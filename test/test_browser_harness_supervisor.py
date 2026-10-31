@@ -198,10 +198,14 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
         return await original(argv, **kw)
 
     sup._spawn = _spy  # type: ignore[method-assign]
+    errlog = tmp_path / "stand-in.err"
     fake_chromium = [
         sys.executable,
         "-c",
-        "import os,json\n"
+        "import os,json,sys,traceback\n"
+        f"sys.stderr=open({str(errlog)!r},'w',buffering=1)\n"
+        "sys.excepthook=lambda *a: traceback.print_exception(*a)\n"
+        "print('started', os.fstat(3), os.fstat(4), file=sys.stderr)\n"
         "buf=b''\n"
         "while not buf.endswith(b'\\0'): buf+=os.read(3,1)\n"
         "req=json.loads(buf[:-1])\n"
@@ -217,7 +221,12 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
         assert not any(a.startswith("--remote-debugging-port") for a in argv)
         assert int(argv[4]) >= supervisor._FIRST_SAFE_FD
         assert int(argv[5]) >= supervisor._FIRST_SAFE_FD
-        await upstream.send(json.dumps({"id": 7, "method": "Browser.getVersion"}))
+        try:
+            await upstream.send(json.dumps({"id": 7, "method": "Browser.getVersion"}))
+        except ConnectionResetError:
+            code = await asyncio.wait_for(proc.wait(), 30)
+            log = errlog.read_text() if errlog.exists() else "<stand-in never started>"
+            pytest.fail(f"the stand-in closed its pipe: exit={code} argv={argv!r} log={log}")
         replies = []
         async for raw in upstream.messages():
             replies.append(raw)
