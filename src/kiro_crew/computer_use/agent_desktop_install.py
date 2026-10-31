@@ -40,6 +40,7 @@ from kiro_crew.computer_use.install_runner import (
     redact_install_output,
 )
 from kiro_crew.computer_use import agent_desktop_locate
+from kiro_crew.computer_use.types import PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WINDOWS
 from kiro_crew.env import find_node_tool
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,9 @@ _DENIED_STATES = frozenset({"denied", "not_granted", "missing", "restricted", "n
 
 LogCallback = Callable[[str], None]
 
+#: Our platform id -> the OS word in the tarball's binary names.
+_OS_KEYS = {PLATFORM_MACOS: "darwin", PLATFORM_LINUX: "linux", PLATFORM_WINDOWS: "win32"}
+
 
 def package_dir() -> Path:
     """Where npm puts the package under the product prefix."""
@@ -70,14 +74,16 @@ def package_dir() -> Path:
 
 
 def platform_binary_name() -> str | None:
-    """The bundled binary for THIS host, named like the tarball names it."""
-    if sys.platform == "darwin":
-        os_key = "darwin"
-    elif sys.platform.startswith("linux"):
-        os_key = "linux"
-    elif sys.platform == "win32":
-        os_key = "win32"
-    else:
+    """The bundled binary for THIS host, named like the tarball names it.
+
+    The OS comes from ``backend.platform_id_for_current_os()``, the package's one
+    platform answer, rather than ``sys.platform``, so a test can pick the Linux (or
+    any) branch on whatever runner it is on.
+    """
+    from kiro_crew.computer_use.backend import platform_id_for_current_os
+
+    os_key = _OS_KEYS.get(platform_id_for_current_os())
+    if os_key is None:
         return None
     machine = platform.machine().lower()
     if machine in ("arm64", "aarch64"):
@@ -304,7 +310,7 @@ def install(on_log: LogCallback | None = None) -> dict[str, Any]:
 
 
 def _reset_backend() -> None:
-    """Drop the shared backend so ``auto`` selection picks agent-desktop up."""
+    """Drop the shared backend so the next build finds the installed agent-desktop."""
     try:
         from kiro_crew.computer_use.backend import reset_shared_backend
 

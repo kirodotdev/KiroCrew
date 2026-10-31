@@ -190,7 +190,7 @@ class TestPathConfinement:
                 return False
 
         monkeypatch.setattr(windows_ffi, "dpi_awareness_scope", lambda: _Scope())
-        return windows_driver.WindowsBackend(), seen
+        return windows_driver.WindowsHelper(), seen
 
     def test_every_intermediate_point_is_confined(self, monkeypatch):
         # THE security assertion for this feature. Two authorized endpoints were

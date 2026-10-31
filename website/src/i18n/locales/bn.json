@@ -19081,7 +19081,6 @@
         "status_region_label": "ডেস্কটপ ড্রাইভারের অবস্থা",
         "driver_label": "সক্রিয় ড্রাইভার",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "বিল্ট-ইন",
         "driver_unsupported": "উপলব্ধ নয়",
         "installed_label": "ইনস্টল করা সংস্করণ",
         "pinned_label": "পিন করা সংস্করণ",

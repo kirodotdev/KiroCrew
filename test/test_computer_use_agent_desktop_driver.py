@@ -10,7 +10,7 @@ with canned JSON envelopes and records the argv it was given. What is pinned:
 * ``--headed`` is passed only for a pointer-moving request;
 * a ref is used only for the record whose fingerprint it was stored with;
 * the locator's order and the digest pin;
-* ``computer_use.driver`` selection.
+* backend selection: agent-desktop or a typed refusal.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from kiro_crew.computer_use.types import (
     DriverResult,
     SnapshotRequest,
 )
-from kiro_crew.testing.fake_computer_use import FakeComputerUseBackend
+from kiro_crew.testing.fake_computer_use import FakeNativeHelper
 
 APP = AppRef(name="Demo", pid=42, bundle_id="com.example.demo", window_id=7, window_title="Demo")
 
@@ -105,6 +105,8 @@ class FakeCli:
         self.states = states or {}
         self.complete = complete
         self.errors: dict[str, str] = {}
+        #: Whether a ``focus`` call moves focus (what a real provider usually does).
+        self.focus_lands = True
 
     def __call__(self, argv, env, timeout):
         args = argv[1:]
@@ -114,6 +116,11 @@ class FakeCli:
             return 1, self.errors[command]
         if command == "--version":
             return 0, "agent-desktop 1.0.2\n"
+        if command == "focus" and self.focus_lands:
+            ref = args[-1]
+            self.states[ref] = [*self.states.get(ref, []), "focused"]
+        if command == "status":
+            return 0, _ok(command, {"supported_surfaces": ["window"]})
         if command == "snapshot":
             return 0, _ok(
                 command,
@@ -266,18 +273,21 @@ class TestClick:
         assert be.click(APP, save, ClickRequest()).ok
         assert cli.calls[-1] == ["click", "--session", SESSION_ID, "--", "@s1:e1"]
 
-    def test_global_point_click_is_the_only_headed_path(self):
+    def test_a_global_point_click_goes_through_the_confining_helper(self):
         cli = FakeCli()
-        be = _backend(cli)
-        assert be.click(APP, None, ClickRequest(method=CLICK_METHOD_GLOBAL, point=(5.0, 6.0))).ok
-        assert cli.calls[-1][0] == "mouse-click" and cli.calls[-1][-1] == "--headed"
-        assert all("--headed" not in c for c in cli.calls[:-1])
+        native = FakeNativeHelper()
+        be = _backend(cli, native=native)
+        req = ClickRequest(method=CLICK_METHOD_GLOBAL, point=(5.0, 6.0))
+        be.click(APP, None, req)
+        assert "mouse-click" not in cli.commands()
+        name, fields = native.backend.calls[-1]
+        assert name == "click" and fields["method"] == CLICK_METHOD_GLOBAL
 
     def test_pointer_free_point_click_delegates_or_refuses(self):
         req = ClickRequest(method=CLICK_METHOD_APP_POST, point=(5.0, 6.0))
         refused = _backend(FakeCli()).click(APP, None, req)
         assert refused.ok is False and "cannot do" in refused.text
-        native = FakeComputerUseBackend()
+        native = FakeNativeHelper()
         cli = FakeCli()
         _backend(cli, native=native).click(APP, None, req)
         assert "mouse-click" not in cli.commands()
@@ -333,7 +343,7 @@ class TestInventoryAndKeys:
 
     def test_list_apps_prefers_native(self):
         cli = FakeCli()
-        _backend(cli, native=FakeComputerUseBackend()).list_apps()
+        _backend(cli, native=FakeNativeHelper()).list_apps()
         assert "list-windows" not in cli.commands()
 
     def test_launch_without_native_is_refused(self):
@@ -344,7 +354,7 @@ class TestInventoryAndKeys:
 
     def test_press_key_prefers_native(self):
         cli = FakeCli()
-        assert _backend(cli, native=FakeComputerUseBackend()).press_key(APP, None, "cmd+s").ok
+        assert _backend(cli, native=FakeNativeHelper()).press_key(APP, None, "cmd+s").ok
         assert "press" not in cli.commands()
 
     def test_press_key_targets_window(self):
@@ -387,7 +397,9 @@ class TestLocate:
         monkeypatch.delenv(locate_mod.ENV_BIN, raising=False)
         monkeypatch.setattr(locate_mod, "INSTALL_PREFIX", lambda: tmp_path / "prefix")
         monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-        on_path = _exe(tmp_path / "bin" / "agent-desktop")
+        # ``shutil.which`` on Windows only finds names with a PATHEXT suffix.
+        suffix = ".exe" if os.name == "nt" else ""
+        on_path = _exe(tmp_path / "bin" / f"agent-desktop{suffix}")
         assert locate_mod.locate() == str(on_path.resolve())
         private = _exe(tmp_path / "prefix" / "node_modules" / ".bin" / "agent-desktop")
         assert locate_mod.locate() == str(private.resolve())
@@ -410,60 +422,122 @@ class TestLocate:
 class TestSelection:
     @pytest.fixture
     def native(self, monkeypatch):
-        fake = FakeComputerUseBackend()
-        monkeypatch.setattr(backend_mod, "select_native_backend", lambda: fake)
+        fake = FakeNativeHelper()
+        monkeypatch.setattr(backend_mod, "select_native_helper", lambda: fake)
         monkeypatch.setattr(backend_mod, "_native_capture", lambda: None)
+        monkeypatch.setattr(backend_mod, "platform_id_for_current_os", lambda: "macos")
         return fake
 
-    def test_native_mode_ignores_agent_desktop(self, monkeypatch, native):
-        monkeypatch.setattr(backend_mod, "_configured_driver", lambda: backend_mod.DRIVER_NATIVE)
-        monkeypatch.setattr(locate_mod, "locate", lambda: "/x")
-        assert backend_mod.select_default_backend() is native
-
-    def test_auto_without_agent_desktop_is_native(self, monkeypatch, native):
-        monkeypatch.setattr(backend_mod, "_configured_driver", lambda: backend_mod.DRIVER_AUTO)
-        monkeypatch.setattr(locate_mod, "locate", lambda: None)
-        assert backend_mod.select_default_backend() is native
-
-    def test_auto_with_unverified_binary_is_native(self, monkeypatch, native):
-        monkeypatch.setattr(backend_mod, "_configured_driver", lambda: backend_mod.DRIVER_AUTO)
-        monkeypatch.setattr(locate_mod, "locate", lambda: "/x")
-        monkeypatch.setattr(locate_mod, "verify", lambda p: "mismatch")
-        assert backend_mod.select_default_backend() is native
-
-    def test_required_but_missing_is_a_typed_refusal(self, monkeypatch, native):
-        monkeypatch.setattr(
-            backend_mod, "_configured_driver", lambda: backend_mod.DRIVER_AGENT_DESKTOP
-        )
+    def test_missing_agent_desktop_is_a_typed_refusal(self, monkeypatch, native):
         monkeypatch.setattr(locate_mod, "locate", lambda: None)
         chosen = backend_mod.select_default_backend()
         assert chosen.status().supported is False
-        assert "agent-desktop" in chosen.status().reason
+        assert chosen.status().reason == backend_mod.AGENT_DESKTOP_MISSING_REASON
 
-    def test_auto_with_verified_binary_wraps_native(self, monkeypatch, native, tmp_path):
-        monkeypatch.setattr(backend_mod, "_configured_driver", lambda: backend_mod.DRIVER_AUTO)
+    def test_unverified_binary_is_a_typed_refusal(self, monkeypatch, native):
+        monkeypatch.setattr(locate_mod, "locate", lambda: "/x")
+        monkeypatch.setattr(locate_mod, "verify", lambda p: "SHA-256 mismatch")
+        chosen = backend_mod.select_default_backend()
+        assert chosen.status().supported is False
+        assert "mismatch" in chosen.status().reason
+
+    def test_verified_binary_runs_over_the_native_helper(self, monkeypatch, native, tmp_path):
         monkeypatch.setattr(locate_mod, "locate", lambda: "/x")
         monkeypatch.setattr(locate_mod, "verify", lambda p: None)
         monkeypatch.setattr(locate_mod, "INSTALL_PREFIX", lambda: tmp_path)
         chosen = backend_mod.select_default_backend()
         assert isinstance(chosen, AgentDesktopBackend)
-        assert chosen.platform_id == native.platform_id
+        assert chosen.platform_id == "macos"
+        assert chosen._native is native
         assert os.path.isdir(tmp_path / "state")
 
 
-class TestConfigKey:
-    @pytest.mark.parametrize(
-        "raw,expected",
-        [
-            (None, "auto"),
-            ("native", "native"),
-            ("Agent-Desktop", "agent-desktop"),
-            ("bogus", "auto"),
-            (3, "auto"),
-        ],
-    )
-    def test_driver_key_reads_enum_or_auto(self, raw, expected):
-        from kiro_crew.config.section_builders import _build_computer_use_config
+class _KeySpy(FakeNativeHelper):
+    """Native fake that records what each keyboard verb sent."""
 
-        data = {} if raw is None else {"driver": raw}
-        assert _build_computer_use_config(data).driver == expected
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+
+    def press_key(self, app, key):
+        self.sent.append(key)
+        return super().press_key(app, key)
+
+    def type_text(self, app, text):
+        self.sent.append(text)
+        return super().type_text(app, text)
+
+
+def _win_backend(cli, native=None):
+    return AgentDesktopBackend("/fake/agent-desktop", "windows", native=native, runner=cli)
+
+
+class TestKeyboardVerbsOnAnElement:
+    """Focus moves through the agent-desktop ref; the native helper only sends keys."""
+
+    def test_press_key_focuses_through_the_ref_then_sends_native_keys(self):
+        cli, spy = FakeCli(), _KeySpy()
+        be = _backend(cli, native=spy)
+        user = _rec(_snap(be), "User")
+        result = be.press_key(APP, user, "cmd+a")
+        assert result.ok, result.text
+        assert spy.sent == ["cmd+a"]
+        assert ["focus", "--session", SESSION_ID, "--", "@s1:e3"] in cli.calls
+        assert "keyboard focus moved to element" in result.text
+
+    def test_focus_is_headed_only_on_windows(self):
+        cli = FakeCli()
+        be = _win_backend(cli, native=_KeySpy())
+        assert be.press_key(APP, _rec(_snap(be), "User"), "ctrl+a").ok
+        focus = [c for c in cli.calls if c[0] == "focus"]
+        assert focus == [["focus", "--session", SESSION_ID, "--headed", "--", "@s1:e3"]]
+        assert all("--headed" not in c for c in cli.calls if c[0] != "focus")
+
+    def test_focus_that_does_not_land_sends_nothing(self):
+        cli, spy = FakeCli(), _KeySpy()
+        cli.focus_lands = False
+        be = _backend(cli, native=spy)
+        result = be.press_key(APP, _rec(_snap(be), "User"), "cmd+a")
+        assert result.ok is False and "did not take keyboard focus" in result.text
+        assert spy.sent == []
+
+    def test_secure_field_is_refused_before_focus(self):
+        cli, spy = FakeCli(states={"@s1:e3": ["secure"]}), _KeySpy()
+        be = _backend(cli, native=spy)
+        result = be.press_key(APP, _rec(_snap(be), "User"), "cmd+v")
+        assert result.ok is False and "secure (password) field" in result.text
+        assert "focus" not in cli.commands() and spy.sent == []
+
+    def test_windows_type_is_focus_plus_native_keys_not_the_cli(self):
+        cli, spy = FakeCli(), _KeySpy()
+        be = _win_backend(cli, native=spy)
+        result = be.type_text(APP, _rec(_snap(be), "User"), "hello")
+        assert result.ok, result.text
+        assert spy.sent == ["hello"]
+        assert "type" not in cli.commands()
+
+    def test_windows_type_without_native_points_at_set_value(self):
+        cli = FakeCli()
+        be = _win_backend(cli)
+        result = be.type_text(APP, _rec(_snap(be), "User"), "hello")
+        assert result.ok is False and "computer_set_value" in result.text
+        assert "type" not in cli.commands() and "focus" not in cli.commands()
+
+    def test_policy_denied_names_the_global_route(self):
+        cli = FakeCli()
+        be = _win_backend(cli)
+        user = _rec(_snap(be), "User")
+        cli.errors["right-click"] = _err("right-click", "POLICY_DENIED")
+        result = be.click(APP, user, ClickRequest(button="right"))
+        assert result.ok is False and "click_method 'global'" in result.text
+
+
+class TestLocateOnWindowsLayout:
+    def test_package_exe_beats_the_npm_shim(self, tmp_path, monkeypatch):
+        """npm's extensionless ``.bin`` shim reads as executable on Windows (no X bit)."""
+        monkeypatch.delenv(locate_mod.ENV_BIN, raising=False)
+        prefix = tmp_path / "prefix"
+        monkeypatch.setattr(locate_mod, "INSTALL_PREFIX", lambda: prefix)
+        _exe(prefix / "node_modules" / ".bin" / "agent-desktop")
+        exe = _exe(prefix / "node_modules" / "agent-desktop" / "bin" / "agent-desktop.exe")
+        assert locate_mod.locate() == str(exe.resolve())

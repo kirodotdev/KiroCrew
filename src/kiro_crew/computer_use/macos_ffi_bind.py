@@ -23,7 +23,6 @@ from ctypes import (
     c_bool,
     c_char_p,
     c_double,
-    c_float,
     c_int,
     c_int32,
     c_int64,
@@ -80,48 +79,6 @@ K_CF_STRING_ENCODING_UTF8 = 0x08000100
 K_CF_NUMBER_SINT32 = 3
 K_CF_NUMBER_DOUBLE = 13
 
-# ``AXValueType`` discriminants (``AXValue.h``). An ``AXValue`` is an opaque box:
-# ``AXValueGetValue`` will only unbox it into a buffer of the type it actually
-# holds, so the type has to be named at the call. Reading ``AXPosition`` (a
-# ``CGPoint``) into a ``CGSize`` buffer would be a silent field transposition —
-# ``y`` read as ``width`` — so the discriminant is passed explicitly and the call
-# is checked rather than assumed.
-K_AX_VALUE_CG_POINT = 1
-K_AX_VALUE_CG_SIZE = 2
-
-# ── Accessibility error codes ──
-AX_ERR_SUCCESS = 0
-# kAXErrorCannotComplete. Electron/Chromium apps answer this to EVERY attribute
-# read until ``AXManualAccessibility`` is set. Not a fatal error — a retry signal.
-AX_ERR_CANNOT_COMPLETE = -25204
-# kAXErrorActionUnsupported. Returned by an element that ADVERTISED the action:
-# a real ``AXScrollArea`` listed ``AXScrollDownByPage`` and then refused it. The
-# advertised action list is a hint, never a contract.
-#
-# The two codes below are DISTINCT and were both confirmed empirically on this
-# macOS rather than copied from a header (they had been transposed onto the same
-# value, which made the scroll fallback's "was it the action that was refused?"
-# test answer for the wrong error):
-#   AXUIElementPerformAction(app, "AXNotARealAction")      -> -25206
-#   AXUIElementCopyAttributeValue(app, "AXNotAnAttribute") -> -25212
-AX_ERR_ACTION_UNSUPPORTED = -25206
-# kAXErrorAttributeUnsupported. Extremely common and completely benign — window
-# elements answer it for ``AXValue``/``AXEnabled``, and every application element
-# on this macOS answers it for ``AXBundleIdentifier`` (see ``apps_macos``).
-AX_ERR_ATTRIBUTE_UNSUPPORTED = -25205
-AX_ERR_NO_VALUE = -25212
-
-# The Electron/Chromium accessibility opt-in, plus its bounded wait. Measured:
-# Obsidian exposed a 13-node stub before the opt-in and 574 nodes after it;
-# Chrome went from a hard ``-25204`` to 1,431 nodes.
-AX_MANUAL_ACCESSIBILITY = "AXManualAccessibility"
-ELECTRON_OPT_IN_WAIT_SECS = 2.0
-ELECTRON_OPT_IN_POLL_SECS = 0.25
-# MANDATORY, immediately after creating the application element. ctypes releases
-# the GIL around the C call, so an unresponsive target app would otherwise park
-# the calling worker thread indefinitely with no way to interrupt it.
-AX_MESSAGING_TIMEOUT_SECS = 2.0
-
 # ── CoreGraphics window-list ABI constants ──
 K_CG_WINDOW_LIST_ON_SCREEN_ONLY = 1
 K_CG_WINDOW_LIST_EXCLUDE_DESKTOP = 16
@@ -161,28 +118,13 @@ CG_WINDOW_LAYER_NORMAL = 0
 # SHARED HID table by name while claiming to be private. Verified live on
 # darwin-arm64: ``CGEventSourceGetSourceStateID`` reports an opaque id for -1 and
 # literally ``1`` for 1. The symptom was masked only because every posting path
-# (``post_key`` / ``post_text`` / ``post_scroll`` / ``_mouse_event``) also calls
+# (``post_key`` / ``post_text`` / ``_mouse_event``) also calls
 # ``CGEventSetFlags(event, 0)``; a future path that omits that would reintroduce
 # the modifier-inheritance bug, and ``macos_skylight``'s deliberate "HID source
 # unlike every other path in this package" contrast was vacuous while these were
 # the same table. Signed because the enum is an ``int32_t``, so ``_FN_SPECS`` binds
 # ``CGEventSourceCreate`` with ``c_int32`` rather than a uint.
 K_CG_EVENT_SOURCE_STATE_PRIVATE = -1
-# kCGScrollEventUnitLine. The enum has exactly TWO members — ``Pixel`` (0) and
-# ``Line`` (1); there is no page unit, so a "page" of scrolling is expressed as a
-# line count in the delta, not by the unit. Named accurately here because the old
-# spelling (``…_UNIT_PAGE``) read as though the OS were doing the page conversion
-# and invited a future caller to pass a page COUNT as the delta.
-K_CG_SCROLL_EVENT_UNIT_LINE = 1
-#: Lines of scrolling treated as one "page" for the wheel-event fallback. The AX
-#: page actions are tried first (``macos_driver.scroll``); this is only the
-#: synthesized approximation for elements that refuse them.
-CG_SCROLL_LINES_PER_PAGE = 10
-# kCGScrollWheelEventDeltaAxis1 (vertical) / Axis2 (horizontal). Set through
-# ``CGEventSetIntegerValueField`` because the multi-axis constructor is variadic.
-K_CG_SCROLL_DELTA_AXIS_1 = 11
-K_CG_SCROLL_DELTA_AXIS_2 = 12
-
 # ── CoreGraphics mouse-event ABI constants ──
 # ``CGEventType`` members. There is NO generic "mouse down" — the type is
 # PER-BUTTON, and a right-click posted as ``kCGEventLeftMouseDown`` with
@@ -340,37 +282,16 @@ _FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
     (LIB_CF, "CFDictionaryGetValue", c_void_p, [c_void_p, c_void_p]),
     (LIB_CF, "CFDictionaryCreateMutable", c_void_p, [c_void_p, c_long, c_void_p, c_void_p]),
     (LIB_CF, "CFDictionarySetValue", _VOID, [c_void_p, c_void_p, c_void_p]),
-    # ── CoreFoundation: numbers + booleans ──
+    # ── CoreFoundation: numbers ──
     (LIB_CF, "CFNumberGetTypeID", _CF_TYPE_ID, []),
     (LIB_CF, "CFNumberCreate", c_void_p, [c_void_p, c_int, c_void_p]),
     (LIB_CF, "CFNumberGetValue", c_bool, [c_void_p, c_int, c_void_p]),
-    (LIB_CF, "CFBooleanGetTypeID", _CF_TYPE_ID, []),
-    (LIB_CF, "CFBooleanGetValue", c_bool, [c_void_p]),
     # ── CoreFoundation: data (the ImageIO encode sink) ──
     (LIB_CF, "CFDataCreateMutable", c_void_p, [c_void_p, c_long]),
     (LIB_CF, "CFDataGetLength", c_long, [c_void_p]),
     (LIB_CF, "CFDataGetBytePtr", POINTER(c_ubyte), [c_void_p]),
     # ── ApplicationServices (Accessibility) ──
     (LIB_AX, "AXIsProcessTrusted", c_bool, []),
-    (LIB_AX, "AXUIElementGetTypeID", _CF_TYPE_ID, []),
-    (LIB_AX, "AXUIElementCreateApplication", c_void_p, [c_int32]),
-    (LIB_AX, "AXUIElementCopyAttributeValue", c_int32, [c_void_p, c_void_p, POINTER(c_void_p)]),
-    (LIB_AX, "AXUIElementSetAttributeValue", c_int32, [c_void_p, c_void_p, c_void_p]),
-    (LIB_AX, "AXUIElementCopyActionNames", c_int32, [c_void_p, POINTER(c_void_p)]),
-    (LIB_AX, "AXUIElementPerformAction", c_int32, [c_void_p, c_void_p]),
-    # ``AXValue`` unboxing, for ``AXPosition``/``AXSize``. ``AXValueGetType``
-    # is checked BEFORE ``AXValueGetValue`` so a mistyped box is refused rather
-    # than transposed into the wrong struct fields.
-    (LIB_AX, "AXValueGetTypeID", _CF_TYPE_ID, []),
-    (LIB_AX, "AXValueGetType", c_int32, [c_void_p]),
-    (LIB_AX, "AXValueGetValue", c_bool, [c_void_p, c_int32, c_void_p]),
-    # Settability, the only way to tell a read-only text field from an editable
-    # one — an ``AXTextField`` the app has disabled for input still reports
-    # ``AXEnabled=true`` and still advertises a value.
-    (LIB_AX, "AXUIElementIsAttributeSettable", c_int32, [c_void_p, c_void_p, POINTER(c_bool)]),
-    # Takes a C ``float``, not a double — a c_double here passes the value in the
-    # wrong register class and the timeout is never applied.
-    (LIB_AX, "AXUIElementSetMessagingTimeout", c_int32, [c_void_p, c_float]),
     # ── CoreGraphics: window list + capture ──
     (LIB_CG, "CGWindowListCopyWindowInfo", c_void_p, [c_uint32, c_uint32]),
     (LIB_CG, "CGWindowListCreateImage", c_void_p, [CGRect, c_uint32, c_uint32, c_uint32]),
@@ -385,18 +306,9 @@ _FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
     (LIB_CG, "CGEventSourceCreate", c_void_p, [c_int32]),
     (LIB_CG, "CGEventCreateKeyboardEvent", c_void_p, [c_void_p, c_uint16, c_bool]),
     (LIB_CG, "CGEventKeyboardSetUnicodeString", _VOID, [c_void_p, c_long, POINTER(c_uint16)]),
-    # The FIXED-arity prototype only: ``wheelCount`` is pinned to 1 by every
-    # caller and the second axis is applied through CGEventSetIntegerValueField.
-    # Declaring the variadic tail produced garbage on arm64 (macos_ffi hazard 3).
-    (LIB_CG, "CGEventCreateScrollWheelEvent", c_void_p, [c_void_p, c_uint32, c_uint32, c_int32]),
     (LIB_CG, "CGEventSetIntegerValueField", _VOID, [c_void_p, c_uint32, c_int64]),
     (LIB_CG, "CGEventSetFlags", _VOID, [c_void_p, c_uint64]),
     (LIB_CG, "CGEventPostToPid", _VOID, [c_int32, c_void_p]),
-    # Where a posted wheel event lands. A new wheel event carries the operator's
-    # pointer position, so without this a scroll aimed at a background window goes
-    # to whatever the pointer is over and the target app drops it. ``CGPoint``
-    # by value, for the same AArch64 reason as CGEventCreateMouseEvent below.
-    (LIB_CG, "CGEventSetLocation", _VOID, [c_void_p, CGPoint]),
     # ── CoreGraphics: mouse-event synthesis ──
     # ``CGPoint`` BY VALUE. Declaring the location as two bare doubles
     # mis-marshals the whole call under the AArch64 calling convention — the
@@ -425,32 +337,13 @@ _FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
     (LIB_PROC, "proc_pidpath", c_int, [c_int, c_void_p, c_uint32]),
 )
 
-# Symbols that are bound if present and simply absent otherwise. Same
-# ``argtypes``-mandatory discipline; the only difference is that a missing symbol
-# is not a failure.
-#
-# ``_AXUIElementGetWindow`` is the only way to learn which CoreGraphics window an
-# ``AXUIElement`` corresponds to, and correlating the two is a correctness
-# requirement, not a nicety: ``AXWindows[0]`` and the CoreGraphics window list are
-# INDEPENDENTLY ordered. Verified live on Notes — ``AXWindows[0]`` was an
-# ``AXDialog`` with an empty title (3 nodes) while the frontmost CG window was the
-# real 103-node document window, so walking ``AXWindows[0]`` and capturing the CG
-# frontmost window would have returned a tree and an image of DIFFERENT WINDOWS.
-# The leading underscore marks it private-but-stable (it has shipped for a decade
-# and every accessibility client uses it); it is optional here so a future macOS
-# that removes it degrades to the title/AXMain fallback in ``snapshot_macos``
-# rather than breaking the feature.
-_OPTIONAL_FN_SPECS: tuple[tuple[str, str, Any, list[Any]], ...] = (
-    (LIB_AX, "_AXUIElementGetWindow", c_int32, [c_void_p, POINTER(c_uint32)]),
-)
-
 
 @dataclass(frozen=True)
 class Libs:
     """The five bound framework handles.
 
     Frozen and built exactly once: rebinding on every call would re-run 50
-    ``getattr`` + attribute assignments per tree walk, and a partially bound
+    ``getattr`` + attribute assignments per call, and a partially bound
     handle is the hazard the single bind pass exists to prevent.
     """
 
@@ -463,7 +356,7 @@ class Libs:
 
 @dataclass(frozen=True)
 class TypeIds:
-    """Cached ``CFTypeID`` values for the types we accept from AX and CF.
+    """Cached ``CFTypeID`` values for the CF types we accept.
 
     Cached because every attribute read compares against them; each is a C call
     and a tree walk performs thousands of reads.
@@ -473,12 +366,6 @@ class TypeIds:
     array: int
     dictionary: int
     number: int
-    boolean: int
-    ax_element: int
-    # ``AXValue`` — the opaque box ``AXPosition``/``AXSize`` come wrapped in. A
-    # separate id from ``ax_element``: handing an ``AXValue`` to an
-    # element-expecting call (or the reverse) is a segfault, not a type error.
-    ax_value: int
 
 
 @dataclass(frozen=True)
@@ -575,12 +462,6 @@ def _frameworks() -> Libs:
         # first call from deep inside a tree walk.
         for lib_key, symbol, restype, argtypes in _FN_SPECS:
             _bind(handles[lib_key], symbol, restype, argtypes)
-        for lib_key, symbol, restype, argtypes in _OPTIONAL_FN_SPECS:
-            try:
-                _bind(handles[lib_key], symbol, restype, argtypes)
-            except AttributeError:
-                # Absent on this macOS: the caller has a documented fallback.
-                logger.debug("optional computer-use symbol %s is unavailable", symbol)
         libs = Libs(
             cf=handles[LIB_CF],
             ax=handles[LIB_AX],
@@ -593,9 +474,6 @@ def _frameworks() -> Libs:
             array=int(libs.cf.CFArrayGetTypeID()),
             dictionary=int(libs.cf.CFDictionaryGetTypeID()),
             number=int(libs.cf.CFNumberGetTypeID()),
-            boolean=int(libs.cf.CFBooleanGetTypeID()),
-            ax_element=int(libs.ax.AXUIElementGetTypeID()),
-            ax_value=int(libs.ax.AXValueGetTypeID()),
         )
         _libs = libs
         return libs
@@ -664,3 +542,8 @@ def event_source() -> c_void_p:
         if _event_source is None:
             _event_source = c_void_p(libs.cg.CGEventSourceCreate(K_CG_EVENT_SOURCE_STATE_PRIVATE))
         return _event_source
+
+
+def ax_is_process_trusted() -> bool:
+    """``AXIsProcessTrusted()`` — ADVISORY. See :mod:`permissions`."""
+    return bool(_frameworks().ax.AXIsProcessTrusted())

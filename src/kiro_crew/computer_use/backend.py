@@ -10,18 +10,20 @@ registry stays swappable inside a single pytest process.
 
 Two structural guarantees:
 
-* **One platform branch.** :func:`select_default_backend` is the only place in
-  the whole package that asks which OS this is, and it asks
+* **One platform branch.** The selection functions here are the only place in
+  the whole package that asks which OS this is, and they ask
   ``platform_compat.IS_MACOS`` / ``IS_WINDOWS`` / ``IS_LINUX`` rather than
-  reading ``sys.platform`` itself.
+  reading ``sys.platform`` itself. The one driver is agent-desktop
+  (:mod:`agent_desktop_driver`); a :class:`NativeHelper` sits under it on macOS
+  and Windows.
 * **No exception crosses the seam.** Every method returns a
   :class:`DriverResult`; drivers convert their own failures into
   ``ok=False``. A ``ComputerUseError`` escaping into the MCP stdio loop's worker
   thread would take the tool call down, and an unhandled ctypes fault would take
   the sidecar with it.
 
-Nothing in this module imports ctypes, and the native drivers are imported
-lazily inside :func:`select_default_backend` — so importing this package on a
+Nothing in this module imports ctypes, and the native helpers are imported
+lazily inside :func:`select_native_helper` — so importing this package on a
 Linux CI runner loads no native library at all.
 """
 
@@ -69,20 +71,8 @@ from kiro_crew.computer_use.types import (
 
 logger = logging.getLogger(__name__)
 
-# Reasons the non-macOS backends report. Concrete rather than "not supported":
-# a user on Windows should learn what is missing, and a maintainer should find
-# the next implementation step named here.
-#: Kept for the case where a Windows host cannot reach UI Automation at all. The
-#: driver reports its OWN reason (``windows_driver.UNAVAILABLE_REASON``) when the
-#: client will not build, so this is the fallback for a failed driver IMPORT —
-#: a partial install, not a missing implementation.
-WINDOWS_REASON = "the Windows UI Automation driver could not be loaded on this host"
-LINUX_REASON = (
-    "the Linux AT-SPI driver is not implemented yet; computer use is macOS-only "
-    "in this release (Wayland has no unprivileged window capture)"
-)
 UNKNOWN_PLATFORM_REASON = "this operating system has no computer-use driver"
-DRIVER_IMPORT_REASON = "the native computer-use driver could not be loaded ({detail})"
+DRIVER_IMPORT_REASON = "the computer-use driver could not be loaded ({detail})"
 
 
 class ComputerUseBackend(abc.ABC):
@@ -243,6 +233,72 @@ class ComputerUseBackend(abc.ABC):
     @abc.abstractmethod
     def perform_action(self, app: AppRef, rec: ElementRec, action: str) -> DriverResult:
         """Perform a named accessibility action on *rec*."""
+
+    @abc.abstractmethod
+    def close(self) -> None:
+        """Release resources. Safe to call repeatedly."""
+
+
+class NativeHelper(abc.ABC):
+    """The platform code the agent-desktop driver calls for what agent-desktop cannot do.
+
+    agent-desktop owns the accessibility tree and every element action. This is the
+    rest, on macOS and Windows only: the window inventory and the app identity rules,
+    a vetted launch, coordinate input (``app_post``/``sky_click`` leave the pointer
+    alone on macOS; ``global`` moves it on both), and keystrokes sent to whatever
+    holds keyboard focus. The caller moves and checks focus first, so nothing here
+    takes an element.
+
+    Same contract as :class:`ComputerUseBackend`: never raise, and never move the
+    pointer unless ``req.moves_pointer`` is True.
+    """
+
+    @property
+    @abc.abstractmethod
+    def platform_id(self) -> str:
+        """``macos`` or ``windows``."""
+
+    @abc.abstractmethod
+    def status(self) -> BackendStatus:
+        """Whether the native libraries load here."""
+
+    @abc.abstractmethod
+    def probe_permissions(self) -> PermissionProbe:
+        """ADVISORY permission hints (see :meth:`ComputerUseBackend.probe_permissions`)."""
+
+    @abc.abstractmethod
+    def list_apps(self) -> DriverResult:
+        """Applications with an on-screen window."""
+
+    @abc.abstractmethod
+    def resolve_app(self, query: str) -> DriverResult:
+        """Resolve *query* to one :class:`AppRef` from the on-screen window list."""
+
+    @abc.abstractmethod
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        """See :meth:`ComputerUseBackend.launch_app`."""
+
+    @abc.abstractmethod
+    def click(self, app: AppRef, req: ClickRequest) -> DriverResult:
+        """Click *req*'s point with its concrete coordinate method."""
+
+    @abc.abstractmethod
+    def drag(self, app: AppRef, req: DragRequest) -> DriverResult:
+        """Drag between *req*'s points inside *app*."""
+
+    @abc.abstractmethod
+    def type_text(self, app: AppRef, text: str) -> DriverResult:
+        """Type *text* into whatever holds *app*'s keyboard focus."""
+
+    @abc.abstractmethod
+    def press_key(self, app: AppRef, key: str) -> DriverResult:
+        """Send one key spec to whatever holds *app*'s keyboard focus."""
 
     @abc.abstractmethod
     def close(self) -> None:
@@ -598,52 +654,28 @@ def reset_shared_backend() -> None:
     index.reset_shared_index()
 
 
-#: Platform ids with a real driver. Kept beside :func:`select_default_backend`, whose
-#: branches are what make it true, so adding a driver is one edit rather than two that
-#: can disagree. ``test_computer_use_backend.py`` pins the two together.
-_SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset({PLATFORM_MACOS, PLATFORM_WINDOWS})
-
-
-#: ``computer_use.driver`` values (``config.integration_sections.ComputerUseConfig``).
-DRIVER_AUTO = "auto"
-DRIVER_AGENT_DESKTOP = "agent-desktop"
-DRIVER_NATIVE = "native"
 AGENT_DESKTOP_MISSING_REASON = (
-    "computer_use.driver is 'agent-desktop', but no agent-desktop executable was found "
-    "(install it from Settings -> Computer Use, or set computer_use.driver to 'auto')"
+    "computer use runs on the agent-desktop driver, which is not installed "
+    "(install it from Settings -> Computer Use)"
 )
 
 
-def _configured_driver() -> str:
-    """``computer_use.driver`` from config.json, ``auto`` when unreadable."""
-    try:
-        from kiro_crew.config.loader import KiroCrewConfig
-
-        value = getattr(getattr(KiroCrewConfig.load(), "computer_use", None), "driver", "")
-    except Exception:
-        logger.debug("computer_use.driver unreadable; using auto", exc_info=True)
-        return DRIVER_AUTO
-    return value if value in (DRIVER_AGENT_DESKTOP, DRIVER_NATIVE) else DRIVER_AUTO
-
-
 def select_default_backend() -> ComputerUseBackend:
-    """The backend ``computer_use.driver`` selects for THIS platform.
+    """The agent-desktop backend for THIS platform, or a typed refusal.
 
-    ``native`` returns :func:`select_native_backend`. ``auto`` and ``agent-desktop``
-    wrap the native driver in :class:`agent_desktop_driver.AgentDesktopBackend` when
-    ``agent_desktop_locate.locate`` finds an executable that verifies against the
-    pinned digests; the native driver stays underneath for what agent-desktop cannot
-    do (pointer-free coordinate input, the window inventory, launch, capture). A
-    missing or unverified agent-desktop leaves ``auto`` on the native driver, and
-    makes ``agent-desktop`` a typed refusal rather than a silent downgrade.
+    agent-desktop is the only driver. :func:`agent_desktop_locate.locate` must find an
+    executable that verifies against the pinned digests; without one every tool
+    refuses with :data:`AGENT_DESKTOP_MISSING_REASON` (or the verify reason). On macOS
+    and Windows a :class:`NativeHelper` from :func:`select_native_helper` sits under
+    it for what agent-desktop cannot do, and the native window capture adds the
+    screenshot. Linux has neither: agent-desktop's own ``screenshot`` is used.
 
-    Building the wrapper never raises: a driver that cannot load must disable one
+    Building the backend never raises: a driver that cannot load must disable one
     capability, not crash the process that asked about it.
     """
-    mode = _configured_driver()
-    native = select_native_backend()
-    if mode == DRIVER_NATIVE:
-        return native
+    platform_id = platform_id_for_current_os()
+    if platform_id == PLATFORM_UNSUPPORTED:
+        return UnsupportedBackend(platform_id, UNKNOWN_PLATFORM_REASON)
     try:
         from kiro_crew.computer_use import agent_desktop_locate
 
@@ -652,25 +684,24 @@ def select_default_backend() -> ComputerUseBackend:
     except Exception as exc:
         binary, reason = None, DRIVER_IMPORT_REASON.format(detail=exc)
     if reason or not binary:
-        if mode == DRIVER_AGENT_DESKTOP:
-            logger.warning("agent-desktop driver unavailable: %s", reason)
-            return UnsupportedBackend(native.platform_id, reason or AGENT_DESKTOP_MISSING_REASON)
-        return native
+        return UnsupportedBackend(platform_id, reason or AGENT_DESKTOP_MISSING_REASON)
     try:
         from kiro_crew.computer_use.agent_desktop_driver import AgentDesktopBackend, state_home_for
 
+        native = select_native_helper()
+        capture = _native_capture()
         return AgentDesktopBackend(
             binary,
-            native.platform_id,
-            native=native if native.status().supported else None,
-            capture=_native_capture(),
+            platform_id,
+            native=native if native is not None and native.status().supported else None,
+            capture=capture,
             state_home=state_home_for(str(agent_desktop_locate.INSTALL_PREFIX())),
+            # No native capture (Linux): agent-desktop's own screenshot command.
+            cli_capture=capture is None,
         )
     except Exception as exc:
         logger.warning("agent-desktop driver could not be built: %s", exc)
-        if mode == DRIVER_AGENT_DESKTOP:
-            return UnsupportedBackend(native.platform_id, DRIVER_IMPORT_REASON.format(detail=exc))
-        return native
+        return UnsupportedBackend(platform_id, DRIVER_IMPORT_REASON.format(detail=exc))
 
 
 def _native_capture() -> "Callable[[Snapshot, int, int], Snapshot] | None":
@@ -695,75 +726,44 @@ def _native_capture() -> "Callable[[Snapshot, int, int], Snapshot] | None":
     )
 
 
-def select_native_backend() -> ComputerUseBackend:
-    """Build the native backend for THIS platform. The only platform branch in the package.
+def select_native_helper() -> "NativeHelper | None":
+    """The :class:`NativeHelper` for THIS platform, or ``None`` (Linux, or a failed load).
 
-    Branches on ``platform_compat.IS_MACOS`` / ``IS_WINDOWS`` / ``IS_LINUX``
-    (never a raw ``sys.platform`` read), which is also what lets a test flip a
-    single flag and exercise the Windows/Linux degradation path on a Linux
-    runner.
-
-    The native driver import is deferred into this function for two reasons: it
-    would be a circular import at module scope (the drivers subclass the classes
-    defined above), and a module-scope import would load ApplicationServices on
-    every machine that merely imports the package — including the Linux CI fleet,
-    where it would break collection of every test that transitively touches
-    ``kiro_crew``.
-
-    A driver module that fails to import degrades to a typed refusal rather than
-    propagating: a partial install or a framework that will not load should
-    disable one capability, not crash the process that asked about it.
+    The import is deferred: it would be a circular import at module scope (the helpers
+    subclass :class:`NativeHelper`), and a module-scope import would load
+    ApplicationServices on every machine that merely imports the package, including
+    the Linux CI fleet. A helper that will not import is logged and left out; the
+    agent-desktop driver then refuses the verbs that needed it.
     """
-    if platform_compat.IS_MACOS:
-        try:
-            # Deferred + circular: macos_driver subclasses ComputerUseBackend.
-            from kiro_crew.computer_use.macos_driver import MacOSBackend
+    try:
+        if platform_compat.IS_MACOS:
+            from kiro_crew.computer_use.macos_driver import MacOSHelper
 
-            return MacOSBackend()
-        except Exception as exc:
-            logger.warning("macOS computer-use driver unavailable: %s", exc)
-            return UnsupportedBackend(PLATFORM_MACOS, DRIVER_IMPORT_REASON.format(detail=exc))
-    if platform_compat.IS_WINDOWS:
-        try:
-            # Deferred + circular: windows_driver subclasses ComputerUseBackend.
-            from kiro_crew.computer_use.windows_driver import WindowsBackend
+            return MacOSHelper()
+        if platform_compat.IS_WINDOWS:
+            from kiro_crew.computer_use.windows_driver import WindowsHelper
 
-            return WindowsBackend()
-        except Exception as exc:
-            # Same degradation as macOS: a driver module that will not import
-            # disables one capability rather than crashing the process that asked
-            # about it.
-            logger.warning("Windows computer-use driver unavailable: %s", exc)
-            return UnsupportedBackend(PLATFORM_WINDOWS, WINDOWS_REASON)
-    if platform_compat.IS_LINUX:
-        # Deferred + circular: linux_driver subclasses UnsupportedBackend.
-        from kiro_crew.computer_use.linux_driver import LinuxBackend
-
-        return LinuxBackend()
-    return UnsupportedBackend(PLATFORM_UNSUPPORTED, UNKNOWN_PLATFORM_REASON)
+            return WindowsHelper()
+    except Exception as exc:
+        logger.warning("native computer-use helper unavailable: %s", exc)
+    return None
 
 
 def platform_could_be_supported() -> bool:
     """Whether THIS OS has a driver at all, WITHOUT loading one.
 
-    The cheap half of the support question, for callers on a hot or boot path. It
-    reads only ``platform_compat`` flags, so it loads no native library and imports no
-    driver module — where ``get_shared_backend().status()`` costs a driver import plus
-    five ``WinDLL`` loads (measured at 31ms and 32 modules on Windows).
-
-    Deliberately OPTIMISTIC: it answers "a driver exists for this platform", not "it
-    works on this host". A macOS box with broken frameworks or a Windows box without
-    ``UIAutomationCore`` still answers True here, and the real ``status()`` says
-    otherwise. That is the correct split for the one caller that needs it — the agent
-    spec gate, whose job is to avoid PAYING for a backend process on a platform that
-    has none. The in-process checks the shim already runs (``enable_state`` in
-    ``_list_tools`` and again in the dispatcher) are what refuse when the driver turns
-    out not to work, and they run in the process that would have done the work.
+    The cheap half of the support question, for the agent spec gate, whose job is to
+    avoid PAYING for a backend process on an OS that has no driver. It reads only
+    ``platform_compat`` flags: macOS, Windows and Linux all run the agent-desktop
+    driver. Deliberately OPTIMISTIC: it does not ask whether agent-desktop is
+    installed. A host without it still gets the computer-use server, whose tools
+    refuse in-band with :data:`AGENT_DESKTOP_MISSING_REASON`, and an install from
+    Settings starts working at the next backend build with no agent-spec rebuild.
 
     Never use this to decide whether an ACTION may proceed: for that, ``status()`` is
     the only honest answer.
     """
-    return platform_id_for_current_os() in _SUPPORTED_PLATFORM_IDS
+    return platform_id_for_current_os() != PLATFORM_UNSUPPORTED
 
 
 def platform_id_for_current_os() -> str:

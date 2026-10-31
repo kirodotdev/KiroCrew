@@ -112,32 +112,6 @@ DEFAULT_CLICK_METHOD = CLICK_METHOD_AUTO
 # ever asking. That naming requirement is what the Settings copy discloses.
 POINTER_MOVING_METHODS: frozenset[str] = frozenset({CLICK_METHOD_GLOBAL})
 
-# ── Windows named actions ──
-# The vocabulary ``computer_perform_action`` accepts on the Windows driver, and the
-# vocabulary ``ElementRec.actions`` publishes there. It lives HERE rather than in
-# ``windows_driver`` because both ends need it: ``snapshot_windows`` advertises the
-# names and the driver serves them, and the driver already imports the snapshot
-# module, so the constants cannot live on the driver without a cycle. Two modules
-# agreeing on one spelling is the whole point — a name published but not served is a
-# refusal the model was invited to trigger.
-#
-# Deliberately a CLOSED set rather than a free-form provider string: the
-# LegacyIAccessible pattern exposes ``SetValue``, so a free-form action name over that
-# interface would be an un-gated write path around ``ValuePattern`` and the
-# secure-field check that guards it.
-WINDOWS_ACTION_PRESS = "press"
-WINDOWS_ACTION_TOGGLE = "toggle"
-WINDOWS_ACTION_SELECT = "select"
-WINDOWS_ACTION_EXPAND = "expand"
-WINDOWS_ACTION_COLLAPSE = "collapse"
-WINDOWS_SUPPORTED_ACTIONS: tuple[str, ...] = (
-    WINDOWS_ACTION_PRESS,
-    WINDOWS_ACTION_TOGGLE,
-    WINDOWS_ACTION_SELECT,
-    WINDOWS_ACTION_EXPAND,
-    WINDOWS_ACTION_COLLAPSE,
-)
-
 # ── Mouse buttons ──
 # Values are the ``CGMouseButton`` enum; the mapping to the six per-button event
 # types lives beside the FFI in ``macos_ffi``, because those are ABI facts.
@@ -402,91 +376,14 @@ SCREENSHOT_FILE_SUFFIX = ".jpeg"
 # cannot fill the temp volume.
 SCREENSHOT_KEEP = 200
 
-# ── Accessibility attribute / role names ──
-AX_ROLE = "AXRole"
-AX_SUBROLE = "AXSubrole"
-AX_TITLE = "AXTitle"
-AX_VALUE = "AXValue"
-AX_DESCRIPTION = "AXDescription"
-AX_CHILDREN = "AXChildren"
-AX_WINDOWS = "AXWindows"
-# Alternate child collections. A table, outline or list frequently exposes its
-# rows ONLY here and reports an empty (or scaffolding-only) ``AXChildren`` — so a
-# children-only walk renders a spreadsheet or a file list as a container with
-# nothing in it, which reads to the model as "this app has no content" rather than
-# "you are looking through the wrong attribute".
-AX_ROWS = "AXRows"
-AX_VISIBLE_CHILDREN = "AXVisibleChildren"
-#: Child attributes read for every node, in the order they are merged. Duplicates
-#: across collections are dropped (a row is commonly in BOTH ``AXRows`` and
-#: ``AXVisibleChildren``), so the extra reads add coverage, never duplicate nodes.
-AX_CHILD_ATTRIBUTES: tuple[str, ...] = (AX_CHILDREN, AX_ROWS, AX_VISIBLE_CHILDREN)
-#: Roles whose real content lives in ``AXRows``/``AXVisibleChildren``. For these,
-#: the alternate collections are read FIRST so the rows keep the low indices a
-#: model is most likely to address, rather than landing after a wall of
-#: scaffolding.
-ROW_BEARING_ROLES: frozenset[str] = frozenset({"AXTable", "AXOutline", "AXList", "AXBrowser"})
-AX_ENABLED = "AXEnabled"
-# Geometry. Both come back as ``AXValue`` boxes (a ``CGPoint`` and a ``CGSize``),
-# never as plain numbers — see ``macos_ffi.ax_frame``.
-AX_POSITION = "AXPosition"
-AX_SIZE = "AXSize"
-# Trait attributes: read as a TRI-STATE (``macos_ffi.ax_bool_opt``), because
-# absent and False mean different things. ``AXSelected`` absent means "no notion
-# of selection here"; ``AXSelected=False`` means "selectable, not selected".
-AX_SELECTED = "AXSelected"
-AX_EXPANDED = "AXExpanded"
-# The focused element of the whole app subtree. Read ONCE per walk off the
-# application element (not per node) — it is what turns "there are 40 text fields"
-# into "the caret is in this one", which is the difference between typing into the
-# right box and guessing.
-AX_FOCUSED_UI_ELEMENT = "AXFocusedUIElement"
-# The user's current text selection inside the focused element. Read once per
-# walk, and NEVER for a secure element (a selected password is still a password).
-AX_SELECTED_TEXT = "AXSelectedText"
+#: The default accessibility press, named in click results.
 AX_PRESS_ACTION = "AXPress"
-# The press LADDER, tried in order when an element advertises no usable ``AXPress``.
-# ``-25206`` (action unsupported) is the single most common click failure, and it is
-# recoverable: a disclosure triangle answers ``AXConfirm``, a Finder row and a link
-# answer ``AXOpen``, and a right-click target answers ``AXShowMenu`` and nothing
-# else. Trying the siblings costs one AX round-trip each (~1ms) and converts a
-# refusal — which the model can only answer by guessing coordinates — into a click.
-AX_CONFIRM_ACTION = "AXConfirm"
-AX_OPEN_ACTION = "AXOpen"
-AX_SHOW_MENU_ACTION = "AXShowMenu"
-#: Left-button press ladder, most-specific first.
-AX_PRESS_LADDER: tuple[str, ...] = (AX_PRESS_ACTION, AX_CONFIRM_ACTION, AX_OPEN_ACTION)
-#: A right click is a DIFFERENT gesture, not a press: only ``AXShowMenu`` expresses
-#: it. Never fall back to ``AXPress`` for it — that would silently turn "open the
-#: context menu" into "activate the control", which is the wrong action entirely.
-AX_MENU_LADDER: tuple[str, ...] = (AX_SHOW_MENU_ACTION,)
-AX_PARENT = "AXParent"
-#: How many ancestors the click ladder walks up looking for a pressable container.
-#: Web content routinely renders a clickable row as a plain unactionable text node
-#: inside a pressable ancestor two or three levels up, so the whole row is dead to
-#: an element click even though a coordinate click on it works. Bounded low: the
-#: ancestor has to plausibly BE the thing the model meant, and by four levels up it
-#: is more likely to be the page than the row — pressing that would activate
-#: something the model never addressed.
-MAX_ANCESTOR_PRESS_HOPS = 3
-#: Largest ancestor-to-target area ratio still treated as "the same control".
-#: The geometric guard on the ancestor fallback, and the thing that keeps it from
-#: becoming a wrong-click generator: a container many times the size of the element
-#: addressed is a layout wrapper (a scroll area, the page body), not the row, and
-#: pressing it would activate an unrelated widget. A row wrapping a text node is
-#: typically 1-6x its area, so this admits the real case and rejects the page.
-MAX_ANCESTOR_AREA_RATIO = 8.0
 
 # THE security-critical constant. A real macOS password box reports
 # ``AXRole == "AXTextField"`` (innocuous) with ``AXSubrole ==
 # "AXSecureTextField"`` and a READABLE ``AXValue`` — so a role-only check
 # misses every password field. Both attributes are compared against this.
 SECURE_SUBROLE = "AXSecureTextField"
-
-# Structural containers that carry no information of their own. Elided from the
-# rendered tree when they have no title/value, WITHOUT consuming an element
-# index, so the numbering the model sees stays dense.
-ELIDABLE_ROLES: frozenset[str] = frozenset({"AXGroup", "AXUnknown", "AXSplitGroup"})
 
 # Trait words rendered in parentheses after an element's role. Deliberately plain
 # English rather than the AX attribute names: ``editable`` is what a model acts on,

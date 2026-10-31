@@ -66,14 +66,9 @@ _PROTOTYPE_SYMBOLS: tuple[str, ...] = (
     "CFArrayGetValueAtIndex",
     "CFDictionaryGetValue",
     "CFNumberGetValue",
-    # ApplicationServices (AX): the tree walk, the actions, and the messaging
-    # timeout that bounds a hung target app.
+    # ApplicationServices (AX): the one accessibility call left after agent-desktop
+    # took over the tree walk — the advisory permission probe.
     "AXIsProcessTrusted",
-    "AXUIElementCreateApplication",
-    "AXUIElementCopyAttributeValue",
-    "AXUIElementSetAttributeValue",
-    "AXUIElementPerformAction",
-    "AXUIElementSetMessagingTimeout",
     # CoreGraphics: window list (pid resolution), capture, and app-targeted input.
     "CGWindowListCopyWindowInfo",
     "CGWindowListCreateImage",
@@ -267,7 +262,6 @@ def test_app_targeted_posting_is_the_default_for_every_non_pointer_path():
     app_scoped = (
         "post_key",
         "post_text",
-        "post_scroll",
         "post_mouse_click",
         "post_mouse_drag",
     )
@@ -440,12 +434,13 @@ def test_every_copy_rule_symbol_has_a_release_path():
 def test_ownership_helpers_are_publicly_exported():
     """The release-side helpers must be part of the module's public surface.
 
-    ``ax_owned_attr`` (the context manager that discharges the Create Rule) and
-    ``release_all`` (the counterpart to the retain in the children walk) are what
-    every caller is expected to use; exporting them is how the obligation stays
-    discoverable rather than folklore.
+    ``cf_string`` (the context manager that always ``CFRelease``s the string it
+    creates) and ``cf_array_items`` (which reads the count first and never indexes
+    out of range) are what every caller is expected to use; exporting them is how
+    the obligation stays discoverable rather than folklore. The AX-tree discharge
+    helpers (``ax_owned_attr``, ``release_all``) went with the native snapshot walk.
     """
-    for helper in ("ax_owned_attr", "release_all", "cf_string"):
+    for helper in ("cf_string", "cf_array_items"):
         assert helper in macos_ffi.__all__, f"{helper} must be exported"
         assert callable(getattr(macos_ffi, helper))
 

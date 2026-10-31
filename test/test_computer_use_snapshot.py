@@ -841,7 +841,7 @@ class TestRenderedTrailerAndTraits:
     """The rendered form of the fields a walk now reads, over the shipped fake.
 
     Asserted against ``FakeComputerUseBackend`` rather than the fake FRAMEWORKS
-    (which ``test_computer_use_snapshot_macos`` uses) because this is the surface a
+    (which ``test_computer_use_macos_helper`` uses) because this is the surface a
     downstream consumer sees: the fake ships in the runtime wheel, so if the new
     fields are unreachable through it, no external suite can exercise them.
     """

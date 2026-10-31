@@ -18767,7 +18767,6 @@
         "status_region_label": "デスクトップドライバーの状態",
         "driver_label": "使用中のドライバー",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "内蔵",
         "driver_unsupported": "利用不可",
         "installed_label": "インストール済みのバージョン",
         "pinned_label": "固定バージョン",

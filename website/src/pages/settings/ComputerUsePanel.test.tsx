@@ -304,6 +304,23 @@ describe('ComputerUsePanel', () => {
     expect(screen.queryByText('Focus + cursor')).not.toBeInTheDocument()
   })
 
+  it.each(['linux', 'macos', 'windows'])(
+    'offers the driver install card on an unsupported %s host',
+    async platform => {
+      // agent-desktop is the only driver, so it is the only way a host becomes
+      // supported; hiding its install card behind "unsupported" was a dead end.
+      await renderPanel(snapshot({ supported: false, platform, reason: 'not installed' }))
+      expect(await screen.findByText('not installed')).toBeInTheDocument()
+      expect(screen.getByText('Desktop driver')).toBeInTheDocument()
+    },
+  )
+
+  it('keeps an OS with no driver to the reason alone', async () => {
+    await renderPanel(snapshot({ supported: false, platform: 'unsupported', reason: 'no driver' }))
+    expect(await screen.findByText('no driver')).toBeInTheDocument()
+    expect(screen.queryByText('Desktop driver')).not.toBeInTheDocument()
+  })
+
 
 
   /* ── the real-pointer opt-in ────────────────────────────────────────────── */

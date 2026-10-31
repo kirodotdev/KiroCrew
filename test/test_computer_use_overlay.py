@@ -979,9 +979,7 @@ class TestAnimation:
         assert _dip_runs(one) == 1
         assert _dip_runs(many) == MAX_CLICK_COUNT
 
-    def test_every_pulse_dips_even_when_the_clock_jumps_the_whole_pulse(
-        self, monkeypatch
-    ):
+    def test_every_pulse_dips_even_when_the_clock_jumps_the_whole_pulse(self, monkeypatch):
         """A stall must not swallow the click.
 
         The dip IS the click, drawn as ``sin(progress * pi)`` -- zero at BOTH
@@ -1335,9 +1333,7 @@ class TestStructuralGuarantees:
             "kiro_crew.computer_use.macos_ffi",
             "kiro_crew.computer_use.macos_ffi_bind",
             "kiro_crew.computer_use.macos_ffi_cf",
-            "kiro_crew.computer_use.macos_ffi_ax",
             "kiro_crew.computer_use.macos_ffi_window",
-            "kiro_crew.computer_use.snapshot_macos",
             "kiro_crew.computer_use.capture_macos",
             "kiro_crew.computer_use.apps_macos",
             "kiro_crew.computer_use.service",

@@ -4189,8 +4189,7 @@
         "attach_screenshot": true,
         "screenshot_max_px": 1280,
         "screenshot_jpeg_quality": 55,
-        "cursor_motion": false,
-        "driver": "auto"
+        "cursor_motion": false
       }
     },
     {
@@ -4290,24 +4289,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
-    },
-    {
-      "path": "computer_use.driver",
-      "kind": "core",
-      "type": "string",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Driver",
-      "help": "Which desktop driver computer use runs on. 'auto' (the default) uses agent-desktop when a pinned copy is installed and the built-in native driver otherwise; 'agent-desktop' requires it and refuses without it; 'native' always uses the built-in driver. Every computer-use safety check runs the same on either driver.",
-      "hasChildren": false,
-      "enumValues": [
-        "auto",
-        "agent-desktop",
-        "native"
-      ],
-      "defaultValue": "auto"
     },
     {
       "path": "aws",

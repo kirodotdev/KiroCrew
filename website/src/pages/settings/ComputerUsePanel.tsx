@@ -26,6 +26,7 @@ const GRANTED = 'granted'
 const MISSING = 'missing'
 const DARWIN = 'macos'
 const WINDOWS = 'windows'
+const LINUX = 'linux'
 
 /** Catalog KEY for each of the backend's permission tokens. The raw values are wire
  *  vocabulary (`missing`, `unsupported`, `unknown`) and read as jargon in a badge.
@@ -304,7 +305,7 @@ export function ComputerUsePanel() {
   }
 
   if (!cfg.supported) {
-    return (
+    const reasonOnly = (
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>
           <div className="text-[13px] text-muted">
@@ -312,6 +313,15 @@ export function ComputerUsePanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
+    )
+    // agent-desktop IS the driver, so the card that installs it must show while
+    // the platform still reads unsupported. An OS with no driver at all gets none.
+    if (![DARWIN, WINDOWS, LINUX].includes(cfg.platform)) return reasonOnly
+    return (
+      <>
+        {reasonOnly}
+        <ComputerUseInstallStatus platform={cfg.platform} index={1} />
+      </>
     )
   }
 

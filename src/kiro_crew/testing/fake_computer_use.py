@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from kiro_crew.computer_use import cursor_motion
-from kiro_crew.computer_use.backend import ComputerUseBackend
+from kiro_crew.computer_use.backend import ComputerUseBackend, NativeHelper
 from kiro_crew.computer_use.types import (
     AX_PRESS_ACTION,
     CLICK_METHOD_ACCESSIBILITY,
@@ -691,6 +691,57 @@ class FakeComputerUseBackend(ComputerUseBackend):
     def stage_tree(self, app_key: str, root: FakeNode) -> None:
         """Replace an app's whole fixture tree (deep trees, empty trees, …)."""
         self.trees[app_key] = root
+
+
+class FakeNativeHelper(NativeHelper):
+    """A :class:`NativeHelper` over :class:`FakeComputerUseBackend`'s coordinate and key verbs.
+
+    For tests of the agent-desktop driver: it stands where ``MacOSHelper`` or
+    ``WindowsHelper`` would, and every call goes to the same deterministic fake.
+    """
+
+    def __init__(self, backend: "FakeComputerUseBackend | None" = None) -> None:
+        self.backend = backend or FakeComputerUseBackend()
+
+    @property
+    def platform_id(self) -> str:
+        return self.backend.platform_id
+
+    def status(self) -> BackendStatus:
+        return self.backend.status()
+
+    def probe_permissions(self) -> PermissionProbe:
+        return self.backend.probe_permissions()
+
+    def list_apps(self) -> DriverResult:
+        return self.backend.list_apps()
+
+    def resolve_app(self, query: str) -> DriverResult:
+        return self.backend.resolve_app(query)
+
+    def launch_app(
+        self,
+        query: str,
+        *,
+        permit: "Callable[[LaunchIdentity], str | None] | None" = None,
+        refuse_launched: "Callable[[AppRef], str | None] | None" = None,
+    ) -> DriverResult:
+        return self.backend.launch_app(query, permit=permit, refuse_launched=refuse_launched)
+
+    def click(self, app: AppRef, req: ClickRequest) -> DriverResult:
+        return self.backend.click(app, None, req)
+
+    def drag(self, app: AppRef, req: DragRequest) -> DriverResult:
+        return self.backend.drag(app, req)
+
+    def type_text(self, app: AppRef, text: str) -> DriverResult:
+        return self.backend.type_text(app, None, text)
+
+    def press_key(self, app: AppRef, key: str) -> DriverResult:
+        return self.backend.press_key(app, None, key)
+
+    def close(self) -> None:
+        self.backend.close()
 
 
 def deep_tree(depth: int) -> FakeNode:

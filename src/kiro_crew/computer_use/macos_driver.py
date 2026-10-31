@@ -1,181 +1,67 @@
-"""The macOS :class:`ComputerUseBackend` — thin glue over the Stage-2 modules.
+"""The macOS :class:`NativeHelper` — what the agent-desktop driver cannot do itself.
 
-Deliberately thin. Discovery lives in :mod:`apps_macos`, the walk in
-:mod:`snapshot_macos`, capture in :mod:`capture_macos`, the FFI in
-:mod:`macos_ffi`, and every *policy* decision lives upstream at the dispatch
-chokepoint. This class only translates the ABC's method signatures into those
-calls and, critically, converts every failure into a :class:`DriverResult`.
+agent-desktop reads the accessibility tree and performs every element action. This
+module keeps the rest: the on-screen window inventory and identity rules
+(:mod:`apps_macos`), the vetted ``open -a`` launch (:mod:`launch_macos`), coordinate
+input, and keystrokes posted to the target process. agent-desktop's own ``press``
+resolves its target through an app inventory that shells out to ``ps``, which the
+gateway's macOS sandbox denies, so keys go through here.
 
 **No exception crosses this seam.** Each public method wraps its work in
-:func:`_guarded`. That is not defensive habit: the MCP loop dispatches tool calls
-on a worker thread, and an exception escaping into it takes the call down, while an
-un-caught ``ComputerUseUnsupported`` at import time would make the whole backend
-look broken rather than the one action.
+:func:`_guarded`: the MCP loop dispatches tool calls on a worker thread, and an
+exception escaping into it takes the call down.
 
-Two design notes that a reader will otherwise question:
-
-* **``element`` handles are not cached across calls.** A mutating action re-walks
-  the tree to find the element at the requested index. Holding a
-  ``AXUIElement`` pointer between tool calls would mean acting on a stale handle
-  whose widget may have been destroyed — a use-after-free in another process's
-  address space, not a Python error. Re-walking costs 25-70ms and is what makes
-  the caller's fingerprint check meaningful, since the fingerprint must come from
-  the same walk as the element being acted on.
-* **Three click paths, and only one of them touches the operator's cursor.**
-  ``accessibility`` is ``AXUIElementPerformAction(elem, "AXPress")`` — no pointer
-  involved at all, and still the default whenever an element index is available.
-  ``app_post`` posts a located mouse event with ``CGEventPostToPid``, so the target
-  app sees a click at a point while the physical cursor stays put (verified live).
-  ``global`` is the one path that warps the real cursor
-  (``CGWarpMouseCursorPosition`` + a global ``CGEventPost``); it exists because
-  some UI is only reachable by a physical click, and it is reachable only when the
-  model NAMES it — ``policy.resolve_click_method`` never resolves ``auto`` onto it.
-  This driver does not evaluate that; it is settled at the dispatch chokepoint
-  before ``req.moves_pointer`` can be True here. A driver must therefore never
-  upgrade a method on its own.
+**Three coordinate paths, and only one of them touches the operator's cursor.**
+``app_post`` posts a located mouse event with ``CGEventPostToPid``, so the target app
+sees a click at a point while the physical cursor stays put. ``sky_click`` routes a
+click to a background window through the private window-server path
+(:mod:`macos_skylight`). ``global`` is the one path that warps the real cursor
+(``CGWarpMouseCursorPosition`` + a global ``CGEventPost``); it is reachable only when
+the model NAMES it — ``policy.resolve_click_method`` never resolves ``auto`` onto it.
+A helper must therefore never upgrade a method on its own.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from contextlib import contextmanager
-from typing import Callable, Iterator
+from typing import Callable
 
 from kiro_crew.computer_use import (
     apps_macos,
-    capture_macos,
     cursor_motion,
     keymap,
     launch_macos,
     macos_ffi,
     macos_skylight,
     permissions,
-    snapshot_macos,
 )
-from kiro_crew.computer_use.backend import ComputerUseBackend, run_launch
+from kiro_crew.computer_use.backend import NativeHelper, run_launch
 from kiro_crew.computer_use.types import (
-    AX_MENU_LADDER,
-    AX_PRESS_ACTION,
-    AX_PRESS_LADDER,
-    AX_VALUE,
-    CLICK_METHOD_ACCESSIBILITY,
     CLICK_METHOD_APP_POST,
     CLICK_METHOD_GLOBAL,
     CLICK_METHOD_SKY_CLICK,
     DEFAULT_DRAG_PATH,
     DEFAULT_DRAG_STEPS,
-    ERR_ACTION_FAILED,
     ERR_POINT_NOT_OWNED,
     ERR_POINT_REQUIRED,
     ERR_UNKNOWN_CLICK_METHOD,
-    MAX_ANCESTOR_AREA_RATIO,
-    MAX_ANCESTOR_PRESS_HOPS,
-    MOUSE_BUTTON_LEFT,
-    MOUSE_BUTTON_RIGHT,
     PERMISSION_UNKNOWN,
     PLATFORM_MACOS,
-    REFUSAL_ACCESSIBILITY_NEEDS_INDEX,
-    SCROLL_DOWN,
-    SCROLL_LEFT,
-    SCROLL_RIGHT,
-    SCROLL_UP,
     AppRef,
     BackendStatus,
     ClickRequest,
     ComputerUseError,
     DragRequest,
     DriverResult,
-    ElementRec,
     LaunchIdentity,
     PermissionProbe,
-    SnapshotRequest,
 )
-
-# The AX attribute set so typed keystrokes land in the addressed element rather
-# than wherever the target app last had focus.
-AX_FOCUSED = "AXFocused"
 
 logger = logging.getLogger(__name__)
 
-# The accessibility action tried for each scroll direction BEFORE falling back to
-# a synthesized wheel event. Tried first because an AX scroll is scoped to the
-# addressed element, while a wheel event goes to whatever the target app decides is
-# under its scroll focus.
-_SCROLL_ACTIONS: dict[str, str] = {
-    SCROLL_UP: "AXScrollUpByPage",
-    SCROLL_DOWN: "AXScrollDownByPage",
-    SCROLL_LEFT: "AXScrollLeftByPage",
-    SCROLL_RIGHT: "AXScrollRightByPage",
-}
-# Wheel deltas per page for each direction. macOS wheel deltas are inverted
-# relative to the reading direction: a NEGATIVE axis-1 delta scrolls the content
-# DOWN (the gesture of pushing the wheel away from you).
-_SCROLL_DELTAS: dict[str, tuple[int, int]] = {
-    SCROLL_UP: (1, 0),
-    SCROLL_DOWN: (-1, 0),
-    SCROLL_LEFT: (0, 1),
-    SCROLL_RIGHT: (0, -1),
-}
-# Wheel-event page deltas are integers, so a fractional ``pages`` request is
-# rounded up to at least one page — asking to scroll and being told "ok" while
-# nothing moved is worse than over-scrolling by a fraction.
-_MIN_WHEEL_PAGES = 1
-# The scroll bar that moves along each direction's axis, and the subrole of its
-# page area: the track segment between the thumb and the end, which scrolls one
-# page per press like a click on the trough. TextEdit's scroll area refuses
-# AXScrollDownByPage with -25205 and ignores a pid-posted wheel event aimed at its
-# centre, while its vertical bar exposes both page areas as pressable buttons.
-_SCROLL_BAR_ATTRS: dict[str, str] = {
-    SCROLL_UP: "AXVerticalScrollBar",
-    SCROLL_DOWN: "AXVerticalScrollBar",
-    SCROLL_LEFT: "AXHorizontalScrollBar",
-    SCROLL_RIGHT: "AXHorizontalScrollBar",
-}
-_SCROLL_BAR_ORIENTATIONS: dict[str, str] = {
-    SCROLL_UP: "AXVerticalOrientation",
-    SCROLL_DOWN: "AXVerticalOrientation",
-    SCROLL_LEFT: "AXHorizontalOrientation",
-    SCROLL_RIGHT: "AXHorizontalOrientation",
-}
-_PAGE_AREA_SUBROLES: dict[str, str] = {
-    SCROLL_UP: "AXDecrementPage",
-    SCROLL_DOWN: "AXIncrementPage",
-    SCROLL_LEFT: "AXDecrementPage",
-    SCROLL_RIGHT: "AXIncrementPage",
-}
-_SCROLL_ENDS: dict[str, str] = {
-    SCROLL_UP: "top",
-    SCROLL_DOWN: "bottom",
-    SCROLL_LEFT: "left edge",
-    SCROLL_RIGHT: "right edge",
-}
-# How far up from the addressed element to look for its scroll bar: a model that
-# addresses the text area rather than the scroll area around it still scrolls.
-_SCROLL_BAR_SEARCH_HOPS = 3
-# A page-area press ANIMATES the scroll: on TextEdit the position still reads 1.0
-# right after the press, 0.85 after 50 ms and 0.0 after 250 ms. So each
-# press is followed by polling until the position has moved and then held still,
-# for at most _SCROLL_SETTLE_POLLS x _SCROLL_SETTLE_INTERVAL_SECS.
-_SCROLL_SETTLE_INTERVAL_SECS = 0.05
-_SCROLL_SETTLE_POLLS = 20
-
-_REASON_UNSUPPORTED_TARGET = "element advertises no {action} action and none succeeded"
-_REASON_NO_ELEMENT = "element {index} is no longer present in '{app}'"
-_REASON_AX_ERROR = "accessibility error {code}"
-# Keyboard input whose addressed element could not be focused. ACTIONABLE on purpose
-# (it names the fix) because the alternative — typing into whatever the app happened
-# to have focused — is how a keystroke reaches a password field that
-# ``policy.check_input_target`` already refused.
-_REASON_FOCUS_FAILED = (
-    "could not focus element {index} of '{app}' (accessibility error {code}), so the "
-    "keystrokes were NOT sent — they would have gone to whatever that app currently "
-    "has focused, which is not the target you named. Call computer_get_state again "
-    "and address a focusable control, or click it first"
-)
-# ``sky_click`` routes by window id, so a vanished window is a distinct failure from
-# a vanished element: the model must re-snapshot to get a live id, and telling it
-# that is what stops it retrying the same dead id.
+# ``sky_click`` routes by window id, so a vanished window is a distinct failure: the
+# model must re-snapshot to get a live id, and telling it that is what stops it
+# retrying the same dead id.
 _REASON_SKY_WINDOW_GONE = (
     "the target window is no longer on screen (or no longer belongs to that app), so "
     "click_method 'sky_click' has no window to address. Call computer_get_state again"
@@ -197,11 +83,11 @@ def _point_not_owned(app: AppRef, x: float, y: float) -> str:
     return ERR_POINT_NOT_OWNED.format(app=app.name, x=int(x), y=int(y), winner=winner)
 
 
-class MacOSBackend(ComputerUseBackend):
-    """Accessibility + CoreGraphics driver for macOS.
+class MacOSHelper(NativeHelper):
+    """CoreGraphics window inventory, launch and input for macOS.
 
     Constructing this class does NOT load a framework: the FFI layer binds lazily
-    on first real use, so a ``MacOSBackend()`` on a machine where
+    on first real use, so a ``MacOSHelper()`` on a machine where
     ApplicationServices will not load still constructs, and the first call returns
     a typed refusal instead of exploding at import time.
     """
@@ -239,8 +125,6 @@ class MacOSBackend(ComputerUseBackend):
             return PermissionProbe(
                 accessibility=PERMISSION_UNKNOWN, screen_recording=PERMISSION_UNKNOWN
             )
-
-    # ── observation ──
 
     def list_apps(self) -> DriverResult:
         def run() -> DriverResult:
@@ -283,30 +167,12 @@ class MacOSBackend(ComputerUseBackend):
 
         return _guarded("launch_app", run)
 
-    def snapshot(self, app: AppRef, req: SnapshotRequest) -> DriverResult:
-        def run() -> DriverResult:
-            snap = snapshot_macos.build_snapshot(app, req)
-            if req.want_image:
-                # Capture is a separate step so the secure-field suppression rule
-                # lives in exactly one place (``capture_snapshot_image`` refuses on
-                # ``has_secure``) instead of being an argument threaded into the
-                # walk. A capture failure degrades to a tree-only snapshot.
-                snap = capture_macos.capture_snapshot_image(
-                    snap, max_px=req.image_max_px, quality=req.image_quality
-                )
-            return DriverResult(ok=True, app=app, snapshot=snap)
-
-        return _guarded("snapshot", run)
-
     # ── input ──
 
-    def click(
-        self,
-        app: AppRef,
-        rec: "ElementRec | None",
-        req: ClickRequest,
-    ) -> DriverResult:
-        """Dispatch one click onto the method *req* already resolved to.
+    def click(self, app: AppRef, req: ClickRequest) -> DriverResult:
+        """Dispatch one coordinate click onto the method *req* already resolved to.
+
+        Element clicks are agent-desktop's; this is the point form only.
 
         ``req.method`` is CONCRETE here — ``auto`` was resolved at the dispatch
         chokepoint (``policy.resolve_click_method``), so this method never chooses
@@ -317,8 +183,6 @@ class MacOSBackend(ComputerUseBackend):
         """
 
         def run() -> DriverResult:
-            if req.method == CLICK_METHOD_ACCESSIBILITY:
-                return self._click_accessibility(app, rec, req.button)
             if req.point is None:
                 return DriverResult(ok=False, text=ERR_POINT_REQUIRED.format(method=req.method))
             if req.method == CLICK_METHOD_APP_POST:
@@ -449,241 +313,43 @@ class MacOSBackend(ComputerUseBackend):
 
         return _guarded("drag", run)
 
-    def _click_accessibility(
-        self, app: AppRef, rec: "ElementRec | None", button: str = MOUSE_BUTTON_LEFT
-    ) -> DriverResult:
-        """Activate the addressed element through accessibility — no pointer at all.
+    def type_text(self, app: AppRef, text: str) -> DriverResult:
+        """Type *text* into whatever holds *app*'s keyboard focus.
 
-        Tries a LADDER of actions rather than ``AXPress`` alone. A single press was
-        the biggest avoidable refusal in the driver: ``AXPress`` returns
-        ``-25206`` (action unsupported) on a disclosure triangle, a Finder row and
-        many web controls, all of which answer ``AXConfirm`` or ``AXOpen`` — so the
-        model was told "the click failed" for elements that were perfectly
-        clickable, and its only remaining move was to guess coordinates.
-
-        A RIGHT button takes a different ladder (``AXShowMenu`` only) and never
-        falls back to a press: quietly turning "open the context menu" into
-        "activate the control" would perform a different action than the model
-        asked for, which is the same class of defect as
-        :func:`keymap.parse_key` refusing an unknown modifier.
-
-        The winning action is NAMED in the result, so a model that sees ``AXOpen``
-        learns what this element responds to instead of re-deriving it next turn.
+        The agent-desktop driver moved focus to the addressed field and checked it
+        landed and is not secure before calling this. Unicode key events rather than
+        a per-character keycode lookup: layout-independent, and able to emit
+        characters the US layout cannot reach in one keystroke.
         """
-        if rec is None:
-            return DriverResult(ok=False, text=REFUSAL_ACCESSIBILITY_NEEDS_INDEX)
-        ladder = AX_MENU_LADDER if button == MOUSE_BUTTON_RIGHT else AX_PRESS_LADDER
-        with _addressed(app, rec) as element:
-            if element is None:
-                return _missing_element(app, rec)
-            # ``advertised`` is what the element SAYS it supports. Preferred over
-            # blind attempts so an unsupported action is skipped without a
-            # round-trip — but an advertised action can still fail, so the result
-            # code is what decides, not the advertisement.
-            advertised = set(rec.actions or ())
-            last_action, last_err = ladder[0], macos_ffi.AX_ERR_ACTION_UNSUPPORTED
-            for action in ladder:
-                if advertised and action not in advertised:
-                    continue
-                err = macos_ffi.ax_perform(element, action)
-                if err == macos_ffi.AX_ERR_SUCCESS:
-                    return DriverResult(ok=True, text=_pressed_text(rec.index, action), app=app)
-                last_action, last_err = action, err
-                if err != macos_ffi.AX_ERR_ACTION_UNSUPPORTED:
-                    # A REAL failure (a wedged app, a destroyed widget), not "wrong
-                    # verb" — trying the next verb would report the wrong cause.
-                    break
-            else:
-                # Nothing in the ladder was advertised at all: attempt the primary
-                # verb anyway. Advertisement is unreliable on web content, where a
-                # node can perform a press it never listed.
-                if not any(a in advertised for a in ladder):
-                    last_err = macos_ffi.ax_perform(element, ladder[0])
-                    last_action = ladder[0]
-                    if last_err == macos_ffi.AX_ERR_SUCCESS:
-                        return DriverResult(
-                            ok=True, text=_pressed_text(rec.index, last_action), app=app
-                        )
-            # LAST rung: the element itself is unpressable, so try the container
-            # that visually IS it. Web content renders a clickable row as a plain
-            # text node inside a pressable ancestor, which leaves the whole row
-            # dead to an element click while a coordinate click on it works fine —
-            # and coordinates are exactly what this path exists to avoid.
-            #
-            # Only for a LEFT click, and only when the element carries a frame to
-            # compare against: without geometry there is no way to tell the row
-            # from the page, and pressing the page would activate something the
-            # model never addressed. See :func:`_ancestor_press`.
-            if button != MOUSE_BUTTON_RIGHT and last_err in (
-                macos_ffi.AX_ERR_ACTION_UNSUPPORTED,
-                macos_ffi.AX_ERR_ATTRIBUTE_UNSUPPORTED,
-            ):
-                pressed = _ancestor_press(element, rec)
-                if pressed:
-                    return DriverResult(ok=True, text=_ancestor_pressed_text(rec.index), app=app)
-        return _action_failed(app, rec, last_action, last_err)
 
-    def type_text(self, app: AppRef, rec: "ElementRec | None", text: str) -> DriverResult:
         def run() -> DriverResult:
-            if rec is not None:
-                with _addressed(app, rec) as element:
-                    if element is None:
-                        return _missing_element(app, rec)
-                    # Focus the addressed element first, so the keystrokes land
-                    # where the model aimed rather than wherever the target app
-                    # last had focus.
-                    focus_err = macos_ffi.ax_set_true(element, AX_FOCUSED)
-                # REFUSE on a focus failure — do not fall through to app-scoped
-                # input. ``policy.check_input_target`` cleared the element the model
-                # ADDRESSED (that is where ``ElementRec.secure`` comes from), so if
-                # focus did not move, ``post_text`` delivers to whatever the app
-                # already had focused — which can be the password field the check
-                # just refused to write into. Typing blind past a failed aim is the
-                # one case where "best effort" defeats the secure-field floor.
-                if focus_err != macos_ffi.AX_ERR_SUCCESS:
-                    return _focus_failed(app, rec, focus_err)
-            # Unicode key events rather than a per-character keycode lookup: this
-            # is layout-independent and can emit characters the US layout cannot
-            # reach in one keystroke. Verified byte-identical round-trip.
             macos_ffi.post_text(app.pid, text)
-            target = "the focused element" if rec is None else f"element {rec.index}"
             return DriverResult(
-                ok=True, text=f"typed {len(text)} character(s) into {target}", app=app
+                ok=True, text=f"typed {len(text)} character(s) into the focused element", app=app
             )
 
         return _guarded("type_text", run)
 
-    def press_key(self, app: AppRef, rec: "ElementRec | None", key: str) -> DriverResult:
+    def press_key(self, app: AppRef, key: str) -> DriverResult:
+        """Send one key spec to *app*'s process.
+
+        ``parse_key`` raises KeyParseError (a ComputerUseError) for an unknown key or
+        modifier, which ``_guarded`` turns into a refusal: silently dropping an
+        unrecognised modifier would send a DIFFERENT keystroke into a live app.
+        """
+
         def run() -> DriverResult:
-            # ``parse_key`` raises KeyParseError (a ComputerUseError) for an
-            # unknown key or modifier, which ``_guarded`` turns into a refusal.
-            # Refusing loudly is right: silently dropping an unrecognised modifier
-            # would send a DIFFERENT keystroke than requested into a live app.
             keycode, flags = keymap.parse_key(key)
-            if rec is not None:
-                # Focus the addressed element first, same as ``type_text``, and
-                # best-effort for the same reason.
-                with _addressed(app, rec) as element:
-                    if element is None:
-                        return _missing_element(app, rec)
-                    focus_err = macos_ffi.ax_set_true(element, AX_FOCUSED)
-                # Same hole, same fix, the other keyboard verb — a keystroke
-                # delivered to a focus the model did not address can reach the
-                # secure field the policy check just cleared us away from.
-                if focus_err != macos_ffi.AX_ERR_SUCCESS:
-                    return _focus_failed(app, rec, focus_err)
             macos_ffi.post_key(app.pid, keycode, flags)
             return DriverResult(ok=True, text=f"sent {key}", app=app)
 
         return _guarded("press_key", run)
 
-    def set_value(self, app: AppRef, rec: ElementRec, value: str) -> DriverResult:
-        def run() -> DriverResult:
-            with _addressed(app, rec) as element:
-                if element is None:
-                    return _missing_element(app, rec)
-                err = macos_ffi.ax_set_str(element, AX_VALUE, value)
-            if err != macos_ffi.AX_ERR_SUCCESS:
-                return _action_failed(app, rec, f"set {AX_VALUE}", err)
-            return DriverResult(ok=True, text=f"set element {rec.index}", app=app)
-
-        return _guarded("set_value", run)
-
-    def scroll(self, app: AppRef, rec: ElementRec, direction: str, pages: float) -> DriverResult:
-        def run() -> DriverResult:
-            action = _SCROLL_ACTIONS.get(direction)
-            if action is None:
-                return DriverResult(ok=False, text=f"unknown scroll direction '{direction}'")
-            whole_pages = max(_MIN_WHEEL_PAGES, int(round(pages)))
-            with _addressed(app, rec) as element:
-                if element is None:
-                    return _missing_element(app, rec)
-                # Try the AX action first — it is element-scoped. But NEVER trust
-                # the advertised action list: a real AXScrollArea listed
-                # ``AXScrollDownByPage`` and then returned
-                # ``kAXErrorActionUnsupported`` when asked to perform it. So the
-                # advertised list is not even consulted; we just try and check.
-                err = macos_ffi.AX_ERR_SUCCESS
-                for _ in range(whole_pages):
-                    err = macos_ffi.ax_perform(element, action)
-                    if err != macos_ffi.AX_ERR_SUCCESS:
-                        break
-                if err == macos_ffi.AX_ERR_SUCCESS:
-                    return DriverResult(
-                        ok=True,
-                        text=f"scrolled element {rec.index} {direction} {whole_pages} page(s)",
-                        app=app,
-                    )
-                paged = _scroll_by_page_area(app, rec, element, direction, whole_pages)
-                if paged is not None:
-                    return paged
-                # Read while the element is still live: the wheel fallback needs a
-                # point to aim at, and the element is released when this scope ends.
-                frame = macos_ffi.ax_frame(element)
-
-            # Last resort: a synthesized wheel event, posted to the target pid with
-            # the private event source and aimed at the element's centre. The app
-            # routes a wheel event to the view under its location, and an unaimed
-            # event carries the operator's pointer position, so it would land on
-            # whatever the pointer is over. With no on-screen frame there is nothing
-            # to aim at, so refuse instead of posting a scroll that cannot reach the
-            # element. Even aimed, an app may drop the event (TextEdit does while
-            # its window is not under the pointer), hence the unconfirmed wording.
-            if frame is None:
-                return DriverResult(
-                    ok=False,
-                    text=(
-                        f"could not scroll element {rec.index}: the accessibility action "
-                        f"was refused with error {err}, and the element has no on-screen "
-                        "position to aim a wheel event at. Try computer_press_key with "
-                        "pagedown or end on an element of that window."
-                    ),
-                    app=app,
-                )
-            # The wheel event is in LINE units — ``CGScrollEventUnit`` has only
-            # ``Pixel`` and ``Line``, no page unit — so a requested PAGE has to be
-            # expressed as a line count. Sending the raw page number scrolled one
-            # single line and reported "scrolled 1 page(s)", which is the kind of
-            # silent no-op that makes an agent loop.
-            left, top, width, height = frame
-            delta_y, delta_x = _SCROLL_DELTAS[direction]
-            lines = whole_pages * macos_ffi.CG_SCROLL_LINES_PER_PAGE
-            macos_ffi.post_scroll(
-                app.pid, delta_y * lines, delta_x * lines, at=(left + width / 2, top + height / 2)
-            )
-            # Not "scrolled": nothing reports whether the app acted on the event, and
-            # a model told it scrolled will describe a view it never checked.
-            return DriverResult(
-                ok=True,
-                text=(
-                    f"sent a {direction} wheel scroll of {whole_pages} page(s) to element "
-                    f"{rec.index} of '{app.name}' (the accessibility action was refused "
-                    f"with error {err}). A wheel event is not confirmed: compare the "
-                    "refreshed tree to see whether the view moved."
-                ),
-                app=app,
-            )
-
-        return _guarded("scroll", run)
-
-    def perform_action(self, app: AppRef, rec: ElementRec, action: str) -> DriverResult:
-        def run() -> DriverResult:
-            with _addressed(app, rec) as element:
-                if element is None:
-                    return _missing_element(app, rec)
-                err = macos_ffi.ax_perform(element, action)
-            if err != macos_ffi.AX_ERR_SUCCESS:
-                return _action_failed(app, rec, action, err)
-            return DriverResult(ok=True, text=f"performed {action} on element {rec.index}", app=app)
-
-        return _guarded("perform_action", run)
-
     def close(self) -> None:
         """Release the FFI handles, the event source and the identity cache.
 
-        Safe to call repeatedly. Called by ``reset_shared_backend``, which is also
-        what drops the snapshot index — element indices from one driver's walk are
-        meaningless against another's.
+        Safe to call repeatedly. Called through the agent-desktop driver's own
+        ``close`` by ``reset_shared_backend``.
         """
         try:
             apps_macos.reset_identity_cache()
@@ -693,106 +359,6 @@ class MacOSBackend(ComputerUseBackend):
             macos_ffi.reset_frameworks()
         except Exception:
             logger.debug("framework reset failed", exc_info=True)
-
-
-@contextmanager
-def _addressed(app: AppRef, rec: ElementRec) -> "Iterator[object | None]":
-    """Yield the live element at ``rec.index``, or ``None``; always releases it.
-
-    Re-resolves on every call rather than caching a handle across tool calls: a
-    stored ``AXUIElement`` may point at a widget the target app has since
-    destroyed, and acting on it is a use-after-free in another process's address
-    space rather than a Python error.
-
-    A context manager because the resolution creates several CoreFoundation
-    references (the application element, the window, the element itself) and every
-    one is a Create-Rule +1 that must be released — skipping them measured at
-    ~400KB of permanent growth per walk. ``snapshot_macos.resolve_element`` owns
-    that bookkeeping; this wrapper adds the identity check.
-
-    ``None`` is yielded when the index does not resolve OR when the control now
-    at that index is not the one the model addressed
-    (:func:`_same_identity`). The addressing walk uses the widest budgets rather
-    than the original request's, so the two numberings are not guaranteed
-    identical when the original walk was truncated — the identity check, not the
-    index alone, is what makes this safe. It is a second line of defence in any
-    case: the dispatch chokepoint already refuses on fingerprint drift.
-    """
-    with snapshot_macos.resolve_element(app, rec) as (element, found):
-        if element is None or found is None or not _same_identity(found, rec):
-            yield None
-            return
-        yield element
-
-
-def _ancestor_press(element: object, rec: ElementRec) -> bool:
-    """Press the nearest ancestor that plausibly IS the control *rec* names.
-
-    The last rung of the click ladder, and the one that recovers web content. A
-    clickable row in a WebArea is frequently a plain ``AXStaticText`` inside a
-    pressable wrapper: the text node advertises no actions and refuses every verb,
-    so an element click reports failure for a row a human clicks without thinking —
-    and the model's only remaining move is to guess coordinates, which is what this
-    whole path exists to avoid.
-
-    **Two guards, because an unguarded version is a wrong-click generator.**
-
-    * *Bounded hops* (:data:`MAX_ANCESTOR_PRESS_HOPS`). Walking to the top would
-      eventually find something pressable — the page, the window — and press it.
-    * *Bounded area* (:data:`MAX_ANCESTOR_AREA_RATIO`). The real signal that an
-      ancestor is "the same control" is that it is roughly the same SIZE. A row
-      wrapping a text node is a small multiple of its area; a scroll area or page
-      body is orders of magnitude larger. Without the target's own frame there is
-      nothing to compare against, so the fallback declines rather than guessing.
-
-    Only ``AXPress`` is attempted, not the full ladder: ``AXOpen`` on a container
-    can mean something quite different from activating the row inside it
-    (open the folder vs. select the file), and this rung is already a heuristic —
-    stacking a second one on top of it widens the blast radius for no clear gain.
-
-    Every ancestor reference is released, including on the success path.
-    """
-    if rec.frame is None:
-        return False
-    target_area = _area(rec.frame)
-    if target_area <= 0:
-        # A zero-area target makes the ratio test meaningless (everything is
-        # infinitely larger), so there is no way to bound the walk. Decline.
-        return False
-    current = element
-    owned: list = []
-    try:
-        for _ in range(MAX_ANCESTOR_PRESS_HOPS):
-            parent = macos_ffi.ax_parent(current)
-            if parent is None:
-                return False
-            owned.append(parent)
-            current = parent
-            frame = macos_ffi.ax_frame(parent)
-            if frame is None:
-                # No geometry to judge by: keep climbing rather than pressing
-                # blind. A wrapper with no frame is common in web content and its
-                # own parent may well have one.
-                continue
-            if _area(frame) > target_area * MAX_ANCESTOR_AREA_RATIO:
-                # Too big to be the control the model addressed, and every further
-                # ancestor is bigger still — stop, do not keep climbing.
-                return False
-            if macos_ffi.ax_perform(parent, AX_PRESS_ACTION) == macos_ffi.AX_ERR_SUCCESS:
-                return True
-        return False
-    finally:
-        macos_ffi.release_all(owned)
-
-
-def _area(frame: tuple[float, float, float, float]) -> float:
-    """Area of a ``(x, y, width, height)`` rect, clamped at 0.
-
-    Clamped because AX occasionally reports a negative dimension for an off-screen
-    or collapsed element, and a negative area would compare as "smaller than
-    everything" and wave the ancestor guard through.
-    """
-    return max(0.0, frame[2]) * max(0.0, frame[3])
 
 
 def _running_app(name: str) -> "AppRef | None":
@@ -824,22 +390,6 @@ def _running_app(name: str) -> "AppRef | None":
     return None
 
 
-def _same_identity(found: ElementRec, expected: ElementRec) -> bool:
-    """True when the record at an index is still the control the model addressed.
-
-    Role, subrole and title only — deliberately NOT ``value``. A text field's value
-    changes as the user types without the control's identity changing at all, and
-    folding it in would refuse almost every legitimate action. This mirrors
-    ``render.fingerprint``'s field selection for the same reason, and neither reads
-    a secure record's bytes.
-    """
-    return (
-        found.role == expected.role
-        and found.subrole == expected.subrole
-        and found.title == expected.title
-    )
-
-
 def _guarded(label: str, run: "Callable[[], DriverResult]") -> DriverResult:
     """Run *run*, converting every failure into ``DriverResult(ok=False, ...)``.
 
@@ -861,33 +411,6 @@ def _guarded(label: str, run: "Callable[[], DriverResult]") -> DriverResult:
     except Exception as exc:
         logger.warning("computer-use %s failed: %s", label, exc, exc_info=True)
         return DriverResult(ok=False, text=f"{label} failed unexpectedly ({type(exc).__name__})")
-
-
-def _pressed_text(index: int, action: str) -> str:
-    """Result prose that NAMES the winning action.
-
-    The verb is included so a model that needed ``AXOpen`` on a Finder row learns
-    that from the result instead of rediscovering the ladder on the next element of
-    the same kind.
-    """
-    verb = "pressed" if action == AX_PRESS_ACTION else f"activated via {action}"
-    return f"{verb} element {index}"
-
-
-def _ancestor_pressed_text(index: int) -> str:
-    """Result prose for the ancestor fallback — SAYS that it was the container.
-
-    Not reported as a plain "pressed element N". The model has to know the press
-    landed on the enclosing control rather than the node it addressed, because that
-    is the difference between "my click worked" and "something near my click
-    worked": if the observable outcome is wrong, this sentence is the only clue as
-    to why, and without it the model would re-try an action that already succeeded
-    on the wrong target.
-    """
-    return (
-        f"element {index} could not be activated directly; pressed its enclosing "
-        "control instead — verify the result is what you intended"
-    )
 
 
 def _sky_click(
@@ -947,221 +470,3 @@ def _click_text(req: ClickRequest, app: AppRef) -> str:
         f"{req.button} click{times} at ({point[0]:.0f}, {point[1]:.0f}) "
         f"in '{app.name}' ({req.method})"
     )
-
-
-def _scroll_by_page_area(
-    app: AppRef, rec: ElementRec, element: object, direction: str, pages: int
-) -> "DriverResult | None":
-    """Scroll by pressing the scroll bar's page area, or ``None`` to fall through.
-
-    Pressing a page area is the accessibility form of clicking the scroll bar's
-    track, so it is scoped to this scroll bar and needs no pointer position. The
-    bar's own position (``AXValue``, 0.0 to 1.0) is read before and after, which
-    makes this the one scroll route whose result is CONFIRMED: an unchanged
-    position falls through to the wheel event instead of reporting success.
-    ``None`` means this route does not apply (no scroll bar, no page area, no press
-    accepted, or nothing moved).
-    """
-    bar = _scroll_bar_for(element, direction)
-    if bar is None:
-        return None
-    end = _SCROLL_ENDS[direction]
-    try:
-        if not macos_ffi.ax_bool(bar, "AXEnabled", default=True):
-            return DriverResult(
-                ok=False,
-                text=(
-                    f"element {rec.index} cannot scroll {direction}: its scroll bar is "
-                    "disabled, which means the content already fits."
-                ),
-                app=app,
-            )
-        before = _scroll_bar_position(bar)
-        if before is not None and _at_scroll_end(before, direction):
-            return DriverResult(
-                ok=True,
-                text=f"element {rec.index} is already at the {end}, so nothing moved.",
-                app=app,
-            )
-        area = _page_area(bar, direction)
-        if area is None:
-            return None
-        pressed = 0
-        position = before
-        try:
-            for _ in range(pages):
-                if macos_ffi.ax_perform(area, AX_PRESS_ACTION) != macos_ffi.AX_ERR_SUCCESS:
-                    break
-                previous = position
-                position = _settled_scroll_bar_position(bar, previous)
-                if position is None:
-                    # Unreadable after the press: it may have moved, so it counts,
-                    # and the reply says the move is unconfirmed.
-                    pressed += 1
-                    break
-                if position == previous:
-                    break
-                pressed += 1
-                if _at_scroll_end(position, direction):
-                    break
-        finally:
-            macos_ffi.release_all([area])
-    finally:
-        macos_ffi.release_all([bar])
-    if pressed == 0:
-        return None
-    if before is None or position is None:
-        return DriverResult(
-            ok=True,
-            text=(
-                f"pressed the {direction} page area of element {rec.index}'s scroll bar "
-                f"{pressed} time(s). The scroll bar reports no position, so compare the "
-                "refreshed tree to see whether the view moved."
-            ),
-            app=app,
-        )
-    if position == before:
-        return None
-    reached = f", reaching the {end}" if _at_scroll_end(position, direction) else ""
-    return DriverResult(
-        ok=True,
-        text=(
-            f"scrolled element {rec.index} {direction} {pressed} of {pages} page(s) with "
-            f"its scroll bar{reached} (scroll position {before:.0%} -> {position:.0%})."
-        ),
-        app=app,
-    )
-
-
-def _scroll_bar_for(element: object, direction: str) -> object:
-    """The scroll bar for *direction*'s axis as a RETAINED reference, or ``None``.
-
-    The addressed element itself when it is that scroll bar, otherwise the bar its
-    nearest scroll area (itself or up to :data:`_SCROLL_BAR_SEARCH_HOPS` ancestors)
-    names. The caller releases the result.
-    """
-    if macos_ffi.ax_str(element, "AXRole") == "AXScrollBar":
-        if macos_ffi.ax_str(element, "AXOrientation") == _SCROLL_BAR_ORIENTATIONS[direction]:
-            return macos_ffi.retain(element)
-        return None
-    attr = _SCROLL_BAR_ATTRS[direction]
-    current = macos_ffi.retain(element)
-    try:
-        for _ in range(_SCROLL_BAR_SEARCH_HOPS + 1):
-            with macos_ffi.ax_owned_attr(current, attr) as (value, err):
-                if (
-                    err == macos_ffi.AX_ERR_SUCCESS
-                    and value is not None
-                    and macos_ffi.cf_is(value, macos_ffi.type_ids().ax_element)
-                ):
-                    return macos_ffi.retain(value)
-            parent = macos_ffi.ax_parent(current)
-            macos_ffi.release_all([current])
-            current = parent
-            if current is None:
-                return None
-        return None
-    finally:
-        macos_ffi.release_all([current])
-
-
-def _scroll_bar_position(bar: object) -> "float | None":
-    """The scroll bar's position, 0.0 (start) to 1.0 (end), or ``None`` if unread."""
-    with macos_ffi.ax_owned_attr(bar, AX_VALUE) as (value, err):
-        if err != macos_ffi.AX_ERR_SUCCESS or value is None:
-            return None
-        return macos_ffi.cf_number_double(value)
-
-
-def _settled_scroll_bar_position(bar: object, previous: "float | None") -> "float | None":
-    """The bar's position once a press has finished moving it.
-
-    Polls until the position differs from *previous* and two reads agree, so an
-    animated scroll is read at its end rather than mid-flight or before it starts.
-    Returns *previous* unchanged when nothing moved within the poll budget, and
-    ``None`` when the position cannot be read.
-    """
-    last = _scroll_bar_position(bar)
-    moved = last is not None and last != previous
-    for _ in range(_SCROLL_SETTLE_POLLS):
-        time.sleep(_SCROLL_SETTLE_INTERVAL_SECS)
-        current = _scroll_bar_position(bar)
-        if current is None:
-            return last
-        if moved and current == last:
-            return current
-        moved = moved or current != previous
-        last = current
-    return last
-
-
-def _page_area(bar: object, direction: str) -> object:
-    """The bar's page area toward *direction* as a RETAINED reference, or ``None``."""
-    subrole = _PAGE_AREA_SUBROLES[direction]
-    parts = macos_ffi.ax_children(bar)
-    try:
-        for part in parts:
-            if macos_ffi.ax_str(part, "AXSubrole") == subrole:
-                return macos_ffi.retain(part)
-        return None
-    finally:
-        macos_ffi.release_all(parts)
-
-
-def _at_scroll_end(position: float, direction: str) -> bool:
-    """True when *position* is at the exact end *direction* scrolls toward."""
-    if direction in (SCROLL_DOWN, SCROLL_RIGHT):
-        return position == 1.0
-    return position == 0.0
-
-
-def _missing_element(app: AppRef, rec: ElementRec) -> DriverResult:
-    """Refusal for an index that does not resolve to an element."""
-    return DriverResult(
-        ok=False,
-        text=_REASON_NO_ELEMENT.format(index=rec.index, app=app.bundle_id or app.name),
-    )
-
-
-def _focus_failed(app: AppRef, rec: ElementRec, err: int) -> DriverResult:
-    """Refusal for keyboard input whose target could not be focused.
-
-    Fail-CLOSED rather than best-effort. ``check_input_target`` validated the element
-    the model ADDRESSED — ``ElementRec.secure`` is read from that element — so falling
-    through to app-scoped ``post_text``/``post_key`` after a failed focus delivers the
-    input to the app's EXISTING focus, which the policy layer never inspected and
-    which can be the secure field it just refused. Some elements genuinely are not
-    focusable and did accept typed input before this refusal; that legitimate case is
-    the cost, and it is recoverable (click the control, then type) whereas a
-    credential typed into the wrong field is not.
-    """
-    return DriverResult(
-        ok=False,
-        text=_REASON_FOCUS_FAILED.format(index=rec.index, app=app.bundle_id or app.name, code=err),
-    )
-
-
-def _action_failed(app: AppRef, rec: ElementRec, action: str, err: int) -> DriverResult:
-    """Refusal for an accessibility action that returned a non-zero code.
-
-    The RAW AX code is included. ``-25205`` in a support thread is immediately
-    diagnosable ("the element refused an action it advertised"); "the click
-    failed" is not.
-    """
-    detail = (
-        _REASON_UNSUPPORTED_TARGET.format(action=action)
-        if err == macos_ffi.AX_ERR_ACTION_UNSUPPORTED
-        else _REASON_AX_ERROR.format(code=err)
-    )
-    return DriverResult(
-        ok=False,
-        text=ERR_ACTION_FAILED.format(
-            action=action,
-            index=rec.index,
-            app=app.bundle_id or app.name,
-            detail=detail,
-        ),
-    )
-
-
-__all__ = ["MacOSBackend"]

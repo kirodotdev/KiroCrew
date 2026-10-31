@@ -393,18 +393,6 @@ class ComputerUseConfig:
             "and turning this on grants no new capability.",
         ),
     )
-    driver: str = field(
-        default="auto",
-        metadata=_meta(
-            "Driver",
-            "Which desktop driver computer use runs on. 'auto' (the default) uses "
-            "agent-desktop when a pinned copy is installed and the built-in native "
-            "driver otherwise; 'agent-desktop' requires it and refuses without it; "
-            "'native' always uses the built-in driver. Every computer-use safety check "
-            "runs the same on either driver.",
-            enum=["auto", "agent-desktop", "native"],
-        ),
-    )
 
 
 @dataclass

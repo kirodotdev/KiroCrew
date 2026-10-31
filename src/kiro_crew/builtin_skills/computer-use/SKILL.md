@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Read and drive native desktop apps through the accessibility layer — list apps, snapshot a window as a numbered element tree, then click/type/scroll/drag by element index or screen coordinates. Use for a desktop app, not a web page. macOS + Windows; off unless enabled in Settings.
+description: Read and drive native desktop apps through the accessibility layer — list apps, snapshot a window as a numbered element tree, then click/type/scroll/drag by element index or screen coordinates. Use for a desktop app, not a web page. macOS, Windows, Linux; off unless enabled in Settings.
 triggers: desktop, desktop app, native app, app window, on screen, click button, type into, accessibility, a11y, AXUIElement, computer use, drive the app, =Finder, =Preview, TextEdit, =Excel, =Word, System Events, !browser, !web page, !playwright
 ---
 
@@ -349,7 +349,7 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `refusing to type this text into 'X': …` | the text looked like a sensitive command or credential | do not rephrase to get around it; explain and stop |
 | `refusing to send input to a secure (password) field …` | the target is a password field | ask the user to type it themselves |
 | `computer use is disabled …` | the primary switch is off | tell the user to enable it in Settings → Computer Use; do not retry |
-| `computer use is not supported on this platform (…)` | no driver for this OS (e.g. Linux) | say so once |
+| `computer use is not supported on this platform (…)` | agent-desktop is not installed or not verified (on Linux also: no accessibility bus), or the OS has no driver | say so once, and point the user to Settings → Computer Use |
 | `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
 | `click_method 'sky_click' supports only the left mouse button (…)` | `sky_click` is a left-button-only recipe | use `left`, or switch to `app_post` for a right/middle click — the refusal names it |
 | `click_method 'auto' with coordinates cannot be served on Windows` | `auto` + x/y, where the only coordinate route moves the real cursor | pass an `element_index`, or name `global` explicitly — `auto` never takes the pointer on its own |
@@ -375,8 +375,9 @@ this is what stops you clicking the same wrong index four times:
   blank `textfield` where you expected "Search" — the tree cannot disambiguate them.
   Use position, or use the containing element.
 - **A near-empty tree from an app that clearly has content.** Electron apps (Slack,
-  VS Code, Obsidian, Freeform) need an accessibility opt-in that takes ~2s; the first
-  snapshot can be a 3-node stub. Snapshot once more before concluding anything.
+  VS Code, Obsidian, Freeform) can answer the first snapshot with a few-node stub
+  while their accessibility tree switches on. Snapshot once more before concluding
+  anything.
 - **The tree disagrees with the screenshot.** Trust the screenshot about what EXISTS
   and the tree about what is ADDRESSABLE. If a control is visible in the image but
   absent from the outline, it is a coordinate target, not a missing feature.
@@ -386,10 +387,6 @@ this is what stops you clicking the same wrong index four times:
 
 ## Things that will bite you if you do not know them
 
-- **Electron apps are slow on the first snapshot.** Slack, VS Code and Obsidian
-  need an accessibility opt-in that takes ~2 seconds to take effect. The first
-  `computer_get_state` on one of them looks like a hang and is not. Wait for it;
-  do not fire a second call.
 - **A password field can look ordinary.** It renders as `<secure>` and its value
   is never shown to you. A window containing one gets **no screenshot at all** —
   that is deliberate, not a bug.
@@ -403,13 +400,19 @@ this is what stops you clicking the same wrong index four times:
   outline. Use it exactly as shown.
 - **Empty containers are elided** from the outline, so numbers are not always
   contiguous. That is expected.
-- **There may be a second driver underneath.** When the user installed
-  `agent-desktop` (Settings → Computer Use), the tools run on it; the tools and
-  refusals are the same. Two differences show: static text has an index but
-  refuses as "not addressable" (act on the control around it), and an index from
-  before a driver switch means nothing, so take a fresh `computer_get_state`. If a
-  refusal says agent-desktop is missing or unverified, tell the user to install or
-  reinstall it from that Settings card; do not try to install it yourself.
+- **The tools run on agent-desktop**, a pinned driver the user installs from
+  Settings → Computer Use. Static text has an index but refuses as "not
+  addressable" (act on the control around it). If a refusal says agent-desktop is
+  missing or unverified, tell the user to install or reinstall it from that
+  Settings card; do not try to install it yourself.
+- **On Linux there is nothing under agent-desktop**, and it has gaps. There is no
+  `computer_launch_app` (start the app yourself or ask the user) and no
+  coordinate click or drag at all, `global` included (use an `element_index`).
+  `computer_scroll` refuses because the wheel moves the pointer: press `pagedown`
+  on the focused element instead. `computer_press_key` reaches only a window in
+  front, and only its `<focused>` element. When an app ignores accessibility text
+  writes (Firefox), `computer_type_text` types as keyboard input and the window
+  takes keyboard focus; `computer_set_value` refuses there, so type instead.
 - **The user may be watching, and you cannot see what they see.** Two optional
   views exist for them, not for you: a live panel that mirrors the screenshots you
   take, and a "Cursor Motion" overlay that draws a moving cursor on their real

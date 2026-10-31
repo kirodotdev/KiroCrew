@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, ShieldCheck } from 'lucide-react'
 
@@ -24,7 +24,6 @@ export const AGENT_DESKTOP_QK = ['computer-use-agent-desktop']
  *  than strings: a module-level `i18nT()` would freeze the boot language. */
 const DRIVER_KEY: Record<AgentDesktopDriver, string> = {
   'agent-desktop': 'pages.settings.computerUseInstall.driver_agent_desktop',
-  native: 'pages.settings.computerUseInstall.driver_native',
   unsupported: 'pages.settings.computerUseInstall.driver_unsupported',
 }
 
@@ -74,6 +73,9 @@ function versionBadge(data: AgentDesktopStatus) {
  * No error here hands off to the agent: the surrounding panel holds numeric
  * drafts that only commit on blur, and the hand-off navigation would lose them.
  */
+/** The Settings → Computer Use panel's own config query (`ComputerUsePanel.tsx`). */
+const COMPUTER_USE_CONFIG_QK = ['computer-use-config']
+
 export function ComputerUseInstallStatus({ platform, index }: { platform: string; index?: number }) {
   const qc = useQueryClient()
   const [actionError, setActionError] = useState('')
@@ -113,6 +115,12 @@ export function ComputerUseInstallStatus({ platform, index }: { platform: string
 
   const title = i18nT('pages.settings.computerUseInstall.title')
   const data = q.data
+  const jobState = data?.job.state
+  // A finished install can make the host supported, so the panel above must re-read
+  // its config: it hides the enable switch while `supported` is false.
+  useEffect(() => {
+    if (jobState === 'done') void qc.invalidateQueries({ queryKey: COMPUTER_USE_CONFIG_QK })
+  }, [jobState, qc])
 
   if (!data) {
     return (

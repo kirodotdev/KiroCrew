@@ -1,20 +1,23 @@
-# Computer Use Module (native desktop GUI automation)
+# Computer Use Module (desktop GUI automation)
 
 Lets the agent **read and drive the operator's own desktop applications** through
 the platform accessibility layer: enumerate on-screen apps, walk one app window
 into an indexed accessibility tree, then act on an element by index (press,
 type, set a value, scroll, perform a named action) or — for UI that exposes no
-addressable element — on a screen point (click, drag). macOS and Windows both drive the
-full tool set, differing in how input is delivered rather than in what is
-supported (see [The Windows driver](#the-windows-driver)); Linux reports a typed
-refusal.
+addressable element — on a screen point (click, drag). One driver does it on every
+platform: the pinned agent-desktop CLI (see
+[The agent-desktop driver](#the-agent-desktop-driver)), with a small native helper
+on macOS and Windows for the window list, launch, coordinate input, keys and the
+screenshot. Without agent-desktop every tool refuses until it is installed (see
+[Platform support](#platform-support)).
 
 Two things this module is NOT, stated up front because both are load-bearing
 product decisions rather than implementation gaps:
 
 - **Element-targeted, non-pointer input is the DEFAULT and the only thing
-  available out of the box.** `computer_click` with an `element_index` performs
-  `AXPress`, which activates a control with no pointer involved at all, and it is
+  available out of the box.** `computer_click` with an `element_index` is an
+  accessibility press (agent-desktop `click`, headless), which activates a control
+  with no pointer involved at all, and it is
   what `auto` picks whenever an index is present. Coordinate clicking and
   `computer_drag` are available for canvases, maps and custom-drawn UI, and they
   too leave the physical cursor alone — `click_method: "app_post"` posts a
@@ -93,9 +96,12 @@ so the model was told the tools existed while no server was ever spawned to serv
 them. `test_the_gate_names_no_operating_system` pins the predicate against that
 regression.
 
-The predicate is deliberately the CHEAP, optimistic half: it reads
-`platform_compat` flags against `_SUPPORTED_PLATFORM_IDS` and answers "a driver
-exists for this platform", not "it works on this host". It is **not**
+The predicate is deliberately the CHEAP, optimistic half: it reads only the
+`platform_compat` flags and answers "a driver exists for this OS" (macOS, Windows
+and Linux all run agent-desktop), not "agent-desktop is installed" or "it works on
+this host". A host without agent-desktop still gets the server; its tools refuse
+in-band with the install reason, and an install from Settings works at the next
+backend build with no agent-spec rebuild. It is **not**
 `get_shared_backend().status()`, which would import the platform driver plus five
 `WinDLL` loads (measured 31 ms and 32 modules on Windows) on a boot path, for an
 answer the in-process checks make again anyway: `enable_state` runs in `_list_tools`
@@ -306,10 +312,11 @@ Contract every implementation honours: never raise (every failure becomes
 says to** (only a `ClickRequest`/`DragRequest` whose `moves_pointer` is True, which
 the chokepoint only builds after both permits cleared — a driver must never
 upgrade a method on its own), set `ElementRec.secure` from BOTH role and subrole,
-stamp `Snapshot.captured_at` from `time.monotonic()`, be thread-safe. `UnsupportedBackend` is a concrete shared base whose every method
-returns the same typed refusal, so a new unsupported platform is ~10 lines and
-cannot accidentally implement half a driver (`windows_driver.py`,
-`linux_driver.py`).
+stamp `Snapshot.captured_at` from `time.monotonic()`, be thread-safe. The one real
+implementation is `AgentDesktopBackend`. `UnsupportedBackend` is a concrete shared
+base whose every method returns the same typed refusal; it is what every host
+without a verified agent-desktop gets. `NativeHelper` is the smaller ABC for the
+macOS and Windows helpers under the driver (no element verbs).
 
 `kiro_crew/testing/fake_computer_use.py` ships a `FakeComputerUseBackend` in the
 runtime wheel (alongside `fake_acp_backend.py`), so a downstream suite can drive
@@ -323,7 +330,8 @@ in the package calls `CDLL` at import scope, CI can never touch the native path.
 
 Importing `kiro_crew.computer_use` is side-effect free: no framework load, no
 file read, no platform branch until `get_shared_backend()` is called.
-`select_default_backend()` is the ONLY platform branch in the package and it asks
+`backend.py`'s selection functions are the ONLY platform branch in the package and
+they ask
 `platform_compat.IS_MACOS` / `IS_WINDOWS` / `IS_LINUX`, never `sys.platform` —
 which is also what lets a Linux runner exercise the Windows degradation path by
 flipping one flag.
@@ -1040,8 +1048,8 @@ limitations](#known-limitations)) — one opt-in, then the desktop — not a new
 
 ## Coordinate clicking, drag and the real-pointer path
 
-Element addressing is the preferred path and stays the default: `AXPress` activates
-a control with no pointer at all, needs no pixel measurement, and is what `auto`
+Element addressing is the preferred path and stays the default: an accessibility
+press (agent-desktop `click`, headless) activates a control with no pointer at all, needs no pixel measurement, and is what `auto`
 picks whenever an `element_index` is present. But some UI has no addressable
 element — canvases, maps, timelines, custom-drawn controls — and some gestures have
 no accessibility form at all. Hence a coordinate `computer_click` and a
@@ -1126,7 +1134,7 @@ conversion — otherwise the suppression would leak the geometry it was suppress
 
 | Method | Delivery | Moves the cursor? | Buttons | Needs |
 |---|---|---|---|---|
-| `accessibility` | `AXUIElementPerformAction(elem, "AXPress")` + the ladder, then the enclosing control | no | left (press ladder), right (`AXShowMenu` only) | `element_index` |
+| `accessibility` | agent-desktop `click` / `right-click` on the element's ref, headless | no | left, right (macOS; Windows refuses headless and names `global`) | `element_index` |
 | `app_post` | `CGEventCreateMouseEvent` + `CGEventPostToPid` | **no** — verified live: the prototype's cursor position was identical before and after | all | `x`+`y` |
 | `sky_click` | private SkyLight recipe (see below) | **no** | **left only** | `x`+`y`, a resolved window id |
 | `global` | `CGWarpMouseCursorPosition` + `CGEventPost(kCGHIDEventTap)` | **YES** | all | `x`+`y`, and the model must NAME the method |
@@ -1145,8 +1153,7 @@ a right-click variant would be invented rather than observed. Downgrading was th
 actual bug an earlier revision shipped: the recipe took no button at all and built
 left-button codes unconditionally, so a right-click request silently *activated the
 control* instead of opening its context menu — on a background window the operator
-cannot see. Same reasoning as `AX_MENU_LADDER` never falling back to `AXPress`:
-performing a different gesture than the one requested is worse than performing none.
+cannot see. Performing a different gesture than the one requested is worse than performing none.
 
 ### `sky_click` — the private path, and why it IS shipped
 
@@ -1222,110 +1229,15 @@ and that is the one question this path exists to keep answerable.
 
 ---
 
-## What one accessibility walk reads (and why each field is worth its round-trip)
+## What a walk reads
 
-The tree is the primary channel, so every field it omits is a turn the model spends
-recovering the information some other way — usually by guessing a coordinate and
-reading back a screenshot. These are the reads that pay for themselves.
-
-**Element frames** (`ElementRec.frame`, from `AXPosition` + `AXSize`). Both come
-back as **`AXValue` boxes**, not plain numbers, so each is type-checked with
-`AXValueGetType` before `AXValueGetValue` unboxes it into the matching struct — a
-`CGPoint` read into a `CGSize` would transpose `y` into `width` and produce a
-plausible-looking rect pointing somewhere else, which is strictly worse than no
-rect. A half-read (position without size) yields `None` rather than a partial
-rectangle for the same reason.
-
-Frames are **window-local**, and `Snapshot.window_bounds` publishes the origin they
-are relative to. Three reasons, in order of how badly the alternative fails:
-
-1. the screenshot the model may also be reading is a **crop of the window**, so a
-   screen-absolute rect could not be related to any pixel it can see;
-2. a window-local frame survives the user dragging the window between turns;
-3. an unlabelled coordinate is unusable — a consumer cannot tell window-local
-   `(12, 40)` from screen-absolute, and the difference is the window's position.
-
-Because `computer_click(x, y)` takes SCREEN coordinates, the rendered origin line
-states the conversion explicitly rather than leaving the model to infer that two
-coordinate systems are in play. Without the origin, a frame passed straight to a
-coordinate click lands off by the window's position — and on a maximised window it
-would appear to work, which is the worst way for this to fail.
-
-**Traits** (`selected`, `expanded`, `editable`). Read as a **tri-state**: only a
-definite `True` renders a word, because `AXSelected` is unsupported on the great
-majority of elements and collapsing absent into `False` would attach a trait to
-every node in the tree. `editable` is the load-bearing one and comes from
-`AXUIElementIsAttributeSettable(AXValue)`, not from `AXEnabled` — those answer
-different questions. A read-only text field (a disabled form input, a log pane, a
-computed cell) reports `AXEnabled=true` with a readable value, so it is
-indistinguishable from a writable one in the tree: the model types into it, gets an
-`ok` result, and the text silently goes nowhere. Settability is the only signal that
-separates them, and it turns that dead end into something visible *before* acting.
-
-**Focus and selection** (`ElementRec.focused`, `Snapshot.selected_text`). Both are
-read ONCE per walk off the **application** element, not per node and not
-system-wide. Per-node would add a round-trip to each of up to ~1,400 nodes to answer
-a question with one answer. System-wide focus follows whatever the *operator* is
-working in, so it would mark a background app's element whenever the target happened
-to be frontmost and report nothing the rest of the time; the app-scoped attribute
-answers "where is this app's caret", including for a background app. Identity is
-compared with `CFEqual`, never pointer equality: `AXFocusedUIElement` is a
-Copy-Rule read returning a fresh reference to a node the walk reaches under a
-different one, so an address comparison would answer "not focused" for every element
-and the marker would silently never appear.
-
-**Alternate child collections** (`AXRows`, `AXVisibleChildren`, merged with
-`AXChildren`). `AXChildren` alone is not the whole tree: a table, outline or list
-routinely exposes its rows ONLY through `AXRows`, and a scrolled list only the
-on-screen ones through `AXVisibleChildren`, reporting an empty or scaffolding-only
-`AXChildren`. A children-only walk therefore rendered a spreadsheet, a Finder list or
-a mail inbox as a container with nothing in it — which reads as "this app has no
-content" rather than "you looked through the wrong attribute". For a row-bearing role
-the alternates are read FIRST so the rows take the low indices a model actually
-addresses. Merged results are deduplicated by element **identity** (`CFEqual`), since
-a row is commonly in both collections and each read mints a distinct reference: a
-duplicated row is worse than a missing one, because the model would address two
-indices believing they are two different rows. `MAX_CHILDREN_PER_NODE` bounds the
-**merged** list, so three collections cannot together exceed what one was allowed to.
-
-**Secure elements disclose only their existence.** No title, no value, no traits and
-no frame. `editable` would confirm the password box accepts input and a rect would
-locate it precisely enough for a coordinate click, so both are withheld for the same
-reason the value is. The selection read is gated on the **focused** element
-specifically rather than the window's `has_secure`, because a window may hold a
-password field while the caret sits in an ordinary search box — refusing there would
-withhold something that is not sensitive.
-
-### The click ladder's last rung: the enclosing control
-
-`AXPress` → `AXConfirm` → `AXOpen` recovers most element clicks. What it does not
-recover is web content, which renders a clickable row as a plain `AXStaticText`
-inside a pressable wrapper: the text node advertises no actions and refuses every
-verb, so an element click reported failure for a row a human clicks without
-thinking — leaving coordinates as the only move, which is what the element path
-exists to avoid.
-
-So a failed ladder tries the nearest ancestor that plausibly IS the control. An
-unguarded version of this is a wrong-click generator (climb far enough and something
-is always pressable — eventually the page), so it is bounded twice:
-
-- **hops** (`MAX_ANCESTOR_PRESS_HOPS = 3`) — beyond that the ancestor is more likely
-  the page than the row;
-- **area** (`MAX_ANCESTOR_AREA_RATIO = 8.0`) — the real signal that an ancestor is
-  "the same control" is that it is roughly the same SIZE. A row wrapping a text node
-  is a small multiple of its area; a scroll area or page body is orders of magnitude
-  larger. **Without the target's own frame there is nothing to compare against, so
-  the fallback declines rather than guessing** — and declines before spending any AX
-  round-trips on a climb it could not judge.
-
-Only `AXPress` is attempted (not the full ladder): `AXOpen` on a container can mean
-something quite different from activating the row inside it. It never applies to a
-right click, for the same reason the menu ladder never falls back to a press — a
-context menu on the wrapper is a different menu. And the result **says** it pressed
-the enclosing control, because the model has to be able to tell "my click worked"
-from "something near my click worked".
-
----
+The walk is agent-desktop's (`snapshot --window-id`), translated by
+`agent_desktop_driver.build_snapshot` into `ElementRec`s: role, name, value
+(withheld for a secure node), window-local frames, the `focused` / `selected` /
+`expanded` traits, the actions agent-desktop advertises, and the truncation flags
+(`complete: false`, the node and depth budgets). Structural groups with no name or
+value are elided without consuming an index, so the numbering stays dense. The
+native AX and UI Automation walkers this section used to describe are gone.
 
 ## Index lifecycle (and its honest limit)
 
@@ -1419,9 +1331,10 @@ list position — position and index are not interchangeable.
 
 ---
 
-## The ctypes layer: four findings from running real code
+## The ctypes layer: findings from running real code
 
-All in-gateway macOS native work is confined to `macos_ffi.py` and its owners; the separate
+All in-gateway macOS native work (the window list, event synthesis, the capture
+and `AXIsProcessTrusted`) is confined to `macos_ffi.py` and its owners; the separate
 cursor-overlay child owns its explicitly documented ctypes exception. `import ctypes`
 is a top-level import statement (AUTOSDE `top-level-imports`), but **no `CDLL`/`find_library`
 runs at module scope** — the four frameworks (CoreFoundation,
@@ -1441,29 +1354,12 @@ when `argtypes is None`. `CGPoint`/`CGSize`/`CGRect` are real `ctypes.Structure`
 asserts every row has both a non-None `argtypes` and a `restype`, and that
 `CGEventPost(` appears nowhere in the module while `CGEventPostToPid` does.
 
-Related hygiene: `_cf_string()` is a context manager that `CFRelease`s on exit (a
-tree walk creates thousands of CFStrings; leaking them is a real RSS bug the
-watchdog would eventually recycle the session over), and `ax_attr()`/`ax_str()`
-type-check `CFGetTypeID(v)` against `CFStringGetTypeID()`/`CFArrayGetTypeID()`
-**before** using a value — a wrong-type read is another segfault, not an
-exception.
+Related hygiene: `_cf_string()` is a context manager that `CFRelease`s on exit
+(leaking CFStrings is a real RSS bug the watchdog would eventually recycle the
+session over), and the CF readers type-check `CFGetTypeID(v)` **before** using a
+value — a wrong-type read is another segfault, not an exception.
 
-**2. Electron/Chromium apps need an explicit opt-in.** Chrome returned
-`kAXErrorCannotComplete = -25204` for every attribute read. Setting
-`AXManualAccessibility = kCFBooleanTrue` on the app element and waiting ~2s
-unlocked **1431 nodes in 0.07s**. Without this, Slack, VS Code, Obsidian and
-Kiro Crew's own desktop app appear permanently empty. Order of operations:
-create the app element, immediately
-`AXUIElementSetMessagingTimeout(app_elem, AX_MESSAGING_TIMEOUT_SECS)` —
-mandatory, because ctypes releases the GIL around the C call and a genuinely hung
-target app would otherwise park the worker thread indefinitely — read
-`AXWindows`, and on `-25204` set the opt-in, poll for up to
-`ELECTRON_OPT_IN_WAIT_SECS` in 0.25s steps, retry **once**, then raise naming the
-raw AX code so a support thread is diagnosable. The first `computer_get_state`
-on an Electron app is inherently slow; the skill says so, so a model does not
-read it as a hang.
-
-**3. `pgrep` is the wrong way to resolve an app to a pid.**
+**2. `pgrep` is the wrong way to resolve an app to a pid.**
 `pgrep -n "Google Chrome"` returned 47492 — a short-lived helper that vanished
 seconds later and answered `-25204` to everything — while the real browser was
 637. `pgrep -n Slack` gave 1614 (helper) against the window list's 942 (real).
@@ -1473,7 +1369,7 @@ Resolution is therefore ALWAYS from `CGWindowListCopyWindowInfo` with
 built from the same window list and nothing else. A test asserts the source text
 contains no `pgrep`.
 
-**4. Synthesized key events inherit the user's LIVE modifier state.** Typing
+**3. Synthesized key events inherit the user's LIVE modifier state.** Typing
 `"a","b","c"` into TextEdit produced **`' I Abc'`**. Three rules, all
 load-bearing and all verified to then produce exactly `'abc'`:
 
@@ -1488,31 +1384,6 @@ cg.CGEventPostToPid(pid, ev)    # 3: app-targeted, never the global tap
 `CGEventPost` (global tap, hits whatever is frontmost — i.e. whatever the user is
 actually doing) appears nowhere.
 
-Two smaller findings encoded the same way: **the advertised action list lies** —
-an `AXScrollArea` advertising `AXScrollDownByPage` returned
-`-25205 (kAXErrorActionUnsupported)`, so `scroll` attempts the AX action and
-checks the error code; and **the tree walk is ITERATIVE** (an explicit stack), so
-a pathological deep tree cannot `RecursionError` inside ctypes.
-
-**When the AX scroll action is refused, `scroll` goes through the scroll bar.**
-The fallback chain, in order:
-
-| Step | Taken when | Result text |
-|---|---|---|
-| `AXScrollDownByPage` and siblings on the element | always first | `scrolled element N ...` |
-| Press the bar's page area (`AXButton` with subrole `AXIncrementPage` / `AXDecrementPage`) once per page | the element, or one of up to three ancestors, names an `AXVerticalScrollBar` / `AXHorizontalScrollBar` that has the page area | `scrolled element N down K of P page(s) with its scroll bar` plus the bar's `AXValue` before and after |
-| No press | the bar is disabled (`AXEnabled` false: the content fits) | refused: nothing to scroll |
-| No press | the bar's `AXValue` is already at the requested end | `already at the bottom` |
-| `CGEventCreateScrollWheelEvent` posted with `CGEventPostToPid`, located at the element's centre | no bar or page area, a press refused, or a press that moved nothing | `sent a ... wheel scroll ... not confirmed`; refused outright when the element has no frame |
-
-A page-area press animates the scroll, so the bar's `AXValue` still reads the old
-position right after the press: on TextEdit it read `1.0` at once, `0.85` after
-50 ms and `0.0` after 250 ms. Each press is therefore followed by polling until
-the position has moved and two reads agree, for at most 20 x 50 ms. The wheel
-event is last because nothing confirms it: a pid-targeted wheel event is routed
-by the app to the view under the event's location, and TextEdit dropped one aimed
-at its own scroll area while the window was not under the pointer.
-
 **Secure fields are a subrole, not a role.** A real macOS password box reports:
 
 ```
@@ -1522,8 +1393,9 @@ AXValue   = readable
 ```
 
 Checking `AXRole == "AXSecureTextField"` — the intuitive check — **misses every
-password field**. The driver sets `secure = (role == SECURE_SUBROLE or subrole ==
-SECURE_SUBROLE)`, and three protections key off that one flag: `render` emits
+password field**. agent-desktop reports such a field as `states: ["secure"]`, the
+driver sets `ElementRec.secure` from that state (or a password role), and three
+protections key off that one flag: `render` emits
 `<secure>` for the value (and for the title, which is sometimes the account
 name), `policy.check_input_target` refuses `set_value`/`type_text`/`press_key` at
 a secure target, and a window containing ANY secure node gets **no screenshot at
@@ -1532,17 +1404,10 @@ reliable way to blank a sub-rectangle of an already-encoded JPEG, and a partial
 redaction that missed would be worse than none.
 
 **Every walk cutoff sets a flag, and the capture gate treats "unknown" as
-"present".** `MAX_CHILDREN_PER_NODE = 512` bounds one pathological container (a
-table with 100k rows) before the global node budget notices — but it used to drop
-the tail *silently*, so `saw_secure` reflected only the first 512 children while
-`truncated` stayed False. The walk then reported itself complete and non-secure and
-`capture_snapshot_image` had nothing to refuse on, leaving a password field as child
-513 with the whole window's pixels capturable (reviewer finding). A capped read now
-sets `truncated`, which already means "there is more of this tree than you were
-shown". Detected as `len(children) >= limit` rather than by re-reading the array for
-a real count (that would reintroduce the cost the cap exists to avoid), so a node
-with exactly the cap many children is treated as truncated too — a false positive
-costs one suppressed screenshot, a false negative is the disclosure.
+"present".** A walk agent-desktop reports as incomplete, or one cut by the node or
+depth budget, sets `truncated`, so `capture_snapshot_image` refuses: a password
+field past the cut is still a password field in the pixels. A false positive costs
+one suppressed screenshot, a false negative is the disclosure.
 
 **And that suppression ANNOUNCES itself** (`TRUNCATED_WINDOW_NOTE`, emitted by
 `render._render_image_note`). It did not: the renderer special-cased only
@@ -1579,34 +1444,28 @@ pointer request). Both emit a `refused` `log_tool_invocation` with the tool name
 An AST test asserts no other function in the module constructs the `Error: ` prefix.
 
 **Keyboard input refuses when the target will not take focus.** Both keyboard
-tools require `element_index` precisely so the addressed element can be inspected
-for that flag — and the macOS driver sets `AXFocused` on it before typing so the
-keystrokes land there. That focus attempt used to be best-effort: on failure it
-logged at debug and typed anyway, which delivered the input to whatever the app
-focused LAST — an element no check ever saw, and possibly the password box the
-refusal above exists to protect (reviewer finding). `type_text` and `press_key` now
-return a failed `DriverResult` naming what did *not* happen ("the keystrokes were
-NOT sent"), because a model told only "focus failed" would assume the input landed
-and go verify a change that never occurred.
+tools take an `element_index` so the addressed element can be inspected for that
+flag, and the driver moves focus to it (agent-desktop `focus`) and reads `states`
+back before a key is sent. Typing past a failed aim would deliver the input to
+whatever the app focused LAST — an element no check ever saw, and possibly the
+password box the refusal above exists to protect. The failed result names what did
+*not* happen ("nothing was sent").
 
 ### Threading
 
-The gateway is async and the native work is blocking, so every accessibility
-walk and capture is offloaded:
+The gateway is async and the driver work is blocking (a CLI spawn, a native
+capture), so every call is offloaded:
 `await loop.run_in_executor(subprocess_executor(), fn, ...)`.
 
 `subprocess_executor()` and never the DEFAULT pool — for both `tools.dispatch` and
 the gateway handler's `_dispatch_off_loop`. That pool is the one the repo reserves
 for calls that can block on a wedged external resource, and a hung target app
-parking a worker for the whole `AX_MESSAGING_TIMEOUT_SECS` is exactly that: on the
+parking a worker until agent-desktop's call timeout is exactly that: on the
 default pool a few wedged desktop calls would starve every other
 `run_in_executor(None, …)` user in the gateway and the loop's own `getaddrinfo`.
 (The handler's *config* reads/writes do use the default pool — short, bounded
-filesystem work.) Verified safe:
-4 concurrent AX walks in threads returned identical node counts (146 — no CF
-thread-safety corruption) while an asyncio heartbeat logged **40/40** ticks, so
-the loop never stalled. The AX messaging timeout above is what bounds the
-worst case of a hung target app parking a worker.
+filesystem work.) `agent_desktop_driver.CALL_TIMEOUT_SECS` bounds the worst case of
+a hung target app parking a worker.
 
 ---
 
@@ -1866,56 +1725,113 @@ values.**
 
 ## The agent-desktop driver
 
-The tool contract can run on a second driver: the `agent-desktop` CLI (npm package
-`agent-desktop`, pinned to `agent_desktop_locate.PINNED_VERSION`, 1.0.2 today).
-`computer_use.driver` in `config.json` picks it (see [config.md](config.md)):
-
-| `computer_use.driver` | Backend |
-|---|---|
-| `auto` (default) | agent-desktop when a binary is located AND verifies against the pinned digests; otherwise the native driver |
-| `agent-desktop` | agent-desktop, or an `UnsupportedBackend` whose reason says it is missing or unverified. Never a silent downgrade |
-| `native` | the native driver (`backend.select_native_backend()`), as before |
-
-`backend.select_default_backend()` reads the key on every build and never raises; an
-unreadable config means `auto`. The shared backend is built once, so a changed value
-or a fresh install takes effect after `reset_shared_backend()`. The installer calls
-it on success.
+Every platform runs the tool contract on one driver: the `agent-desktop` CLI (npm
+package `agent-desktop`, pinned to `agent_desktop_locate.PINNED_VERSION`, 1.0.2
+today). There is no native fallback and no setting to pick one.
+`backend.select_default_backend()` builds `AgentDesktopBackend` when
+`agent_desktop_locate.locate()` finds a binary AND it verifies against the pinned
+digests; otherwise it returns an `UnsupportedBackend` whose reason says to install
+it (`AGENT_DESKTOP_MISSING_REASON`) or why the binary was refused. It never raises.
+The shared backend is built once, so a fresh install takes effect after
+`reset_shared_backend()`; the installer calls it on success.
 
 ### What the driver is, and what stays native
 
-`AgentDesktopBackend` (`computer_use/agent_desktop_driver.py`) wraps the native
-backend. Every observation and element action is one CLI call
-(`snapshot --window-id`, `click`, `get`, `type`, `set-value`, `scroll`, ...),
-addressed by the window id the native inventory gives (`w-<CGWindowID>` matches).
-The native driver stays underneath for what agent-desktop cannot do in the gateway's
-sandbox: the window inventory and `resolve_app` (agent-desktop gives no bundle id,
-and its `list-apps` fails on a `ps` denial), launch, `press_key`, pointer-free
-coordinate clicks and drags (`app_post`, `sky_click`), and screenshots (the native
-`capture_*` function, which owns the secure and truncation floors). When the native
-driver does not load, those verbs refuse.
+`AgentDesktopBackend` (`computer_use/agent_desktop_driver.py`) does every
+observation and element action as one CLI call (`snapshot --window-id`, `click`,
+`get`, `type`, `set-value`, `scroll`, `focus`, ...), addressed by the window id the
+inventory gives (`w-<CGWindowID>` on macOS, `w-<HWND>` on Windows).
+
+On macOS and Windows a `backend.NativeHelper` sits underneath
+(`macos_driver.MacOSHelper`, `windows_driver.WindowsHelper`, built by
+`select_native_helper()`) for what agent-desktop cannot do in the gateway's
+sandbox, and nothing else:
+
+| Verb | Why it stays native |
+|---|---|
+| `list_apps`, `resolve_app` | agent-desktop gives no bundle id, and its `list-apps` fails on the sandbox's `ps` denial on macOS. The native inventory also owns the identity rules (one entry per window, a hosted window named by its title) |
+| `launch_app` | agent-desktop's `launch` takes any absolute path and has no catalog, protected-root or name-match check. `launch_macos` / `launch_windows` keep those |
+| coordinate click / drag | `app_post` and `sky_click` leave the pointer alone; agent-desktop's `mouse-click` and `drag` need `--headed` and check no window ownership. Every point click and drag, `global` included, goes to the helper, which keeps the per-point confinement (`pid_owns_point`, `hwnd_owns_point`) and curved paths. A `global` click on an `element_index` refuses and asks for x and y, because agent-desktop would aim the real pointer at the element unchecked |
+| `press_key`, `type_text` (Windows) | agent-desktop's `press` needs the `ps` inventory on macOS, and its Windows `type` is argv-borne `SendInput` that refuses headless. The native routes have short-send detection |
+| screenshot | `capture_macos` / `capture_windows` own the secure and truncation floors |
+
+The helper takes no element: its `click`, `type_text` and `press_key` act on a point
+or on whatever holds keyboard focus. The tree walkers, the AX and UI Automation
+element code and the element-action ladders that used to make up a native driver
+are gone. When the helper does not load, the verbs that need it refuse.
 
 Every layer above the backend is unchanged: the keystone, the dispatch chokepoint,
-the app lists, `check_input_target`, redaction and the SEL audit all run the same on
-either driver. The driver adds its own checks underneath:
+the app lists, `check_input_target`, redaction and the SEL audit. The driver adds
+its own checks underneath:
 
 - **Pinned binary.** `agent_desktop_locate.locate()` finds the executable
   (`KIROCREW_AGENT_DESKTOP_BIN`, then the install prefix, then `PATH`) and says
   nothing about trust. `verify(path)` accepts it only when its SHA-256, and its
   helper's, is in `PINNED_SHA256`. Bumping the version means changing
   `PINNED_VERSION` and every digest together.
-- **Secure fields.** agent-desktop reports `AXSecureTextField` as `states:
-  ["secure"]` and withholds its value. The driver marks such a node secure, never
-  keeps its value, and before `type` or `set-value` re-reads `get --property states`
-  and refuses if the field turned secure.
+- **Secure fields.** agent-desktop reports `AXSecureTextField` (macOS),
+  `IsPassword` (Windows) and the password role (AT-SPI) as `states: ["secure"]` and
+  withholds the value. The driver marks such a node secure, never keeps its value,
+  and before `type`, `set-value` or a keyboard focus move re-reads `get --property
+  states` and refuses if the field turned secure.
 - **Index drift.** Each index stores its agent-desktop ref with the fingerprint.
   A mismatch refuses with the usual drift message; `STALE_REF`,
   `SNAPSHOT_NOT_FOUND` and `AMBIGUOUS_TARGET` mean "call `computer_get_state`
   again". Static text gets an index but refuses as not addressable.
 - **Argv as data.** Agent text reaches argv only after `--`, so text like
-  `--headed` is typed, not parsed as a flag. `--headed` is passed only when the
-  call `moves_pointer`.
+  `--headed` is typed, not parsed as a flag. `--headed` is passed when the call
+  `moves_pointer`, and for the Windows `focus` described next.
+- **Keyboard verbs on an element.** `press_key` and (on Windows) `type_text` re-check
+  the field is not secure, move focus through the ref, re-read `states` and refuse
+  unless the field is still not secure and now `focused`, then send the keys
+  through the native helper. On Windows agent-desktop grants `focus` only with
+  `--headed` (it raises the window, which `SendInput` needs anyway; the pointer
+  does not move).
 - **State.** `AGENT_DESKTOP_HOME` points at `<prefix>/state` (0700). The refstore
   there holds element names and window titles.
+
+### On Linux: agent-desktop with nothing underneath
+
+Linux has no native helper, so `select_default_backend()` builds
+`AgentDesktopBackend(native=None, cli_capture=True)` there, and agent-desktop
+does every verb itself through AT-SPI. Without a located, verified binary Linux
+gets the same `UnsupportedBackend` as every other OS.
+
+| Verb | On Linux |
+|---|---|
+| `list_apps`, `resolve_app` | `list-windows`, with `bundle_id` (the desktop id) joined from `list-apps` by pid |
+| `snapshot` | `snapshot --window-id <opaque id>` |
+| screenshot | `screenshot --window-id` (base64 PNG) re-encoded as the usual downscaled JPEG by `capture_agent_desktop.py` and persisted with `capture_macos.persist_jpeg`. Same floors as the native captures: none when the walk saw a secure element or was cut short, none on a capture error (X11 refuses a covered window) |
+| element click, `perform_action` | headless AT-SPI actions |
+| `type_text` | headless `type`; when the toolkit answers `ACTION_NOT_SUPPORTED` (Firefox applies no EditableText write), one retry: `focus --headed`, a live `states` read that must show `focused` and not `secure`, then `type --headed`. The pointer did not move in the container run. Never retried where a native helper exists |
+| `set_value` | headless `set-value`; `ACTION_NOT_SUPPORTED` refuses and points at `computer_type_text` |
+| `press_key` | `press --window-id`, headless, so only to the window in front and only on the element that is `<focused>` in the snapshot AND still `focused` in a live `states` read. Any other element refuses, because agent-desktop's `focus` needs `--headed`. A background window refuses with "bring it to the front" (agent-desktop's `STALE_REF` / `exact_window_focus_unconfirmed`), not with "call `computer_get_state` again" |
+| `scroll` | refuses: agent-desktop scrolls only with the physical wheel (`POLICY_DENIED` headless). Never retried `--headed` |
+| coordinate click / drag | refuse. `app_post` / `sky_click` have no CLI form, and a `global` gesture (`mouse-click` / `drag --headed`) would land on whatever owns the pixel: the only window list is AT-SPI's, which leaves out apps without accessibility (terminals, Qt or Java apps without the bridge), so the point's owner cannot be checked |
+| `launch_app` | refuses: no vetted launch catalog on Linux |
+
+Two details the wrapper handles:
+
+- **Opaque window ids.** Linux window ids are AT-SPI paths
+  (`w-1.0-org-a11y-atspi-accessible-172`), while `AppRef.window_id` is an int. The
+  driver derives the int from the string (CRC-32, linear probe on a collision),
+  keeps a table back to the string, and prunes it to the listed windows past 256
+  entries.
+- **The bus check.** With no native helper, `status()` also runs agent-desktop's
+  `status`: an empty `supported_surfaces` means the AT-SPI bus did not answer, and
+  the backend reports unsupported with that reason rather than listing no windows.
+
+The spec gate (`platform_could_be_supported()`) answers True on macOS, Windows and
+Linux whether or not agent-desktop is installed (see
+[The shim is not spawned at all unless it can be used](#the-shim-is-not-spawned-at-all-unless-it-can-be-used));
+`status()` locates and verifies. Settings → Computer Use shows the driver card on
+an unsupported host so the driver can be installed from there.
+
+Measured in an Ubuntu 24.04 arm64 container (Xvfb, openbox, `at-spi2-core`,
+gedit, Firefox from Mozilla's apt repository): all eleven tools through
+`tools.dispatch_tool`, 32 of 32 cases as expected, including the password field
+reported as `states: ["secure"]`, its type and set-value refusals, and its
+screenshot suppression.
 
 The spawn is `agent_desktop_driver.py::_subprocess_runner`, listed in
 `BENIGN_SPAWNS` (`test/spawn_audit_helpers.py`) with its reason: it is not routed
@@ -1924,7 +1840,7 @@ Accessibility grant, which a confining sandbox denies.
 
 ### Measured cost (macOS, median of 5)
 
-| Op | Native | agent-desktop |
+| Op | Old native walker | agent-desktop |
 |---|---|---|
 | snapshot, Notes | 170 ms | 175 ms |
 | snapshot, System Settings | 364 ms | 343 ms |
@@ -1963,7 +1879,9 @@ not installed and is never run, so the card offers a reinstall.
 Settings → Computer Use shows a driver card (`ComputerUseInstallStatus.tsx`, state
 helpers in `computerUseInstallState.ts`) between the enable and the macOS
 permissions card. It shows install state, installed vs pinned version, the active
-driver (`agent-desktop` / `native` / `unsupported`) and each grant. Its one button
+driver (`agent-desktop` / `unsupported`) and each grant. It also shows on an
+unsupported macOS, Windows or Linux host, since installing it is what makes the
+host supported. Its one button
 is Install, Update or Reinstall depending on that state; on macOS a second button
 opens the grant guide. It polls the status while a job runs and shows the failed
 step with its redacted error. The routes are in [HTTP surface](#http-surface).
@@ -1972,36 +1890,63 @@ step with its redacted error. The routes are in [HTTP surface](#http-surface).
 
 - Typed text and set values sit in agent-desktop's argv while a call runs, so a
   same-user `ps` can read them. Secure fields are refused, so never a password.
-- Secure detection on Windows (`IsPassword`) and Linux is agent-desktop's and is not
-  verified on a real host; its docs say a GTK4 entry with visibility off is not
-  reported secure.
-- Indices are numbered differently from the native walker. After a driver switch,
-  take a fresh `computer_get_state`.
-- Only macOS was run on a real host. The Windows and Linux paths follow the same CLI
-  contract, untested.
+- Secure detection on Windows (`IsPassword`) and Linux is agent-desktop's. On
+  Linux it was verified for a Firefox `<input type="password">` only; its docs say
+  a GTK4 entry with visibility off is not reported secure.
+- On Linux the `type --headed` retry is keyboard input. It moved no pointer in the
+  container run, but agent-desktop does not promise that for every toolkit.
+- Linux was run in an X11 container, not on a Wayland desktop. On Wayland
+  agent-desktop's pointer commands refuse and its screenshots need portal consent.
+- macOS, Windows (Server 2025) and Linux (in a container) were run for real.
+
+### Measured on Windows (Server 2025, agent-desktop 1.0.2)
+
+Run in a signed-in console session; agent-desktop does not work in session 0.
+
+- **Install.** npm writes an extensionless `sh` shim into `node_modules/.bin`, and
+  Windows reports any file as executable, so `locate()` checks the package's
+  `bin/agent-desktop.exe` first. The shim had made `verify()` refuse a correct
+  install.
+- **Works through the driver:** snapshot (Notepad, Paint, Calculator, Edge,
+  Settings, Explorer), element click on a background window without moving the
+  pointer, `set-value`, `scroll`, `expand`/`collapse`, the `global` click and drag,
+  and the keyboard verbs above. An Edge `<input type=password>` reads as `secure`,
+  so typing, setting and keys to it refuse and the screenshot is suppressed.
+- **Refuses headless, as agent-desktop documents:** element `right-click`,
+  `double-click` and `focus`. The refusal names the `global` route.
+- **Focus fails closed** when Windows' foreground lock stops a background process
+  from raising the window: agent-desktop's `focus` reports the window did not come
+  forward, and no key is sent.
+- **Speed.** Each call is a process spawn: a Notepad snapshot takes ~430 ms
+  against the old native walker's ~60 ms, an element action with its re-walk ~1.3 s
+  against ~0.2 s, and a keyboard verb (two state reads, focus, keys) ~2.5 s.
 
 ## Platform support
 
 | Platform | State |
 |---|---|
-| macOS | Supported. ApplicationServices AX + CoreGraphics + ImageIO via ctypes. |
-| Windows | **Full tool set.** UIAutomationCore over raw ctypes COM (no `comtypes`) + `PrintWindow`/GDI+. Element-addressed actions go through UIA control patterns and move neither the pointer nor focus; the pointer and keyboard routes exist but are opt-in by name, because Windows has no per-process input delivery. See [The Windows driver](#the-windows-driver). |
-| Linux | `LinuxBackend(UnsupportedBackend)` — typed refusal. The plan is AT-SPI over D-Bus; Wayland has no unprivileged window capture (it needs xdg-desktop-portal), so a first cut may be tree-only, which `SnapshotRequest.want_image` already accommodates. |
+| macOS | Supported through agent-desktop (AX). `MacOSHelper` adds the CoreGraphics window list, `open -a` launch, pid-posted input and the ImageIO capture via ctypes. |
+| Windows | Supported through agent-desktop (UI Automation). `WindowsHelper` adds the Win32 window list, the vetted launch catalog, the real-cursor click and drag, `SendInput` keys and the `PrintWindow`/GDI+ capture. Windows has no per-process input delivery, so pointer and keyboard routes are opt-in by name. See [The Windows driver](#the-windows-native-helper). |
+| Linux | **Through agent-desktop only** (AT-SPI): reading, element actions, typing and screenshots work; launch, scroll and pointer-free coordinate input refuse. See [On Linux](#on-linux-agent-desktop-with-nothing-underneath). |
+| any OS | Without a located, verified agent-desktop: `UnsupportedBackend`, a typed refusal that says to install it. |
 
 Every unimplemented path **refuses rather than raises**, mirroring how
 `dashboard/handlers/terminal.py` handles the Windows PTY, and names what is
 missing so a user learns something and a maintainer finds the next step. When
 `supported` is false the Settings panel renders the reason and no toggle.
 
-### The Windows driver
+### The Windows native helper
 
-Reading and input both work through real UI Automation, and the whole layer above
-the driver (the keystone, schema validation, the snapshot index, fingerprint
-drift, redaction, the SEL audit) runs unchanged. Files: `windows_ffi.py` and its owners (the Windows-native surface),
-`apps_windows.py`, `snapshot_windows.py`, `capture_windows.py`, `windows_driver.py`.
+agent-desktop reads the UI Automation tree and performs every element action. What
+stays native on Windows is `WindowsHelper` (`windows_driver.py`): the window
+inventory and identity rules (`apps_windows.py`), the vetted launch catalog
+(`launch_windows.py`), the real-cursor click and drag, `SendInput` keys, and the
+capture (`capture_windows.py`). Files: `windows_ffi.py` and its owners (the
+Windows-native surface: the library loader, window enumeration, the DPI scope and
+`SendInput`).
 
-Five things differ from macOS in ways that are load-bearing rather than
-incidental. Each was measured on Windows 11:
+These differ from macOS in ways that are load-bearing rather than incidental.
+Each was measured on Windows 11:
 
 - **A host process's name is not an app identity either, so a hosted window is
   named by its TITLE.** `ApplicationFrameHost.exe` fronts every packaged/UWP app, and
@@ -2013,10 +1958,6 @@ incidental. Each was measured on Windows 11:
   identity such a window has that an operator would write down. Its instability
   across documents is the accepted cost; the alternative is an action in an app they
   excluded.
-- **Re-addressing an element compares role AND name.** A toolbar that swapped Save
-  for Delete leaves both as `Button` at the same index, so a role-only check accepts
-  Delete and the action presses it — the model's "click Save" deletes the user's
-  work. The name is already computed for the elision test, so this costs nothing.
 - **A pid is not an app identity, so confinement keys on the HWND.**
   `apps_macos.pid_owns_point` is sound because macOS delivers input per-process
   (it stays closed over the Dock's full-screen layer-20 backing window, which a
@@ -2041,41 +1982,8 @@ incidental. Each was measured on Windows 11:
   callback yielded 135 of 270 windows with nothing reaching Python. The callback
   records failures and the caller re-raises, because "no applications on screen" must
   never be the answer to a read that could not be performed.
-- **The bounded walk is mandatory, not an optimization.**
-  `FindAllBuildCache(Subtree)` ignores a node budget entirely: it built 2966
-  nodes in **13.7s** on a real Chromium window, where `windows_ffi.walk_bounded`
-  reached the shipped 1200-node budget in **630ms**. A mutating action walks
-  twice, so that is ~27s against ~1.3s per click. Cached property reads are what
-  make even that viable — 176 reads in 1.4ms against roughly 0.6–1.5ms *each*
-  live, because every live read is a cross-process RPC. Per-node cost ranges from
-  ~2ms (UWP) to ~20ms (WPF).
-- **The secure flag is read LIVE and decided fail-closed.**
-  `UIA_IsPasswordPropertyId` is **30019**; 30097 is `LegacyIAccessibleHelp` and
-  returns a `VT_BSTR` that is empty — hence falsy — for a real password box with
-  no placeholder, so it fails OPEN exactly where the floor must hold. The read
-  uses `GetCurrentPropertyValueEx(ignoreDefaultValue=TRUE)`, because the plain
-  form folds "the provider does not implement this" into the property's default
-  of `False`: a password box in such a framework would read as safe. Only an
-  explicit, supported, live `VARIANT_BOOL` False is treated as plain. The flag is
-  deliberately absent from the cached walk — a field can flip plain to password on
-  the application's own timer, and a cached verdict then reports `False` while the
-  cache holds the cleartext.
-
-  One narrowing, measured: the strict rule applies to text-bearing roles only.
-  Explorer's tree provider implements the property for nothing, so 13 of 87 nodes
-  came back inconclusive and suppressed the screenshot of an ordinary file-manager
-  window. Across ten real windows every inconclusive read landed on a NON-text
-  control while every text-bearing control answered definitively, so the floor
-  still covers everything that could leak.
-- **`BoundingRectangle` is a SAFEARRAY of `[left, top, WIDTH, HEIGHT]`**, not
-  `[left, top, right, bottom]` — verified against `GetWindowRect`. It arrives as
-  `VT_ARRAY | VT_R8`, so `variant_value` decodes the SAFEARRAY and `_local_frame`
-  reads width/height directly; subtracting as right/bottom gave a negative
-  (silently dropped) height on any child below its parent's origin and a wrong
-  size on the rest, which is the "worse than no rect" failure because a model acts
-  on it.
-- **One DPI awareness scope must cover walk, capture, confinement and click.**
-  UIA rectangles follow the *caller's* awareness rather than always being physical
+- **One DPI awareness scope must cover capture, confinement and click.**
+  Window rectangles follow the *caller's* awareness rather than always being physical
   pixels (one window measured `(614,223,1424,750)` aware against
   `(491,178,1139,600)` unaware on a 125% display), and a mismatch does not fail
   closed: feeding the unaware coordinate to `WindowFromPoint` resolved a
@@ -2186,30 +2094,6 @@ incidental. Each was measured on Windows 11:
   `parse_spec("A") == parse_spec("shift+a")`. What `win` MEANS stays a per-platform
   decision — it is canonical rather than folded onto `cmd`, since macOS's shared
   `FLAG_COMMAND` is that platform's answer and not a cross-platform fact.
-- **Frames are window-local or absent, never unlabelled.** `_local_frame` returns
-  `None` when the window origin is unavailable, matching `snapshot_macos`: a
-  consumer cannot tell a window-local `(12, 40)` from a screen-absolute one, and the
-  screenshot the model may also be reading is a crop of that window.
-- **`selected` is `SelectionItem.IsSelected` (30079), not `HasKeyboardFocus`.**
-  Focus is already published as `ElementRec.focused` plus the `<focused>` marker, so
-  sourcing the trait from focus reported one signal twice while a genuinely selected
-  but unfocused row carried no trait — making "which row is selected?" always name
-  the caret's element.
-- **No COM call carries a duration bound, and that is a platform limit rather than an
-  omission.** `macos_ffi` caps every AX call at `AX_MESSAGING_TIMEOUT_SECS` (2.0s)
-  because ctypes releases the GIL for the duration of a C call, so an unresponsive
-  target parks the calling worker with no interruption path — not even a signal handler
-  runs. The hazard is identical on Windows: a provider that pumps a modal inside
-  `Invoke` retires one pooled worker until that dialog closes. UIA's equivalent knob is
-  `IUIAutomation2::put_TransactionTimeout`, and this client cannot reach it — measured
-  on Windows 11, `QueryInterface` for `IUIAutomation2` returns `E_NOINTERFACE` from both
-  `CLSID_CUIAutomation` and `CLSID_CUIAutomation8`, while that same `CUIAutomation8`
-  returns plain `IUIAutomation` with `S_OK`. So the class is present and only the
-  derived interface is absent. What contains it is the bounded executor: one verb is one
-  call, so a wedged provider costs a worker and not the loop. A watchdog that abandons
-  the call would be worse than nothing — an abandoned COM call still holds its
-  apartment, so the thread never returns and the "timeout" only hides the leak.
-
 - **The window list is ON-SCREEN, not merely `IsWindowVisible`.** That flag means "not
   explicitly hidden", so a minimized window (parked at -32000,-32000) and a
   **DWM-cloaked** one (a suspended packaged app, or a window on another virtual
@@ -2224,77 +2108,12 @@ incidental. Each was measured on Windows 11:
   absent without DWM composition and treating "cannot ask" as "not on screen" would
   report an empty desktop.
 
-- **A secure node is never elided**, even when its role is otherwise droppable.
-  `secure` flips `has_secure`, which suppresses the screenshot; eliding the node too
-  left a window with no tree AND no pixels, explained as "this window contains a secure
-  (password) field". That is reachable with no password at all — `Custom` is both an
-  elidable role and one where an inconclusive secure read fails closed, so a
-  bridge-less Java/Qt app or a game canvas produces exactly it (reproduced:
-  `elements=0`, `has_secure=True`). The floor is unchanged; the node stays visible so
-  the suppression has a stated cause. **Both walks must pass `secure=`** — the
-  numbering `build_snapshot` publishes and the one `addressed` re-derives have to
-  match, or an index resolves to a different control.
-
-- **`ElementRec.actions` publishes the DRIVER's vocabulary**, sourced from the cached
-  `Is<Pattern>PatternAvailable` properties. The shipped computer-use skill tells the
-  model to read this list before choosing a call, so leaving it empty made that
-  channel dead on Windows while it worked on macOS — the model had to attempt a verb
-  to learn whether the element supports it, and a refusal is indistinguishable from
-  having addressed the wrong element. Cached rather than probed: `GetCurrentPattern`
-  is a cross-process round trip PER element, exactly the cost the cached walk exists
-  to avoid, while these ride along in the walk that already happened. The names are
-  `perform_action`'s own (`press`, `toggle`, …), never UIA's pattern names, and
-  `WINDOWS_SUPPORTED_ACTIONS` in `types.py` is the single tuple both ends read — a
-  name published but not served is a refusal the model was invited to trigger.
-  Verified against `GetCurrentPattern` on real controls: a `Button` reported Invoke, a
-  `CheckBox` Invoke + Toggle, a `ListItem` Invoke + SelectionItem.
-- **`expanded` is `ExpandCollapseState` (30070)**, the counterpart of the macOS
-  walk's `AXDisclosing` read: without it a model cannot tell an open tree node from a
-  closed one and spends a turn expanding what is already open. Read TRI-STATE — only
-  an explicit `Expanded` publishes the trait, because `PartiallyExpanded` is not open
-  and `LeafNode` means the control cannot expand at all, so either would misdescribe
-  what a collapse would do. Verified on a real `TreeView`: two nodes read `Collapsed`
-  and `Expanded` while every non-expandable element in the same window (buttons, the
-  title bar, an `Edit`) answered the not-supported sentinel.
-
-**Input works, and its shape is dictated by one platform fact: Windows has no
-per-process input delivery at all.** `SendInput` carries no hwnd and no pid, so
+**The native input is shaped by one platform fact: Windows has no per-process
+input delivery at all.** `SendInput` carries no hwnd and no pid, so
 unlike `CGEventPostToPid` there is no way to give one application a mouse event
 without moving the operator's cursor, or a keystroke without taking their focus.
 Every asymmetry below follows from that:
 
-- **Element-addressed actions are the safe form, and the only one `auto` resolves
-  to.** A UIA pattern method needs neither the pointer nor focus — the provider
-  performs it inside the target — so a press, toggle, select, expand or `SetValue`
-  has no effect outside the control it names. The ladder is by SPECIFICITY:
-  `Invoke`, then `Toggle` / `Select`, then `LegacyIAccessiblePattern.DoDefaultAction`
-  last, because that one performs whatever the provider nominated. **A rung is
-  tried only when the previous pattern is ABSENT, never when it was present and
-  FAILED** — falling onward from a failure performs a different gesture than the
-  one requested, and on a checkbox that is a state flip nobody asked for.
-
-  **The winning rung is NAMED in the result** (`pressed element 3 via Toggle`), as
-  macOS names the AX action that succeeded. "pressed element 3" alone hides what the
-  call did — a press that landed on `Toggle` flipped a checkbox — and naming it also
-  tells the model which pattern this element answers, so the next turn does not
-  re-derive it. Measured usefulness: a WinForms `CheckBox` answers `Invoke`, not
-  `Toggle`, which nothing in the tree advertises.
-
-  **`capslock` is refused as a modifier here**, though it stays in the platform-free
-  vocabulary because macOS serves it. macOS models it as `FLAG_ALPHA_SHIFT`, a
-  per-event flag that changes no machine state; `VK_CAPITAL` down/up **toggles a
-  machine-wide lock** whose flip OUTLIVES the call, so `capslock+a` would capitalize
-  everything the operator types next — and unlike every other modifier, releasing the
-  key does not undo it. The refusal names `shift+<key>` as the alternative.
-
-  Every rung is a LEFT-button activation, so **a non-left button on the element path
-  refuses.** UIA has no pattern that opens a context menu — no `AXShowMenu`
-  equivalent and no ShowMenu pattern at all — so the ladder could only activate the
-  control, which is a different action than "open the context menu". This is the same
-  rule as macOS's right-button ladder (`AXShowMenu` only, never falling back to a
-  press), reached from the opposite direction: macOS has an action to prefer, Windows
-  has none to offer, and both refuse rather than substitute. The button IS honoured
-  on the coordinate path, where a real right-click is what `global` already means.
 - **The pointer path is opt-in by name.** `auto` + coordinates **refuses**, because
   the only coordinate route here moves the real cursor and `auto` must never resolve
   onto a pointer-moving method. `app_post` and `sky_click` refuse BY NAME rather
@@ -2343,53 +2162,21 @@ Every asymmetry below follows from that:
   nothing at all: a press that already happened is a stuck button, and any later
   motion becomes an unintended drag.
 - **The keyboard verbs take focus and say so**, and a focus failure REFUSES rather
-  than typing anyway. The policy check cleared the element the model ADDRESSED, so
-  keystrokes delivered to a focus that did not move can reach the password field
-  that check just refused.
-- **`perform_action` takes a CLOSED vocabulary** (`press`, `toggle`, `select`,
-  `expand`, `collapse`), each mapped to one specific pattern method. Forwarding the
-  caller's string to `LegacyIAccessiblePattern` would be an un-gated write path:
-  that interface also exposes `SetValue` and sits on nearly every node of a real
-  Win32 tree. **Its `SetValue` slot is deliberately not bound anywhere in the
-  package**, which is the durable half of the control — the vocabulary can be
-  widened by a later edit, an unbound vtable slot cannot be reached at all.
-- **The secure-field floor is re-read LIVE at the driver**, not inherited from the
-  snapshot the model was shown: a field can flip plain to password on the
-  application's own timer in between, and the driver is reachable without the
-  dispatch chokepoint (`kirocrew computer call`). `tools._SECURE_TARGET_TOOLS` also
-  widens the chokepoint's own check to `perform_action` and `scroll`, so the floor
-  holds for every backend rather than only this one.
-
-**Pattern vtable slots were measured, not transcribed — and a plausible value is
-not enough.** Each interface's layout was fixed by probing a read-only getter in a
-subprocess (a wrong slot is an access violation, so a crash is data) and requiring
-TWO independent signals: a value whose SHAPE could only come from the method named,
-and a neighbouring slot that answers `E_INVALIDARG`/`E_FAIL`.
-
-That rigour is not ceremony. **A wrong action slot does not necessarily fault** — it
-can land on a neighbour that returns `S_OK` while doing something else, which no
-return-code check catches. Two interfaces here did exactly that:
-
-- `ScrollPattern.Scroll` at slot 4 is `SetScrollPercent`. It answered `S_OK` for
-  every call while the panel never moved, so the driver reported "scrolled 2
-  page(s)" over an unchanged window and a model would scroll forever. Found only by
-  reading the panel's own scroll percentage back and seeing it pinned; the correct
-  slot is 3, anchored by slot 8 returning `20.13` (a ViewSize FRACTION, so not a
-  percent) and slot 10 returning `1` for `VerticallyScrollable` (a `VARIANT_BOOL`,
-  so not a double).
-- `LegacyIAccessiblePattern.DoDefaultAction` at slot 4 is `Select`. The correct slot
-  is 3, anchored by `get_CurrentRole` (slot 10) returning `ROLE_SYSTEM_PUSHBUTTON`
-  on a real Button and `get_CurrentDefaultAction` (slot 15) returning `'Press'` on
-  the same element.
-
-`test_computer_use_windows_input.py` pins both as numbers with their anchors, so a
-future edit that "tidies" a slot back to the header's apparent order fails.
-
+  than typing anyway. agent-desktop moves focus (`focus --headed`) and the driver
+  reads `states` back before `WindowsHelper` sends a key: keystrokes delivered to a
+  focus that did not move can reach the password field the secure check just
+  refused.
+- **`capslock` is refused as a modifier here**, though it stays in the platform-free
+  vocabulary because macOS serves it. macOS models it as `FLAG_ALPHA_SHIFT`, a
+  per-event flag that changes no machine state; `VK_CAPITAL` down/up **toggles a
+  machine-wide lock** whose flip OUTLIVES the call, so `capslock+a` would capitalize
+  everything the operator types next. The refusal names `shift+<key>` as the
+  alternative.
 A minimized window is refused up front with its own reason. It is still `IsWindow`
 and still `IsWindowVisible` (that flag means "not explicitly hidden"), and its rect
 is parked off-screen at `-32000, -32000`, so the capture SUCCEEDS over a uniform
 buffer and the blank-frame gate rejects it with no cause anyone can report. The
-tree is still returned — the UIA tree of a minimized window reads perfectly well.
+tree is still returned.
 
 `kirocrew computer doctor --json` is what the gateway shells for the Settings
 permission rows — a short-lived subprocess, deliberately NOT an in-gateway ctypes
@@ -2760,44 +2547,40 @@ computer use.
 | `computer_use/render.py` | Tree/app-list rendering, `fingerprint`, secure placeholder |
 | `computer_use/index.py` | `SnapshotIndex`: TTL, cap, `resolve`, `end_turn`, drift message |
 | `computer_use/enable_state.py` | The keystone primary enable + the operator's app allow/deny lists (read fail-soft to off) |
-| `computer_use/backend.py` | `ComputerUseBackend` ABC, `UnsupportedBackend`, registry, the one platform branch |
+| `computer_use/backend.py` | `ComputerUseBackend` and `NativeHelper` ABCs, `UnsupportedBackend`, registry, the one platform branch |
 | `computer_use/gate.py` | The SEL audit of every call and every real-pointer gesture, plus the pass-through shims (`apply_observation_ceiling`, `permitted_observation_channels`) the renderers still route through |
 | `computer_use/tools.py` | The single in-gateway dispatch chokepoint: validation, enable, audit, target/freshness/input checks, driver dispatch and response shaping |
 | `computer_use/service.py` | Blocking snapshot/index/screenshot orchestration over the active backend; no policy decisions |
-| `computer_use/windows_driver.py` | `WindowsBackend`: observation + all seven input verbs — the UIA pattern ladder, pointer confinement, verified focus, and the closed `perform_action` vocabulary |
-| `computer_use/windows_ffi.py` | The Windows-native surface's import path and patch surface (a `_facade_mirror` facade over the three owners below), and the `SendInput` keyboard and mouse synthesis |
-| `computer_use/windows_ffi_com.py` | ABI constants and structures, the flat-function table and the one vtable-slot table, the library loader and `vcall`, COM reference discipline, the per-thread apartment and UIA client |
-| `computer_use/windows_ffi_uia.py` | VARIANT/BSTR marshalling, the fail-closed secure read, the control-pattern ladder and focus, the bounded cached walk |
+| `computer_use/windows_driver.py` | `WindowsHelper`: the window inventory, launch, the confined real-cursor click and drag, `SendInput` keys |
+| `computer_use/windows_ffi.py` | The Windows-native surface's import path and patch surface (a `_facade_mirror` facade over the two owners below), and the `SendInput` keyboard and mouse synthesis |
+| `computer_use/windows_ffi_com.py` | ABI constants and structures, the flat-function table and the `IUnknown` vtable entry, the library loader, `vcall` and `release` |
 | `computer_use/windows_ffi_window.py` | The DPI scope, window enumeration and geometry, `window_render_scale`, `quantize_point` and the hit test |
 | `computer_use/apps_windows.py` | Window-list app enumeration keyed on the top-level HWND (a pid fronts many apps), the transient-popup filter, `find_window_for` (the launch verb's non-raising lookup) + `hwnd_owns_point`, the confinement predicate |
-| `computer_use/snapshot_windows.py` | Iterative bounded UIA walk, UIA role vocabulary, window-local frames, truncation flags |
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
-| `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
-| `computer_use/agent_desktop_driver.py` | `AgentDesktopBackend`: the tool contract over the `agent-desktop` CLI, wrapping the native backend for inventory, launch, keys, pointer-free coordinates and capture |
+| `computer_use/capture_agent_desktop.py` | Window screenshots through `agent-desktop screenshot` (Linux): PNG to downscaled JPEG under the native captures' floors |
+| `computer_use/agent_desktop_driver.py` | `AgentDesktopBackend`, the one driver: the tool contract over the `agent-desktop` CLI, over a native helper for inventory, launch, keys, pointer-free coordinates and capture |
 | `computer_use/agent_desktop_locate.py` | `locate()` and `verify()` against `PINNED_VERSION` / `PINNED_SHA256`, `INSTALL_PREFIX()` |
 | `computer_use/agent_desktop_install.py` | The pinned npm install into the private prefix, binary placement, `readiness()`, the permissions probe and guide |
 | `dashboard/handlers/computer_use_install.py` | `/api/computer-use/agent-desktop/{status,install,permissions-guide}` and the background install job |
 | `website/src/pages/settings/ComputerUseInstallStatus.tsx` | Settings → Computer Use driver card (state logic in `computerUseInstallState.ts`) |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
-| `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
-| `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |
-| `computer_use/macos_ffi_cf.py` | CF hygiene: CFString lifetime, type-checked number/bool/array reads, the CF dictionary |
-| `computer_use/macos_ffi_ax.py` | Accessibility reads, actions and settable writes, with the messaging timeout and the Create Rule |
+| `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the three owners below), and key/mouse event synthesis |
+| `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids, private event source and `ax_is_process_trusted` |
+| `computer_use/macos_ffi_cf.py` | CF hygiene: CFString lifetime, type-checked number/array reads, the CF dictionary |
 | `computer_use/macos_ffi_window.py` | The CoreGraphics window list, `executable_path`, in-process window capture and the JPEG size check |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
-| `computer_use/snapshot_macos.py` | Iterative AX walk, `AXManualAccessibility` retry, secure detection |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |
 | `computer_use/screencast.py` | Live-view (PiP) relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
 | `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring), plus `drag_points` for a multi-point drag. No ctypes, no AppKit, no config |
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
 | `computer_use/permissions.py` | Advisory TCC probe + `responsible_hint` |
-| `computer_use/macos_driver.py` | `MacOSBackend` glue |
+| `computer_use/macos_driver.py` | `MacOSHelper`: the window inventory, launch, `app_post` / `sky_click` / confined `global` input, pid-posted keys |
 | `computer_use/cli.py` | `kirocrew computer doctor [--json] \| apps \| call` |
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |
-| `testing/fake_computer_use.py` | `FakeComputerUseBackend`, shipped in the wheel |
+| `testing/fake_computer_use.py` | `FakeComputerUseBackend` and `FakeNativeHelper`, shipped in the wheel |
 | `dashboard/handlers/computer_use.py` | `/api/computer-use/{config,invoke,frame}` |
 | `website/src/pages/settings/ComputerUsePanel.tsx` | Settings → Computer Use |
 | `website/src/components/ComputerUseLiveView.tsx` | The floating live view (PiP) panel |

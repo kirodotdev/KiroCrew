@@ -9245,7 +9245,6 @@
         "status_region_label": "Desktop driver status",
         "driver_label": "Active driver",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Built-in",
         "driver_unsupported": "Not available",
         "installed_label": "Installed version",
         "pinned_label": "Pinned version",

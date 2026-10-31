@@ -1,7 +1,7 @@
 """CoreFoundation memory and type discipline in :mod:`kiro_crew.computer_use.macos_ffi`.
 
 :func:`cf_string`, a context manager that always releases; the CFString read; the
-type-checked number, boolean and array reads (:func:`cf_array_items` reads the count first
+type-checked number and array reads (:func:`cf_array_items` reads the count first
 and never indexes past it); and the CF dictionary built with the real key and value
 callbacks.
 
@@ -148,23 +148,6 @@ def cf_number_double(ref: Any) -> "float | None":
     if not _frameworks().cf.CFNumberGetValue(ref, K_CF_NUMBER_DOUBLE, ctypes.byref(out)):
         return None
     return float(out.value)
-
-
-def cf_bool_value(ref: Any) -> "bool | None":
-    """Read a CFBoolean, or ``None`` for a non-boolean."""
-    if not cf_is(ref, type_ids().boolean):
-        return None
-    return bool(_frameworks().cf.CFBooleanGetValue(ref))
-
-
-def cf_true() -> c_void_p:
-    """``kCFBooleanTrue``.
-
-    Read through ``c_void_p.in_dll``: the symbol IS a pointer to the shared
-    singleton, so ``.value`` is the right read here — unlike the dictionary
-    callback STRUCTS, which need :func:`_cf_type_dict`'s ``addressof``.
-    """
-    return c_void_p.in_dll(_frameworks().cf, "kCFBooleanTrue")
 
 
 def _cf_type_dict() -> c_void_p:

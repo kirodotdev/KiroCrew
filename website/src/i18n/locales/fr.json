@@ -19395,7 +19395,6 @@
         "status_region_label": "État du pilote de bureau",
         "driver_label": "Pilote actif",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Intégré",
         "driver_unsupported": "Indisponible",
         "installed_label": "Version installée",
         "pinned_label": "Version épinglée",

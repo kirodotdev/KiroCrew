@@ -175,10 +175,8 @@ async def test_guide_success_and_refusal(monkeypatch):
     ("cls_name", "expected"),
     [
         ("AgentDesktopBackend", "agent-desktop"),
-        ("MacOSBackend", "native"),
-        ("WindowsBackend", "native"),
-        ("LinuxBackend", "unsupported"),
         ("UnsupportedBackend", "unsupported"),
+        ("FakeComputerUseBackend", "unsupported"),
     ],
 )
 def test_driver_active_reads_the_class_name(monkeypatch, cls_name, expected):

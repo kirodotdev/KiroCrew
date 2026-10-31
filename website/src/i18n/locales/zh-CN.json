@@ -18767,7 +18767,6 @@
         "status_region_label": "桌面驱动状态",
         "driver_label": "当前驱动",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "内置",
         "driver_unsupported": "不可用",
         "installed_label": "已安装版本",
         "pinned_label": "固定版本",

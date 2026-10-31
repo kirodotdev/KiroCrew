@@ -19709,7 +19709,6 @@
         "status_region_label": "Состояние драйвера рабочего стола",
         "driver_label": "Активный драйвер",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Встроенный",
         "driver_unsupported": "Недоступен",
         "installed_label": "Установленная версия",
         "pinned_label": "Закреплённая версия",

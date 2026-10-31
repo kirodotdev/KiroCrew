@@ -453,7 +453,7 @@ def test_shim_module_does_not_import_ctypes():
     assert not hasattr(mcp_computer, "ctypes")
     src = inspect.getsource(mcp_computer)
     assert "import ctypes" not in src
-    for native in ("macos_ffi", "macos_driver", "snapshot_macos", "capture_macos", "apps_macos"):
+    for native in ("macos_ffi", "macos_driver", "capture_macos", "apps_macos"):
         assert native not in src, f"the shim must not reference {native}"
 
 

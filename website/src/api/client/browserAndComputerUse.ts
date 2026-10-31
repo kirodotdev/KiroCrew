@@ -75,7 +75,7 @@ export interface ComputerUseConfigSave {
 export type AgentDesktopPermission = 'granted' | 'denied' | 'unknown'
 
 /** Which computer-use driver the gateway is running right now. */
-export type AgentDesktopDriver = 'agent-desktop' | 'native' | 'unsupported'
+export type AgentDesktopDriver = 'agent-desktop' | 'unsupported'
 
 /** The gateway-owned agent-desktop install job. `idle` means none has run. */
 export interface AgentDesktopJob {

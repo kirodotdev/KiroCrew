@@ -1,12 +1,13 @@
 """The macOS native layer: its import path, and its CoreGraphics event synthesis.
 
-Everything native lives here: CoreFoundation memory discipline, the
-Accessibility (AX) attribute/action calls, CoreGraphics window enumeration and
-event synthesis, and the in-process ImageIO encode, across this module and its
-owners: the framework binding in :mod:`~kiro_crew.computer_use.macos_ffi_bind`, the
-CoreFoundation helpers in :mod:`~kiro_crew.computer_use.macos_ffi_cf`, the AX calls in
-:mod:`~kiro_crew.computer_use.macos_ffi_ax`, window enumeration and capture in
-:mod:`~kiro_crew.computer_use.macos_ffi_window`, and the event synthesis below. Every
+Everything native lives here: CoreFoundation memory discipline, CoreGraphics
+window enumeration and event synthesis, and the in-process ImageIO encode, across
+this module and its owners: the framework binding in
+:mod:`~kiro_crew.computer_use.macos_ffi_bind`, the CoreFoundation helpers in
+:mod:`~kiro_crew.computer_use.macos_ffi_cf`, window enumeration and capture in
+:mod:`~kiro_crew.computer_use.macos_ffi_window`, and the event synthesis below. The
+accessibility tree is agent-desktop's; the one AX call left is
+``AXIsProcessTrusted``. Every
 other computer-use module talks to macOS through these helpers, read and patched as
 ``macos_ffi.<name>`` (see :mod:`kiro_crew._facade_mirror`), so the FFI hazards are audited
 in one module family instead of scattered across the five modules that use them.
@@ -33,13 +34,7 @@ abort**, not a Python exception, so none of them can be handled by a caller.
    an empty ``CFArray``. ctypes cannot translate an ObjC exception into a Python
    one, so every array read goes through :func:`cf_array_items`, which reads the
    count FIRST and never indexes out of range.
-3. **``CGEventCreateScrollWheelEvent`` is VARIADIC and ctypes marshals its
-   variadic tail incorrectly on arm64.** Asking for ``(axis1=-3, axis2=0)``
-   through the 5-argument form produced ``axis2=30416`` — garbage that would
-   scroll a live window sideways by an arbitrary amount. Only the fixed
-   (``wheelCount=1``) prototype is declared, and the second axis is set
-   afterwards through the non-variadic
-   ``CGEventSetIntegerValueField`` (verified exact for every input).
+3. **(Retired with the scroll-wheel path, which agent-desktop now owns.)**
 4. **``kCFTypeDictionaryKeyCallBacks`` is a STRUCT, not a pointer.**
    ``c_void_p.in_dll(...).value`` reads its first word — ``None`` — and passing
    that means "no callbacks", i.e. CF neither retains nor releases the dictionary
@@ -47,7 +42,7 @@ abort**, not a Python exception, so none of them can be handled by a caller.
 5. **A synthesized key event inherits the user's LIVE modifier state.** Typing
    ``abc`` produced ``' I Abc'`` until the events were built from a *private*
    event source with flags set EXPLICITLY on every event. See :func:`post_key`.
-6. **A CFString leak is a real RSS bug.** One tree walk creates thousands of
+6. **A CFString leak is a real RSS bug.** Window enumeration creates many of
    them, so :func:`cf_string` is a context manager that always ``CFRelease``s.
 7. **``CGEventCreateMouseEvent`` takes a ``CGPoint`` BY VALUE**, and there is no
    generic "mouse down" event type — the type is PER-BUTTON. Passing two bare
@@ -66,10 +61,6 @@ deliberately takes over the operator's physical mouse and is therefore reachable
 only when the model NAMED that method — ``auto`` never resolves onto it, and the
 resolution happens upstream at the dispatch chokepoint. A test pins the call-site
 count, so a stray global post anywhere else in the family fails CI.
-
-Every AX read is also type-checked with ``CFGetTypeID`` *before* the value is
-used: AX attributes are polymorphic and a wrong-type read is another segfault
-rather than an exception.
 """
 
 from __future__ import annotations
@@ -77,7 +68,7 @@ from __future__ import annotations
 import importlib as _importlib
 import sys as _sys
 import time
-from ctypes import c_bool, c_int32, c_int64, c_long, c_uint16, c_uint32, c_uint64, c_void_p
+from ctypes import c_bool, c_int64, c_long, c_uint16, c_uint32, c_uint64, c_void_p
 from typing import TYPE_CHECKING, Sequence
 
 from kiro_crew import platform_compat  # noqa: F401
@@ -88,9 +79,6 @@ from kiro_crew.computer_use.macos_ffi_bind import (
     DRAG_STEPS,
     K_CG_HID_EVENT_TAP,
     K_CG_MOUSE_EVENT_CLICK_STATE,
-    K_CG_SCROLL_DELTA_AXIS_1,
-    K_CG_SCROLL_DELTA_AXIS_2,
-    K_CG_SCROLL_EVENT_UNIT_LINE,
     MOUSE_EVENT_TYPES,
     CGPoint,
     Libs,
@@ -99,9 +87,6 @@ from kiro_crew.computer_use.macos_ffi_bind import (
     logger,
 )
 from kiro_crew.computer_use.types import (  # noqa: F401
-    AX_PARENT,
-    AX_POSITION,
-    AX_SIZE,
     MOUSE_BUTTON_LEFT,
     MOUSE_BUTTON_MIDDLE,
     MOUSE_BUTTON_RIGHT,
@@ -190,42 +175,6 @@ def post_text(pid: int, text: str) -> None:
                 libs.cg.CGEventPostToPid(int(pid), event)
             finally:
                 libs.cf.CFRelease(event)
-
-
-def post_scroll(
-    pid: int, delta_y: int, delta_x: int, *, at: "tuple[float, float] | None" = None
-) -> None:
-    """Post one scroll-wheel event to *pid*, in LINE units, aimed at *at*.
-
-    *at* is a TOP-LEFT SCREEN point. The target app routes a wheel event to the
-    view under the event's location, and a new event's location is wherever the
-    operator's pointer happens to be. Without *at*, a scroll aimed at a background
-    window lands on whatever the pointer is over, and the target app drops it.
-
-    **Never uses the multi-axis constructor.**
-    ``CGEventCreateScrollWheelEvent`` is variadic, and ctypes marshals a variadic
-    tail incorrectly on arm64: declaring the 5-argument form and asking for
-    ``(axis1=-3, axis2=0)`` produced ``axis2=30416`` — an arbitrary sideways
-    scroll of a live window. So the event is built with ``wheelCount=1`` through
-    the FIXED prototype and both axes are then written with the non-variadic
-    ``CGEventSetIntegerValueField``, which was verified exact for every input.
-    """
-    libs = _frameworks()
-    source = event_source()
-    event = c_void_p(
-        libs.cg.CGEventCreateScrollWheelEvent(source, K_CG_SCROLL_EVENT_UNIT_LINE, 1, c_int32(0))
-    )
-    if not event:
-        return
-    try:
-        libs.cg.CGEventSetIntegerValueField(event, K_CG_SCROLL_DELTA_AXIS_1, c_int64(int(delta_y)))
-        libs.cg.CGEventSetIntegerValueField(event, K_CG_SCROLL_DELTA_AXIS_2, c_int64(int(delta_x)))
-        libs.cg.CGEventSetFlags(event, c_uint64(0))
-        if at is not None:
-            libs.cg.CGEventSetLocation(event, CGPoint(float(at[0]), float(at[1])))
-        libs.cg.CGEventPostToPid(int(pid), event)
-    finally:
-        libs.cf.CFRelease(event)
 
 
 def mouse_button_codes(button: str) -> tuple[int, int, int, int]:
@@ -488,13 +437,6 @@ def post_mouse_drag_global(
 
 
 __all__ = [
-    "AX_ERR_ACTION_UNSUPPORTED",
-    "AX_ERR_ATTRIBUTE_UNSUPPORTED",
-    "AX_ERR_CANNOT_COMPLETE",
-    "AX_ERR_NO_VALUE",
-    "AX_ERR_SUCCESS",
-    "AX_MANUAL_ACCESSIBILITY",
-    "AX_MESSAGING_TIMEOUT_SECS",
     "CGPoint",
     "CGRect",
     "CGSize",
@@ -504,36 +446,18 @@ __all__ = [
     "K_CG_HID_EVENT_TAP",
     "K_CG_MOUSE_EVENT_CLICK_STATE",
     "MOUSE_EVENT_TYPES",
-    "ELECTRON_OPT_IN_POLL_SECS",
-    "ELECTRON_OPT_IN_WAIT_SECS",
     "CG_WINDOW_LAYER_NORMAL",
     "Libs",
     "TypeIds",
     "WindowInfo",
     "available",
-    "ax_actions",
-    "ax_app_element",
-    "ax_application",
-    "ax_attr",
-    "ax_attr_error",
-    "ax_bool",
-    "ax_children",
     "ax_is_process_trusted",
-    "ax_owned_attr",
-    "ax_perform",
-    "ax_retained_elements",
-    "ax_set_str",
-    "ax_set_true",
-    "ax_str",
-    "ax_window_id",
     "capture_window_jpeg",
     "cf_array_items",
-    "cf_bool_value",
     "cf_is",
     "cf_number_int",
     "cf_string",
     "cf_string_value",
-    "cf_true",
     "event_source",
     "executable_path",
     "frameworks",
@@ -544,12 +468,9 @@ __all__ = [
     "post_mouse_drag",
     "post_mouse_drag_global",
     "post_mouse_global",
-    "post_scroll",
     "post_text",
     "preflight_screen_capture",
-    "release_all",
     "reset_frameworks",
-    "retain",
     "shots_dir_default",
     "type_ids",
     "window_list",
@@ -563,7 +484,6 @@ __all__ = [
 _OWNERS = (
     "kiro_crew.computer_use.macos_ffi_bind",
     "kiro_crew.computer_use.macos_ffi_cf",
-    "kiro_crew.computer_use.macos_ffi_ax",
     "kiro_crew.computer_use.macos_ffi_window",
 )
 for _owner in _OWNERS:
@@ -574,54 +494,16 @@ _EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded
 _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
-    from kiro_crew.computer_use.macos_ffi_ax import (  # noqa: F401
-        MAX_ACTION_NAME_LEN,
-        _ax_value_point,
-        _ax_value_size,
-        _sanitize_action,
-        _unbox_ax_value,
-        ax_actions,
-        ax_app_element,
-        ax_application,
-        ax_attr,
-        ax_attr_error,
-        ax_bool,
-        ax_bool_opt,
-        ax_children,
-        ax_frame,
-        ax_is_process_trusted,
-        ax_is_settable,
-        ax_owned_attr,
-        ax_parent,
-        ax_perform,
-        ax_retained_elements,
-        ax_set_str,
-        ax_set_true,
-        ax_str,
-        ax_window_id,
-        release_all,
-        retain,
-        same_element,
-    )
     from kiro_crew.computer_use.macos_ffi_bind import (  # noqa: F401
         _CF_TYPE_ID,
         _FN_SPECS,
         _FRAMEWORK_NAMES,
         _LIBPROC_FALLBACK_PATH,
-        _OPTIONAL_FN_SPECS,
         _VOID,
-        AX_ERR_ACTION_UNSUPPORTED,
-        AX_ERR_ATTRIBUTE_UNSUPPORTED,
-        AX_ERR_CANNOT_COMPLETE,
-        AX_ERR_NO_VALUE,
-        AX_ERR_SUCCESS,
-        AX_MANUAL_ACCESSIBILITY,
-        AX_MESSAGING_TIMEOUT_SECS,
         CG_BOUNDS_H,
         CG_BOUNDS_W,
         CG_BOUNDS_X,
         CG_BOUNDS_Y,
-        CG_SCROLL_LINES_PER_PAGE,
         CG_WINDOW_BOUNDS,
         CG_WINDOW_LAYER,
         CG_WINDOW_LAYER_NORMAL,
@@ -629,12 +511,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CG_WINDOW_NUMBER,
         CG_WINDOW_OWNER_NAME,
         CG_WINDOW_OWNER_PID,
-        ELECTRON_OPT_IN_POLL_SECS,
-        ELECTRON_OPT_IN_WAIT_SECS,
         IO_KEY_LOSSY_QUALITY,
         IO_KEY_MAX_PIXEL_SIZE,
-        K_AX_VALUE_CG_POINT,
-        K_AX_VALUE_CG_SIZE,
         K_CF_NUMBER_DOUBLE,
         K_CF_NUMBER_SINT32,
         K_CF_STRING_ENCODING_UTF8,
@@ -675,6 +553,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _load_library,
         _type_ids,
         available,
+        ax_is_process_trusted,
         frameworks,
         reset_frameworks,
         type_ids,
@@ -682,13 +561,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.computer_use.macos_ffi_cf import (  # noqa: F401
         _cf_type_dict,
         cf_array_items,
-        cf_bool_value,
         cf_is,
         cf_number_double,
         cf_number_int,
         cf_string,
         cf_string_value,
-        cf_true,
     )
     from kiro_crew.computer_use.macos_ffi_window import (  # noqa: F401
         _JPEG_EOI,

@@ -18767,7 +18767,6 @@
         "status_region_label": "데스크톱 드라이버 상태",
         "driver_label": "활성 드라이버",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "기본 제공",
         "driver_unsupported": "사용할 수 없음",
         "installed_label": "설치된 버전",
         "pinned_label": "고정 버전",

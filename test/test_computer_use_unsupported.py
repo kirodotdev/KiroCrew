@@ -275,15 +275,18 @@ class TestRefusalsOnUnsupportedPlatform:
         assert status.supported is False
         # Concrete rather than "not supported": a user should learn what is missing
         # and a maintainer should find the next implementation step named.
-        assert "AT-SPI" in status.reason
+        assert "agent-desktop" in status.reason and "install" in status.reason
 
-    def test_linux_reason_names_the_wayland_capture_problem(self, monkeypatch):
+    def test_linux_without_agent_desktop_says_to_install_it(self, monkeypatch):
+        from kiro_crew.computer_use import agent_desktop_locate
+
+        monkeypatch.setattr(agent_desktop_locate, "locate", lambda: None)
         monkeypatch.setattr(platform_compat, "IS_MACOS", False)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(platform_compat, "IS_LINUX", True)
         driver = select_default_backend()
         assert driver.platform_id == PLATFORM_LINUX
-        assert "Wayland" in driver.status().reason
+        assert "Settings -> Computer Use" in driver.status().reason
 
     def test_permission_probe_reports_unsupported_not_missing(self, unsupported_backend):
         # "missing" would send the user to a System Settings pane that cannot help.

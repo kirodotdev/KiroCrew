@@ -1205,7 +1205,7 @@ def _element_from_payload(entry: Mapping[str, Any]) -> ElementRec:
         depth=int(entry.get("depth") or 0),
         secure=bool(entry.get("secure")),
         enabled=bool(entry.get("enabled", True)),
-        # A half-read frame is worse than none (see ``snapshot_macos``): only a
+        # A half-read frame is worse than none: only a
         # complete 4-tuple of finite numbers becomes a rect, anything else is None.
         frame=_frame_from_payload(entry.get("frame")),
         traits=tuple(str(t) for t in traits) if isinstance(traits, (list, tuple)) else (),

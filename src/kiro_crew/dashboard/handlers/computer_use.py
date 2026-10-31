@@ -105,7 +105,7 @@ DOCTOR_TIMEOUT_SECS = 5.0
 #: Platforms whose driver has a permission probe worth spawning a child for.
 #: Membership rather than an inequality, so a platform that gains a driver opts IN
 #: explicitly: an ``!= PLATFORM_MACOS`` test silently answered "unsupported" for
-#: Windows after its driver shipped, making ``WindowsBackend.probe_permissions``
+#: Windows after its driver shipped, making ``WindowsHelper.probe_permissions``
 #: unreachable while the CLI's own ``doctor`` reported it fine. ``PLATFORM_FAKE`` is
 #: included so the suite's fake backend exercises this path rather than the
 #: short-circuit.
@@ -269,7 +269,7 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
 
     Runs for every platform that has a DRIVER, asking the backend rather than naming
     an OS — the same seam ``_payload`` reads. Gating this on macOS made
-    ``WindowsBackend.probe_permissions`` unreachable from the surface it was written
+    ``WindowsHelper.probe_permissions`` unreachable from the surface it was written
     for, so ``kirocrew computer doctor --json`` reported ``accessibility=granted``
     while the API reported ``unsupported`` for the same host. A platform with no
     driver still short-circuits: there is nothing to probe and nothing to spawn.

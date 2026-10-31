@@ -19081,7 +19081,6 @@
         "status_region_label": "डेस्कटॉप ड्राइवर की स्थिति",
         "driver_label": "सक्रिय ड्राइवर",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "बिल्ट-इन",
         "driver_unsupported": "उपलब्ध नहीं",
         "installed_label": "इंस्टॉल किया गया वर्ज़न",
         "pinned_label": "पिन किया गया वर्ज़न",

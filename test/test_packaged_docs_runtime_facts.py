@@ -15,8 +15,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
 )
-from kiro_crew.computer_use.backend import UnsupportedBackend
-from kiro_crew.computer_use.linux_driver import LinuxBackend
+from kiro_crew.computer_use import backend as computer_use_backend
 from kiro_crew.dashboard.upload_destination import DOCUMENT_CHANNELS
 from kiro_crew.providers.mirrors import mirror_for
 from kiro_crew.providers.mirrors.base import Concern, Disposition
@@ -69,8 +68,11 @@ def test_wecom_file_send_cell_follows_the_document_channels():
     assert row["WeCom"] == "✅"
 
 
-def test_linux_computer_use_is_documented_as_unsupported():
-    assert issubclass(LinuxBackend, UnsupportedBackend)
+def test_computer_use_is_documented_as_needing_agent_desktop():
+    # Without agent-desktop every OS gets a refusing backend whose reason says to
+    # install it; the doc must say both halves: the refusal, and the install.
+    assert "install it" in computer_use_backend.AGENT_DESKTOP_MISSING_REASON
     doc = _read("computer-use.md")
-    assert "## Linux" in doc
-    assert '"not\nsupported on this platform" refusal' in doc
+    assert "## The desktop driver" in doc and "## Linux" in doc
+    assert '"not supported on this platform"\nrefusal' in doc
+    assert "agent-desktop" in doc and "at-spi2-core" in doc

@@ -19081,7 +19081,6 @@
         "status_region_label": "Status des Desktop-Treibers",
         "driver_label": "Aktiver Treiber",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Integriert",
         "driver_unsupported": "Nicht verfügbar",
         "installed_label": "Installierte Version",
         "pinned_label": "Festgelegte Version",

@@ -1,14 +1,13 @@
 """The Windows native layer: its import path, and its ``SendInput`` keyboard and mouse input.
 
-Everything native for Windows lives here: the UI Automation COM client, its
-vtable dispatch and the library loader in :mod:`~kiro_crew.computer_use.windows_ffi_com`;
-VARIANT/BSTR marshalling, element reads and actions and the bounded walk in
-:mod:`~kiro_crew.computer_use.windows_ffi_uia`; window enumeration and the DPI awareness
-scope in :mod:`~kiro_crew.computer_use.windows_ffi_window`; and the keyboard and mouse
-input below. Every other Windows computer-use module talks to the OS through these
-helpers, read and patched as ``windows_ffi.<name>`` (see :mod:`kiro_crew._facade_mirror`),
-so the FFI hazards are audited in one place — the same property ``macos_ffi`` holds for
-macOS.
+Everything native for Windows lives here: the library loader, the flat-function table
+and the COM ``IUnknown`` release in :mod:`~kiro_crew.computer_use.windows_ffi_com`;
+window enumeration and the DPI awareness scope in
+:mod:`~kiro_crew.computer_use.windows_ffi_window`; and the keyboard and mouse input
+below. The UI Automation tree is agent-desktop's. Every other Windows computer-use
+module talks to the OS through these helpers, read and patched as
+``windows_ffi.<name>`` (see :mod:`kiro_crew._facade_mirror`), so the FFI hazards are
+audited in one place — the same property ``macos_ffi`` holds for macOS.
 
 ``import ctypes`` is a top-level import statement, but **no ``WinDLL`` runs at
 module scope**. The libraries load inside :func:`_libraries`, cached in a module
@@ -18,46 +17,21 @@ binding logic with a fake loader. ``from ctypes import wintypes`` supplies type
 ALIASES only and imports cleanly on POSIX, which is what lets the structures
 sit at module scope on every platform.
 
-UI Automation is COM-only — there is no C API — so every call is a manual vtable
-dispatch. That makes the hazards here different in kind from the macOS ones:
-**the slot index IS the ABI**, and a wrong index is an access violation that
-kills the interpreter with no Python traceback, taking the gateway (and with it
-cron, Slack and every session) down. Six hazards this family exists to contain,
-each measured on Windows 11:
+Two hazards this family exists to contain, each measured on Windows 11:
 
-1. **A wrong vtable slot is a process abort, not an exception.** A blind slot
-   sweep produced a real ``EXIT=139``. Hence :data:`_VTABLE`: every slot index in
-   this package appears exactly once, in that table, and :func:`vcall` resolves by METHOD
-   NAME so no call site can hand-roll an index.
-2. **Two slots return ``S_OK`` while doing the WRONG thing.**
-   ``ElementFromHandle`` is slot 6; slot 7 is ``ElementFromPoint``, and handed an
-   HWND it reads it as a screen coordinate and cheerfully resolves to the whole
-   DESKTOP. A desktop-scoped walk then reads every application's tree while
-   looking like it worked, so :func:`element_from_hwnd` treats a NULL result as a
-   hard error and never falls through.
-3. **A missing ``argtypes`` truncates a 64-bit pointer to 32 bits.** An HWND
+1. **A missing ``argtypes`` truncates a 64-bit pointer to 32 bits.** An HWND
    passed as a bare Python int is the common form of this; every handle crosses
    the boundary as ``c_void_p``. :data:`_FN_SPECS` carries both ``argtypes`` and
    ``restype`` on every row and :func:`_bind` RAISES on ``argtypes=None`` rather
    than accepting the ctypes default.
-4. **A BSTR must be decoded BEFORE ``VariantClear``.** Afterwards the freed block
-   is reused, and different properties read back byte-identical — which looks
-   exactly like a wrong-property bug and is not. :func:`variant_value` copies out
-   first, with ``SysStringLen`` rather than a NUL scan so an embedded NUL cannot
-   truncate a value.
-5. **``restype`` must be ``c_long``, never ``ctypes.HRESULT``.** ``HRESULT``
-   raises on a failure code, which turns an EXPECTED ``E_INVALIDARG`` — the
-   normal answer for an unsupported property id — into an exception that reads
-   like a crash.
-6. **A ``ctypes.Structure`` declared in a function body leaks forever.**
+2. **A ``ctypes.Structure`` declared in a function body leaks forever.**
    ``ctypes.POINTER`` memoises the type in a module-level dict with no eviction,
    so every call pins a fresh pair of type objects. Every structure and union
    in this family is at module scope.
 
-**The secure-field decision is the security-critical function in this family.**
-:func:`is_secure_element` gates three separate floors — value redaction, input
-refusal and whole-window screenshot suppression — so it fails CLOSED. See its
-docstring for the decision table and for why a cached value may never decide it.
+A COM slot index appears only in :data:`_VTABLE` (``IUnknown::Release`` for the
+capture stream), resolved by name through :func:`vcall`: a wrong slot is an access
+violation with no traceback.
 """
 
 from __future__ import annotations
@@ -66,10 +40,6 @@ import ctypes
 import importlib as _importlib
 import math
 import sys as _sys
-
-# ``ManualClock.install(monkeypatch, windows_ffi)`` finds the clock in this module's own
-# namespace; the mirror carries the patch to ``windows_ffi_uia``, whose walk reads it.
-import time  # noqa: F401
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from typing import TYPE_CHECKING, Sequence
 
@@ -85,10 +55,10 @@ from kiro_crew.computer_use.windows_ffi_window import quantize_point
 # application.** ``SendInput`` takes no hwnd and no pid: it injects at the session
 # level and delivery follows whatever holds focus, so unlike macOS's
 # ``CGEventPostToPid`` there is no per-process keystroke route at all. Two
-# consequences the callers must honour, both enforced in ``windows_driver``:
+# consequences the callers must honour, both enforced in ``agent_desktop_driver``:
 #
-# * the target must be FOCUSED first (``set_element_focus``) and the result must
-#   SAY the focus moved, because the operator's caret really did move;
+# * the target must be FOCUSED first (agent-desktop ``focus``, read back) and the
+#   result must SAY the focus moved, because the operator's caret really did move;
 # * a keystroke is never a fallback for a failed focus. If focus did not land where
 #   the model aimed, the keystrokes would go to whatever the application had
 #   focused — which can be the password field the secure check just refused.
@@ -726,51 +696,13 @@ def post_mouse_drag(
 
 
 __all__ = [
-    "CACHED_WALK_PROPERTIES",
-    "E_ACCESSDENIED",
-    "MAX_WALK_SECS",
-    "ExpandCollapseState_Collapsed",
-    "ExpandCollapseState_Expanded",
-    "ExpandCollapseState_LeafNode",
-    "ScrollAmount_LargeDecrement",
-    "ScrollAmount_LargeIncrement",
-    "ScrollAmount_NoAmount",
-    "WalkResult",
-    "do_default_action",
-    "expand_collapse_state",
-    "expand_element",
-    "invoke_element",
-    "pattern",
-    "pattern_action",
-    "scroll_element",
-    "select_element",
-    "element_has_focus",
-    "set_element_focus",
-    "set_element_value",
-    "toggle_element",
-    "UIA_IsPasswordPropertyId",
-    "VARIANT",
     "WindowInfo",
-    "add_ref",
-    "automation",
     "available",
-    "bstr_value",
-    "cached_prop",
-    "create_cache_request",
     "dpi_awareness_scope",
-    "element_from_hwnd",
-    "is_secure_element",
     "libraries",
-    "owned",
-    "prop_value_ex",
     "release",
-    "release_all",
     "reset_libraries",
-    "release_all_clients",
-    "reset_thread_state",
     "root_window_at_point",
-    "variant_value",
-    "walk_bounded",
     "window_bounds",
     "window_class",
     "window_is_live",
@@ -790,7 +722,6 @@ __all__ = [
 # binds the name (see :mod:`kiro_crew._facade_mirror`).
 _OWNERS = (
     "kiro_crew.computer_use.windows_ffi_com",
-    "kiro_crew.computer_use.windows_ffi_uia",
     "kiro_crew.computer_use.windows_ffi_window",
 )
 for _owner in _OWNERS:
@@ -805,121 +736,27 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FN_SPECS,
         _LIB_NAMES,
         _VTABLE,
-        CLSCTX_INPROC_SERVER,
-        COINIT_MULTITHREADED,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
         DPI_AWARENESS_CONTEXT_UNAWARE,
-        E_ACCESSDENIED,
         GA_ROOT,
         GUID,
         POINT,
         PROCESS_QUERY_LIMITED_INFORMATION,
         RECT,
-        RPC_E_CHANGED_MODE,
         S_OK,
-        VARIANT,
-        VT_ARRAY,
-        VT_ARRAY_R8,
-        VT_BOOL,
-        VT_BSTR,
-        VT_EMPTY,
-        VT_I2,
-        VT_I4,
-        VT_I8,
-        VT_NULL,
-        VT_R8,
-        VT_UNKNOWN,
-        AutomationElementMode_Full,
-        CLSID_CUIAutomation_STR,
-        ExpandCollapseState_Collapsed,
-        ExpandCollapseState_Expanded,
-        ExpandCollapseState_LeafNode,
-        ExpandCollapseState_PartiallyExpanded,
-        IID_IUIAutomation_STR,
-        ScrollAmount_LargeDecrement,
-        ScrollAmount_LargeIncrement,
-        ScrollAmount_NoAmount,
-        ScrollAmount_SmallDecrement,
-        TreeScope_Children,
-        TreeScope_Descendants,
-        TreeScope_Element,
-        TreeScope_Subtree,
-        UIA_BoundingRectanglePropertyId,
-        UIA_ControlTypePropertyId,
-        UIA_ExpandCollapseExpandCollapseStatePropertyId,
-        UIA_ExpandCollapsePatternId,
-        UIA_HasKeyboardFocusPropertyId,
-        UIA_InvokePatternId,
-        UIA_IsEnabledPropertyId,
-        UIA_IsExpandCollapsePatternAvailablePropertyId,
-        UIA_IsInvokePatternAvailablePropertyId,
-        UIA_IsPasswordPropertyId,
-        UIA_IsSelectionItemPatternAvailablePropertyId,
-        UIA_IsTogglePatternAvailablePropertyId,
-        UIA_LegacyIAccessiblePatternId,
-        UIA_NamePropertyId,
-        UIA_ScrollPatternId,
-        UIA_ScrollPatternNoScroll,
-        UIA_SelectionItemIsSelectedPropertyId,
-        UIA_SelectionItemPatternId,
-        UIA_TogglePatternId,
-        UIA_ValueIsReadOnlyPropertyId,
-        UIA_ValuePatternId,
-        UIA_ValueValuePropertyId,
         WindowInfo,
         _bind,
-        _clients,
-        _clients_generation,
-        _clients_lock,
         _ct,
-        _ensure_apartment,
         _guid,
         _libs,
         _libs_lock,
-        _thread_state,
-        _VariantUnion,
-        add_ref,
-        automation,
         available,
         libraries,
         logger,
-        owned,
-        release_all,
-        release_all_clients,
         reset_libraries,
-        reset_thread_state,
         vcall,
-    )
-    from kiro_crew.computer_use.windows_ffi_uia import (  # noqa: F401
-        CACHED_WALK_PROPERTIES,
-        MAX_WALK_SECS,
-        WalkResult,
-        _any_has_children,
-        _cached_children,
-        _safearray_doubles,
-        _variant,
-        bstr_value,
-        cached_prop,
-        create_cache_request,
-        do_default_action,
-        element_from_hwnd,
-        element_has_focus,
-        expand_collapse_state,
-        expand_element,
-        invoke_element,
-        is_secure_element,
-        pattern,
-        pattern_action,
-        prop_value_ex,
-        scroll_element,
-        select_element,
-        set_element_focus,
-        set_element_value,
-        toggle_element,
-        variant_value,
-        walk_bounded,
     )
     from kiro_crew.computer_use.windows_ffi_window import (  # noqa: F401
         DWMWA_CLOAKED,

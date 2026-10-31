@@ -13,6 +13,15 @@ The enable does not live in `config.json`. It sits in its own protected file
 precisely because `config.json` is writable by the agent's own shell — an enable
 stored there could be flipped by a prompt injection rather than by you.
 
+## The desktop driver
+
+Computer use runs on one driver on every platform: agent-desktop, a pinned
+command-line tool that reads the accessibility tree. Install it from
+**Settings → Computer Use**. Until it is installed, every computer-use tool returns
+a "not supported on this platform"
+refusal, and the page shows the reason and the driver card with its Install button
+instead of a switch.
+
 ## macOS and Windows
 
 Both platforms support the full tool set. They differ in one way that changes
@@ -31,9 +40,18 @@ because your pointer will jump out from under your hand.
 
 ## Linux
 
-Linux has no computer-use driver yet. Every computer-use tool returns a "not
-supported on this platform" refusal, and **Settings → Computer Use** shows the
-reason instead of a switch, so it cannot be turned on there.
+On Linux agent-desktop reads the AT-SPI accessibility tree, so Kiro Crew must run
+inside your graphical session with `at-spi2-core` installed.
+
+Once it is installed, reading windows, clicking and typing by element index, and
+screenshots work. Some things do not, and the tools say so:
+
+- Launching an app: start it yourself.
+- Clicking or dragging at a point. Address the control by its element index.
+- Scrolling, which needs the mouse wheel. Press Page Down instead.
+- A key press goes only to the window in front.
+- In apps that ignore accessibility text input (Firefox), typing is sent as
+  keystrokes, so that window takes keyboard focus.
 
 ## What is off limits
 

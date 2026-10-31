@@ -215,7 +215,7 @@ def _computer_use_spec_gate() -> bool:
     it is the cheaper of the two.
 
     That makes the support half OPTIMISTIC — it says a driver EXISTS for this OS, not
-    that it works on this host. Correct here: this gate's job is to avoid PAYING for a
+    that agent-desktop is installed or works on this host. Correct here: this gate's job is to avoid PAYING for a
     backend process on a platform with no driver at all, and a driver that exists but
     will not load is caught by the shim's own in-process checks, which run inside the
     process that would otherwise have done the work.

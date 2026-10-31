@@ -19395,7 +19395,6 @@
         "status_region_label": "Estado del controlador de escritorio",
         "driver_label": "Controlador activo",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Integrado",
         "driver_unsupported": "No disponible",
         "installed_label": "Versión instalada",
         "pinned_label": "Versión fijada",

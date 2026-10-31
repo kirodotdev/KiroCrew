@@ -21,15 +21,17 @@ from kiro_crew import platform_compat
 from kiro_crew.computer_use import backend as backend_mod
 from kiro_crew.computer_use import index as index_mod
 from kiro_crew.computer_use.backend import (
-    LINUX_REASON,
+    AGENT_DESKTOP_MISSING_REASON,
     UNKNOWN_PLATFORM_REASON,
     ComputerUseBackend,
+    NativeHelper,
     UnsupportedBackend,
     get_shared_backend,
     platform_id_for_current_os,
     register_computer_use_backend,
     reset_shared_backend,
     select_default_backend,
+    select_native_helper,
     unsupported_snapshot,
 )
 from kiro_crew.computer_use.types import (
@@ -243,6 +245,22 @@ class TestAbcContract:
         }
         assert set(ComputerUseBackend.__abstractmethods__) == expected
 
+    def test_the_native_helper_declares_only_what_agent_desktop_cannot_do(self):
+        # No element verb: agent-desktop owns the tree and every element action.
+        assert set(NativeHelper.__abstractmethods__) == {
+            "platform_id",
+            "status",
+            "probe_permissions",
+            "list_apps",
+            "resolve_app",
+            "launch_app",
+            "click",
+            "drag",
+            "type_text",
+            "press_key",
+            "close",
+        }
+
     def test_fake_backend_satisfies_the_contract(self):
         # The shipped fake must stay a complete implementation: it is the reference
         # the whole suite runs against.
@@ -298,8 +316,8 @@ class TestUnsupportedBackend:
 class TestPlatformSelection:
     @pytest.fixture(autouse=True)
     def _no_agent_desktop(self, monkeypatch):
-        # These tests own the NATIVE branch; an agent-desktop on the host's PATH
-        # would otherwise wrap it. The wrapper is pinned in
+        # These tests own the no-agent-desktop branch; one on the host's PATH would
+        # otherwise be selected. The driver is pinned in
         # test_computer_use_agent_desktop_driver.py.
         from kiro_crew.computer_use import agent_desktop_locate
 
@@ -311,28 +329,21 @@ class TestPlatformSelection:
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
         monkeypatch.setattr(platform_compat, "IS_LINUX", linux)
 
-    def test_windows_selection_on_any_runner(self, monkeypatch):
-        """How the Windows path is tested on a Linux runner: flip one flag.
-
-        The branch reads ``platform_compat.IS_*`` rather than ``sys.platform``
-        precisely so this is possible.
-
-        ``status().supported`` is deliberately NOT asserted here. Windows now has a
-        read-path driver, so the answer depends on whether UI Automation actually
-        loads on the host — which is exactly what ``status`` exists to report and
-        cannot be true on a Linux runner. The selection is what this test owns; the
-        driver's own behaviour is pinned in
-        ``test_computer_use_windows_driver.py``.
-        """
-        self._pin(monkeypatch, windows=True)
+    @pytest.mark.parametrize(
+        "flags,expected",
+        [
+            ({"macos": True}, PLATFORM_MACOS),
+            ({"windows": True}, PLATFORM_WINDOWS),
+            ({"linux": True}, PLATFORM_LINUX),
+        ],
+    )
+    def test_no_agent_desktop_is_a_typed_refusal_on_every_os(self, monkeypatch, flags, expected):
+        """agent-desktop is the only driver: without it there is no fallback to fall to."""
+        self._pin(monkeypatch, **flags)
         driver = select_default_backend()
-        assert driver.platform_id == PLATFORM_WINDOWS
-
-    def test_linux_degradation_on_any_runner(self, monkeypatch):
-        self._pin(monkeypatch, linux=True)
-        driver = select_default_backend()
-        assert driver.platform_id == PLATFORM_LINUX
-        assert driver.status().reason == LINUX_REASON
+        assert isinstance(driver, UnsupportedBackend)
+        assert driver.platform_id == expected
+        assert driver.status().reason == AGENT_DESKTOP_MISSING_REASON
 
     def test_unknown_platform_degrades(self, monkeypatch):
         self._pin(monkeypatch)
@@ -340,13 +351,19 @@ class TestPlatformSelection:
         assert driver.platform_id == PLATFORM_UNSUPPORTED
         assert driver.status().reason == UNKNOWN_PLATFORM_REASON
 
-    def test_macos_driver_import_failure_degrades_instead_of_raising(self, monkeypatch):
-        """A partial install must disable ONE capability, not crash the process.
+    def test_the_windows_helper_is_selected_on_any_runner(self, monkeypatch):
+        """How the Windows path is tested on a Linux runner: flip one flag."""
+        from kiro_crew.computer_use.windows_driver import WindowsHelper
 
-        The import is deferred into this function, so a broken framework surfaces
-        here — where it can be converted into a typed refusal — rather than at
-        package import time on every machine.
-        """
+        self._pin(monkeypatch, windows=True)
+        assert isinstance(select_native_helper(), WindowsHelper)
+
+    def test_linux_has_no_native_helper(self, monkeypatch):
+        self._pin(monkeypatch, linux=True)
+        assert select_native_helper() is None
+
+    def test_a_helper_import_failure_degrades_instead_of_raising(self, monkeypatch):
+        """A partial install must disable ONE capability, not crash the process."""
         import builtins
 
         real_import = builtins.__import__
@@ -358,10 +375,7 @@ class TestPlatformSelection:
 
         self._pin(monkeypatch, macos=True)
         monkeypatch.setattr(builtins, "__import__", _fail)
-        driver = select_default_backend()
-        assert driver.platform_id == PLATFORM_MACOS
-        assert driver.status().supported is False
-        assert "ApplicationServices unavailable" in driver.status().reason
+        assert select_native_helper() is None
 
     @pytest.mark.parametrize(
         "flags,expected",

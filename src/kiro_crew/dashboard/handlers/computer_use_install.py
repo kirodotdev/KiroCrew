@@ -105,7 +105,7 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
 
 
 def _driver_active() -> str:
-    """``agent-desktop`` / ``native`` / ``unsupported`` from the shared backend's class.
+    """``agent-desktop`` when the shared backend is the agent-desktop driver, else ``unsupported``.
 
     Read by class name so this module does not import the drivers, and
     defensively: a backend that fails to build reports ``unsupported``.
@@ -117,12 +117,7 @@ def _driver_active() -> str:
     except Exception:  # noqa: BLE001 - status must answer
         logger.debug("computer-use backend unavailable for status", exc_info=True)
         return "unsupported"
-    lowered = name.lower()
-    if "agentdesktop" in lowered:
-        return "agent-desktop"
-    if "unsupported" in lowered or lowered.startswith("linux"):
-        return "unsupported"
-    return "native"
+    return "agent-desktop" if "agentdesktop" in name.lower() else "unsupported"
 
 
 async def _status_payload() -> dict[str, Any]:

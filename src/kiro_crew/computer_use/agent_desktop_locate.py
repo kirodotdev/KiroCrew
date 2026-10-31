@@ -86,14 +86,16 @@ def _prefix_candidates(prefix: Path) -> list[Path]:
     """The executables an npm install into *prefix* can leave behind.
 
     ``node_modules/.bin/agent-desktop`` is npm's link on POSIX. On Windows npm writes
-    ``.cmd``/``.ps1`` shims there instead, which cannot be exec'd without a shell, so
-    the package's own ``bin/agent-desktop.exe`` (what its postinstall writes) is
-    checked as well.
+    shims there instead: ``.cmd``/``.ps1`` and an extensionless ``sh`` script, which
+    ``os.access(X_OK)`` reports as executable because Windows has no execute bit. So
+    the package's own ``bin/agent-desktop.exe`` (what the installer places) comes
+    FIRST: it exists only on Windows, and taking the shim there made :func:`verify`
+    refuse a correct install (measured on Windows Server 2025).
     """
     pkg_bin = prefix / "node_modules" / "agent-desktop" / "bin"
     return [
-        prefix / "node_modules" / ".bin" / _EXE_NAME,
         pkg_bin / f"{_EXE_NAME}.exe",
+        prefix / "node_modules" / ".bin" / _EXE_NAME,
     ]
 
 

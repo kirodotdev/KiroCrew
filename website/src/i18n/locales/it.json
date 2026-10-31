@@ -19395,7 +19395,6 @@
         "status_region_label": "Stato del driver desktop",
         "driver_label": "Driver attivo",
         "driver_agent_desktop": "agent-desktop",
-        "driver_native": "Integrato",
         "driver_unsupported": "Non disponibile",
         "installed_label": "Versione installata",
         "pinned_label": "Versione fissata",

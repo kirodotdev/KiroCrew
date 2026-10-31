@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient } from '@tanstack/react-query'
 
 import { renderWithProviders } from '../../test/helpers'
 import type { AgentDesktopStatus } from '../../api/client'
@@ -21,7 +22,7 @@ function status(overrides: Partial<AgentDesktopStatus> = {}): AgentDesktopStatus
     version: null,
     pinned: '0.4.0',
     path: null,
-    driver_active: 'native',
+    driver_active: 'unsupported',
     permissions: { accessibility: 'denied', screen_recording: 'unknown' },
     job: { state: 'idle', log_tail: '', error: null },
     ...overrides,
@@ -38,12 +39,24 @@ async function renderCard(platform = 'macos') {
 describe('ComputerUseInstallStatus', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('re-reads the panel config once an install is done, so the enable switch can appear', async () => {
+    const spy = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    getStatus().mockResolvedValue(
+      status({ installed: true, version: '0.4.0', job: { state: 'done', log_tail: '', error: null } }),
+    )
+    await renderCard()
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith({ queryKey: ['computer-use-config'] }),
+    )
+    spy.mockRestore()
+  })
+
   it('shows a missing install with Install and the permission guide', async () => {
     getStatus().mockResolvedValue(status())
     const card = await renderCard()
     expect(within(card).getByText('Not installed')).toBeInTheDocument()
     expect(within(card).getByText('0.4.0')).toBeInTheDocument()
-    expect(within(card).getByText('Built-in')).toBeInTheDocument()
+    expect(within(card).getByText('Not available')).toBeInTheDocument()
     expect(within(card).getByText('Not granted')).toBeInTheDocument()
     expect(within(card).getByText('Could not check')).toBeInTheDocument()
     expect(within(card).getByRole('button', { name: /^install$/i })).toBeEnabled()
