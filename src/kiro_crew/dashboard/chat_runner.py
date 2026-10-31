@@ -218,7 +218,6 @@ from kiro_crew.dashboard.chat_turn.session_events import (
 )
 from kiro_crew.dashboard.chat_turn.session_reset import _turn_release_session
 from kiro_crew.dashboard.chat_turn.slash_commands import (
-    _answer_slash_without_channel,
     _turn_compact_command,
     _turn_slash_gate,
 )

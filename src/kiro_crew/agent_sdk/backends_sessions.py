@@ -343,3 +343,24 @@ ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
 # ``_meta.jetbrains.air.fork.messageId`` (from 0.71.0; see
 # ``CLAUDE_ACP_FORK_POINT_MIN_VERSION``).
 ACP_BACKENDS_FORK_AT_MESSAGE = frozenset({ACP_BACKEND_CLAUDE})
+
+# Harnesses that can dispose ONE session's backend inside a process that stays up,
+# after which every ``session/prompt`` on that id answers the same error. The
+# process is no use to that session any more, but its saved session is: a fresh
+# process ``session/load``s it. For a member, :mod:`kiro_crew.acp.disposed_session`
+# names the error text the harness writes when it disposes a backend, and
+# ``AcpClient`` answers it: a cancelled turn ends as cancelled, any other turn
+# surfaces the error once, and the next ``ensure_ready`` replaces the process and
+# loads the same id before the next prompt goes out. A request for approval that
+# arrives after Crew sent ``session/cancel`` is answered ``cancelled`` at once,
+# because the harness holds its turn open on that answer and the cancel cannot
+# finish while it waits.
+#
+# strands is a member: the Strands CLI kills its Python worker when a cancel does
+# not stop it within 3s, then answers that prompt, and every later one on the same
+# id, with ``-32603`` and ``data.details`` "The Python agent did not stop after
+# cancellation. Reload it to continue." A second process loaded the same id, replayed
+# the conversation and answered the next prompt
+# (``test/fixtures/acp_frames/strands/cancel-dispose-live.jsonl``, then
+# ``test/fixtures/acp_frames/strands/cancel-dispose-reload-live.jsonl``).
+ACP_BACKENDS_RELOAD_DISPOSED_SESSION = frozenset({ACP_BACKEND_STRANDS})

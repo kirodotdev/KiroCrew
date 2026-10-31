@@ -25,6 +25,7 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.drivers.acp import advertised_model_ids
 from kiro_crew.agent_sdk.kas_tool_view import clean_names, kas_tool_view
 from kiro_crew.security import redact
@@ -34,6 +35,19 @@ if TYPE_CHECKING:
 
 #: The commands this module answers.
 KAS_LOCAL_INSPECT_COMMANDS = frozenset({"/mcp", "/model", "/tools"})
+
+
+def served_slash_commands(backend: str, dashboard_served: frozenset[str]) -> frozenset[str]:
+    """The commands the dashboard serves for *backend*, a harness with no command channel.
+
+    This module reads KAS's own registration, so its commands are served on KAS
+    alone; any other member of ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` gets the
+    notice for them, and the ``/`` menu leaves them out.
+    """
+    if backend == ACP_BACKEND_KAS:
+        return dashboard_served
+    return dashboard_served - KAS_LOCAL_INSPECT_COMMANDS
+
 
 # Names listed per line, so one huge catalog or roster cannot flood the transcript.
 _INSPECT_LIST_CAP = 60
