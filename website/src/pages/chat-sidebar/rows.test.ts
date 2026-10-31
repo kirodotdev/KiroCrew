@@ -443,7 +443,9 @@ describe('a pinned session is exempt from the property filters', () => {
 
   it('is dropped by the search, and a reveal then clears only the search', () => {
     const rows = build({ search: { text: 'beta' }, status: { active: new Set<SessionFilterKey>(['running']) } })
-    expect(keys(rows.filteredSlots)).toEqual([])
+    // The search pauses the Running chip, so its match set is the whole result:
+    // `plain` (not running) stays; the pinned row is out for the search alone.
+    expect(keys(rows.filteredSlots)).toEqual(['plain'])
     const [, search, status] = rows.revealBlockingFilters
     expect(search.hides(pin)).toBe(true)
     expect(status.hides(pin)).toBe(false)
@@ -460,6 +462,36 @@ describe('a pinned session is exempt from the property filters', () => {
     const rows = build({ status: { active: new Set<SessionFilterKey>(['running']) } })
     expect(rows.statusCounts.running).toBe(0)
     expect(rows.statusCounts.pinned).toBe(1)
+  })
+})
+
+describe('a search pauses the tag and status chips', () => {
+  // `matchOff` matches the search but is dropped by the model filter, which a search
+  // does not pause; `searchOff` is the row the search itself drops. Neither carries
+  // t1 nor runs, so the resumed chips would hide both.
+  const matchOff = local('off', { title: 'alpha x' })
+  const searchOff = local('miss', { title: 'beta' })
+  const rows = buildSidebarRows(inputs([matchOff, searchOff], {
+    filters: {
+      search: { text: 'alpha' },
+      tags: { resolved: new Set(['t1']), raw: new Set(['t1']) },
+      status: { active: new Set<SessionFilterKey>(['running']) },
+      models: { passes: slot => slot.key !== 'off', active: true },
+    },
+  }))
+  const [tag, search, status] = rows.revealBlockingFilters
+
+  it('leaves the chips set when another filter dropped a row the search keeps', () => {
+    expect(rows.filteredSlots).toEqual([])
+    expect(search.hides(matchOff)).toBe(false)
+    expect(tag.hides(matchOff)).toBe(false)
+    expect(status.hides(matchOff)).toBe(false)
+  })
+
+  it('clears the chips with the search when the search dropped the row', () => {
+    expect(search.hides(searchOff)).toBe(true)
+    expect(tag.hides(searchOff)).toBe(true)
+    expect(status.hides(searchOff)).toBe(true)
   })
 })
 
@@ -734,16 +766,19 @@ describe('each output keeps its identity while its own inputs hold still', () =>
       folders: { hiddenSubtree: new Set(['F2']), active: true },
     },
   })
+  /** `ACTIVE` with the search box empty: the search pauses the tag filter, so a
+   *  tag-only change is observable only here. */
+  const UNSEARCHED: SidebarRowInputs = { ...ACTIVE, filters: { ...ACTIVE.filters, search: { text: '', folderMatches: null } } }
   /** The same leaf values in fresh outer objects, the way the facade builds them per render. */
-  const rebuilt = (): SidebarRowInputs => ({
-    ...ACTIVE,
-    local: { ...ACTIVE.local },
+  const rebuilt = (from: SidebarRowInputs = ACTIVE): SidebarRowInputs => ({
+    ...from,
+    local: { ...from.local },
     filters: {
-      tags: { ...ACTIVE.filters.tags }, search: { ...ACTIVE.filters.search },
-      status: { ...ACTIVE.filters.status }, folders: { ...ACTIVE.filters.folders },
-      models: { ...ACTIVE.filters.models },
+      tags: { ...from.filters.tags }, search: { ...from.filters.search },
+      status: { ...from.filters.status }, folders: { ...from.filters.folders },
+      models: { ...from.filters.models },
     },
-    clears: { ...ACTIVE.clears },
+    clears: { ...from.clears },
   })
   type Filters = SidebarRowInputs['filters']
   const withLocal = <K extends keyof SidebarRowInputs['local']>(key: K, value: SidebarRowInputs['local'][K]) =>
@@ -790,8 +825,9 @@ describe('each output keeps its identity while its own inputs hold still', () =>
   // result, it must observe exactly what a build from scratch observes: a dependency an
   // output forgot would leave it stale here. Each row first proves its change is
   // visible, so no row passes by changing nothing. (`frozen` is the one input whose
-  // incremental answer differs on purpose: see the drag-freeze cases.)
-  const leaves: Array<[string, (i: SidebarRowInputs) => SidebarRowInputs]> = [
+  // incremental answer differs on purpose: see the drag-freeze cases.) A row names
+  // its own base when `ACTIVE` would mask its leaf.
+  const leaves: Array<[string, (i: SidebarRowInputs) => SidebarRowInputs, SidebarRowInputs?]> = [
     ['rows', i => ({ ...i, rows: [...i.rows, peer('z', { tags: ['t1'], title: 'zeta alpha', running: true })] })],
     ['local.folderOf', withLocal('folderOf', { a: 'F2', b: 'F2', d: 'F1', f: 'F1' })],
     ['local.pinned', withLocal('pinned', new Set(['a', 'b']))],
@@ -800,7 +836,8 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     ['local.running', withLocal('running', new Set(['b', 'c']))],
     ['local.recent', withLocal('recent', new Set(['a']))],
     ['local.searchRanks', withLocal('searchRanks', new Map([['b', 0], ['d', 1]]))],
-    ['filters.tags.resolved', withFilter('tags', 'resolved', new Set(['t2']))],
+    // Read only while no search is typed: the search pauses the tag filter.
+    ['filters.tags.resolved', withFilter('tags', 'resolved', new Set(['t2'])), UNSEARCHED],
     ['filters.tags.raw', withFilter('tags', 'raw', new Set(['t2']))],
     ['filters.search.text', withFilter('search', 'text', 'beta')],
     ['filters.search.folderMatches', withFilter('search', 'folderMatches', new Set(['F1']))],
@@ -814,11 +851,11 @@ describe('each output keeps its identity while its own inputs hold still', () =>
     ['clock', i => ({ ...i, clock: () => NOW + 10 * DAY })],
     ['crewGroups', i => ({ ...i, crewGroups: [] })],
   ]
-  it.each(leaves)('a change of %s alone is never served stale', (_name, change) => {
-    const next = change(rebuilt())
+  it.each(leaves)('a change of %s alone is never served stale', (_name, change, base = ACTIVE) => {
+    const next = change(rebuilt(base))
     const population = next.rows
-    expect(observe(buildSidebarRows(next), population)).not.toEqual(observe(buildSidebarRows(ACTIVE), population))
-    const incremental = buildSidebarRows(next, buildSidebarRows(ACTIVE))
+    expect(observe(buildSidebarRows(next), population)).not.toEqual(observe(buildSidebarRows(base), population))
+    const incremental = buildSidebarRows(next, buildSidebarRows(base))
     expect(observe(incremental, population)).toEqual(observe(buildSidebarRows(next), population))
   })
 

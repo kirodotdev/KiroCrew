@@ -232,6 +232,54 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('1')
     })
   })
+
+  it('clears the chips a search had paused, so the revealed row survives the search clearing', async () => {
+    // While a search is typed, the tag and status chips are inert (they filter
+    // nothing) but the reveal still has to clear them: the reveal effect makes
+    // ONE pass over the registry, and clearing the search resumes the chips on
+    // the next commit. A `hides` that went inert with the filter would leave
+    // the chips on, and the resumed chips would hide the row the pass revealed.
+    await withScrollStub(async () => {
+      localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+      localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t1']))
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
+      // The search names alpha only, so beta stays out for a third reason.
+      const search = utils.getByPlaceholderText('Search sessions…')
+      fireEvent.change(search, { target: { value: 'alpha' } })
+      await waitFor(() => expect(utils.queryByText('alpha session')).not.toBeNull())
+      expect(utils.queryByText('beta session')).toBeNull()
+
+      utils.store.dispatch(requestSlotReveal('k-beta'))
+
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+      expect(search).toHaveValue('')
+      expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('0')
+      expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual([])
+    })
+  })
+
+  it('leaves the paused chips set when the reveal target is a row the search kept', async () => {
+    // The search bypass shows beta although neither chip matches it. The row is
+    // on screen, so the reveal clears nothing and the chips resume when the
+    // search clears.
+    await withScrollStub(async () => {
+      localStorage.setItem(RUNNING_ONLY_LS_KEY, '1')
+      localStorage.setItem(TAG_FILTER_LS_KEY, JSON.stringify(['t1']))
+      const utils = renderSidebar()
+      const search = utils.getByPlaceholderText('Search sessions…')
+      fireEvent.change(search, { target: { value: 'beta' } })
+      await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
+
+      utils.store.dispatch(requestSlotReveal('k-beta'))
+
+      await waitFor(() => expect(utils.store.getState().chat.revealRequest).toBeNull())
+      await waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled())
+      expect(search).toHaveValue('beta')
+      expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('1')
+      expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual(['t1'])
+    })
+  })
 })
 
 /** The reveal owner: both reveal effects live here, the session one first. */
