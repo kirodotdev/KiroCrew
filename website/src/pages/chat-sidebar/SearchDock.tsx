@@ -7,7 +7,7 @@
  *  writes and order, create, rename, title, peer sessions). */
 import { Fragment } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
+import { X, ArrowUpDown, EyeOff, ZapOff, ChevronRight, Clock, Check, List, ListTree, Pin, RotateCcw, Rows3, Server, Pause, Play, WifiOff } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { useQuery } from '@tanstack/react-query'
@@ -893,33 +893,67 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                         <span className="flex-1">{i18nT('pages.chatSidebar.show_all_folders')}</span>
                       </DropdownMenuItem>
                     )}
-                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor }) => (
-                      <DropdownMenuItem
-                        key={f.id}
-                        style={{ paddingLeft: `${8 + depth * 14}px` }}
-                        title={hiddenByAncestor
-                          ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
-                          : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder')}
-                        // Keep the menu open so several folders can be toggled.
-                        onSelect={e => { e.preventDefault(); toggleFolderFilter(f.id) }}
-                        data-testid={`folder-filter-${f.id}`}
-                        role="menuitemcheckbox"
-                        aria-checked={!hidden && !hiddenByAncestor}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
-                          style={hidden || hiddenByAncestor
-                            ? { borderColor: 'var(--border)', background: 'transparent' }
-                            : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                    {folderFilterRows.map(({ folder: f, depth, count, hidden, hiddenByAncestor, pinned, pinnedDescendant }) => {
+                      // A folder under or above a pin reads checked and inert:
+                      // the pin steps over this checkbox, so a tick here would
+                      // change nothing on screen, and the row says why instead
+                      // of offering it. The reason is drawn as a line under the
+                      // row, not only as its title: a disabled item takes no
+                      // pointer events, so a hover tooltip never shows on
+                      // exactly the row that needs explaining.
+                      const inert = pinned || pinnedDescendant !== null
+                      const inertReason = pinned
+                        ? i18nT('pages.chatSidebar.pinned_folder_always_shown', { name: f.name })
+                        : pinnedDescendant !== null
+                          ? i18nT('pages.chatSidebar.holds_pinned_folder', { name: f.name, pinned: pinnedDescendant.name })
+                          : null
+                      return (
+                        <DropdownMenuItem
+                          key={f.id}
+                          style={{ paddingLeft: `${8 + depth * 14}px` }}
+                          // The reason wraps onto its own line under the row; the
+                          // first line keeps the one-row alignment of its neighbours.
+                          className={inert ? 'flex-wrap' : undefined}
+                          title={inertReason
+                            ?? (hiddenByAncestor
+                              ? i18nT('pages.chatSidebar.hidden_because_parent_hidden', { name: f.name })
+                              : hidden ? i18nT('pages.chatSidebar.show_folder') : i18nT('pages.chatSidebar.hide_folder'))}
+                          // Keep the menu open so several folders can be toggled.
+                          onSelect={e => { e.preventDefault(); if (!inert) toggleFolderFilter(f.id) }}
+                          disabled={inert}
+                          data-testid={`folder-filter-${f.id}`}
+                          role="menuitemcheckbox"
+                          aria-checked={inert || (!hidden && !hiddenByAncestor)}
                         >
-                          {!hidden && !hiddenByAncestor && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
-                        </span>
-                        <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
-                        <span className={`flex-1 truncate${hiddenByAncestor ? ' opacity-50' : ''}`}>{f.name}</span>
-                        {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
-                      </DropdownMenuItem>
-                    ))}
+                          <span
+                            aria-hidden="true"
+                            className="w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center"
+                            style={!inert && (hidden || hiddenByAncestor)
+                              ? { borderColor: 'var(--border)', background: 'transparent' }
+                              : { borderColor: 'var(--accent)', background: 'var(--accent)' }}
+                          >
+                            {/* The pin, not a tick, for an inert row: a checked box that
+                             *  cannot be unchecked would read as an ordinary checked row,
+                             *  which in dark mode is exactly what it looks like, and the
+                             *  pin is the mark the folder header already wears for this
+                             *  state. A lock read as "private" instead. */}
+                            {inert
+                              ? <Pin size={11} className="text-accent-fg" strokeWidth={2.5} data-testid={`folder-filter-lock-${f.id}`} />
+                              : (!hidden && !hiddenByAncestor) && <Check size={10} className="text-accent-fg" strokeWidth={3} />}
+                          </span>
+                          <FolderGlyph color={f.color} icon={f.icon} size={12} className="shrink-0 text-muted" />
+                          <span className={`flex-1 truncate${hiddenByAncestor && !inert ? ' opacity-50' : ''}`}>{f.name}</span>
+                          {count > 0 && <span className="text-muted text-[11px] shrink-0">{count}</span>}
+                          {/* Indented past the checkbox and the glyph (14 + 8 + 12 + 8)
+                              so the reason lines up under the folder name. */}
+                          {inertReason && (
+                            <span className="basis-full pl-[42px] text-[11px] text-muted" data-testid={`folder-filter-reason-${f.id}`}>
+                              <span className="block w-0 min-w-[16rem] whitespace-normal">{inertReason}</span>
+                            </span>
+                          )}
+                        </DropdownMenuItem>
+                      )
+                    })}
                       </>
                     )}
                   </>
