@@ -10818,6 +10818,8 @@
       "default_profile": "デフォルトプロファイル",
       "deploy": "デプロイ",
       "deploy_anyway": "それでもデプロイ",
+      "pending_deploy_failed_status": "確認に失敗しました（{{status}}）",
+      "dismiss_failed_status": "非表示にできませんでした（{{status}}）",
       "deploy_artifact": "{{name}} をデプロイ",
       "deploy_profile_for_slug": "{{slug}} のデプロイプロファイル",
       "deploy_recall_destroy_each_require_explicit_conf": "デプロイ / Recall / 破棄のそれぞれが明示的な確認を必要とします\n              （自動承認なし）および SEL 監査イベントを発行します。",

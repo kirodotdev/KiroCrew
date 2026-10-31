@@ -10818,6 +10818,8 @@
       "default_profile": "기본 프로필",
       "deploy": "배포",
       "deploy_anyway": "그래도 배포",
+      "pending_deploy_failed_status": "확인 실패 ({{status}})",
+      "dismiss_failed_status": "닫기 실패 ({{status}})",
       "deploy_artifact": "{{name}} 배포",
       "deploy_profile_for_slug": "{{slug}}의 배포 프로필",
       "deploy_recall_destroy_each_require_explicit_conf": "배포 / 회수 / 파기는 각각 명시적인 확인이 필요하며(자동 승인되지 않습니다)\n SEL 감사 이벤트를 발생시킵니다.",

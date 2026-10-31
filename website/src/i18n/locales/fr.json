@@ -11144,6 +11144,8 @@
       "default_profile": "Profil par défaut",
       "deploy": "Déployer",
       "deploy_anyway": "Déployer quand même",
+      "pending_deploy_failed_status": "Échec de la confirmation ({{status}})",
+      "dismiss_failed_status": "Échec de l’action Ignorer ({{status}})",
       "deploy_artifact": "Déployer {{name}}",
       "deploy_profile_for_slug": "Profil de déploiement pour {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Déployer / Retirer / Détruire nécessitent chacun une confirmation explicite\n              (jamais approuvée automatiquement) et émettent un événement d'audit SEL.",

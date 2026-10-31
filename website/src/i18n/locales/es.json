@@ -11144,6 +11144,8 @@
       "default_profile": "Perfil predeterminado",
       "deploy": "Desplegar",
       "deploy_anyway": "Desplegar de todos modos",
+      "pending_deploy_failed_status": "Error al confirmar ({{status}})",
+      "dismiss_failed_status": "Error al descartar ({{status}})",
       "deploy_artifact": "Desplegar {{name}}",
       "deploy_profile_for_slug": "Perfil de despliegue para {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Desplegar / Retirar / Destruir requieren cada uno una confirmación explícita\n              (nunca se aprueban automáticamente) y emiten un evento de auditoría SEL.",

@@ -11307,6 +11307,8 @@
       "default_profile": "Профиль по умолчанию",
       "deploy": "Развернуть",
       "deploy_anyway": "Развернуть всё равно",
+      "pending_deploy_failed_status": "Не удалось подтвердить ({{status}})",
+      "dismiss_failed_status": "Не удалось скрыть ({{status}})",
       "deploy_artifact": "Развернуть {{name}}",
       "deploy_profile_for_slug": "Профиль развёртывания для {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "«Развернуть», «Отозвать» и «Уничтожить» требуют явного подтверждения\n              (никогда не разрешаются автоматически) и создают событие аудита SEL.",

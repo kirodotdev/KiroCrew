@@ -18,7 +18,7 @@ import { copyToClipboard, copyCode } from '../utils/clipboard'
 import { formatCost } from '../utils/formatCost'
 
 import { i18nT } from '../i18n/t'
-import { toApiError } from '../api/apiError'
+import { ApiError, toApiError } from '../api/apiError'
 import { errMessage } from '../utils/thunkError'
 const BASE = '/api/deploy'
 
@@ -106,6 +106,26 @@ async function jsend<T>(path: string, body: unknown, method = 'POST'): Promise<{
   const r = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ..._sk }, body: JSON.stringify(body) })
   if (!r.ok) throw await toApiError(r)
   return { status: r.status, data: (await r.json()) as T }
+}
+// A failed pending confirm/dismiss, read through the same factory, so a proxy's
+// HTML or plain-text 5xx shows its status or text rather than a JSON parse
+// error. A reply with no reason keeps the card's `<action> failed (<status>)`.
+async function pendingActionError(
+  r: Response,
+  failedKey: 'pages.artifactDeployPage.pending_deploy_failed_status' | 'pages.artifactDeployPage.dismiss_failed_status',
+): Promise<ApiError> {
+  const err = await toApiError(r)
+  if (err.message === `HTTP ${r.status}`) err.message = i18nT(failedKey, { status: r.status })
+  return err
+}
+// The top-level fields of a JSON object body, or `{}` for any other body.
+function jsonBodyFields(body: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
 }
 
 const chip: React.CSSProperties = { background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--muted)', padding: '1px 7px', borderRadius: 9999, fontSize: 10.5, fontFamily: 'ui-monospace,Menlo,monospace' }
@@ -976,20 +996,20 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
       // overridable (non-credential) findings — the human's explicit
       // "Deploy anyway" sends override_scan so the backend clears them.
       const res = await fetch(BASE + `/pending/${id}/confirm`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' }, body: JSON.stringify(overrideScan ? { override_scan: true } : {}) })
-      const data = await res.json()
       if (!res.ok) {
         // Carry the two technical fields alongside the message so the banner can
         // stay the plain sentence and the stack names go behind Details. A
         // confirm here is exactly where the reaper precondition lands.
-        const err = new Error(data.error || `Confirm failed (${res.status})`) as Error & {
+        const err = (await pendingActionError(res, 'pages.artifactDeployPage.pending_deploy_failed_status')) as ApiError & {
           details?: string; remediation?: string; code?: string
         }
+        const data = jsonBodyFields(err.body)
         err.details = typeof data.details === 'string' ? data.details : undefined
         err.remediation = typeof data.remediation === 'string' ? data.remediation : undefined
         err.code = typeof data.code === 'string' ? data.code : undefined
         throw err
       }
-      return data
+      return res.json()
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['deploy-web', 'pending'] })
@@ -1009,9 +1029,8 @@ function PendingConfirmations({ qc, askAgent }: { qc: ReturnType<typeof useQuery
   const dismissMut = useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(BASE + `/pending/${id}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Key': 'dashboard:ui' } })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || `Dismiss failed (${res.status})`)
-      return data
+      if (!res.ok) throw await pendingActionError(res, 'pages.artifactDeployPage.dismiss_failed_status')
+      return res.json()
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['deploy-web', 'pending'] })

@@ -10981,6 +10981,8 @@
       "default_profile": "ডিফল্ট প্রোফাইল",
       "deploy": "ডিপ্লয়",
       "deploy_anyway": "তবুও ডিপ্লয় করো",
+      "pending_deploy_failed_status": "ডিপ্লয় নিশ্চিত করা যায়নি ({{status}})",
+      "dismiss_failed_status": "খারিজ করা যায়নি ({{status}})",
       "deploy_artifact": "{{name}} ডিপ্লয় করো",
       "deploy_profile_for_slug": "{{slug}}-এর জন্য ডিপ্লয় প্রোফাইল",
       "deploy_recall_destroy_each_require_explicit_conf": "ডিপ্লয় / রিকল / ডেস্ট্রয় — প্রত্যেকটির জন্য স্পষ্ট নিশ্চিতকরণ প্রয়োজন\n              (কখনও স্বয়ংক্রিয়ভাবে অনুমোদিত হয় না) এবং প্রত্যেকটি একটি SEL অডিট ইভেন্ট তৈরি করে।",

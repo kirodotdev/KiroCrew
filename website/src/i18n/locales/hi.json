@@ -10981,6 +10981,8 @@
       "default_profile": "डिफ़ॉल्ट प्रोफ़ाइल",
       "deploy": "तैनात करें",
       "deploy_anyway": "फिर भी डिप्लॉय करें",
+      "pending_deploy_failed_status": "पुष्टि नहीं हो सकी ({{status}})",
+      "dismiss_failed_status": "खारिज नहीं हो सका ({{status}})",
       "deploy_artifact": "{{name}} डिप्लॉय करें",
       "deploy_profile_for_slug": "{{slug}} के लिए तैनाती प्रोफ़ाइल",
       "deploy_recall_destroy_each_require_explicit_conf": "तैनात करें / वापस लें / नष्ट करें — हर एक के लिए स्पष्ट पुष्टि आवश्यक है\n              (कभी स्वतः स्वीकृत नहीं) और हर एक SEL ऑडिट इवेंट दर्ज करता है।",
