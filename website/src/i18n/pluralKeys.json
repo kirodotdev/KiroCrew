@@ -224,6 +224,7 @@
   "pages.overview.portabilityTab.import_complete_restart_gateway",
   "pages.overview.skillsTab.agent",
   "pages.schedulePage.backing_off_after_n_failures",
+  "pages.overview.skillsTab.siblings_removed_by_refetch",
   "pages.schedulePage.cronFolders.batch_move_failed",
   "pages.schedulePage.cronFolders.job_count",
   "pages.schedulePage.job_could_not_be_deleted",
