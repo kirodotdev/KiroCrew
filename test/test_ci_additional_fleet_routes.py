@@ -17,12 +17,13 @@ _EXPRESSIONS = {
     "push": parity._CANONICAL_PUSH_EXPR,
     "push-dispatch": parity._CANONICAL_DISPATCH_EXPR,
     # Named for its workflow rather than its events, unlike the three above:
-    # exactly one workflow uses it. It is covered here and has deliberately NOT
-    # moved to the larger-runner group, for the reason given in
-    # test_the_ratchet_audit_route_stays_off_the_larger_runner_group below.
-    # The truth table alone does NOT hold it there -- it reads its expectation
-    # out of the expression under test -- so that separate assertion is what
-    # does.
+    # exactly one workflow uses it. Its non-fleet path takes the larger-runner
+    # group, and the condition that makes that safe -- plus the rollback
+    # trigger -- is in
+    # test_the_ratchet_audit_route_reaches_the_group_on_its_non_fleet_path
+    # below. The truth table alone does NOT pin that, since it reads its
+    # expectation out of the expression under test, so that separate assertion
+    # is what does.
     "ratchet-audit": parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR,
 }
 
@@ -352,28 +353,45 @@ def test_additional_routes_have_no_container_or_cloud_credential_steps(filename,
         assert "claude-code-action" not in step.get("uses", "")
 
 
-def test_the_ratchet_audit_route_stays_off_the_larger_runner_group():
-    """`main-ratchet-audit.yml` keeps its hosted fallback until the merge-group
-    leg is dealt with on purpose.
+def test_the_ratchet_audit_route_reaches_the_group_on_its_non_fleet_path():
+    """`main-ratchet-audit.yml` takes the group label when the fleet declines it.
 
-    `merge-queue-readiness.yml` lists that workflow in its polled set. It polls
+    This assertion replaces the one that pinned the hosted tail here. That pin
+    existed so moving this policy would be a deliberate act rather than a side
+    effect, and the move was made deliberately: the merge-group leg is the thing
+    it asked to have settled, so settle it here.
+
+    `merge-queue-readiness.yml` lists this workflow in its polled set. It polls
     every merge group, counts a queued run as pending, and fails the group
-    closed when its budget runs out. So routing this policy's non-fleet path to
-    `kirocrew-runners` puts merge capacity behind the pull-request lanes that
-    already compete for that group's cap.
+    closed when its budget runs out, so a queued run on a capped group does hold
+    merges. Three things decide that this is acceptable rather than reckless:
 
-    Pinned DIRECTLY, and not left to the truth table above, because that table
-    reads its expected value out of the expression under test. A change that
-    edits this constant and the workflow together -- which is the shape a real
-    move takes -- carries the expectation along with it and passes. So the table
-    catches a workflow edited alone and nothing else. Deleting this assertion is
-    the deliberate act that decision ought to require.
+    - The leg is dormant. A `merge_group` event needs a merge queue on the
+      branch, and no active ruleset configures one; all 1,099 `merge_group` runs
+      in this repository's history were created in one window, between
+      2026-10-02T18:17Z and 2026-10-03T00:03Z.
+    - It is not unique to this workflow. The queue polls `ci.yml`,
+      `fast-gate.yml` and `build.yml` as well, and their merge-group leg reaches
+      the group whenever the queuing actor is not on the allowlist. Several
+      `ci.yml` jobs reach it unconditionally, with no fleet branch at all. So
+      every merge group already waits on this cap.
+    - Only a merge group queued by an actor OUTSIDE `CODEBUILD_ACTOR_IDS` lands
+      here. An allowlisted queuer still takes the fleet.
+
+    Turning the merge queue back on is therefore the event that makes this live,
+    and it is the rollback trigger: restore the literal hosted tail on this
+    constant before enabling the queue if the group is anywhere near its cap.
+
+    Pinned DIRECTLY, like its predecessor, and not left to the truth table
+    above, because that table reads its expected value out of the expression
+    under test and so would carry along any later edit of the constant and the
+    workflow together.
     """
-    assert parity._GROUP_THEN_HOSTED_TAIL not in parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR, (
-        "main-ratchet-audit.yml's non-fleet path must stay on the hosted image: "
-        "merge-queue-readiness.yml polls that workflow on every merge group and fails "
-        "the group closed on a run left queued, so a capped group puts merge capacity "
-        "behind the PR lanes. Settle the merge-group leg before changing this."
+    assert parity._GROUP_THEN_HOSTED_TAIL in parity._CANONICAL_DISPATCH_MERGE_GROUP_EXPR, (
+        "main-ratchet-audit.yml's non-fleet path is expected to take the "
+        "kirocrew-runners group label, with the hosted image reachable only from a "
+        "fork. Restoring the bare hosted tail is a rollback: do it deliberately, and "
+        "before the merge queue is enabled rather than after."
     )
 
 

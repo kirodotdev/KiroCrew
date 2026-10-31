@@ -40,20 +40,9 @@ _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.
 # event tests; this one decides only which non-fleet destination is reachable,
 # so neither can be derived from the other.
 #
-# One ROUTING constant below does not carry this tail:
-# _CANONICAL_DISPATCH_MERGE_GROUP_EXPR, whose workflow is
-# `main-ratchet-audit.yml`. Its literal hosted fallback is the current contract,
-# not an oversight: that site's hosted tail is pinned by a dedicated assertion,
-# `test_the_ratchet_audit_route_stays_off_the_larger_runner_group`, rather than
-# derived from the expression, so moving it means deleting that assertion on
-# purpose and belongs in its own change. The merge queue polling that workflow
-# is NOT what sets it apart -- the queue polls `ci.yml`, `fast-gate.yml` and
-# `build.yml` too, and their merge-group leg already reaches the group whenever
-# the queuing actor is not on the allowlist.
-#
-# The resolver-consumer constants do not carry the tail either, for an unrelated
-# reason: an EMPTY resolver output means the resolver did not run, and hosted is
-# the only safe answer there.
+# Every ROUTING constant carries this tail. The resolver-consumer constants do
+# not, for an unrelated reason: an EMPTY resolver output means the resolver did
+# not run, and hosted is the only safe answer there.
 _GROUP_THEN_HOSTED_TAIL = (
     "|| github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
     "|| 'ubuntu-latest' }}"
@@ -123,7 +112,7 @@ _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
     + " && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || "
     "github.event_name == 'merge_group') && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 
 # These lanes take no fleet route: untrusted-content model execution,

@@ -107,7 +107,10 @@ Three structural facts explain most of the rest:
   request head it aggregates every lane, and on a merge group it is the queue's
   own check (next bullet). Individual red
   checks are strong signals a human can weigh. Whether the queue is required
-  is the owner's call, and today main does not require it. That is a ruleset
+  is the owner's call, and today main does not require it. **Before enabling
+  it, read the runner-group consequence** under *The fleet-fallback sites*
+  below: the merge-polled workflows' non-fleet path now reaches the capped
+  `kirocrew-runners` group, which is dormant only while the queue is off. That is a ruleset
   setting no PR diff shows, so the scheduled `merge-queue-ruleset.yml` reads
   main's live rules and the `MERGE_QUEUE_ENABLED` variable every 6 hours
   (`scripts/check_merge_queue_ruleset.py`). No `merge_queue` rule with the
@@ -1274,10 +1277,11 @@ way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
 **The fleet-fallback sites reach the group by LABEL instead, because they must
-choose at run time.** Twenty jobs take this form. Six fire on no pull request at
-all -- `build-wheel.yml`, `dependency-vulnerability.yml`,
-`pr-merge-conflict-label.yml`, both `pages.yml` jobs, and `ci.yml`'s
-`cancel-superseded-run`, whose `if:` is a push to `main` -- and fourteen are the
+choose at run time.** Twenty-four jobs take this form. Ten fire on no pull
+request at all -- `build-wheel.yml`, `dependency-vulnerability.yml`,
+`pr-merge-conflict-label.yml`, both `pages.yml` jobs, `ci.yml`'s
+`cancel-superseded-run`, whose `if:` is a push to `main`, and
+`main-ratchet-audit.yml`'s four -- and fourteen are the
 pull-request lanes: `code-review.yml`'s four, `fast-gate.yml`'s three,
 `ci.yml`'s `changes` and `await-fast-gate`, `build.yml`'s `build-wheel` and
 `desktop-matrix`, `pr-policy.yml`, `dependency-review.yml`'s `license-gate` and
@@ -1287,9 +1291,13 @@ fleet does not admit the run.
 A conditional cannot name the group: the fleet's runners are REPOSITORY-level
 self-hosted runners and are not members of this organization group, so no single
 `runs-on` names both destinations. The rename exposure that group targeting
-avoids therefore applies to all twenty lines -- **rename the definition and they
-must move with it** -- which is why the expected strings live in one place,
-`_GROUP_THEN_HOSTED_TAIL` in `test/test_ci_fleet_routing_expression_parity.py`.
+avoids therefore applies to **all twenty-six lines** carrying this form -- the
+twenty-four enumerated above plus `readiness` and
+`sensitive-change-review.yml`, which get their own paragraphs below --
+**rename the definition and they must move with it**. That is why the expected
+strings live in one place, `_GROUP_THEN_HOSTED_TAIL` in
+`test/test_ci_fleet_routing_expression_parity.py`, and why a rename is scoped by
+grepping the label rather than from this list.
 
 Each of those expressions falls back TWICE, and the second branch is
 load-bearing rather than defensive. A run executing in THIS repository takes
@@ -1318,12 +1326,14 @@ measure rather than assume.** The fleet branch admits the `pull_request` actions
 that: `code-review.yml` adds `reopened` and `edited`, `pr-policy.yml` adds
 `reopened`, `edited`, `labeled` and `unlabeled`, `dependency-review.yml` adds
 `reopened`, `labeled` and `unlabeled`, and `macos-on-demand.yml` adds `reopened`
-and `labeled`. So every label a bot adds or removes, and every description edit,
+and `labeled`. `ci.yml`, `fast-gate.yml` and `build.yml` name no `types:` at
+all, so GitHub's own default applies and `reopened` reaches them too. So every
+label a bot adds or removes, and every description edit,
 on an ordinary same-repository pull request from a listed actor misses the fleet
 and lands here. Measured over one 6-hour window on the two workflows carrying
-most of it, 317 of 357 such jobs (88%) were same-repository runs on a
-non-admitted action and only 40 (11%) were fork pull requests. A merge group
-queued by an unlisted actor lands here too.
+most of it, 317 of 357 such jobs (about 89%) were same-repository runs on a
+non-admitted action and only 40 (about 11%) were fork pull requests. A merge
+group queued by an unlisted actor lands here too.
 
 **Size the added occupancy before adding a site, and size it as concurrency
 rather than as a monthly total**, because these lanes fire on the same
@@ -1334,28 +1344,34 @@ API does not expose a run's triggering action, so a model built on the event
 alone counts every `labeled` and `edited` run as fleet-admitted and understates
 this leg.
 
-`main-ratchet-audit.yml` also fires on no pull request, and is still
-**deliberately left hosted** -- but read why carefully, because the obvious
-reason is no longer the true one. It admits `merge_group`, and
-`merge-queue-readiness.yml` polls it on every merge group, treating a queued run
-as pending and failing the group closed once its budget runs out.
+`main-ratchet-audit.yml`'s four jobs moved too, and that one needed the
+**merge-group leg settled on purpose** rather than carried along. It admits
+`merge_group`, and `merge-queue-readiness.yml` polls it on every merge group,
+treating a queued run as pending and failing the group closed once its budget
+runs out. So a queued run there really does hold merges. Three facts decide that
+the move is acceptable rather than reckless:
 
-That hazard is real and it is **no longer unique to this workflow.** The queue
-polls six workflows, and three of them -- `ci.yml`, `fast-gate.yml` and
-`build.yml` -- now reach the group on exactly the same leg: a merge group queued
-by an actor outside `CODEBUILD_ACTOR_IDS` misses the fleet and takes the group
-label. Several `ci.yml` jobs reach it unconditionally already, with no fleet
-branch at all. So every merge group already waits on this cap, and the honest
-statement is that moving the ratchet audit would add less merge-path exposure
-than is already there -- not that keeping it hosted protects merge capacity.
+- **The leg is dormant.** A `merge_group` event needs a merge queue on the
+  branch, and no active ruleset configures one. Every `merge_group` run in this
+  repository's history -- 1,099 of them -- was created in one window, between
+  2026-10-02T18:17Z and 2026-10-03T00:03Z. That is the span of the RUNS, which
+  is what the API can show; how long the ruleset itself carried the rule is not
+  recoverable from here.
+- **It is not unique to this workflow.** The queue polls six workflows, and
+  `ci.yml`, `fast-gate.yml` and `build.yml` reach the group on exactly the same
+  leg; several `ci.yml` jobs reach it unconditionally, with no fleet branch at
+  all. Every merge group already waits on this cap, so leaving the ratchet audit
+  hosted protected nothing.
+- **Only an unlisted queuer lands here.** A merge group queued by an actor in
+  `CODEBUILD_ACTOR_IDS` still takes the fleet.
 
-What keeps it out is narrower: it is the one site whose hosted tail is pinned by
-a dedicated assertion rather than derived, so moving it means deleting
-`test_the_ratchet_audit_route_stays_off_the_larger_runner_group` on purpose.
-That is a deliberate decision with its own evidence, not a line to carry along
-inside a change about the pull-request lanes, so it waits for its own change.
-`test/test_ci_additional_fleet_routes.py` covers its policy while it is still
-hosted. The direct pin is there because
+**Enabling the merge queue is what makes this live, and is therefore the
+rollback trigger**: restore the literal hosted tail on
+`_CANONICAL_DISPATCH_MERGE_GROUP_EXPR` before turning the queue on if the group
+is anywhere near its cap. `test_the_ratchet_audit_route_reaches_the_group_on_its_non_fleet_path`
+pins the current contract directly and carries that instruction. It replaced an
+assertion that pinned the hosted tail, whose purpose was to make this move
+deliberate; deleting it was that deliberate act. The direct pin is there because
 the truth table alone would not catch it: that table derives its expected value
 from the expression under test, so a change editing the constant and the
 workflow together carries the expectation along and passes.
@@ -1364,7 +1380,7 @@ workflow together carries the expectation along and passes.
 queueing holds every merge.** `pr-readiness.yml`'s `readiness` job keeps its
 CodeBuild fleet route -- a same-repository `pull_request_target` run from a
 listed actor -- and changed only what happens when the fleet does not admit the
-run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the twenty above and the
+run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the twenty-four above and the
 same rename exposure applies to its line. What sets it apart from the other
 pull-request lanes is not the event: it fires on `pull_request_target`, and
 it publishes the required `PR Readiness` status itself rather than being polled
@@ -1395,7 +1411,7 @@ jobs API filtered on `runner_group_name` as **Capacity** below asks, and treat a
 lengthening hold window as the rollback trigger rather than waiting for a wrong
 verdict to be acted on.
 
-Rollback is the fleet-preserving recipe the twenty above use, and **this is the
+Rollback is the fleet-preserving recipe the twenty-four above use, and **this is the
 line to restore first** when the group is at its cap, because every merge is
 behind it: drop the middle branch so the expression's tail is `|| 'ubuntu-latest'
 }}` again, and in `_CANONICAL_READINESS_EXPR` REPLACE `_GROUP_THEN_HOSTED_TAIL`
@@ -1578,16 +1594,25 @@ wrong shows up as slower merges rather than as a broken check.
 Rollback is per site and needs no AWS or runner-group change: restore
 `runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
 matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
-so the rollback does not send the Windows leg to Linux. The twenty
-fleet-fallback sites, plus `readiness`, are the exception twice over.
+so the rollback does not send the Windows leg to Linux. The twenty-four
+fleet-fallback sites, plus `readiness` and `sensitive-change-review`, are the
+exception twice over.
 It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
-`|| 'ubuntu-latest' }}` again, and drop `_GROUP_THEN_HOSTED_TAIL` from that
-policy's constant. And it is **not per site but per policy** -- the three
-`_CANONICAL_PUSH_EXPR` sites revert together, as do both `_CANONICAL_DISPATCH_EXPR`
-ones -- because the parity test pins one whole string per policy and stays red
-until every site sharing it agrees. Rolling back one site alone means splitting
-its policy into its own constant first. A job dispatched to a group that
+`|| 'ubuntu-latest' }}` again, and REPLACE `_GROUP_THEN_HOSTED_TAIL` in that
+policy's constant with the literal `"|| 'ubuntu-latest' }}"` rather than
+deleting it, which would leave the constant ending at `format(...)` with no
+tail. And it is **not per site but per policy** -- the parity test pins one
+whole string per policy and stays red until every site sharing it agrees, so a
+revert takes its whole policy with it: `_CANONICAL_MERGE_GROUP_ROUTING_EXPR` is
+8 sites, `_CANONICAL_ROUTING_EXPR` 7, `_CANONICAL_DISPATCH_MERGE_GROUP_EXPR` 4,
+`_CANONICAL_PUSH_EXPR` 3 and `_CANONICAL_DISPATCH_EXPR` 2. Rolling back one site
+alone means splitting its policy into its own constant first. Reverting
+`_CANONICAL_MERGE_GROUP_ROUTING_EXPR` also needs
+`test/test_ci_windows_canary.py`'s `test_all_actual_routes_require_repository_event_and_admitted_actor`
+edited in the same change: it names `kirocrew-linux-4-core` as the expected
+upstream destination for `ci.yml`'s `changes` and `await-fast-gate`, so a
+constant-only revert turns it red. A job dispatched to a group that
 does not admit this repository stays queued for up to 24 hours before
 auto-cancelling, so cancel the run and fix the group's repository access rather
 than waiting out the timeout.
