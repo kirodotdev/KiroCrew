@@ -1198,7 +1198,7 @@ describe('registry install trust gate', () => {
     // the same shape the permanent refusal uses) rather than running on inline
     // after "check the logs"; the agent hand-off still keeps it, looked up by the
     // raw string.
-    const refusal = 'Python apps that require a build step are not supported in the desktop app'
+    const refusal = 'Python apps that require a build step are not supported in Kiro Crew\'s desktop build'
     installFromRegistryStream
       .mockResolvedValueOnce(INSTALL_DENIED())
       .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: refusal })
@@ -1273,8 +1273,8 @@ describe('retryFailureCode', () => {
 
 describe('registry install trust gate — permanent desktop refusal', () => {
   const REFUSAL =
-    'Python apps that require a build step are not supported in the desktop app: ' +
-    'its bundled interpreter is inside the signed application bundle and cannot install packages'
+    'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
+    'build: its bundled interpreter is inside the signed application bundle and cannot install packages'
 
   beforeEach(() => {
     listRegistry.mockResolvedValue({
