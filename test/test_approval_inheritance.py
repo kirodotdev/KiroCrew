@@ -113,7 +113,7 @@ def test_lower_creator_never_raises_a_worker(state):
 
 
 def test_card_scoped_creator_hands_down_nothing(state):
-    """A "Trust this crew member" card on the creator covers its own tools only."""
+    """A "Trust this crew member" card reaches the creator's subagents, not its sessions."""
     conductor = _slot(state, "chat-root")
     worker = _create(state, conductor)
     conductor._trust = True

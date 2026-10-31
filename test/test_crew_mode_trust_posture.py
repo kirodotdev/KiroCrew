@@ -1,4 +1,4 @@
-"""A Crew Mode card trust stops at the worker on every path (edge review R4 H1, H3)."""
+"""A Crew Mode card trust reaches the worker's subagents, not its sessions (R4 H1, H3)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 from kiro_crew import crew_mode
-from kiro_crew.dashboard.approval_posture import trust_carries
+from kiro_crew.dashboard.approval_posture import trust_carries, trust_reaches_subagents
 from kiro_crew.dashboard.chat_handlers import api_chat_mode, api_chat_slot_approve
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.state import SlotOrigin
@@ -45,7 +45,7 @@ async def _owner(request: web.Request, handler):
 
 
 @pytest.mark.asyncio
-async def test_H1_card_trust_never_reaches_the_workers_children_on_any_path(tmp_path):
+async def test_H1_card_trust_reaches_subagents_not_sessions_on_any_path(tmp_path):
     from kiro_crew.dashboard.chat_turn.tool_approval import _persistable_session_policy
     from kiro_crew.dashboard.handlers.crew_workers import api_crew_worker_approve
     from kiro_crew.dashboard.server import (
@@ -77,9 +77,12 @@ async def test_H1_card_trust_never_reaches_the_workers_children_on_any_path(tmp_
         return writes[-1] if writes else ""
 
     def children_ask() -> None:
-        assert stored() == ""  # spawn gate + subagent policy
-        assert _persistable_session_policy(worker, False) == ""  # resume / create
-        assert trust_carries(worker) is False  # session_create + fork
+        # Subagents: the spawn gate and each subagent's policy read the stored value.
+        assert stored() == "auto"
+        assert _persistable_session_policy(worker, False) == "auto"
+        assert trust_reaches_subagents(worker) is True
+        # Sessions and forks the worker opens are born asking.
+        assert trust_carries(worker) is False
 
     app = web.Application(middlewares=[_owner])
     app["state"] = state
@@ -103,15 +106,32 @@ async def test_H1_card_trust_never_reaches_the_workers_children_on_any_path(tmp_
             children_ask()
     # The safety override's expiry and suspension.
     policy(key, "auto")  # as a yolo arm writes it
+    # A slot holding only the override's inherited "auto", so suspend/restore run.
+    plain_key = effective_session_key(state._slots["plain"])
+    state._slots["plain"]._trust = False
+    state._slots["plain"]._trust_reads = False
     with patch("kiro_crew.messaging.session_trust.clear_trusted_sessions"):
         _clear_override_derived_trust(state, "test")
     children_ask()
     state.sessions.get_approval_policy = MagicMock(return_value="auto")
     restore = _suspend_override_derived_trust(state)
+    assert restore is not None  # the plain slot was suspended
+    assert policy.call_args_list[-1].args == (plain_key, "")
     children_ask()
     state.sessions.get_approval_policy = MagicMock(return_value="")
     restore()
+    assert policy.call_args_list[-1].args == (plain_key, "auto")
     children_ask()
+    # Revoking the worker's trust: a subagent spawned after it asks again.
+    app2 = web.Application(middlewares=[_owner])
+    app2["state"] = state
+    app2.router.add_post("/api/chat/mode", api_chat_mode)
+    async with TestClient(TestServer(app2)) as client:
+        resp = await client.post("/api/chat/mode", json={"mode": "normal", "slot": "w"})
+        assert resp.status == 200, await resp.text()
+    assert stored() == ""
+    assert _persistable_session_policy(worker, False) == ""
+    assert trust_reaches_subagents(worker) is False
     # A trust the person sets on the conductor itself keeps its inheritance.
     root._trust = True
     assert trust_carries(root) and _persistable_session_policy(root, False) == "auto"

@@ -569,16 +569,23 @@ once in `kirocrew.crew_mode.worker_waits`, and a close counts the run in
 `kirocrew.crew_mode.runs_finished` and `steers_per_run`
 (`metrics.crew_mode.board_is_crew_mode`).
 
-**Trust stays with the one it was given to.** `approval_posture.trust_carries` is
-the one decision on whether a slot's `_trust` passes to what it starts: it does for
-a trust a person set on the slot itself, and not for a card-scoped trust
-(`_trust_card_scoped`, the "Trust this crew member" grant the conductor's approval
-card will make; nothing sets it yet, so every trust carries today). A card-scoped
-trust covers that crew member's own tools only: `session_create` gives its children
-no inherited trust, `tool_approval._persistable_session_policy` answers `""` for it
-(so its `spawn_run` is not auto-approved and each subagent is born asking), and the
-Slack turn approvals do not inherit it either; the override-derived trust reset
-reads the same rule. Trust is in memory only and never persisted. A pending
+**Card trust reaches the worker's subagents, not its sessions.** `approval_posture`
+holds the two decisions on whether a slot's `_trust` passes to what it starts.
+`trust_reaches_subagents` is any `_trust`, a card-scoped one (`_trust_card_scoped`,
+the "Trust this crew member" grant on the conductor's approval card) included: every
+writer of the stored `approval_policy` (`tool_approval._persistable_session_policy`,
+the mode route, the card's Trust) reads it, so a card-trusted worker's `spawn_run`
+is auto-approved and each subagent is born `auto`; the Slack/background
+parent-trust gate counts the card trust as a slot trust (`_slot_is_trusted`), and
+the override-derived trust reset counts it as standing trust. For a channel-born
+worker that stored `auto` is also what `messaging.approval` reads for the
+conversation's own text approvals, which the card trust already covers.
+`trust_carries` is `_trust` that is NOT card-scoped: `session_create`, forks and the
+workflow ceiling read it, so the sessions a card-trusted worker opens are born
+asking, on the same card. A revoke clears `_trust` and writes `""`, so a subagent
+spawned after it asks again; one already running keeps the policy it was given at
+spawn (`subagent_manager.turn_session`).
+Trust is in memory only and never persisted. A pending
 approval's slot row carries `trust_grantable` (the slot approve route's own proof
 that Trust may be offered) and, for a coordinator request such as a spawn,
 `request_instance` (names THIS record, since the id can recur), so a card that

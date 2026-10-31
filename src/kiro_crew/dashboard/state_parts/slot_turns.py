@@ -290,9 +290,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     self._approval_stopped = set()
     self._trust = False  # auto-approve tools for this slot
     # True when ``_trust`` came from a Crew Mode conductor's approval card
-    # ("Trust this crew member"). That grant covers this one slot: the sessions it
-    # creates later are born asking (session_create skips the inheritance). Any
-    # direct trust of this slot clears it again.
+    # ("Trust this crew member"). That grant covers this slot and the subagents it
+    # spawns; the sessions and forks it creates later are born asking
+    # (``approval_posture.trust_carries``). Any direct trust of this slot clears it.
     self._trust_card_scoped = False
     # SafetyOverride scope key holding an EXPIRING, SEL-audited auto-approve
     # grant, for an unattended app worker with no human present to click

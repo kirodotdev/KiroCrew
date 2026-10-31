@@ -239,16 +239,15 @@ def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
     re-checks the scope each time.
 
     A Crew Mode card trust ("Trust this worker", ``slot._trust_card_scoped``) is
-    not cached either. It covers THAT worker only: its own tools still
-    auto-approve through :func:`_slot_is_trusted`, but the subagents it spawns and
-    the sessions it creates must keep asking, so their requests reach the
-    conductor's card. A stored ``"auto"`` would hand them the trust.
+    a ``slot._trust`` too and IS cached: trusting a worker trusts the subagents it
+    spawns (``approval_posture.trust_reaches_subagents``). The sessions it creates
+    read the slot, not this value, and keep asking (``trust_carries``).
     """
     if yolo_active:
         return "auto"
-    from kiro_crew.dashboard.approval_posture import trust_carries
+    from kiro_crew.dashboard.approval_posture import trust_reaches_subagents
 
-    return "auto" if trust_carries(slot) else ""
+    return "auto" if trust_reaches_subagents(slot) else ""
 
 
 def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:

@@ -403,8 +403,8 @@ untouched. On top of those verbs the port adds only:
   above the launching session's own posture (`_trust` → `trust`, `_trust_reads`
   → `trust_reads`, else `normal`; a launching slot that closed or was replaced
   reads as `normal`, and a Crew Mode card trust (`_trust_card_scoped`), which
-  `approval_posture.trust_carries` keeps from passing to what the session
-  starts, counts as no `_trust`). So a session the person lowered stays lowered, and the
+  `approval_posture.trust_carries` keeps from passing to the sessions it
+  starts though it reaches its subagents, counts as no `_trust`). So a session the person lowered stays lowered, and the
   mode write's `trust` arm, which also approves the session's pending tool calls,
   is never reached from a workflow: a request for the mode a session already has
   returns `unchanged` without running the write. A session holding a scoped
