@@ -271,7 +271,11 @@ export default function AttentionCard({ item, title, context, onDraftChange, onO
     {/* A rejected submission is an error surface (errors-use-error-notice), even
         though its answer is safe in that session's composer. A retirement with no
         failed submission is RestoredQuestionNotice's warn-tone status instead. */}
-    <ErrorNotice message={restored ? restoredNotice : expired ? t('components.approvalCard.approval_no_longer_pending') : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />
+    {/* A gone approval (expired, decided elsewhere, replaced) is status, not a
+        failure, so it reads as a muted status row rather than a red error. */}
+    {!restored && expired
+      ? <StatusNotice variant="inline" message={t('components.approvalCard.approval_no_longer_pending')} testId="attention-approval-gone" />
+      : <ErrorNotice message={restored ? restoredNotice : answerRefused ? t(answerFailureKey(mutation.error)) : mutation.error?.message} />}
     {restored ? null
       : delivered ? <p role="status" className="text-sm text-ok flex items-center gap-2"><Check size={15} />{t('commandCenter.recorded')}</p>
       : item.question ? <QuestionCard questions={followUpQuestions || item.question.questions} askId={item.question.ask_id} submitLabel={t('commandCenter.send_answer')} busy={mutation.isPending} onDraftChange={onDraftChange} onSubmit={answers => submit({ answers })} />

@@ -203,8 +203,10 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'no pending approval')))
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    // A gone approval is STATUS, not an error: role="status", never alert.
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('nothing is waiting on it')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
     expect(screen.queryByText('Reject')).not.toBeInTheDocument()
   })
@@ -213,8 +215,9 @@ describe('ApprovalCard', () => {
     const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'not found')))
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
     fireEvent.click(screen.getByText('Approve'))
-    const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('no longer waiting')
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toContain('nothing is waiting on it')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     expect(screen.queryByText('Approve')).not.toBeInTheDocument()
   })
 
@@ -268,7 +271,8 @@ describe('ApprovalCard', () => {
     fireEvent.click(screen.getByText('Trust'))
     fireEvent.click(screen.getByText('Trust all tools for this session'))
     await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
-    expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
+    expect(screen.getByRole('status').textContent).toContain('nothing is waiting on it')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('shows a generic failure message when the rejection carries no message', async () => {
