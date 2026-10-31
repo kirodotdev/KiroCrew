@@ -1,0 +1,1284 @@
+openapi: 3.1.0
+info:
+  title: Crew API · Owner
+  version: 1.0.0-draft
+  description: |
+    Owner tier of the Crew API: the user's own clients (dashboard, control panel, CLI) call it
+    with the user's own credential. Design and rationale: docs/request-for-change/rfc-crew-api.md.
+
+    - paths holds the 6 new grant and connector operations, fully defined.
+    - x-crew-reused-routes lists the 96 existing routes that move into the Owner tier as they are.
+      They carry path, method, summary and source only, no full schema, and are all
+      x-crew-stability: experimental. They are wrapped as /v1/crew/owner/* over time.
+    - A delegated credential calling any Owner operation gets 403 insufficient_scope.
+    - The Owner tier's compatibility promise is an open question in the RFC.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+- url: https://{crew_endpoint}
+  description: The user's crew gateway
+  variables:
+    crew_endpoint:
+      default: crew.example.invalid
+      description: The address the app was given for this crew. Placeholder.
+- url: http://127.0.0.1:{port}
+  description: Local
+  variables:
+    port:
+      default: '5476'
+tags:
+- name: connectors
+  description: Connectors
+- name: grants
+  description: Grants
+paths:
+  /v1/crew/grants:
+    get:
+      operationId: get_v1_crew_grants
+      summary: List grants (with usage)
+      tags:
+      - grants
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: status
+        in: query
+        required: false
+        description: Filter by status.
+        schema:
+          $ref: '#/components/schemas/GrantStatus'
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantList'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: revoked grants are not listed by default.
+  /v1/crew/grants/{grant_id}:
+    patch:
+      operationId: patch_v1_crew_grants_grant_id
+      summary: 'Tighten a grant: lower quota, remove mates, change sensitivity and notification limit'
+      tags:
+      - grants
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: grant_id
+        in: path
+        required: true
+        description: grt_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Grant'
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: 'Takes effect at once: the next request uses the new values; a turn in flight finishes its reserved
+        part.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGrantRequest'
+    delete:
+      operationId: delete_v1_crew_grants_grant_id
+      summary: Revoke a grant
+      tags:
+      - grants
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: grant_id
+        in: path
+        required: true
+        description: grt_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Deleted
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: Takes effect at once (status=revoked). Open streams receive grant.revoked and are closed.
+  /v1/crew/grants/{grant_id}/resume:
+    post:
+      operationId: post_v1_crew_grants_grant_id_resume
+      summary: Resume a paused or throttled grant
+      tags:
+      - grants
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: grant_id
+        in: path
+        required: true
+        description: grt_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Grant'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '409':
+          $ref: ./components.yaml#/components/responses/ConflictNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: paused or throttled goes back to active. A grant paused for re-consent (pause.by=reconsent) gets
+        409 and recovers only through re-consent.
+  /v1/crew/connectors:
+    get:
+      operationId: get_v1_crew_connectors
+      summary: List consented connectors
+      tags:
+      - connectors
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorList'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+  /v1/crew/connectors/{client_id}:
+    get:
+      operationId: get_v1_crew_connectors_client_id
+      summary: Read a connector's manifest and hash
+      tags:
+      - connectors
+      security:
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: client_id
+        in: path
+        required: true
+        description: App id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Connector'
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: owner
+      x-crew-scope: grants:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+components:
+  securitySchemes:
+    firstPartySession:
+      type: http
+      scheme: bearer
+      description: The user's own credential (owner). Holds every scope.
+  schemas:
+    GrantStatus:
+      enum:
+      - active
+      - throttled
+      - paused
+      - revoked
+      description: Only these four values are used. Revoked grants are no longer listed.
+    Grant:
+      type: object
+      required:
+      - id
+      - object
+      - client_id
+      - scopes
+      - status
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^grt_
+        object:
+          const: grant
+        client_id:
+          type: string
+        app:
+          type: object
+          properties:
+            name:
+              type: string
+            icon_url:
+              type:
+              - string
+              - 'null'
+        grant_type:
+          enum:
+          - backend
+          - embed
+        scopes:
+          type: array
+          items:
+            type: string
+        mates:
+          type: array
+          items:
+            type: string
+          description: Mate ids the user allows this app to use; empty means none.
+        memory_global:
+          type: boolean
+          default: false
+          description: Whether this grant may read the user's Global memory. Takes effect only together with memory:read.
+        notify_per_hour:
+          type: integer
+          minimum: 0
+          default: 10
+        status:
+          $ref: '#/components/schemas/GrantStatus'
+        pause:
+          type:
+          - object
+          - 'null'
+          description: Only when paused.
+          properties:
+            by:
+              enum:
+              - monitor
+              - user
+              - reconsent
+              description: 'monitor: the gateway paused it automatically; user: the user did; reconsent: it waits
+                for the user to agree to a changed grant'
+            reason:
+              type: string
+            at:
+              $ref: ./components.yaml#/components/schemas/Timestamp
+        created_at:
+          $ref: ./components.yaml#/components/schemas/Timestamp
+        last_used_at:
+          type:
+          - integer
+          - 'null'
+        quota:
+          allOf:
+          - $ref: ./components.yaml#/components/schemas/Quota
+          - type: object
+            properties:
+              consented_at:
+                $ref: ./components.yaml#/components/schemas/Timestamp
+        usage_7d:
+          type: array
+          items:
+            type: object
+            properties:
+              day:
+                type: string
+                format: date
+              credits:
+                type: number
+    GrantList:
+      allOf:
+      - $ref: ./components.yaml#/components/schemas/ListEnvelope
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Grant'
+    UpdateGrantRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: 'Tighten only: quota can only go down and mates can only be removed. Raising quota or adding
+        a mate gets 403 insufficient_scope (the app must ask for re-consent).'
+      properties:
+        quota:
+          type: object
+          properties:
+            daily_credits:
+              type: number
+            max_turn_tokens:
+              type: integer
+            max_turn_tool_calls:
+              type: integer
+            max_turn_secs:
+              type: integer
+        notify_per_hour:
+          type: integer
+          minimum: 0
+        mates:
+          type: array
+          items:
+            type: string
+          description: The new full list; must be a subset of the current list.
+    Connector:
+      type: object
+      required:
+      - client_id
+      - object
+      - agent_id
+      - manifest_hash
+      - defn_sv
+      description: Manifests are written by the system that records the grant (Internal, not in this file); read
+        only here.
+      properties:
+        client_id:
+          type: string
+        object:
+          const: connector
+        name:
+          type: string
+        agent_id:
+          type: string
+        manifest_hash:
+          type: string
+        defn_sv:
+          type: integer
+          description: Security version.
+        consented_at:
+          $ref: ./components.yaml#/components/schemas/Timestamp
+        grants:
+          type: array
+          items:
+            type: string
+        manifest:
+          $ref: '#/components/schemas/ConnectorManifest'
+          description: Returned only when reading a single item.
+    ConnectorList:
+      allOf:
+      - $ref: ./components.yaml#/components/schemas/ListEnvelope
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Connector'
+    ConnectorManifest:
+      type: object
+      required:
+      - manifest_version
+      - client_id
+      - agent
+      - scopes
+      description: 'What the user agreed to for this app: its agent, tools, mates, scopes and webhook address'
+      properties:
+        manifest_version:
+          const: 1
+        client_id:
+          type: string
+        agent:
+          type: object
+          required:
+          - id
+          - name
+          - description
+          - prompt
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            description:
+              type: string
+            prompt:
+              type: string
+            icon_url:
+              type: string
+              format: uri
+        tools:
+          type: object
+          properties:
+            mcp_servers:
+              type: array
+              items:
+                type: object
+                required:
+                - name
+                - url
+                - tools
+                properties:
+                  name:
+                    type: string
+                  url:
+                    type: string
+                    pattern: ^https://
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - name
+                      - approval
+                      properties:
+                        name:
+                          type: string
+                        approval:
+                          enum:
+                          - always
+                          - never
+            client_tools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+        mates:
+          type: array
+          items:
+            type: string
+          description: Mate ids the app asks for; the ones the user allows are stored in the grant's mates.
+        scopes:
+          type: array
+          items:
+            type: string
+        optional_scopes:
+          type: array
+          items:
+            enum:
+            - memory:read
+            - knowledge:read
+            - schedules:manage
+            - workflows:run
+        requested_quota:
+          type: object
+          description: Defaults apply when omitted.
+          properties:
+            daily_credits:
+              type: number
+            max_turn_tokens:
+              type: integer
+            max_turn_tool_calls:
+              type: integer
+            max_turn_secs:
+              type: integer
+        callbacks:
+          type: object
+          properties:
+            webhook_url:
+              type: string
+              format: uri
+              description: The only source of the callback address; changing it needs re-consent.
+x-crew-reused-routes:
+- method: get
+  path: /api/knowledge/sources
+  summary: Knowledge base sources
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/handlers/knowledge_lifecycle.py:302
+  x-crew-stability: experimental
+- method: post
+  path: /api/knowledge/sources
+  summary: Knowledge base sources
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/handlers/knowledge_lifecycle.py:304
+  x-crew-stability: experimental
+- method: get
+  path: /api/models
+  summary: Available models
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:33
+  x-crew-stability: experimental
+- method: get
+  path: /api/agents
+  summary: Selectable agents (counterpart of /v1/models)
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:57
+  x-crew-stability: experimental
+- method: post
+  path: /api/agents
+  summary: Selectable agents (counterpart of /v1/models)
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:59
+  x-crew-stability: experimental
+- method: get
+  path: /api/members
+  summary: 'Crewmate list: pick a mate'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:77
+  x-crew-stability: experimental
+- method: post
+  path: /api/members/{slug}/thread
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:78
+  x-crew-stability: experimental
+- method: get
+  path: /api/members/{slug}/activity
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:81
+  x-crew-stability: experimental
+- method: get
+  path: /api/members/{slug}/briefing
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/agents.py:83
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat
+  summary: 'Send a message and receive the reply as SSE: the main owner channel'
+  auth: internal-secret|cookie
+  streaming: sse
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:83
+  x-crew-stability: experimental
+- method: get
+  path: /api/chat/slots
+  summary: 'List, create and read conversations: the core of an owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:100
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots
+  summary: 'List, create and read conversations: the core of an owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:101
+  x-crew-stability: experimental
+- method: get
+  path: /api/chat/slots/{slot}
+  summary: 'List, create and read conversations: the core of an owner client'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:120
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/stop
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:141
+  x-crew-stability: experimental
+- method: delete
+  path: /api/chat/slots/{slot}
+  summary: 'List, create and read conversations: the core of an owner client'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:155
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/agent
+  summary: 'Switch model or agent: owner client setting'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:160
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/model
+  summary: 'Switch model or agent: owner client setting'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:164
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/fork
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/chat.py:194
+  x-crew-stability: experimental
+- method: get
+  path: /api/auth/me
+  summary: First-party sign-in session upkeep
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:100
+  x-crew-stability: experimental
+- method: post
+  path: /api/auth/refresh
+  summary: First-party sign-in session upkeep
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:105
+  x-crew-stability: experimental
+- method: post
+  path: /api/auth/logout
+  summary: First-party sign-in session upkeep
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:106
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:109
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/search-sessions
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:110
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/versions
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:113
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:114
+  x-crew-stability: experimental
+- method: patch
+  path: /api/instances/{id}
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:115
+  x-crew-stability: experimental
+- method: delete
+  path: /api/instances/{id}
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:116
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/{id}/status
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:117
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/connect
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:118
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/refresh-token
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:119
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/embed-token
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:126
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/disconnect
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:129
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/restart
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:132
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/update
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:135
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/{id}/update
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:138
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/send-session
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:141
+  x-crew-stability: experimental
+- method: post
+  path: /api/instances/{id}/crew-turn
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:150
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/{id}/capabilities
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:155
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/{id}/approval-state
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:161
+  x-crew-stability: experimental
+- method: get
+  path: /api/instances/{id}/chat-slots
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:169
+  x-crew-stability: experimental
+- method: '*'
+  path: /api/instances/{id}/proxy/{path:.*}
+  summary: 'Multi-instance management: control plane'
+  auth: cookie|token+owner-only
+  streaming: stream
+  x-crew-source: src/kiro_crew/dashboard/routes/connections.py:175
+  x-crew-stability: experimental
+- method: get
+  path: /api/memory/recall
+  summary: 'Memory recall: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/memory.py:81
+  x-crew-stability: experimental
+- method: get
+  path: /api/ws
+  summary: 'Live push: the only event channel today'
+  auth: cookie|token
+  streaming: ws
+  x-crew-source: src/kiro_crew/dashboard/routes/realtime.py:42
+  x-crew-stability: experimental
+- method: get
+  path: /api/status
+  summary: 'Instance health: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/realtime.py:45
+  x-crew-stability: experimental
+- method: get
+  path: /api/stream
+  summary: Live push, SSE fallback
+  auth: cookie|token
+  streaming: sse
+  x-crew-source: src/kiro_crew/dashboard/routes/realtime.py:65
+  x-crew-stability: experimental
+- method: get
+  path: /api/version
+  summary: Precursor of version negotiation
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/realtime.py:71
+  x-crew-stability: experimental
+- method: get
+  path: /api/sessions/{id}/crew-log
+  summary: 'Event replay: the base of the in-instance event stream'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:41
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/resume
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:70
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/approve
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:71
+  x-crew-stability: experimental
+- method: get
+  path: /api/chat/slots/{slot}/question
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:73
+  x-crew-stability: experimental
+- method: post
+  path: /api/chat/slots/{slot}/question/answer
+  summary: 'Drive a conversation: send, stop, approve, read history'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:74
+  x-crew-stability: experimental
+- method: patch
+  path: /api/chat/slots/{slot}/mode
+  summary: 'Switch model or agent: owner client setting'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:126
+  x-crew-stability: experimental
+- method: post
+  path: /v1/chat/completions
+  summary: Transition OpenAI-compatible entry; owner and local apps only, delegated credentials get 403
+  auth: internal-secret|cookie
+  streaming: sse (optional)
+  x-crew-source: src/kiro_crew/dashboard/routes/sessions.py:194
+  x-crew-stability: experimental
+- method: get
+  path: /api/notifications
+  summary: 'Notification list: a client''s inbox'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:37
+  x-crew-stability: experimental
+- method: delete
+  path: /api/notifications
+  summary: 'Notification list: a client''s inbox'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:38
+  x-crew-stability: experimental
+- method: get
+  path: /api/update/check
+  summary: 'Upgrade: control plane'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:50
+  x-crew-stability: experimental
+- method: post
+  path: /api/update
+  summary: 'Upgrade: control plane'
+  auth: cookie|token+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:53
+  x-crew-stability: experimental
+- method: post
+  path: /api/update/arm
+  summary: 'Upgrade: control plane'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:67
+  x-crew-stability: experimental
+- method: get
+  path: /api/update/arm
+  summary: 'Upgrade: control plane'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:68
+  x-crew-stability: experimental
+- method: delete
+  path: /api/update/arm
+  summary: 'Upgrade: control plane'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:72
+  x-crew-stability: experimental
+- method: get
+  path: /api/sessions
+  summary: Session inventory
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:86
+  x-crew-stability: experimental
+- method: get
+  path: /api/approvals
+  summary: 'List and answer approvals: required by owner clients'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:213
+  x-crew-stability: experimental
+- method: post
+  path: /api/approvals/{id}/{action}
+  summary: 'List and answer approvals: required by owner clients'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/routes/system.py:214
+  x-crew-stability: experimental
+  x-crew-contract-mapping:
+    allow: action=approve
+    deny: action=reject
+    'deny + scope: once': action=reject_once
+    allow_always: allow_always (new)
+- method: get
+  path: /api/members/{slug}/goals
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:343
+  x-crew-stability: experimental
+- method: get
+  path: /api/lessons
+  summary: 'View and write lessons: owner'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:170
+  x-crew-stability: experimental
+- method: post
+  path: /api/lessons
+  summary: 'View and write lessons: owner'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:171
+  x-crew-stability: experimental
+- method: delete
+  path: /api/lessons
+  summary: 'View and write lessons: owner'
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:172
+  x-crew-stability: experimental
+- method: put
+  path: /api/members/{slug}/goals/long-term
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:373
+  x-crew-stability: experimental
+- method: put
+  path: /api/members/{slug}/goals/key-results
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:377
+  x-crew-stability: experimental
+- method: put
+  path: /api/members/{slug}/goals/schedules
+  summary: 'Crewmate thread, goals, key results, check-ins: the owner manages a mate'
+  auth: cookie|token
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:381
+  x-crew-stability: experimental
+- method: get
+  path: /api/crons
+  summary: 'Schedule management: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:457
+  x-crew-stability: experimental
+- method: post
+  path: /api/crons
+  summary: 'Schedule management: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:458
+  x-crew-stability: experimental
+- method: delete
+  path: /api/crons
+  summary: 'Schedule management: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:459
+  x-crew-stability: experimental
+- method: delete
+  path: /api/crons/{job_id}
+  summary: 'Schedule management: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:462
+  x-crew-stability: experimental
+- method: patch
+  path: /api/crons/{job_id}
+  summary: 'Schedule management: owner client'
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:463
+  x-crew-stability: experimental
+- method: post
+  path: /api/crons/{job_id}/enable
+  summary: Schedule trigger, pause, history
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:469
+  x-crew-stability: experimental
+- method: post
+  path: /api/crons/{job_id}/run
+  summary: Schedule trigger, pause, history
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:470
+  x-crew-stability: experimental
+- method: get
+  path: /api/crons/{job_id}/history
+  summary: Schedule trigger, pause, history
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:474
+  x-crew-stability: experimental
+- method: get
+  path: /api/artifacts
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:701
+  x-crew-stability: experimental
+- method: post
+  path: /api/workflows/run
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:721
+  x-crew-stability: experimental
+- method: get
+  path: /api/workflows/definitions
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:723
+  x-crew-stability: experimental
+- method: post
+  path: /api/workflows/definitions
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:724
+  x-crew-stability: experimental
+- method: post
+  path: /api/workflows/definitions/{workflow_ref}/run
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:725
+  x-crew-stability: experimental
+- method: get
+  path: /api/workflows/definitions/{workflow_ref}
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:728
+  x-crew-stability: experimental
+- method: patch
+  path: /api/workflows/definitions/{workflow_ref}
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie+owner-only
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:729
+  x-crew-stability: experimental
+- method: get
+  path: /api/workflows/runs
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:732
+  x-crew-stability: experimental
+- method: get
+  path: /api/workflows/runs/{run_id}
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:733
+  x-crew-stability: experimental
+- method: post
+  path: /api/workflows/runs/{run_id}/cancel
+  summary: Workflow list, run, status
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:735
+  x-crew-stability: experimental
+- method: post
+  path: /api/artifacts
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:740
+  x-crew-stability: experimental
+- method: get
+  path: /api/artifacts/{slug}
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:759
+  x-crew-stability: experimental
+- method: patch
+  path: /api/artifacts/{slug}
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:761
+  x-crew-stability: experimental
+- method: delete
+  path: /api/artifacts/{slug}
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:762
+  x-crew-stability: experimental
+- method: get
+  path: /api/artifacts/{slug}/versions
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:764
+  x-crew-stability: experimental
+- method: get
+  path: /api/artifacts/{slug}/versions/{version}
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:765
+  x-crew-stability: experimental
+- method: get
+  path: /api/artifacts/{slug}/comments
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:830
+  x-crew-stability: experimental
+- method: post
+  path: /api/artifacts/{slug}/comments
+  summary: Artifact read and write, versions, comments
+  auth: internal-secret|cookie
+  streaming: 'no'
+  x-crew-source: src/kiro_crew/dashboard/server_runtime/mcp_routes.py:831
+  x-crew-stability: experimental

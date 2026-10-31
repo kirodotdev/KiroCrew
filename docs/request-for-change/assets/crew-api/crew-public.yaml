@@ -1,0 +1,2750 @@
+openapi: 3.1.0
+info:
+  title: Crew API · Public
+  version: 1.0.0-draft
+  description: |
+    Public tier of the Crew API: apps call it with a scoped bearer credential. 42 operations.
+    Design and rationale: docs/request-for-change/rfc-crew-api.md.
+
+    - Authentication: requests carry a bearer credential; each credential carries a set of scopes
+      (x-crew-scopes). How credentials are issued is out of scope.
+    - Versioning: the major version is in the path (/v1). The minor version is the Crew-API-Version
+      request header; the response echoes the server's version. A major version only ever adds.
+    - Errors: one error body, Error in components.yaml. Every response carries X-Request-Id.
+    - Permissions: a delegated credential holds only the scopes listed under security. Calling any
+      operation not in this file returns 403 insufficient_scope. The user's own credential may call
+      every Public operation and holds every scope.
+    - Ownership: a delegated credential sees and changes only the conversations, artifacts,
+      schedules and workflow runs created under its own grant. Anything else is 404.
+    - Quota: every response to a delegated-credential request, success or failure, carries
+      X-Crew-Quota-*. The embed-only /v1/crew/approvals/{id}/decision carries no quota headers.
+    - Idempotency: POSTs that spend credits (/v1/responses, /v1/crew/workflows/runs) accept
+      Idempotency-Key for 24 hours.
+    - Vocabulary: approval answers are allow and deny; approval states are pending, allowed,
+      denied and expired.
+    - Webhooks: the address comes only from the grant's manifest. The webhooks section below gives
+      the callback body and signature headers.
+    - Extensions: x-crew-tier, x-crew-scope, x-crew-reuses (existing code that can be built on),
+      x-crew-coverage (done/partial), x-crew-depends-on (open questions in the RFC).
+    - Streaming: for text/event-stream, x-crew-sse-data gives the shape of each data line and
+      x-crew-sse-events lists the event types (OpenAPI 3.1 has no item schema for SSE).
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+- url: https://{crew_endpoint}
+  description: The user's crew gateway
+  variables:
+    crew_endpoint:
+      default: crew.example.invalid
+      description: The address the app was given for this crew. Placeholder.
+- url: http://127.0.0.1:{port}
+  description: Local
+  variables:
+    port:
+      default: '5476'
+tags:
+- name: approvals
+  description: Approvals
+- name: artifacts
+  description: Artifacts
+- name: conversations
+  description: Conversations
+- name: crew
+  description: Crew extensions
+- name: events
+  description: Event stream
+- name: knowledge
+  description: Knowledge base
+- name: mates
+  description: Crewmates
+- name: memory
+  description: Memory
+- name: models
+  description: Models
+- name: notifications
+  description: Notifications
+- name: responses
+  description: Responses compatible
+- name: schedules
+  description: Schedules
+- name: webhooks
+  description: Webhooks
+- name: workflows
+  description: Workflows
+paths:
+  /v1/responses:
+    post:
+      operationId: post_v1_responses
+      summary: Run a turn
+      tags:
+      - responses
+      security:
+      - delegatedCredential:
+        - responses:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/IdempotencyKey
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Response
+              example:
+                id: resp_01JBX9
+                object: response
+                created_at: 1761822000
+                status: completed
+                model: agent_writer
+                conversation:
+                  id: conv_01JBX8
+                output:
+                - type: message
+                  id: msg_01
+                  role: assistant
+                  status: completed
+                  content:
+                  - type: output_text
+                    text: Done.
+                    annotations: []
+                usage: null
+                metadata: {}
+                crew:
+                  ignored_parameters:
+                  - temperature
+            text/event-stream:
+              schema:
+                type: string
+                description: 'SSE. Each data: line is one ResponseStreamEvent JSON object.'
+              x-crew-sse-data:
+                $ref: ./components.yaml#/components/schemas/ResponseStreamEvent
+              x-crew-sse-events:
+              - response.created
+              - response.queued
+              - response.in_progress
+              - response.completed
+              - response.failed
+              - response.incomplete
+              - response.output_item.added
+              - response.output_item.done
+              - response.content_part.added
+              - response.content_part.done
+              - response.output_text.delta
+              - response.output_text.done
+              - response.function_call_arguments.delta
+              - response.function_call_arguments.done
+              - response.mcp_call.in_progress
+              - response.mcp_call.completed
+              - response.mcp_call.failed
+              - error
+              - crew.notice
+              example: |
+                event: response.created
+                data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_01JBX9","object":"response","status":"in_progress"}}
+
+                event: response.output_text.delta
+                data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_01","output_index":0,"content_index":0,"delta":"Done"}
+
+                event: response.completed
+                data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_01JBX9","object":"response","status":"completed"}}
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '409':
+          $ref: ./components.yaml#/components/responses/Conflict
+        '413':
+          $ref: ./components.yaml#/components/responses/PayloadTooLarge
+        '422':
+          $ref: ./components.yaml#/components/responses/Unprocessable
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: responses:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_runner.py:765 (_run_chat)
+      - src/kiro_crew/dashboard/openai_compat.py:757 (how _stream_response reads the queue)
+      x-crew-coverage: partial
+      x-crew-depends-on:
+      - Q2 image and file input
+      - Q3 json_schema output
+      - Q4 reasoning summaries
+      description: 'stream=true returns text/event-stream; background=true returns queued at once. Delegated credential:
+        model must be the connector''s agent.id or a mate the grant allows, and conversation must be one opened
+        under this grant. Spends credits against the grant quota; a retry with the same Idempotency-Key is not charged
+        again.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateResponseRequest
+            example:
+              model: agent_writer
+              conversation: conv_01JBX8
+              input: Make the second paragraph shorter
+              stream: true
+  /v1/responses/{response_id}:
+    get:
+      operationId: get_v1_responses_response_id
+      summary: Read a turn; can resume its stream
+      tags:
+      - responses
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: response_id
+        in: path
+        required: true
+        description: resp_ id
+        schema:
+          type: string
+      - name: stream
+        in: query
+        required: false
+        description: true resumes the stream as SSE.
+        schema:
+          type: boolean
+      - name: starting_after
+        in: query
+        required: false
+        description: Resume after the Nth stream event (sequence_number).
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Response
+              example:
+                id: resp_01JBX9
+                object: response
+                created_at: 1761822000
+                status: completed
+                model: agent_writer
+                conversation:
+                  id: conv_01JBX8
+                output:
+                - type: message
+                  id: msg_01
+                  role: assistant
+                  status: completed
+                  content:
+                  - type: output_text
+                    text: Done.
+                    annotations: []
+                usage: null
+                metadata: {}
+                crew:
+                  ignored_parameters:
+                  - temperature
+            text/event-stream:
+              schema:
+                type: string
+                description: 'SSE. Each data: line is one ResponseStreamEvent JSON object.'
+              x-crew-sse-data:
+                $ref: ./components.yaml#/components/schemas/ResponseStreamEvent
+              x-crew-sse-events:
+              - response.created
+              - response.queued
+              - response.in_progress
+              - response.completed
+              - response.failed
+              - response.incomplete
+              - response.output_item.added
+              - response.output_item.done
+              - response.content_part.added
+              - response.content_part.done
+              - response.output_text.delta
+              - response.output_text.done
+              - response.function_call_arguments.delta
+              - response.function_call_arguments.done
+              - response.mcp_call.in_progress
+              - response.mcp_call.completed
+              - response.mcp_call.failed
+              - error
+              - crew.notice
+              example: |
+                event: response.created
+                data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_01JBX9","object":"response","status":"in_progress"}}
+
+                event: response.output_text.delta
+                data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_01","output_index":0,"content_index":0,"delta":"Done"}
+
+                event: response.completed
+                data: {"type":"response.completed","sequence_number":9,"response":{"id":"resp_01JBX9","object":"response","status":"completed"}}
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: partial
+      x-crew-depends-on:
+      - Q1 event and stream retention
+      description: Stream events must be stored to allow resuming; how long is an open question.
+  /v1/responses/{response_id}/cancel:
+    post:
+      operationId: post_v1_responses_response_id_cancel
+      summary: Cancel a running turn
+      tags:
+      - responses
+      security:
+      - delegatedCredential:
+        - responses:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: response_id
+        in: path
+        required: true
+        description: resp_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Response
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: responses:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/turn_stop.py:822 (api_chat_slot_stop)
+      x-crew-coverage: done
+      description: An already finished turn returns its current state without error. A cancelled turn has status=cancelled.
+  /v1/responses/{response_id}/input_items:
+    get:
+      operationId: get_v1_responses_response_id_input_items
+      summary: Read this turn's input
+      tags:
+      - responses
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: response_id
+        in: path
+        required: true
+        description: resp_ id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      - $ref: ./components.yaml#/components/parameters/Order
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/InputItemList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (the slot window)
+      x-crew-coverage: done
+  /v1/conversations:
+    post:
+      operationId: post_v1_conversations
+      summary: Create a conversation
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - responses:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Conversation
+              example:
+                id: conv_01JBX8
+                object: conversation
+                created_at: 1761822000
+                metadata:
+                  doc_id: d42
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: responses:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_create.py:212 (api_chat_slot_create)
+      x-crew-coverage: done
+      description: The conversation is tagged with the grant id. The external id is conv_, never the internal session
+        key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateConversationRequest
+    get:
+      operationId: get_v1_conversations
+      summary: List this grant's conversations
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      - $ref: ./components.yaml#/components/parameters/Order
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ConversationList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_detail.py:52 (api_chat_slots)
+      x-crew-coverage: done
+      description: OpenAI has no such endpoint; Crew adds it. A delegated credential lists only conversations opened
+        under its grant.
+  /v1/conversations/{conversation_id}:
+    get:
+      operationId: get_v1_conversations_conversation_id
+      summary: Read a conversation
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: conversation_id
+        in: path
+        required: true
+        description: conv_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Conversation
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (api_chat_slot_detail)
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_conversations_conversation_id
+      summary: Update conversation metadata
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - responses:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: conversation_id
+        in: path
+        required: true
+        description: conv_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Conversation
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: responses:write
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/UpdateConversationRequest
+    delete:
+      operationId: delete_v1_conversations_conversation_id
+      summary: Delete a conversation opened under this grant
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - responses:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: conversation_id
+        in: path
+        required: true
+        description: conv_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Deleted
+              example:
+                id: conv_01JBX8
+                object: conversation.deleted
+                deleted: true
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '409':
+          $ref: ./components.yaml#/components/responses/Conflict
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: responses:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_lifecycle.py:1303 (api_chat_slot_delete)
+      x-crew-coverage: done
+      description: A delegated credential can delete only conversations opened under its grant; others get 404.
+        409 response_in_progress while a turn is running.
+  /v1/conversations/{conversation_id}/items:
+    get:
+      operationId: get_v1_conversations_conversation_id_items
+      summary: Read history, paged
+      tags:
+      - conversations
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: conversation_id
+        in: path
+        required: true
+        description: conv_ id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      - $ref: ./components.yaml#/components/parameters/Order
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ConversationItemList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/chat_api/slot_detail.py:803 (the slot window)
+      x-crew-coverage: done
+  /v1/models:
+    get:
+      operationId: get_v1_models
+      summary: List the agents and mates the caller can use
+      tags:
+      - models
+      security:
+      - delegatedCredential: []
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ModelList
+              example:
+                object: list
+                data:
+                - id: agent_writer
+                  object: model
+                  owned_by: app_7Hk
+                  crew:
+                    kind: connector
+                    name: Writing assistant
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: any
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/agents.py:1388 (api_models)
+      - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
+      x-crew-coverage: done
+      description: 'Lists only what the current credential can use: for a delegated credential, the connector''s
+        agent.id plus the grant''s mates; for the owner, everything.'
+  /v1/crew/capabilities:
+    get:
+      operationId: get_v1_crew_capabilities
+      summary: Capability negotiation
+      tags:
+      - crew
+      security:
+      - delegatedCredential: []
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Capabilities
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: any
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: Call this first. The result is filtered by credential; using a feature reported as false returns
+        422 capability_unavailable.
+  /v1/crew/info:
+    get:
+      operationId: get_v1_crew_info
+      summary: Instance information
+      tags:
+      - crew
+      security:
+      - delegatedCredential: []
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/InstanceInfo
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: any
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers_system.py:228 (api_status)
+      x-crew-coverage: done
+  /v1/crew/events:
+    get:
+      operationId: get_v1_crew_events
+      summary: In-instance event stream (conversation stream or instance stream)
+      tags:
+      - events
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: conversation
+        in: query
+        required: false
+        description: With it, a conversation stream; without it, the instance stream.
+        schema:
+          type: string
+          pattern: ^conv_
+      - name: since
+        in: query
+        required: false
+        description: 'Cursor: the last seq the client processed. Without it, only new events are sent.'
+        schema:
+          type: integer
+          minimum: 0
+      - name: limit
+        in: query
+        required: false
+        description: Page size for paged JSON; 0 returns only latest_seq.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 100
+      - name: wait
+        in: query
+        required: false
+        description: Long-poll seconds for paged JSON.
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 30
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema:
+          type: string
+        description: Sent by the browser on SSE reconnect; same as since.
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/EventPage
+            text/event-stream:
+              schema:
+                type: string
+                description: 'SSE. Each data: line is one Event JSON object.'
+              x-crew-sse-data:
+                $ref: ./components.yaml#/components/schemas/Event
+              x-crew-sse-events:
+              - conversation.created
+              - conversation.updated
+              - turn.started
+              - message.created
+              - tool.called
+              - approval.requested
+              - approval.decided
+              - turn.completed
+              - grant.revoked
+              - notice
+              example: |
+                id: 43
+                event: approval.requested
+                data: {"seq":43,"event_id":"evt_01JBX","type":"approval.requested","conversation":"conv_01JBX8","response":"resp_01JBX9","created_at":1761822000,"data":{"approval_id":"apr_9f3c","tool":"docs.publish","reason":"Publish the document","answerable_by_you":false}}
+
+                : keepalive
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '410':
+          $ref: ./components.yaml#/components/responses/ResyncRequired
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/crew_log/read.py:559 (read_page)
+      x-crew-coverage: partial
+      x-crew-depends-on:
+      - Q1 event and stream retention
+      description: 'With `Accept: text/event-stream` this is SSE: each message''s `id:` is the seq and `event:`
+        is the type, and a comment line is sent every 15 seconds when idle. Otherwise it returns paged JSON. Events
+        are stored before they are sent, and a slow client is disconnected instead of losing events. Each credential
+        may hold at most 10 stream connections; past that, 429 concurrency_limit.'
+  /v1/crew/approvals:
+    get:
+      operationId: get_v1_crew_approvals
+      summary: List approvals (read only)
+      tags:
+      - approvals
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: state
+        in: query
+        required: false
+        description: Filter by status.
+        schema:
+          $ref: ./components.yaml#/components/schemas/ApprovalState
+      - name: conversation
+        in: query
+        required: false
+        description: Filter by conversation.
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ApprovalList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/state_parts/dashboard_state.py:762 (_pending_approvals)
+      x-crew-coverage: done
+  /v1/crew/approvals/{approval_id}:
+    get:
+      operationId: get_v1_crew_approvals_approval_id
+      summary: Read one approval
+      tags:
+      - approvals
+      security:
+      - delegatedCredential:
+        - conversations:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: approval_id
+        in: path
+        required: true
+        description: apr_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Approval
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: conversations:read
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+  /v1/crew/approvals/{approval_id}/decision:
+    post:
+      operationId: post_v1_crew_approvals_approval_id_decision
+      summary: Answer an approval (embed credential only)
+      tags:
+      - approvals
+      security:
+      - embedCredential: []
+      - embedCredentialHeader: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: approval_id
+        in: path
+        required: true
+        description: apr_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Approval
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequestNoQuota
+        '401':
+          $ref: ./components.yaml#/components/responses/UnauthorizedNoQuota
+        '403':
+          $ref: ./components.yaml#/components/responses/ForbiddenNoQuota
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFoundNoQuota
+        '409':
+          $ref: ./components.yaml#/components/responses/ConflictNoQuota
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequestsNoQuota
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalErrorNoQuota
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailableNoQuota
+      x-crew-tier: public
+      x-crew-scope: embed
+      x-crew-reuses:
+      - src/kiro_crew/shared_crew/decisions.py:592 (resolve_approval_by_id, first answer wins)
+      x-crew-coverage: done
+      description: 'Public, embed credential only: accepts only the embed credential, and only for the connector
+        conversation it is bound to. A delegated credential gets 403 approval_requires_first_party. Spends no quota
+        and returns no quota headers. The first answer wins; later ones get 409 approval_already_resolved. The owner
+        answers (including allow_always) through the Owner approval endpoint.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/ApprovalDecisionRequest
+            example:
+              decision: allow
+  /v1/crew/mates:
+    get:
+      operationId: get_v1_crew_mates
+      summary: List mates the app may chat with
+      tags:
+      - mates
+      security:
+      - delegatedCredential:
+        - mates:chat
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/MateList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: mates:chat
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/members_roster.py:331 (api_members)
+      x-crew-coverage: done
+      description: A delegated credential lists only the grant's mates; empty means an empty list.
+  /v1/crew/mates/{mate_id}/goals:
+    get:
+      operationId: get_v1_crew_mates_mate_id_goals
+      summary: Read a mate's goals, key results and readings
+      tags:
+      - mates
+      security:
+      - delegatedCredential:
+        - mates:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: mate_id
+        in: path
+        required: true
+        description: mate id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/MateGoals
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: mates:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/member_goals.py:177 (api_member_goals_get)
+      x-crew-coverage: done
+      description: A mate not in the grant's mates gets 404.
+  /v1/crew/mates/{mate_id}/reports:
+    get:
+      operationId: get_v1_crew_mates_mate_id_reports
+      summary: List a mate's weekly and monthly reports
+      tags:
+      - mates
+      security:
+      - delegatedCredential:
+        - mates:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: mate_id
+        in: path
+        required: true
+        description: mate id
+        schema:
+          type: string
+      - name: include
+        in: query
+        required: false
+        description: 'content: include the body'
+        schema:
+          enum:
+          - content
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/MateReportList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: mates:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/member_goals.py:648 (report writer; the read side is new work)
+      x-crew-coverage: done
+      description: Read only; mates:read includes report bodies. A mate not in the grant's mates gets 404.
+  /v1/crew/artifacts:
+    get:
+      operationId: get_v1_crew_artifacts
+      summary: List this grant's artifacts
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: tag
+        in: query
+        required: false
+        description: Filter by tag.
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      - $ref: ./components.yaml#/components/parameters/Order
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ArtifactList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/artifacts_parts/library_reads.py:291 (api_artifacts_list)
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_crew_artifacts
+      summary: Create an artifact
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Artifact
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '413':
+          $ref: ./components.yaml#/components/responses/PayloadTooLarge
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/artifacts_parts/create_update.py:77
+      x-crew-coverage: done
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateArtifactRequest
+            example:
+              name: Weekly report draft
+              kind: markdown
+              content: '# This week
+
+                ...'
+  /v1/crew/artifacts/{artifact_id}:
+    get:
+      operationId: get_v1_crew_artifacts_artifact_id
+      summary: Read an artifact (with body)
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: artifact_id
+        in: path
+        required: true
+        description: Artifact id
+        schema:
+          type: string
+      - name: version
+        in: query
+        required: false
+        description: Read a given version.
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Artifact
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:759
+      x-crew-coverage: done
+    patch:
+      operationId: patch_v1_crew_artifacts_artifact_id
+      summary: Update an artifact
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: artifact_id
+        in: path
+        required: true
+        description: Artifact id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Artifact
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '413':
+          $ref: ./components.yaml#/components/responses/PayloadTooLarge
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:761
+      x-crew-coverage: done
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/UpdateArtifactRequest
+  /v1/crew/artifacts/{artifact_id}/versions:
+    get:
+      operationId: get_v1_crew_artifacts_artifact_id_versions
+      summary: List versions
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: artifact_id
+        in: path
+        required: true
+        description: Artifact id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ArtifactVersionList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:764
+      x-crew-coverage: done
+  /v1/crew/artifacts/{artifact_id}/comments:
+    get:
+      operationId: get_v1_crew_artifacts_artifact_id_comments
+      summary: List comments
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: artifact_id
+        in: path
+        required: true
+        description: Artifact id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/CommentList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:830
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_crew_artifacts_artifact_id_comments
+      summary: Post a comment or reply
+      tags:
+      - artifacts
+      security:
+      - delegatedCredential:
+        - artifacts:write
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: artifact_id
+        in: path
+        required: true
+        description: Artifact id
+        schema:
+          type: string
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Comment
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: artifacts:write
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:831
+      x-crew-coverage: done
+      description: 'Cannot resolve: only a person resolves comments.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateCommentRequest
+  /v1/crew/notifications:
+    post:
+      operationId: post_v1_crew_notifications
+      summary: Send the user a notification
+      tags:
+      - notifications
+      security:
+      - delegatedCredential:
+        - notifications:send
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Notification
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: notifications:send
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/notification_coordinator.py:126 (NotificationCoordinator.notify)
+      x-crew-coverage: done
+      description: Each grant may send 10 per hour by default (the grant's notify_per_hour). Past the limit, 429
+        notification_limited with Retry-After.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateNotificationRequest
+  /v1/crew/schedules:
+    get:
+      operationId: get_v1_crew_schedules
+      summary: List this grant's schedules
+      tags:
+      - schedules
+      security:
+      - delegatedCredential:
+        - schedules:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ScheduleList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: schedules:manage
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:457
+      - src/kiro_crew/dashboard/handlers/cron_shared.py:125 (_app_caller)
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_crew_schedules
+      summary: Create a schedule
+      tags:
+      - schedules
+      security:
+      - delegatedCredential:
+        - schedules:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Schedule
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: schedules:manage
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/cron_jobs.py:450
+      x-crew-coverage: done
+      description: Each run spends credits against the same grant quota; when quota is short the run is skipped
+        and last_run.status=skipped_quota.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateScheduleRequest
+            example:
+              name: Morning summary
+              model: agent_writer
+              message: Summarize yesterday's changes
+              schedule:
+                cron: 0 9 * * 1-5
+                timezone: Asia/Shanghai
+  /v1/crew/schedules/{schedule_id}:
+    patch:
+      operationId: patch_v1_crew_schedules_schedule_id
+      summary: Change, pause or resume
+      tags:
+      - schedules
+      security:
+      - delegatedCredential:
+        - schedules:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: schedule_id
+        in: path
+        required: true
+        description: sch_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Schedule
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: schedules:manage
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:463
+      x-crew-coverage: done
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/UpdateScheduleRequest
+    delete:
+      operationId: delete_v1_crew_schedules_schedule_id
+      summary: Delete a schedule
+      tags:
+      - schedules
+      security:
+      - delegatedCredential:
+        - schedules:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: schedule_id
+        in: path
+        required: true
+        description: sch_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Deleted
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: schedules:manage
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:462
+      x-crew-coverage: done
+  /v1/crew/schedules/{schedule_id}/run:
+    post:
+      operationId: post_v1_crew_schedules_schedule_id_run
+      summary: Trigger once now
+      tags:
+      - schedules
+      security:
+      - delegatedCredential:
+        - schedules:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: schedule_id
+        in: path
+        required: true
+        description: sch_ id
+        schema:
+          type: string
+      - $ref: ./components.yaml#/components/parameters/IdempotencyKey
+      responses:
+        '202':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/ScheduleRun
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '409':
+          $ref: ./components.yaml#/components/responses/Conflict
+        '422':
+          $ref: ./components.yaml#/components/responses/Unprocessable
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: schedules:manage
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/cron_runs.py:46 (api_cron_run)
+      x-crew-coverage: done
+      description: Spends credits against the grant quota; a retry with the same Idempotency-Key is not charged
+        again.
+  /v1/crew/workflows/runs:
+    get:
+      operationId: get_v1_crew_workflows_runs
+      summary: List workflow runs started by this grant
+      tags:
+      - workflows
+      security:
+      - delegatedCredential:
+        - workflows:run
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/After
+      - $ref: ./components.yaml#/components/parameters/Limit
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/WorkflowRunList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: workflows:run
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/workflows.py:568
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_crew_workflows_runs
+      summary: Start a workflow run
+      tags:
+      - workflows
+      security:
+      - delegatedCredential:
+        - workflows:run
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - $ref: ./components.yaml#/components/parameters/IdempotencyKey
+      responses:
+        '202':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/WorkflowRun
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '422':
+          $ref: ./components.yaml#/components/responses/Unprocessable
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: workflows:run
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/workflows.py:637
+      x-crew-coverage: done
+      description: Only saved workflows the user marked "allow third parties". Spends credits and runs several agents
+        in parallel; counted against the grant quota.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateWorkflowRunRequest
+  /v1/crew/workflows/runs/{run_id}:
+    get:
+      operationId: get_v1_crew_workflows_runs_run_id
+      summary: Read status and result
+      tags:
+      - workflows
+      security:
+      - delegatedCredential:
+        - workflows:run
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: run_id
+        in: path
+        required: true
+        description: wfr_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/WorkflowRun
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: workflows:run
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:733
+      x-crew-coverage: done
+  /v1/crew/workflows/runs/{run_id}/cancel:
+    post:
+      operationId: post_v1_crew_workflows_runs_run_id_cancel
+      summary: Cancel a workflow run
+      tags:
+      - workflows
+      security:
+      - delegatedCredential:
+        - workflows:run
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: run_id
+        in: path
+        required: true
+        description: wfr_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/WorkflowRun
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: workflows:run
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/server_runtime/mcp_routes.py:735
+      x-crew-coverage: done
+  /v1/crew/memory/recall:
+    get:
+      operationId: get_v1_crew_memory_recall
+      summary: Memory recall
+      tags:
+      - memory
+      security:
+      - delegatedCredential:
+        - memory:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: q
+        in: query
+        required: true
+        description: Search query.
+        schema:
+          type: string
+          maxLength: 2000
+      - name: limit
+        in: query
+        required: false
+        description: How many results at most.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 5
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/RecallResult
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: memory:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/memory_member.py:165 (api_memory_recall)
+      x-crew-coverage: done
+      description: Needs memory:read and the grant's memory_global set to true; otherwise 403 insufficient_scope.
+        Reads the user's Global memory only, never a crewmate's private memory.
+  /v1/crew/knowledge/search:
+    get:
+      operationId: get_v1_crew_knowledge_search
+      summary: Knowledge base search
+      tags:
+      - knowledge
+      security:
+      - delegatedCredential:
+        - knowledge:read
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: q
+        in: query
+        required: true
+        description: Search terms.
+        schema:
+          type: string
+          maxLength: 2000
+      - name: source_id
+        in: query
+        required: false
+        description: Search within one source only.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: How many results at most.
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 3
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/KnowledgeResult
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: knowledge:read
+      x-crew-reuses:
+      - src/kiro_crew/dashboard/handlers/knowledge_agent_context.py:92 (search_for_context)
+      x-crew-coverage: done
+  /v1/crew/webhooks:
+    get:
+      operationId: get_v1_crew_webhooks
+      summary: List this grant's webhook subscriptions
+      tags:
+      - webhooks
+      security:
+      - delegatedCredential:
+        - webhooks:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/WebhookList
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: webhooks:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+    post:
+      operationId: post_v1_crew_webhooks
+      summary: Subscribe to webhook events
+      tags:
+      - webhooks
+      security:
+      - delegatedCredential:
+        - webhooks:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      responses:
+        '201':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Webhook
+        '400':
+          $ref: ./components.yaml#/components/responses/BadRequest
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '422':
+          $ref: ./components.yaml#/components/responses/Unprocessable
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: webhooks:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: Selects event types only; the address comes from the manifest. If the manifest has no webhook_url,
+        422 capability_unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/CreateWebhookRequest
+  /v1/crew/webhooks/{webhook_id}:
+    delete:
+      operationId: delete_v1_crew_webhooks_webhook_id
+      summary: Delete a webhook subscription
+      tags:
+      - webhooks
+      security:
+      - delegatedCredential:
+        - webhooks:manage
+      - firstPartySession: []
+      parameters:
+      - $ref: ./components.yaml#/components/parameters/CrewApiVersion
+      - $ref: ./components.yaml#/components/parameters/RequestId
+      - name: webhook_id
+        in: path
+        required: true
+        description: whk_ id
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          headers:
+            X-Request-Id:
+              $ref: ./components.yaml#/components/headers/X-Request-Id
+            Crew-API-Version:
+              $ref: ./components.yaml#/components/headers/Crew-API-Version
+            X-Crew-Quota-Limit:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Limit
+            X-Crew-Quota-Remaining:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Remaining
+            X-Crew-Quota-Reset:
+              $ref: ./components.yaml#/components/headers/X-Crew-Quota-Reset
+          content:
+            application/json:
+              schema:
+                $ref: ./components.yaml#/components/schemas/Deleted
+        '401':
+          $ref: ./components.yaml#/components/responses/Unauthorized
+        '403':
+          $ref: ./components.yaml#/components/responses/Forbidden
+        '404':
+          $ref: ./components.yaml#/components/responses/NotFound
+        '429':
+          $ref: ./components.yaml#/components/responses/TooManyRequests
+        '500':
+          $ref: ./components.yaml#/components/responses/InternalError
+        '503':
+          $ref: ./components.yaml#/components/responses/InstanceUnavailable
+      x-crew-tier: public
+      x-crew-scope: webhooks:manage
+      x-crew-reuses:
+      - None; new work.
+      x-crew-coverage: done
+      description: Subscriptions are deleted with the grant and never retried.
+components:
+  securitySchemes:
+    delegatedCredential:
+      type: http
+      scheme: bearer
+      description: A bearer credential an app holds on the user's behalf. Each credential carries a set of scopes
+        (x-crew-scopes at the document root). How credentials are issued is out of scope for this API.
+    firstPartySession:
+      type: http
+      scheme: bearer
+      description: The user's own credential (owner). Holds every scope.
+    embedCredential:
+      type: apiKey
+      in: cookie
+      name: crew_embed
+      description: A short-lived credential that represents the user and is bound to one conversation. It can only
+        answer approvals in that conversation. The cookie name is a placeholder.
+    embedCredentialHeader:
+      type: apiKey
+      in: header
+      name: X-Crew-Embed-Credential
+      description: The same embed credential sent as a header; accepted only on the approval endpoint.
+x-crew-scopes:
+  responses:write: Open conversations, run turns, cancel its own turns.
+  conversations:read: Read conversations, events and approvals opened under this grant (read only).
+  webhooks:manage: Select event types for callbacks; the address comes from the manifest.
+  mates:chat: List mates the app may chat with, and chat with them.
+  mates:read: Read goals, key results, progress and reports (with bodies) of mates the grant allows.
+  artifacts:read: Read this grant's artifacts and comments.
+  artifacts:write: Write this grant's artifacts and comments.
+  notifications:send: Send the user a notification (dashboard bell only; 10 per hour per grant by default).
+  schedules:manage: This grant's schedules (off unless the user enables it).
+  workflows:run: Start saved workflows the user marked "allow third parties" (off unless the user enables it).
+  memory:read: Memory recall over the user's Global memory (off unless the user enables it).
+  knowledge:read: Knowledge base search (off unless the user enables it).
+x-crew-owner-only-scopes:
+- approvals:answer
+- grants:manage
+- instance:manage
+- mates:manage
+- memory:write
+- knowledge:write
+webhooks:
+  crewEvent:
+    post:
+      operationId: crew_event_webhook
+      summary: Callback the crew sends to the app's backend
+      description: Sent to the manifest's callbacks.webhook_url. Carries ids only, never content. Signed with HMAC-SHA256
+        under the app's webhook secret; see X-Crew-Signature. Receivers reject an X-Crew-Timestamp older than 5
+        minutes. The gateway sends only to public addresses and does not follow redirects.
+      security: []
+      x-crew-coverage: done
+      parameters:
+      - name: X-Crew-Signature
+        in: header
+        required: true
+        description: sha256=<hex>, where <hex> is the lowercase hex HMAC-SHA256 of timestamp + "." + raw_body (timestamp
+          is the X-Crew-Timestamp value, raw_body the exact request body) under the app's webhook secret. The secret
+          is issued once when the app is registered and can be rotated; how it is issued is out of scope for this
+          API.
+        schema:
+          type: string
+      - name: X-Crew-Timestamp
+        in: header
+        required: true
+        description: Unix seconds.
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components.yaml#/components/schemas/WebhookDelivery
+            example:
+              id: evt_01JBX
+              type: turn.completed
+              created_at: 1761822000
+              grant_id: grt_8Kd
+              conversation: conv_01JBX8
+              response: resp_01JBX9
+      responses:
+        2XX:
+          description: Received. Any other status counts as one failed delivery.
