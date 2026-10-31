@@ -55,7 +55,7 @@ from kiro_crew.monitoring.models import (
     MonitorCreationSurface,
     MonitorState,
 )
-from kiro_crew.platform import PlatformCompositionError
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -73,6 +73,13 @@ logger = logging.getLogger(__name__)
 STALE_GOAL_BASELINE_ERROR = (
     "Not saved: the goal was changed or reloaded since you opened it. Your text is kept. "
     "Send the same save again to replace the stored goal with your text."
+)
+
+#: Both nudge authorizers refuse a save with this, so a reader meets ONE wording
+#: for one condition whichever route they came in by.
+SCRUB_UNAVAILABLE_SAVE_ERROR = (
+    "Safety checks are temporarily unavailable, so this goal cannot be saved. "
+    "If this keeps happening, restart Kiro Crew."
 )
 
 # Dashboard slot modes that refuse automation turns armed from OUTSIDE the
@@ -725,6 +732,29 @@ def message_is_echoed_projection(current: Any, message: Any) -> bool:
     return message == stored or message == scrub_loop_text(stored)
 
 
+def scrub_policy_unavailable() -> bool:
+    """True when the active credential policy cannot scrub, so nothing may be written.
+
+    Both authorizers mutate and then hand a nudge loop back to a caller that
+    SERIALIZES it through a fail-closed projection. Without this gate a request
+    reached the store, COMMITTED, and only then raised while rendering the
+    response: HTTP 500 with the mutation persisted and audited as a success, so a
+    retry applies it twice. Asking ONCE up front -- before the critical
+    ``invoked`` audit and before the mutation -- turns that into an audited 503.
+
+    ``redact_via_context("")`` is the probe: the shim calls
+    ``current_context().credentials.redact(text)`` with no short-circuit, so
+    composition is exercised regardless of the text, and an empty string scrubs
+    nothing real. Only ``PlatformCompositionError`` counts -- every other adapter
+    failure already degrades inside the shim, so the projection still succeeds.
+    """
+    try:
+        redact_via_context("")
+    except PlatformCompositionError:
+        return True
+    return False
+
+
 async def authorize_and_update_nudge(
     *,
     svc: Any,
@@ -812,11 +842,7 @@ async def authorize_and_update_nudge(
         try:
             resubmitted_projection = message_is_echoed_projection(row, message)
         except PlatformCompositionError:
-            return _deny(
-                "Safety checks are temporarily unavailable, so this goal cannot "
-                "be saved. If this keeps happening, restart Kiro Crew.",
-                503,
-            )
+            return _deny(SCRUB_UNAVAILABLE_SAVE_ERROR, 503)
         if resubmitted_projection:
             message = None
             # NOT silent: a caller that really did mean this exact text can see why it
@@ -845,11 +871,7 @@ async def authorize_and_update_nudge(
                 )
                 banner = None
         except PlatformCompositionError:
-            return _deny(
-                "Safety checks are temporarily unavailable, so this goal cannot "
-                "be saved. If this keeps happening, restart Kiro Crew.",
-                503,
-            )
+            return _deny(SCRUB_UNAVAILABLE_SAVE_ERROR, 503)
     if banner is not None:
         # Optional and display-only; ``None`` reached here means "leave
         # unchanged" and was filtered by the caller, so a value present now is a
@@ -1261,6 +1283,10 @@ async def authorize_and_add_nudge(
         admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
+    # BEFORE the sentinel unlink below, which is unconditional: probing afterwards
+    # destroyed an operator's live stop file and only then refused the arm.
+    if scrub_policy_unavailable():
+        return _deny(SCRUB_UNAVAILABLE_SAVE_ERROR, 503)
     if monitor is None:
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None

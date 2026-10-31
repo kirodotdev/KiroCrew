@@ -520,6 +520,25 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes through the credential + exfiltration-URL chain before egress.",
     ),
     (
+        "Auto-nudge loop inventory",
+        "dashboard/handlers/autonudge.py",
+        "A nudge loop's own text fields -- its `message` and `stopped_reason` -- "
+        "served by `GET /api/autonudge` and its per-loop detail, and echoed back on the "
+        "`POST` and `PATCH` responses. `message` is the instruction re-delivered to the "
+        "model every cycle, and three producers reach `svc.add` without passing through the "
+        "arming authorizer (the goal loop, auto-research, and issue-radar, the last "
+        "composing its text from external issue bodies), while a hand-edited "
+        "`autonudge.json` bypasses that authorizer too -- so the stored value can be text "
+        "nothing has scanned. `_serialize` therefore runs the credential + "
+        "exfiltration-URL chain over every string it returns except the `id` and `slot_key` "
+        "the client uses to address the loop, which must survive verbatim or the row cannot "
+        "be acted on. Dict and list values are walked rather than flattened, so the typed "
+        "`judge` readings keep the shape the popover parses. The ungated `autonudge_state` "
+        "WebSocket frame, assembled in `slack/gateway_runtime/nudge_wiring.py`, applies "
+        "THIS module's per-field rule rather than a second copy of it, so a field added to "
+        "the frame cannot end up scrubbed on one surface only.",
+    ),
+    (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "
