@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import posixpath
 import re
 from collections.abc import Iterable
@@ -350,6 +351,40 @@ def strands_envelope_identity(envelope: dict[str, Any]) -> StrandsCallIdentity |
             "other", False, server, tool, f"{ACP_BACKEND_STRANDS}#@{server}/{tool}"
         )
     return None
+
+
+#: Why a Strands Side Chat call that is not the proven built-in read is refused.
+STRANDS_SIDE_READ_ONLY_REFUSAL = (
+    "this side chat is read-only, and on Strands only the harness's own file read "
+    "of an absolute path runs here"
+)
+
+
+def is_strands_side_read(
+    identity: StrandsCallIdentity | None,
+    envelope: dict[str, Any] | None,
+    gated_params: object,
+) -> bool:
+    """Whether a Strands Side Chat call is the harness's own file read of an absolute path.
+
+    True only when the gate module proved the call is the ``read`` built-in
+    (``owner: "builtin"``: the tool object ``strands_harness`` built), its envelope
+    arrived whole, and the path it names is absolute on this host and is the same
+    path the deny tiers judge (*gated_params*, what the permission event carries).
+    The built-in refuses a relative path and any ``..`` itself; the sensitive-path
+    checks resolve a relative path against the gateway's own directory, so one is
+    not accepted here either. Every other call -- the shell, a write, a fetch, a
+    sub-agent, a project's own tool, an MCP tool -- is False.
+    """
+    if identity is None or envelope is None or envelope.get("truncated"):
+        return False
+    if identity.harness_tool_id != f"{ACP_BACKEND_STRANDS}#read" or identity.mcp_server_name:
+        return False
+    stated = envelope.get("input")
+    path = stated.get("path") if isinstance(stated, dict) else None
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return False
+    return isinstance(gated_params, dict) and gated_params.get("path") == path
 
 
 #: The server-name characters pi keeps in an MCP tool name; any other is ``_``.
@@ -1064,6 +1099,19 @@ def build_permission_event(
         # always matched as this gateway's paths.
         _resolved_raw_params = dict(_resolved_raw_params)
 
+    # Strands asks about every call through Crew's gate module, and the envelope's
+    # owner is the proof of which tool runs. On a Side Chat session the harness's
+    # own file read of an absolute path is named as kiro-cli's ``fs_read``, which
+    # the READ_ONLY gate takes as a read; every other call carries the refusal, so
+    # the shell, writes, fetches, sub-agents and a project's own tools never run
+    # there, a read-only shell command included. Side Chat only.
+    _side_read_only_refusal = ""
+    if side_read_only and harness_backend == ACP_BACKEND_STRANDS:
+        if is_strands_side_read(strands_identity, envelope, _resolved_raw_params):
+            _harness_builtin_tool = "fs_read"
+        else:
+            _side_read_only_refusal = STRANDS_SIDE_READ_ONLY_REFUSAL
+
     # dsh's permission frame names only the toolCallId, so which dsh tool a
     # request is for comes only from the name its preceding tool_call frame
     # stated. The gate reads it on a READ_ONLY turn alone, and only once the
@@ -1115,6 +1163,7 @@ def build_permission_event(
         harness_builtin_tool=_harness_builtin_tool,
         deepseek_tool_name=_deepseek_tool_name,
         deepseek_read_only_issue=_deepseek_read_only_issue,
+        side_read_only_refusal=_side_read_only_refusal,
         tool_purpose=_purpose,
     )
     return event, recorded

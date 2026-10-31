@@ -102,6 +102,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping this would let a READ_ONLY turn on an unproved dsh
         # composition reach the gate's other read-only proofs.
         deepseek_read_only_issue=e.deepseek_read_only_issue,
+        # Dropping this would let a Strands side turn's read-only shell command
+        # reach the gate's shell classifier and run.
+        side_read_only_refusal=e.side_read_only_refusal,
         server_name=e.server_name,
         oauth_url=e.oauth_url,
         subagents=e.subagents,

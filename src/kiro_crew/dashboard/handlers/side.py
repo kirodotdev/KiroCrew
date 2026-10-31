@@ -19,7 +19,11 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.acp.client import AcpAuthRequired
-from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKENDS_SIDE_READONLY
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_STRANDS,
+    ACP_BACKENDS_SIDE_READONLY,
+)
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import (
@@ -578,20 +582,31 @@ async def _run_side_turn(
         # cannot reach a write: kiro-cli through the derived agent spec below,
         # claude-agent-acp through the session options its client sends for
         # ``side_read_only``, goose through the separate goose home its launch
-        # builds for ``side_read_only``. Off the set — or with the harness unknown because
+        # builds for ``side_read_only``, Strands through its gate module, which
+        # asks about every call, and a launch that mounts no MCP server for
+        # ``side_read_only``. Off the set — or with the harness unknown because
         # the config never loaded — the turn runs the pre-allowance posture: the
         # base agent under REJECT_ALL, and the prompt and fallback say tools are
         # unavailable here.
         tools_available = await _side_read_only_tools(side_backend)
         claude_side = tools_available and is_claude_backend_name(side_backend)
         goose_side = tools_available and side_backend == ACP_BACKEND_GOOSE
+        strands_side = tools_available and side_backend == ACP_BACKEND_STRANDS
         side_session_kwargs: dict[str, Any] = {}
-        if goose_side:
+        if strands_side:
+            # Strands reads no kiro agent spec. Every call asks through Crew's gate
+            # module; on a ``side_read_only`` session only the harness's own file
+            # read is proven, and every other call is refused before the gate.
+            side_agent: str | None = kiro_agent or slot_agent
+            approval_policy = ToolApprovalPolicy.READ_ONLY
+            binding = (side_agent or "", project or "", "strands_read_only")
+            side_session_kwargs["side_read_only"] = True
+        elif goose_side:
             # goose reads no kiro agent spec either. Its launch starts the side
             # session on a goose home of its own, where no permission.yaml can
             # pre-approve a tool and no MCP server is mounted, so every call
             # reaches the READ_ONLY gate below.
-            side_agent: str | None = kiro_agent or slot_agent
+            side_agent = kiro_agent or slot_agent
             approval_policy = ToolApprovalPolicy.READ_ONLY
             binding = (side_agent or "", project or "", "goose_read_only")
             side_session_kwargs["side_read_only"] = True
@@ -717,8 +732,9 @@ async def _run_side_turn(
             question,
             is_first_turn=is_first_turn or (is_new and not resumed),
             tools_available=tools_available,
-            shell_available=not (claude_side or goose_side),
+            shell_available=not (claude_side or goose_side or strands_side),
             file_reads_available=not goose_side,
+            searches_available=not strands_side,
             cfg=cfg,
         )
         try:

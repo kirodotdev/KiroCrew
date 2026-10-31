@@ -83,6 +83,7 @@ __all__ = [
     "STRANDS_ENV_NAMES",
     "STRANDS_GATE_SHA256",
     "StrandsLaunch",
+    "launch_mcp_servers",
     "strands_gate_module_path",
     "strands_installed_version",
     "strands_mcp_config",
@@ -843,6 +844,23 @@ def _refuse(issue: str, remedy: str = "") -> None:
     raise AcpToolGateUnroutable(issue)
 
 
+async def launch_mcp_servers(session: ProcessSession) -> list[Any]:
+    """The session's projected MCP array this launch mounts, startable entries only.
+
+    The projection is always prepared: it is what records the agent spec's own
+    restrictions on the session (a ``"tools": []`` spec's total ban among them),
+    which the permission path enforces on every call. A Side Chat session
+    (``side_read_only``) then mounts none of it: its gate refuses every call but
+    the harness's own file read, so a mounted server would only start a process
+    whose tools can never run there.
+    """
+    await session._prepare_session_mcp()
+    if getattr(session, "_side_read_only", False):
+        return []
+    kept, _pruned = await asyncio.to_thread(prune_unstartable, session._session_mcp_servers())
+    return kept
+
+
 class StrandsLaunch(ProcessAdapter):
     """The Strands CLI in Python-project mode, on Crew's gate module, verified by a boot."""
 
@@ -892,8 +910,7 @@ class StrandsLaunch(ProcessAdapter):
         argv = [*argv, "--agent", sealed_module, *model_args]
         # The session's projected array, translated into the launch file. The wire
         # array stays empty: the CLI refuses a non-empty one in project mode.
-        await session._prepare_session_mcp()
-        kept, _pruned = await asyncio.to_thread(prune_unstartable, session._session_mcp_servers())
+        kept = await launch_mcp_servers(session)
         document = strands_mcp_config(kept)
         # What the session report and the unresolved-ref guard judge: the wire array
         # stays empty for this harness, so they would otherwise call every spec
