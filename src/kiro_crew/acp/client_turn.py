@@ -10,7 +10,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_turn_credits``, ``_cancelled``,
-``_claude_compaction_pending``, ``_codex_compaction_pending``,
+``_claude_compaction_pending``, ``_claude_native_compaction_id``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
 ``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
 ``_prompt_or_tool_seen``, ``_skill_reads``, ``_stale_eligible``,
@@ -346,6 +346,7 @@ async def _prompt_loop(
         self._compaction_failed_at = None
         self._compaction_failed_turn = False
         self._claude_compaction_pending = False
+        self._claude_native_compaction_id = None
         self._codex_compaction_pending = False
         deadline = time.monotonic() + timeout
         consecutive_empty = 0

@@ -1363,7 +1363,7 @@ The handshake also branches on the backend:
 
 Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not found`.
 
-**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, and the claude backend's row adds `subagents` (below).
+**`clientCapabilities` in the `initialize` request.** Both transports (`AcpClient._initialize_session` and `AcpRuntime`) send the shared `ACP_CLIENT_CAPABILITIES` dict from `acp/types.py`. Without the key the agent would assume the all-false default. `AcpClient` reads its dict from the per-backend table `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; a backend with no row sends the shared dict unchanged, while the Claude row adds `subagents` and `session.compaction`, and the Codex row adds `session.compaction` (below).
 
 **`agentInfo.version` from the `initialize` response.** Both transports retain it (`AcpClient.agent_version`, `AcpRuntime.agent_version`, surfaced through `AcpSessionHandle` → `AcpSessionProvider` → `AcpProvider.agent_version`; `""` until the handshake completes). It is the version the spawned process RUNS, which after an in-place kiro-cli upgrade differs from the binary on disk — the MCP hot-reload gate reads it for that reason. Parsed with the shared `agent_version_from_init` in `acp/_dispatch.py`; a missing or non-string value reads as unknown rather than failing the handshake.
 
@@ -4317,3 +4317,41 @@ in the gateway's own environment (for a systemd user unit,
 `Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
 with no seed, and gives up the isolation from other `codex app-server`
 processes that this section exists for.
+
+
+### Native adapter compaction lifecycle
+
+Only the Codex and Claude handshakes advertise `session.compaction = {}`
+through `client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`; kiro-cli, KAS
+and every other backend send the shared set unchanged. The standalone transport
+reads only `client_capabilities_for(backend)`, and the Codex harness reads the same
+Codex row. The Claude row also retains its `subagents` declaration.
+`acp.client.ACP_CLIENT_CAPABILITIES` remains the shared capability mapping exported
+from `acp.types`.
+Codex ACP 2.0.0 and 2.2.2 and Claude ACP 0.84.0 and 0.97.0 emit native `compaction_update`
+frames, observed live for manual `/compact` on both. Claude ACP 0.97.0 then sends no
+`Compacting` text and no compaction tool call, so the legacy paths do not report it twice. Both transports route these through the existing
+compaction event and context-reset handling. Native IDs deduplicate notices,
+retained per session in `NativeCompactionStates`: ids use `liveness_key` rather
+than truncation, and at most `NATIVE_COMPACTION_STATES_MAX` are
+kept, settled ids are evicted before in-flight ones, and each eviction is
+counted and logged. Failure preserves context counts and arms the bounded
+post-failure turn wait in both transports; its reason determines whether the
+existing transient-compaction retry applies. Failed event titles carry the reason
+through `compaction_failure_detail`, including its credential and URL redaction.
+`cancelled` (a Stop
+mid-compaction) closes the lifecycle with no event, no failure streak and no
+synthesized failure at turn end.
+Claude native starts use Claude's own pending state on `AcpClient`, the only
+transport a Claude session runs on (Claude is not in `ACP_BACKENDS_ACP_RUNTIME`,
+so the runtime handle sees only Codex frames). If no explicit terminal arrives,
+natural `end_turn` synthesizes `completed` and resets the context counts; cancellation, refusal, or an error ending clears the pending
+state without a verdict or count reset. This preserves the documented Claude
+automatic-compaction fallback, which is fixture-covered. The recorded live
+Claude 0.84.0 automatic-compaction probe emitted native start/terminal frames
+and reduced context from 57,477 to 7,940 tokens; it did not exercise a missing
+terminal. The settled native ID also suppresses a delayed terminal or replayed
+start after another ID. Codex retains its missing-terminal `failed` verdict.
+Legacy tool-marker/text paths remain available for older adapters. No AIR
+capability is advertised, so read, terminal and MCP output contracts remain
+unchanged. Unknown lifecycle statuses and summary chunks are tolerated.
