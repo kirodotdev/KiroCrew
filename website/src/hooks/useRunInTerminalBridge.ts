@@ -9,6 +9,7 @@ import { runInTerminalText, RUN_IN_TERMINAL_READY_DEADLINE_MS, RUN_IN_TERMINAL_O
 import { isPopoutOpen as isTerminalPopoutOpen, focusPopout as focusTerminalPopout } from '../utils/terminalPopout'
 import { onTerminalReady, sendToTerminalSession, getTerminalShell, getTerminalFenceShells, getTerminalInputWs } from '../utils/terminalRegistry'
 import { errMessage } from '../utils/thunkError'
+import { noteTerminalRun, type TerminalRunOutcome, type TerminalRunReason, type TerminalRunSource } from '../utils/terminalRunNote'
 import { addTab as addDockTerminal, removeTab as removeDockTerminal, hasTab as hasDockTerminal, reuseCurrentTab as reuseDockTerminal } from './useBottomTerminal'
 
 /** The refs the Run-in-terminal handler reads at event time. They mirror the
@@ -125,6 +126,14 @@ export function useRunInTerminalBridge({
       // host answers, or that this host never answers): not ours to answer.
       if (typeof detail.scope === 'string' ? detail.scope !== scope : !answersUnscoped()) return
       if (typeof code !== 'string' || !code) return
+      // What became of this click, for the chat the command came from: only a
+      // request scoped to this host names that chat. The gateway tells it when it
+      // is a crewmate's own thread (utils/terminalRunNote) and nobody otherwise.
+      const ownerSlot = typeof detail.scope === 'string' ? slotRef?.current : undefined
+      const source: TerminalRunSource = detail.source === 'run_yourself' ? 'run_yourself' : 'code_block'
+      const report = (outcome: TerminalRunOutcome, reason?: TerminalRunReason) => {
+        if (ownerSlot) noteTerminalRun(ownerSlot, { command: code, outcome, reason, source })
+      }
       // Opt-in reuse focuses the terminal tab the user selected and copies the
       // command for a manual paste. Sending raw bytes into a live terminal is
       // unsafe: a partially typed shell command or a foreground program owns
@@ -172,6 +181,8 @@ export function useRunInTerminalBridge({
           window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', {
             detail: { reqId, ok: copied, copied },
           }))
+          if (copied) report('copied')
+          else report('failed', 'copy_failed')
         })
         return
       }
@@ -182,13 +193,16 @@ export function useRunInTerminalBridge({
       if (readyRef && !readyRef.current) {
         showActionError(i18nT('pages.chatPage.run_in_terminal_cwd_pending_error'))
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
+        report('failed', 'not_ready')
         return
       }
       if (runsHereRef && runsHereRef.current !== true) {
-        showActionError(runsHereRef.current === false
+        const remote = runsHereRef.current === false
+        showActionError(remote
           ? i18nT('pages.chatPage.run_in_terminal_remote_chat_error')
           : i18nT('pages.chatPage.run_in_terminal_placement_pending_error'))
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok: false } }))
+        report('failed', remote ? 'remote_chat' : 'not_ready')
         return
       }
       // When reuse is off — whether the user set it off, or its config query is
@@ -212,6 +226,8 @@ export function useRunInTerminalBridge({
         if (settled) return
         settled = true
         window.dispatchEvent(new CustomEvent('mc:run-in-terminal-result', { detail: { reqId, ok } }))
+        if (ok) report('ran')
+        else report('failed', sessionId ? 'not_sent' : 'no_tab')
       }
       if (!sessionId) {
         // F3: no fresh tab could be minted (the terminal cap is full). The

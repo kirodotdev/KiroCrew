@@ -18,10 +18,13 @@ envelope ``[Worker report]``).
   wakes nobody.
 
 The same flush delivers a moved crewmate's one upgrade notice first
-(:mod:`kiro_crew.mate_upgrade_notice`), and the notice a thread owes once its
+(:mod:`kiro_crew.mate_upgrade_notice`), the notice a thread owes once its
 crewmate is set to another agent than the thread runs
-(:func:`offer_rebind_notice`). Per-gateway state lives on the dashboard state
-object, never in module globals.
+(:func:`offer_rebind_notice`), then what the user did with the crewmate's
+cards and commands (:func:`queue_user_action`,
+:mod:`kiro_crew.dashboard.mate_user_actions`) as one ``[User action]`` turn,
+then worker reports. Per-gateway state lives on the dashboard state object,
+never in module globals.
 """
 
 from __future__ import annotations
@@ -345,6 +348,34 @@ def offer_rebind_notice(state: Any, slot: Any, agent: str, recorded_agent: str) 
     schedule_flush(state, slot.key)
 
 
+def _user_actions(state: Any) -> dict[str, list[str]]:
+    """Each thread's queued ``[User action]`` lines (:mod:`mate_user_actions`), oldest first."""
+    queued = getattr(state, "_mate_user_actions", None)
+    if not isinstance(queued, dict):
+        queued = {}
+        state._mate_user_actions = queued
+    return queued
+
+
+def queue_user_action(state: Any, key: str, line: str) -> bool:
+    """Queue *line* for crewmate thread *key* and schedule its delivery.
+
+    Delivered with every other line queued by then as one hidden turn once the
+    thread is idle (:func:`_flush`): a busy thread is never steered. At most
+    ``mate_user_actions.MAX_PENDING_LINES`` lines wait; the oldest is dropped.
+    """
+    from kiro_crew.dashboard.mate_user_actions import MAX_PENDING_LINES
+
+    slot = state.get_slot(key)
+    if slot is None or not is_crewmate_thread(slot) or not line:
+        return False
+    lines = _user_actions(state).setdefault(key, [])
+    lines.append(line)
+    del lines[:-MAX_PENDING_LINES]
+    schedule_flush(state, key)
+    return True
+
+
 def _notice_checked(state: Any) -> set[str]:
     checked = getattr(state, "_mate_notice_checked", None)
     if not isinstance(checked, set):
@@ -405,10 +436,11 @@ async def _flush(state: Any, key: str) -> None:
     while True:
         slot = state.get_slot(key)
         reports = _pending(state).get(key)
+        actions = _user_actions(state).get(key)
         owed = (
             key in _notices(state) or key in _kept_notices(state) or key in _rebind_notices(state)
         )
-        if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
+        if not (reports or owed or actions) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
             # the thread's next turn end schedules this again.
             return
@@ -434,6 +466,16 @@ async def _flush(state: Any, key: str) -> None:
         if _idle(slot) and key in _rebind_notices(state):
             dispatch_hidden_turn(state, slot, _rebind_notices(state).pop(key), human_seen=False)
             logger.info("rebind notice started on %s", key)
+            continue
+        if _idle(slot) and actions:
+            # What the user did with the crewmate's cards or commands: its own
+            # turn, before any worker report, so a report never reads as news
+            # the user's answer already made stale.
+            from kiro_crew.dashboard.mate_user_actions import prompt as user_action_prompt
+
+            _user_actions(state).pop(key, None)
+            dispatch_hidden_turn(state, slot, user_action_prompt(actions), human_seen=False)
+            logger.info("user action note started on %s (%d line(s))", key, len(actions))
             continue
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
@@ -467,7 +509,7 @@ async def _flush(state: Any, key: str) -> None:
         # A rebind notice is offered from inside the thread's own turn, so its
         # flush waits for that turn to end; the other notices wait for a later
         # turn end to schedule them again.
-        if not reports and key not in _rebind_notices(state):
+        if not reports and not actions and key not in _rebind_notices(state):
             return
         if reports and _idle(slot):
             _pending(state).pop(key, None)
@@ -628,6 +670,7 @@ def note_turn_end(
         elif is_crewmate_thread(slot):
             if (
                 _pending(state).get(slot.key)
+                or _user_actions(state).get(slot.key)
                 or slot.key in _notices(state)
                 or slot.key in _kept_notices(state)
                 or slot.key in _rebind_notices(state)

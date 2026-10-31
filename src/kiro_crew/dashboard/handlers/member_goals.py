@@ -415,6 +415,9 @@ async def api_member_goals_key_results(request: web.Request) -> web.Response:
             from kiro_crew.dashboard import goal_setup
 
             goal_setup.schedule_milestones_nudge(request.app.get("state"), *written[0])
+            from kiro_crew.dashboard.mate_user_actions import REQ_CARD_OWN_WAKE
+
+            request[REQ_CARD_OWN_WAKE] = True
     return resp
 
 
