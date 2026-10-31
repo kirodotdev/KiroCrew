@@ -41,10 +41,13 @@ from .shell_normalizer import (
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
+    _capped_span_possible,
     _data_consumer_exempt,
     _debracket,
     _decode_printf_escapes,
+    _decode_shell_quoted_literals,
     _ends_argv,
+    _fold_line_continuations,
     _glob_could_expand_to,
     _is_mint_verb,
     _is_self_program,
@@ -55,6 +58,7 @@ from .shell_normalizer import (
     _shell_join_continuations,
     _shell_payload_walk,
     _substitution_bodies,
+    _substitution_body_entries,
     _substitution_depth_delta,
 )
 from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
@@ -254,6 +258,10 @@ _SELF_FLOOR_MACHINERY_RE = re.compile(r"[?*\[\]{}$`~]|\\x[0-9a-f]|\\0?[0-7]{1,3}
 
 
 _SELF_FLOOR_QUOTE_JUNK_RE = re.compile(r"[\"'\\\\]")
+
+#: The programs a kill verb names, for the capped-span fail-closed in
+#: :func:`_is_self_kill`: ``kill`` takes PIDs, the rest take names.
+_KILL_VERBS = frozenset({"kill"}) | _KILL_BY_NAME_PROGRAMS
 
 
 def _self_floor_can_fire(text_lower: str) -> bool:
@@ -586,7 +594,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 # bash parses the body in a fresh context, so the span is
                 # proven from the slice at NEUTRAL state -- and the walk
                 # resumes with the OUTER state carried across the jump.
-                rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                rel, proven = _matching_close_paren(source[off + 2 :])
                 body = source[off + 2 : off + 1 + rel] if proven else source[off + 2 :]
                 # An EMPTY substitution expands to NOTHING, so the word
                 # CONTINUES across it -- ``kill$()`` runs ``kill`` (the same
@@ -649,7 +657,7 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
                 break
             if step.active:
                 if ch in "<>" and source.startswith("(", off + 1):
-                    rel, proven = _matching_close_paren(source[off + 2 :], 0)
+                    rel, proven = _matching_close_paren(source[off + 2 :])
                     fresh_word = not word and not open_word
                     if not fresh_word and not _kill_prefix_keeps_anchor(words, word):
                         glued = True
@@ -708,6 +716,22 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
+def _frames_name_a_kill(text_lower: str) -> bool:
+    """True if a token in some payload frame runs ``kill``, ``pkill`` or ``killall``.
+
+    The token resolves as a program does (wrappers, parameter defaults, empty
+    substitutions), then quote junk comes off (``k''ill``). Not ``killed`` or
+    ``--kill-after=5``: a whole resolved word, not a substring.
+    """
+    for view in (text_lower, _decode_shell_quoted_literals(text_lower).lower()):
+        for tokens in _self_token_frames(view):
+            for token in tokens:
+                base = _shell_normalizer._program_basename(token)
+                if _SELF_FLOOR_QUOTE_JUNK_RE.sub("", base) in _KILL_VERBS:
+                    return True
+    return False
+
+
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
@@ -730,6 +754,27 @@ def _is_self_kill(text_lower: str) -> bool:
     # holds, so a miss skips both descents.
     if not _self_floor_can_fire(text_lower):
         return False
+    # A span past the nesting cap is read in shallow pieces, so the frame holding
+    # a ``kill`` and the one holding its ``$(pgrep -f kiro${x:-crew})`` can part
+    # and neither names the target. Refuse a kill once the span reader really
+    # capped a span in some frame (Opus). The opener count only gates that walk:
+    # 32 flat ``${A}`` nest nothing and are no reason to refuse (Opus, Security
+    # Scope). The verb is a frame token read as the frame loop reads a program, so
+    # ``${k:-kill}`` and ``ki${x:-ll}`` count (Opus), on the raw text and on its
+    # ANSI-C decoding, so ``$'\x6b'ill`` and ``$'\153'ill`` count too (bolichen97).
+    # Openers are counted on the text the span reader reads, with line
+    # continuations folded, so ``$\<newline>(`` counts as a ``$(`` (Opus).
+    if _capped_span_possible(_fold_line_continuations(text_lower)) and _frames_name_a_kill(
+        text_lower
+    ):
+        for source in _shell_payload_sources(text_lower):
+            folded = _fold_line_continuations(source)
+            if not _capped_span_possible(folded):
+                continue
+            seen: list[bool] = []
+            _substitution_body_entries(folded, capped_seen=seen)
+            if seen:
+                return True
     for tokens in _self_token_frames(text_lower):
         programs = _argv_programs(tokens)
         # Once per FRAME, not once per trigger token: see ``_is_credential_mint``.

@@ -12,18 +12,19 @@ blinds every tier at once, and no OS sandbox sees shell text, so this layer
 over-approximates on purpose and the tiers above it are where precision belongs.
 Narrowing a matcher means narrowing the site that DECIDES, never this one.
 
-The reader is four modules below this one, and this one keeps attribution -- which
+The reader is five modules below this one, and this one keeps attribution -- which
 program a token reaches, nested shell payloads, local assignments and function
 aliases, the data-consumer exemption, the glob reading of a program name and the
 normalized token view. ``shell_normalizer_walk`` reads characters, quotes, words and
-structure; ``shell_normalizer_redirects`` reads the carriers that bring program text
+structure; ``shell_normalizer_span`` matches where a substitution's body ends and
+returns the bodies; ``shell_normalizer_redirects`` reads the carriers that bring program text
 outside argv; ``shell_normalizer_escapes`` decodes escapes; ``shell_normalizer_programs``
 holds the program vocabulary. Every name a caller imports from this module still
 resolves here, and a name a test patches lives in the same module as every reader of
 it.
 
 Imports only ``vocabulary``, the layer below, for the product's own name, and its own
-four owners, which never import it: the tiers depend on the reader, never the reverse.
+five owners, which never import it: the tiers depend on the reader, never the reverse.
 """
 
 from __future__ import annotations
@@ -68,6 +69,13 @@ from .shell_normalizer_redirects import (  # noqa: F401  (also re-exported for i
     _stdin_program_text,
     _xargs_here_string_rebuild,
 )
+from .shell_normalizer_span import (  # noqa: F401  (also re-exported for importers)
+    _backtick_closer,
+    _capped_span_possible,
+    _matching_close_paren,
+    _substitution_bodies,
+    _substitution_body_entries,
+)
 from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for importers)
     _AMBIGUOUS_EXPANSION_RE,
     _CMD_SPLIT_RE,
@@ -84,7 +92,6 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _SHELL_WRAPPER_CHARS,
     _VAR_USE_RE,
     _arms_case_context,
-    _backtick_closer,
     _cut_at_operator,
     _debracket,
     _dequote_token,
@@ -93,7 +100,6 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _is_computed_value,
     _is_shell_variable_reference,
     _iter_shell_chars,
-    _matching_close_paren,
     _opens_comment,
     _prev_word,
     _push_option_matches,
@@ -108,7 +114,6 @@ from .shell_normalizer_walk import (  # noqa: F401  (also re-exported for import
     _split_push_command_segments,
     _split_shell_words,
     _strip_redirect,
-    _substitution_bodies,
     _substitution_depth_delta,
     _substitution_program,
 )
@@ -1599,13 +1604,13 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
     finite.
     """
     out: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
+    seen: dict[str, bool] = {}
     # The third field is whether this frame may perform the ``eval`` argument join.
     # A frame PRODUCED by a join may not, which is what bounds the walk: see
     # ``_nested_shell_payloads``.
-    pending: list[tuple[str, int, bool]] = [(text_lower, len(text_lower) + 1, True)]
+    pending: list[tuple[str, int, bool, bool]] = [(text_lower, len(text_lower) + 1, True, True)]
     while pending:
-        source, parent_len, allow_join = pending.pop()
+        source, parent_len, allow_join, extract_subs = pending.pop()
         tokens = _self_tokens(source)
         if not tokens:
             continue
@@ -1632,15 +1637,21 @@ def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
         from .shell_commands import redirect_hidden_payloads  # the reader imports this module
 
         nested = list(nested) + redirect_hidden_payloads(source)
-        for payload in nested + _substitution_bodies(_fold_line_continuations(source)):
+        sub_entries = (
+            _substitution_body_entries(_fold_line_continuations(source)) if extract_subs else []
+        )
+        # A ``suppress`` over-read is scanned whole with its nested openers emitted
+        # separately; re-extracting only re-walks a heredoc run (O(n^2)), so skip it.
+        subs = [(b, not sup) for b, sup in sub_entries]
+        for payload, child_extract in [(p, True) for p in nested] + subs:
             # Descend through EVERY literal payload, to any depth.  Termination is
-            # structural, not a cap: a payload is carried inside one token of its
-            # parent, so it is strictly shorter than the parent's source text.
+            # structural: a payload is carried inside one token of its parent, so
+            # it is strictly shorter than the parent's source text.
             payload = _decode_printf_escapes(payload)
-            if len(payload) >= parent_len or payload in seen:
+            if len(payload) >= parent_len or seen.get(payload, -1) >= child_extract:
                 continue
-            seen.add(payload)
-            pending.append((payload, len(source), payload not in joined_here))
+            seen[payload] = child_extract
+            pending.append((payload, len(source), payload not in joined_here, child_extract))
     return out
 
 

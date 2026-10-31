@@ -616,7 +616,7 @@ _EXPORTS: dict[str, str] = {
     "_ShellChar": "shell_normalizer_walk",
     "_ShellWalk": "shell_normalizer_walk",
     "_VAR_USE_RE": "shell_normalizer_walk",
-    "_backtick_closer": "shell_normalizer_walk",
+    "_backtick_closer": "shell_normalizer_span",
     "_continuation_width": "shell_normalizer_walk",
     "_cut_at_operator": "shell_normalizer_walk",
     "_debracket": "shell_normalizer_walk",
@@ -626,7 +626,7 @@ _EXPORTS: dict[str, str] = {
     "_is_computed_value": "shell_normalizer_walk",
     "_is_shell_variable_reference": "shell_normalizer_walk",
     "_iter_shell_chars": "shell_normalizer_walk",
-    "_matching_close_paren": "shell_normalizer_walk",
+    "_matching_close_paren": "shell_normalizer_span",
     "_push_option_matches": "shell_normalizer_walk",
     "_push_token_redirection": "shell_normalizer_walk",
     "_push_token_shell_read": "shell_normalizer_walk",
@@ -638,7 +638,7 @@ _EXPORTS: dict[str, str] = {
     "_split_push_command_segments": "shell_normalizer_walk",
     "_split_shell_words": "shell_normalizer_walk",
     "_strip_redirect": "shell_normalizer_walk",
-    "_substitution_bodies": "shell_normalizer_walk",
+    "_substitution_bodies": "shell_normalizer_span",
     "_substitution_depth_delta": "shell_normalizer_walk",
     "_substitution_program": "shell_normalizer_walk",
     # text_redaction
@@ -1262,6 +1262,11 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _stdin_program_text,
         _stdin_redirect_carriers,
     )
+    from kiro_crew.security.shell_normalizer_span import (  # noqa: F401
+        _backtick_closer,
+        _matching_close_paren,
+        _substitution_bodies,
+    )
     from kiro_crew.security.shell_normalizer_walk import (  # noqa: F401
         _AMBIGUOUS_EXPANSION_RE,
         _CMD_SEPARATOR_RE,
@@ -1285,7 +1290,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _SHELL_VAR_RE,
         _SHELL_WRAPPER_CHARS,
         _VAR_USE_RE,
-        _backtick_closer,
         _continuation_width,
         _cut_at_operator,
         _debracket,
@@ -1295,7 +1299,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _is_computed_value,
         _is_shell_variable_reference,
         _iter_shell_chars,
-        _matching_close_paren,
         _push_option_matches,
         _push_token_redirection,
         _push_token_shell_read,
@@ -1309,7 +1312,6 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         _split_push_command_segments,
         _split_shell_words,
         _strip_redirect,
-        _substitution_bodies,
         _substitution_depth_delta,
         _substitution_program,
     )

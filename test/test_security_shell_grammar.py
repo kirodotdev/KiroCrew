@@ -148,7 +148,7 @@ class TestSubstitutionCloserReadsCommandGrammar:
 
     def test_an_unproven_span_still_yields_the_whole_remainder(self) -> None:
         """Fail-CLOSED direction: a body that reaches too far is only over-scanned."""
-        (body,) = security._substitution_bodies(f"$(case x in x) printf {self.VERB}")
+        body, *_ = security._substitution_bodies(f"$(case x in x) printf {self.VERB}")
         assert f"printf {self.VERB}" in body, body
 
 
@@ -204,7 +204,7 @@ class TestCaseArmingRequiresCommandPosition:
         ],
     )
     def test_every_bash_spanning_form_still_arms(self, command: str) -> None:
-        (body,) = security._substitution_bodies(command)
+        body, *_ = security._substitution_bodies(command)
         assert "pgrep -f kirocrew" in body, body
         assert security._is_self_kill(command)
 
@@ -222,7 +222,7 @@ class TestCaseArmingRequiresCommandPosition:
         after the word in') disarms on ``echo in esac`` inside a clause body,
         which is the BYPASS direction. Pinned to the fail-closed fallback:
         unproven span, whole remainder, extractors scan more."""
-        (body,) = security._substitution_bodies("$(case z in esac; echo after)")
+        body, *_ = security._substitution_bodies("$(case z in esac; echo after)")
         assert "echo after" in body, body
 
     def test_option_words_are_transparent_in_the_chain(self) -> None:
@@ -241,7 +241,7 @@ class TestCaseArmingRequiresCommandPosition:
             "$(time -p case x in x) : ;; esac; pgrep -f kirocrew)",
             "$(time -- case x in x) : ;; esac; pgrep -f kirocrew)",
         ):
-            assert _matching_close_paren(text, 2) == (len(text), True), text
+            assert _matching_close_paren(text[2:]) == (len(text) - 2, True), text
         assert security._substitution_bodies("echo $(echo -n case x in y) tail") == [
             "echo -n case x in y"
         ]
@@ -258,7 +258,7 @@ class TestCaseArmingRequiresCommandPosition:
             "kill $(echo <<X\ncase x in y)\nX\npgrep -f kirocrew)",
             "kill $(cat <<X\ncase a in a) : ;; esac\nX\npgrep -f kirocrew)",
         ):
-            (body,) = security._substitution_bodies(cmd)
+            body, *_ = security._substitution_bodies(cmd)
             assert "pgrep -f kirocrew" in body, body
             assert security._is_self_kill(cmd)
 
