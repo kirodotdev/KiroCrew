@@ -791,7 +791,7 @@ jobs:
       # writes after the probe.
       - name: Upload the unprobed candidate set
         if: always() && steps.scope.outputs.in_scope == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-candidates-raw
           path: candidates.json
@@ -800,7 +800,7 @@ jobs:
 
       - name: Upload the unscrubbed review text
         if: always() && steps.scope.outputs.in_scope == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-review-raw
           path: ${{ runner.temp }}/scope-review-output.md
@@ -1158,7 +1158,7 @@ jobs:
       # consumer's expression context where a quote or a `}}` would break out.
       - name: Upload the normalized corpus
         if: steps.validate.outputs.adjudicate == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-normalized
           path: ${{ runner.temp }}/normalized.json
@@ -1173,7 +1173,7 @@ jobs:
       # the SCRUB's own answer rather than the job's conclusion.
       - name: Upload the review text
         if: always() && steps.redact_review.outputs.scrub_ok == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-review
           path: ${{ runner.temp }}/scope-review-output.md
@@ -1401,7 +1401,7 @@ jobs:
       # conclusion.
       - name: Upload this leg's report
         if: always() && steps.differential.outputs.scrub_ok == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scope-report-${{ matrix.os }}
           path: report.json
@@ -2742,7 +2742,7 @@ jobs:
         # verdict and never part of one: it may be loud, and a failed step is
         # still annotated, but it may not change what the lane concluded.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Named by the publish step: the head SHA leads, so every record for
           # one revision is reachable from the revision alone, and the run and

@@ -1241,7 +1241,7 @@ jobs:
 
       - name: Upload Linux pytest progress
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-pytest-progress-${{ matrix.group }}
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
@@ -1261,7 +1261,7 @@ jobs:
 
       - name: Upload shard coverage
         if: steps.scope.outputs.reduced != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-shard-${{ matrix.group }}
           path: .coverage.${{ matrix.group }}
@@ -1400,7 +1400,7 @@ jobs:
         # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
         # retain partial evidence in the Actions log without relying on this upload.
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-pytest-progress-${{ matrix.group }}
           path: ${{ runner.temp }}/pytest-progress/*.jsonl
@@ -1488,7 +1488,7 @@ jobs:
           mv .coverage .coverage.ipv6
       - name: Upload IPv6 coverage
         if: runner.os == 'Linux' && needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-ipv6
           path: .coverage.ipv6
@@ -1580,7 +1580,7 @@ jobs:
           mv .coverage .coverage.kernel-lock-owner
       - name: Upload kernel lock owner coverage
         if: needs.changes.outputs.only_frontend != 'true' && needs.changes.outputs.leaf_tests != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-kernel-lock-owner
           path: .coverage.kernel-lock-owner
@@ -1799,7 +1799,7 @@ jobs:
       # boot refusal is legible, and the plane root is the --basetemp above.
       - name: Upload the pod boot log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pod-boot-windows
           path: |
@@ -2193,7 +2193,7 @@ jobs:
 
       - name: Upload FAISS regression evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: member-faiss-regressions
           path: ${{ runner.temp }}/member-faiss-results.xml
@@ -2261,7 +2261,7 @@ jobs:
       - name: Upload current member recall evidence
         if: always() && steps.member-benchmark.outputs.selected == 'true'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: member-recall-qwen-${{ github.sha }}
           path: ${{ runner.temp }}/member-memory-benchmark-evidence/
@@ -2655,7 +2655,7 @@ jobs:
           coverage report
 
       - name: Upload combined coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-backend
           path: coverage.xml
@@ -3647,7 +3647,7 @@ jobs:
         # carries this shard's results AND its coverage data; the merge job
         # unions them. .vitest-reports is a dot dir -> include-hidden-files.
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-blob-${{ matrix.shard }}
           path: website/.vitest-reports/*
@@ -3746,7 +3746,7 @@ jobs:
         run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-reconcile.mjs" .vitest-reports
 
       - name: Upload merged coverage
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-frontend
           # vitest's reportsDirectory is website/build/coverage (see
@@ -4163,7 +4163,7 @@ jobs:
 
       - name: Upload read-aloud recovery evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: voice-recovery-evidence
           path: website/test-results/**/voice-recovery/
@@ -4172,7 +4172,7 @@ jobs:
 
       - name: Upload member memory UI evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: member-memory-ui-evidence
           path: |
@@ -4199,7 +4199,7 @@ jobs:
       # has no results, and this step must not turn that into a second failure.
       - name: Upload Playwright failure artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-playwright-failures
           path: |
@@ -4321,7 +4321,7 @@ jobs:
             | tee "$HITS_DIR/route-coverage.txt"
       - name: Upload route-coverage report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: integration-route-coverage
           path: ${{ runner.temp }}/integration-hits/
@@ -4507,7 +4507,7 @@ jobs:
 
       - name: Upload the boot-matrix log
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-boot-matrix-${{ matrix.os }}
           path: boot-matrix.log
