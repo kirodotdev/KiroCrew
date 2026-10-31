@@ -244,6 +244,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Local import, like the other owner-module imports here: a module-level
+        # binding would be re-served by the cli_commands facade mirror and trip
+        # its composition contract (every served name must be owner-DEFINED).
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -255,6 +260,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
             memory_store=memory_store,
             display_name=display_name,
             model=model,
+            # `kirocrew agent create` supplies no avatar, so default to the same
+            # name-seeded ICON the UI posts rather than the trait ghost a missing
+            # override renders as. Seeded from the shown name
+            # (`display_name or key`), identical to the API create path.
+            avatar=default_icon_avatar(display_name or args.name),
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
