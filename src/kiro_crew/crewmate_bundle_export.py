@@ -46,8 +46,9 @@ from kiro_crew.crewmate_bundle import CARRIED_FILE_MAX_BYTES as MAX_FILE_BYTES
 from kiro_crew.crewmate_bundle import CREWMATE_FORMAT
 from kiro_crew.crewmate_bundle import ENTRY_MAX as MAX_ENTRIES
 from kiro_crew.crewmate_bundle import FILE_MAX_BYTES as MAX_BUNDLE_BYTES
+from kiro_crew.crewmate_bundle import FILE_SUFFIX
 from kiro_crew.crewmate_bundle import JSON_MAX_BYTES as MAX_JSON_BYTES
-from kiro_crew.crewmate_bundle import SKILL_FILE
+from kiro_crew.crewmate_bundle import MANIFEST_ENTRY, SKILL_FILE
 from kiro_crew.crewmate_bundle import SKILL_FOLDER_MAX_BYTES as MAX_SKILL_BYTES
 from kiro_crew.guide_catalog import _has_control_chars, _redacts
 from kiro_crew.preview_text import drop_format_chars
@@ -902,7 +903,7 @@ def _over_caps(plan: ExportPlan) -> bool:
 
 def _fixed_entries(plan: ExportPlan) -> list[tuple[str, bytes]]:
     entries = [
-        ("crewmate.json", _json_bytes(plan.manifest)),
+        (MANIFEST_ENTRY, _json_bytes(plan.manifest)),
         ("agent.json", _json_bytes(plan.agent)),
     ]
     if plan.avatar:
@@ -1039,12 +1040,12 @@ def _preview_body(plan: ExportPlan) -> dict[str, Any]:
 
 
 def bundle_filename(name: str) -> str:
-    """An ASCII-safe ``<name>.crewmate`` for the download's plain ``filename``."""
+    """An ASCII-safe ``<name>.crewjam`` for the download's plain ``filename``."""
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "crewmate"
-    return f"{stem[:64]}.crewmate"
+    return f"{stem[:64]}{FILE_SUFFIX}"
 
 
 def content_disposition(name: str) -> str:
     """``attachment`` with an ASCII ``filename`` and the exact UTF-8 name in ``filename*``."""
-    exact = quote(f"{name}.crewmate", safe="")
+    exact = quote(f"{name}{FILE_SUFFIX}", safe="")
     return f"attachment; filename=\"{bundle_filename(name)}\"; filename*=UTF-8''{exact}"

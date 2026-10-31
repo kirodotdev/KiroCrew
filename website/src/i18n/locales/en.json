@@ -8417,7 +8417,7 @@
       "dashboard_values_behind_old": "These values have not updated in a while, so they may be behind.",
       "dashboard_values_stale": "Live values stopped updating, so these are the last ones received.",
       "export_row": "Export as file",
-      "export_row_sub": "Share this mate as a .crewmate file",
+      "export_row_sub": "Share this mate as a .crewjam file",
       "export_title": "Export as file",
       "export_intro": "The file holds exactly what is listed here. Nothing is saved on this machine.",
       "export_identity": "Name, description and picture",

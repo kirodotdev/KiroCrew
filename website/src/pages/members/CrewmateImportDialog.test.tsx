@@ -75,7 +75,7 @@ describe('CrewmateImportDialog', () => {
     const input = screen.getByTestId('crewmate-import-input') as HTMLInputElement
     expect(input.type).toBe('file')
     expect(input.accept).toBe(CREWMATE_FILE_ACCEPT)
-    expect(CREWMATE_FILE_ACCEPT).toBe('.crewmate')
+    expect(CREWMATE_FILE_ACCEPT).toBe('.crewjam,.crewmate')
   })
 
   it('sends the picked file and shows the one card the gateway raised', async () => {
