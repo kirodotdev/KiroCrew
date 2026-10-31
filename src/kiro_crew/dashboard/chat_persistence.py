@@ -137,6 +137,7 @@ from kiro_crew.history import (  # noqa: F401
     carry_provenance,
     carry_unowned_metadata,
     latest_transcript_ts,
+    transcript_lock_stems,
     transcript_sort_key,
     update_metadata_off_loop,
 )

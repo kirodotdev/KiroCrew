@@ -1462,14 +1462,20 @@ no longer destroy older turns.
   from the thread (`slot._lock` is an asyncio lock, and once the rebind path has
   recomputed these for its own transcript no undo is right); it wants the five
   fields collapsed into one assignable record carrying the key it describes.
-- **Cross-process lock (`_locked`)**: `_save_slot_to_history` holds the session's
-  cross-process `_locked` (the SAME lock `append` / `append_off_loop` / rotate /
-  rewrite / metadata edits take) across its metadata read, frozen-prefix read,
-  archive diff, and `atomic_write`. `_locked` expands every Slack spelling through
-  `transcript_lock_stems` and delegates to `ConversationLog.locked_stems`, which
-  acquires the exact physical stems in sorted order; canonical `slack_<ts>` and
-  pre-migration bare `<ts>` writers therefore cannot synchronize on different
-  sidecars. Writers resolve `_path` only after that complete set is held, so a
+- **Cross-process lock (`_locked`)**: for an ordinary save,
+  `_save_slot_to_history` holds the target session's cross-process `_locked` (the
+  SAME lock `append` / `append_off_loop` / rotate / rewrite / metadata edits take)
+  across its metadata read, frozen-prefix read, archive diff, and `atomic_write`.
+  When the slot's observed identity belongs to a genuinely different source A and
+  the current write target is B, the save instead expands both keys through
+  `transcript_lock_stems` and passes their union to
+  `ConversationLog.locked_stems` before source verification, holding both through
+  B's `atomic_write`. `locked_stems` deduplicates and acquires the exact physical
+  stems in sorted order, the same order every transcript writer uses; a permanent
+  delete of A therefore runs wholly before verification or wholly after B commits,
+  never between them. Canonical `slack_<ts>` and pre-migration bare `<ts>` writers
+  cannot synchronize on different sidecars. Writers resolve `_path` only after the
+  complete applicable set is held, so a
   waiter cannot publish a filename choice made before restore created the other
   alias. Without the lock a concurrent `append_off_loop` (e.g. a workflow/cron
   result appended to the originating dashboard session) could land between the
@@ -1520,8 +1526,10 @@ no longer destroy older turns.
   a save always carries forward and which therefore never changes for a
   continuously-existing file) against `_disk_meta_created_at`, the identity
   the slot last observed at restore or at its own save; a known-vs-known
-  mismatch aborts rather than merging the deleted window into the new
-  transcript, while a readable-but-absent `created_at` (legacy meta) fails
+  `created_at` mismatch on the SAME transcript key aborts rather than merging
+  the deleted window into the new transcript (a mismatch because the KEY
+  drifted is a separate rule, below), while a readable-but-absent `created_at`
+  (legacy meta) fails
   open, and so does a CORRUPT line, which the save rewrites under the strictest
   mode. The metadata is read through `get_metadata_status`, and an UNREADABLE
   line fails CLOSED: the save raises (leaving `_dirty` armed for the flush
@@ -1572,6 +1580,42 @@ no longer destroy older turns.
   (e.g. a cron-linked tab whose slot key matches none of the spellings the
   cleanup probes), the abort latches — every later save of new activity is
   skipped, which is why the skip logs at WARNING with the slot key.
+
+  The identity above is observed under ONE transcript key, and the slot records
+  that key in `_disk_meta_key` at the same three sites that record
+  `_disk_meta_created_at`: the two hydrate sites
+  (`channel_slots.py`, `metadata_codec.py`) and the committed save
+  (`save_transaction.py`). The write target can later DRIFT to a different key —
+  a cron-born slot whose `linked_session_key` lapses falls back to the
+  `dashboard:<slot>` spelling, a legitimately-existing file B with its own
+  `created_at`. Comparing B's identity against the observation from file A would
+  read "different file" as "deleted and recreated" and skip every save of a live
+  session. So when the keys differ the witnesses do NOT compare the target: they
+  stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
+  `delete_won` and `session_was_deleted`). A still present with the same identity
+  means the drift is legitimate and the save proceeds; it first drops the slot's
+  `_frozen_prefix_cache`, which was filled from A and is keyed on mtime and size
+  only, so a B whose stat happens to match cannot be served A's prefix and lose
+  its own rows. A gone or recreated with
+  a different `created_at` means the observed session was deleted, so the save is
+  refused (`delete_won` True, logged at WARNING; the republish probe True) and the
+  deleted window is not resurrected under the drifted key. A transient stat or
+  metadata failure raises on the save path, leaving `_dirty` armed for retry, and
+  returns True on the lock-free copy probe, refusing republication. A corrupt
+  metadata line retains the established fail-open behavior because no retry can
+  recover it. A drifted save takes the sorted union of A's and B's lock stems
+  before verifying A and holds it through B's commit, closing the check-then-write
+  deletion window. The lock-free copy probe has no such ordering, so an empty
+  readable identity is re-statted: if A vanished between its first stat and the
+  metadata read, the second stat records the delete instead of treating it as
+  legacy metadata. The key comparison
+  is stem equivalence, not raw string equality
+  (`_same_transcript` via `transcript_lock_stems`): `slack_<ts>`, `slack:<ts>`
+  and the bare `<ts>` fold onto one file, so an unbound channel slot observed
+  under the stem spelling and bound to the canonical one later is the SAME file,
+  not a drift, and its delete is still witnessed on the target. The rule is gated
+  on a recorded `_disk_meta_key`, so slots hydrated before the field existed keep
+  the prior target-only behavior.
 - **Turn persistence is offloaded through ONE choke point**
   (`save_conversation_turn_off_loop`, `llm_helpers_parts/turn_results.py`): `save_conversation_turn`
   makes TWO `append` calls, so an on-loop caller pays ~24 ms of loop time per turn

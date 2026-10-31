@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
+    slot_history_key,
     slot_transcript_key,
 )
 from kiro_crew.dashboard.slot_buffers import (
@@ -1515,6 +1516,16 @@ def apply(
     # lists (``slot._saved_created_by``) and is never read as ownership.
     saved_creator = meta.get("created_by")
     slot._saved_created_by = saved_creator if isinstance(saved_creator, str) else ""
+    # Record the transcript key the identity was observed under, now that the
+    # full field loop has settled ``linked_session_key`` (the fields run in
+    # FIELDS order, so ``created_at`` is read before the link is restored —
+    # resolving the key inside ``_read_created_at`` would see the unset link).
+    # The delete witnesses compare this against the current write target; a
+    # mismatch means the slot's routing has drifted to a different file, so the
+    # observed ``created_at`` must not be read as a delete-recreate.
+    # Read through getattr: a reader may hand a partial slot that never observed a line.
+    if getattr(slot, "_disk_meta_created_at", "") or getattr(slot, "_disk_meta_observed", False):
+        slot._disk_meta_key = slot_history_key(slot)
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
     if slot.autocompact_pct is not None and state.sessions:
