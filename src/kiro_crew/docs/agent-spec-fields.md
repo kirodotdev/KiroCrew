@@ -508,7 +508,7 @@ routinely holds tokens, and a remote entry's `headers` can hold a static
 author survives only when it is exactly `true` or `false` (any case), its key is
 not credential-shaped (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `accessKey` …), and the
 credential redactor would not rewrite it. So `FEATURE_X_ENABLED=true` reaches the
-server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A value that is exactly `${NAME}`
+server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log, and a new chat shows one notice naming each such server and its withheld key names (never a value), and, for a local (command) server, how to start it with its full env: a `secret://` value with the server routed through the gateway. A remote (url) server cannot be routed, and the notice says nothing on Crew's side supplies its headers. A value that is exactly `${NAME}`
 survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference

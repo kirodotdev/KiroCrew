@@ -997,6 +997,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             crew_panel=False,
             session_key="",
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1021,6 +1022,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             crew_panel=False,
             session_key,
             skill_scope_rules=(),
+            withheld_out=None,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]

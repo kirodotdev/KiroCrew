@@ -168,6 +168,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "acp"),
     "wait_turn_done": ("function", True, "48da118c69ff", "acp"),
+    "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
 }
 
