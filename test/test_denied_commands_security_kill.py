@@ -1129,6 +1129,88 @@ class TestSelfKillArgvWindowIsQuoteAware:
         assert security._is_self_kill(cmd.format(n=_NAME).lower()) is False
 
 
+class TestSelfKillHeredocSpanDoesNotStopTheRawWalk:
+    """A HEREDOC inside the raw window's span must not end the raw walk early.
+
+    ``_matching_close_paren`` reads a span a heredoc body starts inside the flat
+    way ``main`` reads every span, so ``_bare_kill_raw_bodies`` resumes where
+    ``main`` resumes and still reaches the LATER top-level ``$k $(printf ')' ;
+    pgrep -f <name>)`` -- the decoyed-alias clause only this raw walk catches.
+    ``main`` refuses the self-kill rows and allows the twins, and so does this
+    reading; a product named by a LATER separate command
+    (``kill $(cat <<'EOF'⏎4242⏎EOF⏎); kirocrew status``) is that command's word,
+    not the kill's operand.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the issue's three spellings: a heredoc span, then the decoyed
+            # alias clause the raw walk must still reach
+            "k=kill; x=$(cat <<E\nE\n); $k $(printf ')' ; pgrep -f {n})",
+            "k=kill; cat <(cat <<E\nE\n); $k $(printf ')' ; pgrep -f {n})",
+            "k=kill; x=\"$(cat <<E\nE\n)\"; $k $(printf ')' ; pgrep -f {n})",
+            # a LITERAL kill before the heredoc-decoy sibling
+            "kill $(cat <<E\nE\n) $(printf ')' ; pgrep -f {n})",
+            # a RUN of heredoc spans before the clause (the linearity shape)
+            "kill $(cat <<E\nE\n) $(cat <<F\nF\n) $(printf ')' ; pgrep -f {n})",
+            # the heredoc span's own close has a ``)`` glued after it, so the
+            # target rides the whole-remainder over-read
+            "kill $(cat <<E\n)\nE\n) $(pgrep -f {n})",
+            # backtick alias spelling of the decoy after a heredoc span
+            "k=kill; x=$(cat <<E\nE\n); $k `printf ')' ; pgrep -f {n}`",
+            # a cleanly skipped heredoc, then a real self-kill in a LATER command
+            "kill $(cat <<'EOF'\n4242\nEOF\n); kill $(pgrep -f {n})",
+            "kill $(cat <<'EOF'\n4242\nEOF\n); pkill -f {n}",
+        ],
+    )
+    def test_heredoc_decoy_kill_is_still_a_self_kill(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # the exact twins with a NON-protected target stay allowed: the
+            # resumed walk reaches the pgrep, but the name is not ours
+            "k=kill; x=$(cat <<E\nE\n); $k $(printf ')' ; pgrep -f nginx)",
+            "k=kill; cat <(cat <<E\nE\n); $k $(printf ')' ; pgrep -f nginx)",
+            "kill $(cat <<E\nE\n) $(printf ')' ; pgrep -f nginx)",
+            # a heredoc whose sibling substitution belongs to a DIFFERENT
+            # command (after a real ``;``) is not the kill's operand
+            "kill 123; echo $(cat <<E\nE\n) $(pgrep -f {n})",
+            # a cleanly skipped heredoc closes at its real ``)``: the product
+            # named by a LATER separate command is not the kill's operand
+            # (Security Scope row)
+            "kill $(cat <<'EOF'\n4242\nEOF\n); {n} status",
+            "kill $(cat <<EOF\n4242\nEOF\n) && {n} status",
+            "kill $(cat <<-EOF\n4242\n\tEOF\n); echo {n} ok",
+            "kill <(cat <<'EOF'\n4242\nEOF\n); cat /tmp/{n}.log",
+        ],
+    )
+    def test_heredoc_decoy_twins_stay_allowed(self, cmd):
+        assert _denied_by(cmd.format(n=_NAME)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A ``<(...)`` bash RUNS sits after a heredoc body INSIDE a bare
+            # ``$(...)``: the span is unproven but closes, and its body up to
+            # that close is re-extracted, so the payload walk reaches the nested
+            # kill. ``main`` refuses these.
+            f"echo $(cat <<E\nE\ncat <({_K} $(pgrep -f {_NAME})))",
+            f'echo "$(cat <<E\nx\nE\ncat <({_PK} -f {_NAME}))"',
+            f"echo $(cat <<E\nE\ncat `{_PK} -f {_NAME}`)",
+        ],
+    )
+    def test_a_kill_in_a_run_command_after_a_heredoc_body_is_a_self_kill(self, cmd):
+        assert _denied_by(cmd) == _RULE_KILL
+
+    def test_a_kill_of_another_process_after_a_heredoc_body_stays_allowed(self):
+        # The nested opener is reached, but a kill of a non-protected process is
+        # not a self-kill -- the extraction does not widen the TARGET match.
+        assert _denied_by(f"echo $(cat <<E\nE\ncat <({_PK} -f nginx))") is None
+
+
 class TestSelfKillRawWindowSearchesDequotedView:
     """The raw-window bodies are ALSO searched in a de-quoted, tokenized view.
 

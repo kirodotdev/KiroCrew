@@ -191,7 +191,7 @@ def read_commands(
             if step.state == 2 and text.startswith("$(", step.offset):
                 # bash reads "$(…)" from an unquoted start, then the double quote resumes
                 body = text[step.offset + 2 :]
-                close, proven = _shell._matching_close_paren(body, 0)
+                close, proven = _shell._matching_close_paren(body)
                 if nested:
                     out.extend(read_commands(body[: close - 1 if proven else close], track, at + 2))
                 end = pos + step.offset + 2 + close
@@ -298,4 +298,4 @@ def without_substitutions(command: str) -> str:
         if hit is None:
             return "".join(out) + command[pos:]
         out.append(command[pos:hit] + "_")
-        pos = _shell._matching_close_paren(command, hit + 2)[0]
+        pos = hit + 2 + _shell._matching_close_paren(command[hit + 2 :])[0]

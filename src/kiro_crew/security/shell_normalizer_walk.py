@@ -3,16 +3,16 @@
 The part of :mod:`kiro_crew.security.shell_normalizer` that reads a command line the
 way a shell's lexer does, before any token is attributed to a program: the quote and
 escape state machine (``_iter_shell_chars``, ``_shell_quote_walk``), line
-continuations, the structural matches a substitution or a ``case`` arm needs
-(closing parens and backticks, comments, command position), substitution bodies,
-word splitting and dequoting, statement separators, the push-token reads, and the
-word views that peel brackets, parameter defaults and empty substitutions off a
-word.
+continuations, the structural reads a substitution or a ``case`` arm needs
+(comments, command position), word splitting and dequoting, statement separators,
+the push-token reads, and the word views that peel brackets, parameter defaults and
+empty substitutions off a word.
 
 Nothing here decides anything, and nothing here imports ``shell_normalizer``: the
 attribution layer there reads this one, never the reverse.
 ``kiro_crew.security.shell_normalizer`` re-exports every name a caller imports from
-it, so that import path holds. New lexical reading belongs here.
+it, so that import path holds. New lexical reading belongs here; the span
+matcher and the substitution bodies live in ``shell_normalizer_span``.
 """
 
 from __future__ import annotations
@@ -240,53 +240,6 @@ def _ends_argv(token: str) -> bool:
     if token in {"&", "&&", "||", ";", ";;", "\n"}:
         return True
     return "|" in token or ";" in token
-
-
-def _substitution_bodies(text: str) -> "list[str]":
-    """The body of each command substitution in *text*.
-
-    ``$(...)`` is scanned with paren nesting so a nested substitution closing
-    first does not truncate the outer body; backticks are taken pairwise.  Only
-    the BODY is returned -- a bare ``kill`` must not be attributed a name that
-    merely appears in a LATER, unrelated command of the same line.
-
-    The nesting walk is QUOTE-AWARE, through the same
-    :func:`_matching_close_paren` span the git-publish boundary walk uses. A
-    private, quote-unaware copy of it truncates the body at a QUOTED ``)``, and
-    that loses the nested command entirely rather than merely mis-sizing the span:
-    ``git push origin my-feature > >(X=')' git push origin main)`` extracts the
-    body ``X='``, so the nested publish of a protected branch is never scanned
-    and ``is_denied`` returns None for a command bash executes. An UNPROVEN span
-    yields the whole remainder, which is the fail-closed direction -- scanning
-    text that is not really in the body can only add findings.
-
-    Quoting was not the whole of it. That span helper counted a ``)`` that shell
-    COMMAND GRAMMAR also puts there as an ordinary character, and two such
-    spellings were measured allowing a payload this module still refuses:
-    a ``#`` comment (``$(: # )`` closes on a later line) and a ``case`` pattern
-    (``$(case x in x) printf token;; esac)``). Both truncated the body before the
-    verb, so the value assembled from it was never recognised. The closer for the
-    BACKTICK form reads the same state machine now too, so the two spellings
-    cannot disagree.
-    """
-    bodies: list[str] = []
-    i = 0
-    while i < len(text):
-        # PROCESS substitutions run their body as a command just as a command
-        # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
-        # feeds its output through a pipe.  Same paren-nesting walk.
-        if text.startswith(("<(", ">(", "$("), i):
-            end, proven = _matching_close_paren(text, i + 2)
-            bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
-            i = end
-            continue
-        if text[i] == "`":
-            end, proven = _matching_close_backtick(text, i + 1)
-            bodies.append(text[i + 1 : end - 1] if proven else text[i + 1 :])
-            i = end
-        else:
-            i += 1
-    return bodies
 
 
 # A shell removes ``backslash + newline`` while lexing (line continuation), so
@@ -809,147 +762,6 @@ def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> boo
             continue
         return False
     return True  # chain too deep to decide -- arm, the long direction
-
-
-def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
-    """``(index just past the matching ``)``, proven)`` for a paren opened before
-    *open_end*, walked QUOTE-AWARELY through :func:`_iter_shell_chars`.
-
-    THE one span computation for a substitution or subshell body. Both the
-    git-publish boundary walk and the nested-payload EXTRACTOR read it, because a
-    body extracted over a different span than the boundary proved is exactly how a
-    nested command escapes the scan: ``git push origin my-feature > >(X=')' git
-    push origin main)`` truncated the extracted body at the QUOTED ``)``, so the
-    payload came back as ``X='`` and the nested publish of a protected branch was
-    never scanned at all -- ``is_denied`` allowed a command bash runs.
-
-    Quoting is not the only way a ``)`` reaches this walk as an ordinary
-    character. Two COMMAND-GRAMMAR constructs put one there too, and each was
-    measured allowing a payload this module still refuses:
-
-    * a ``#`` COMMENT runs to the end of its line, so the ``)`` in
-      ``$(: # )`` is commented out and the substitution closes on a LATER line.
-      Counting it closed the body at ``: # ``, and the ``printf`` behind it that
-      computed the credential-minting verb was never scanned.
-    * a ``case`` PATTERN is terminated by ``)``. In
-      ``$(case x in x) printf token;; esac)`` the pattern's ``)`` is not the
-      substitution's, and reading it as one truncated the body to ``case x in x``.
-
-    Between ``case`` and its ``esac`` both parens are therefore ignored, which
-    keeps a ``(x|y)`` pattern balanced-neutral as well. ARMING is generous and
-    DISARMING is strict on purpose: missing a real ``case`` closes the body EARLY,
-    which is the bypass, while missing a real ``esac`` only runs it long, which is
-    imprecision. So ``case`` arms on any standalone word IN COMMAND POSITION
-    (:func:`_arms_case_context` -- bash only reads the reserved word there, so
-    ``echo case x in y`` does not arm on ordinary commands, and every
-    undecidable position still arms) and ``esac`` disarms only in command
-    position -- an ``esac`` passed to a command as an ARGUMENT would otherwise
-    end the rule early and let the next paren close.
-
-    ``proven`` is False when the parens never balance before the text ends. The
-    caller must fail CLOSED on that: for an extractor the safe reading is the
-    whole remainder (scan more, never less). All three call sites are extractors,
-    so a span that reaches too far only feeds them text to inspect.
-    """
-    depth = 1
-    cases = 0
-    pos = 0
-    state = 0
-    ansi = False
-    while pos <= len(text):
-        jumped = False
-        for step in _iter_shell_chars(text[pos:], state, ansi):
-            off = pos + step.offset
-            if off < open_end:
-                continue
-            if not step.active:
-                continue
-            ch = step.char
-            # A ``#`` opens a comment only at the START of a word, and the
-            # character before it is read as the shell reads it -- a folded
-            # continuation leaves ``a\`` + newline + ``#b`` one ordinary word.
-            if ch == "#" and _opens_comment(text, off):
-                newline = text.find("\n", off)
-                if newline == -1:
-                    return (len(text), False)
-                pos = newline + 1
-                state, ansi = 0, False
-                jumped = True
-                break
-            if _word_at(text, off, "case") and _arms_case_context(text, off, cases > 0):
-                cases += 1
-                continue
-            if _word_at(text, off, "esac") and _in_command_position(text, off):
-                cases = max(0, cases - 1)
-                continue
-            if cases and ch in "()":
-                continue
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-                if depth == 0:
-                    return (off + len(step.text), True)
-        if not jumped:
-            break
-    return (len(text), False)
-
-
-def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
-    """``(index just past the closing backtick, proven)`` for a body at *start*.
-
-    The paren walk above got quote awareness; the BACKTICK form was still taken
-    pairwise with a plain ``find``, so a backtick the shell reads as a literal --
-    ``` `A='`'; ...` ``` -- was counted as the closer and truncated the body there.
-    One state machine now answers both spellings, which is what keeps them from
-    drifting apart again.
-
-    A backtick inside DOUBLE quotes really is a closer (``"`cmd`"`` runs ``cmd``),
-    so only single-quoted and escaped ones are data. Read through the same
-    ``in_single`` idiom the argv walk uses, rather than a second reading of the
-    state.
-
-    HARDENING, not a patched hole: no payload this module refuses was reachable
-    through the pairwise version -- the strings it mis-read are ones bash itself
-    rejects, because backticks do not nest unescaped. It is fixed so the two
-    closers cannot disagree, not because a bypass was measured.  Sibling
-    scanner: :func:`_backtick_closer` is the exact bash-faithful variant
-    (backslash-only, returns ``-1``) -- reach for it when the caller needs the
-    closer bash itself would pick rather than a fail-closed span.
-    """
-    for step in _iter_shell_chars(text[start:]):
-        escaped = len(step.text) == 2
-        in_single = step.state == 1 and not (step.char == "'" and step.active)
-        if not escaped and not in_single and step.char == "`":
-            return (start + step.offset + len(step.text), True)
-    return (len(text), False)
-
-
-def _backtick_closer(source: str, start: int) -> int:
-    """Index of the backtick that CLOSES a substitution opened before *start*.
-
-    Within backticks bash strips a backslash before ``$``, ``\\``` and ``\\\\``,
-    so an escaped backtick is data and must not be taken as the closer --
-    ``str.find`` did, and it truncated ``kill `printf '\\`' ; pgrep -f <name>```
-    one clause short of the target's name (found in pre-push review, bash-
-    measured: the inner command past the escaped backtick runs).  Quotes do NOT
-    protect a backtick from closing, so this scan honours backslashes only.
-
-    -1 when no unescaped closer exists before the text ends.  Sibling scanner:
-    :func:`_matching_close_backtick` is the quote-aware over-approximating
-    variant returning ``(index, proven)`` -- reach for that one when an
-    unproven span must fail closed rather than fall through.
-    """
-    j = start
-    n = len(source)
-    while j < n:
-        if source[j] == "\\":
-            j += 2
-            continue
-        if source[j] == "`":
-            return j
-        j += 1
-    return -1
 
 
 def _resolved_word_view(word: str) -> str:
