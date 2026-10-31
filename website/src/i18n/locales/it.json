@@ -19137,7 +19137,8 @@
         "crew_disabled": "Connessioni: spente",
         "crew_enabled_named": "{{name}} attivato",
         "crew_toggle_failed": "Impossibile modificare {{name}}: {{error}}",
-        "crew_switch_hint": "Spento chiude la connessione di questa dashboard a quella crew e la tiene chiusa. Le sessioni sulla macchina continuano."
+        "crew_switch_hint": "Spento chiude la connessione di questa dashboard a quella crew e la tiene chiusa. Le sessioni sulla macchina continuano.",
+        "row_actions_failed": "Impossibile caricare i controlli aggiuntivi di {{name}}: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhook in entrata",

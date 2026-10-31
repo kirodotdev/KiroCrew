@@ -18525,7 +18525,8 @@
         "crew_disabled": "연결: 꺼짐",
         "crew_enabled_named": "{{name}} 사용 중",
         "crew_toggle_failed": "{{name}}을(를) 변경할 수 없습니다: {{error}}",
-        "crew_switch_hint": "끄면 이 대시보드의 연결을 닫고 닫힌 상태로 둡니다. 그 머신의 세션은 계속 실행됩니다."
+        "crew_switch_hint": "끄면 이 대시보드의 연결을 닫고 닫힌 상태로 둡니다. 그 머신의 세션은 계속 실행됩니다.",
+        "row_actions_failed": "{{name}}의 추가 컨트롤을 불러오지 못했습니다: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "인바운드 webhook",

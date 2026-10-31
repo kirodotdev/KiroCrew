@@ -19137,7 +19137,8 @@
         "crew_disabled": "Connexions : éteintes",
         "crew_enabled_named": "{{name}} activé",
         "crew_toggle_failed": "Impossible de modifier {{name}} : {{error}}",
-        "crew_switch_hint": "Éteint ferme la connexion de ce tableau de bord à cette crew et la garde fermée. Les sessions sur la machine continuent."
+        "crew_switch_hint": "Éteint ferme la connexion de ce tableau de bord à cette crew et la garde fermée. Les sessions sur la machine continuent.",
+        "row_actions_failed": "Impossible de charger les commandes supplémentaires de {{name}} : {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrants",

@@ -18525,7 +18525,8 @@
         "crew_disabled": "连接：关",
         "crew_enabled_named": "{{name}} 已启用",
         "crew_toggle_failed": "无法更改 {{name}}：{{error}}",
-        "crew_switch_hint": "关闭后，此仪表板与该成员机的连接会断开并保持断开。那台机器上的会话会继续运行。"
+        "crew_switch_hint": "关闭后，此仪表板与该成员机的连接会断开并保持断开。那台机器上的会话会继续运行。",
+        "row_actions_failed": "{{name}} 的额外控件加载失败：{{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "入站 webhook",

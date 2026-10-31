@@ -19137,7 +19137,8 @@
         "crew_disabled": "Conexões: desligadas",
         "crew_enabled_named": "{{name}} ativado",
         "crew_toggle_failed": "Não foi possível alterar {{name}}: {{error}}",
-        "crew_switch_hint": "Desligado fecha a conexão deste painel com essa crew e a mantém fechada. As sessões na máquina continuam rodando."
+        "crew_switch_hint": "Desligado fecha a conexão deste painel com essa crew e a mantém fechada. As sessões na máquina continuam rodando.",
+        "row_actions_failed": "Não foi possível carregar os controles extras de {{name}}: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",

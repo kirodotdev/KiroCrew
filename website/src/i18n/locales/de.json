@@ -18831,7 +18831,8 @@
         "crew_disabled": "Verbindungen: Aus",
         "crew_enabled_named": "{{name}} aktiviert",
         "crew_toggle_failed": "{{name}} konnte nicht geändert werden: {{error}}",
-        "crew_switch_hint": "Aus schließt die Verbindung dieses Dashboards zur Crew und lässt sie geschlossen. Sitzungen auf dem Rechner laufen weiter."
+        "crew_switch_hint": "Aus schließt die Verbindung dieses Dashboards zur Crew und lässt sie geschlossen. Sitzungen auf dem Rechner laufen weiter.",
+        "row_actions_failed": "Die zusätzlichen Steuerelemente für {{name}} konnten nicht geladen werden: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Eingehende Webhooks",

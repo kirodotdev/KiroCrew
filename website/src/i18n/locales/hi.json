@@ -18831,7 +18831,8 @@
         "crew_disabled": "कनेक्शन: बंद",
         "crew_enabled_named": "{{name}} चालू है",
         "crew_toggle_failed": "{{name}} बदला नहीं जा सका: {{error}}",
-        "crew_switch_hint": "बंद करने पर इस डैशबोर्ड का उस क्रू से कनेक्शन बंद हो जाता है और बंद रहता है। मशीन पर सेशन चलते रहते हैं।"
+        "crew_switch_hint": "बंद करने पर इस डैशबोर्ड का उस क्रू से कनेक्शन बंद हो जाता है और बंद रहता है। मशीन पर सेशन चलते रहते हैं।",
+        "row_actions_failed": "{{name}} के अतिरिक्त नियंत्रण लोड नहीं हो सके: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "इनबाउंड webhooks",

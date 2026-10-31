@@ -19137,7 +19137,8 @@
         "crew_disabled": "Conexiones: apagadas",
         "crew_enabled_named": "{{name}} activado",
         "crew_toggle_failed": "No se pudo cambiar {{name}}: {{error}}",
-        "crew_switch_hint": "Apagado cierra la conexión de este panel con esa crew y la mantiene cerrada. Las sesiones en la máquina siguen en marcha."
+        "crew_switch_hint": "Apagado cierra la conexión de este panel con esa crew y la mantiene cerrada. Las sesiones en la máquina siguen en marcha.",
+        "row_actions_failed": "No se pudieron cargar los controles adicionales de {{name}}: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

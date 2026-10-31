@@ -10290,6 +10290,7 @@
         "fetch_code_hint": "Shows the code this crew is already waiting on — it does not start a new sign-in.",
         "fetch_sign_in_code": "Show the sign-in code",
         "finish_open_edit_first": "Save or cancel the open edit before editing another crew.",
+        "row_actions_failed": "The extra controls for {{name}} failed to load: {{error}}",
         "finish_prereqs": "Finish the AWS setup above to enable this.",
         "get_a_code": "Get a sign-in code",
         "get_a_code_for": "Get a sign-in code for {{name}}",

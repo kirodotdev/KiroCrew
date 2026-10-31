@@ -18525,7 +18525,8 @@
         "crew_disabled": "接続: オフ",
         "crew_enabled_named": "{{name}} は有効",
         "crew_toggle_failed": "{{name}} を変更できませんでした: {{error}}",
-        "crew_switch_hint": "オフにすると、このダッシュボードからの接続を閉じ、閉じたままにします。マシン上のセッションは動き続けます。"
+        "crew_switch_hint": "オフにすると、このダッシュボードからの接続を閉じ、閉じたままにします。マシン上のセッションは動き続けます。",
+        "row_actions_failed": "{{name}} の追加コントロールを読み込めませんでした: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "受信 Webhooks",
