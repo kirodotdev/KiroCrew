@@ -27,7 +27,7 @@ from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Concatenate, Iterator, ParamSpec, TypeVar
 
-from kiro_crew import shutdown_event
+from kiro_crew import probes, shutdown_event
 from kiro_crew.autonudge_service.maintenance import _DurabilityDrain
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
@@ -35,6 +35,7 @@ from kiro_crew.autonudge_service.model import (
     _START_FAILURE_STANDDOWN_AFTER,
     APPROVAL_HOLD,
     PERSON_WAIT_HOLD,
+    SUBJECT_READ_SECS,
     NudgeAdmissionRefused,
     NudgeLoop,
     _MutationAdmission,
@@ -44,6 +45,7 @@ from kiro_crew.autonudge_service.model import (
     is_structured_monitor_loop,
     note_hold_start,
 )
+from kiro_crew.autonudge_service.subject import loop_subject
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorDispatchResult
 
 if TYPE_CHECKING:
@@ -337,6 +339,21 @@ def _drained_bookkeeping(
             return await fn(self, *args, **kwargs)
 
     return wrapper
+
+
+def _held_tick_rearms(loop: NudgeLoop) -> bool:
+    """Whether *loop*'s held tick re-arms one read interval out to read its subject again.
+
+    Only an approval-held GATED loop that names one pull request does, which
+    ``subject_reads.hold_tick`` reads so a merge or a close settles the loop. An
+    ungated loop never does: ``gate=False`` promises a terminal reading can never
+    end it, so held it reads nothing, exactly as a held loop naming no pull
+    request, and waits for a person.
+    """
+    if not loop.approval_stalled or not loop.gate or loop.monitor is None:
+        return False
+    target = loop_subject(loop)
+    return target is not None and target.kind == probes.GH_PR
 
 
 def notify_approval_stalled(self: AutoNudgeService, slot_key: str) -> None:
@@ -1214,6 +1231,15 @@ def _arm_from_deadline(self: AutoNudgeService, loop: NudgeLoop) -> None:
         if loop.monitor is not None:
             loop.monitor.next_probe_at = loop.next_due_ts
         self._persist_soon()
+    if _held_tick_rearms(loop) and not is_structured_monitor_loop(loop):
+        # A held gated loop naming one pull request: its timer is its subject read
+        # (``subject_reads.hold_tick``), one read interval out whatever its deadline,
+        # from every arm: a turn ending, a deferred re-arm, a reconciler rescue. Any
+        # other held loop is armed toward its deadline as any loop is, so its tick
+        # still reaches the cycle cap and the stop sentinel. The release arms toward
+        # the deadline.
+        self._arm_timer(loop, delay=SUBJECT_READ_SECS)
+        return
     remaining = loop.next_due_ts - now
     if remaining <= 0:
         delay = float(seams._OVERDUE_REARM_SECS)
@@ -1349,10 +1375,15 @@ def _reconcile_once(self: AutoNudgeService) -> None:
             continue
         if loop.id in self._firing or loop.id in self._maintenance_quiescing:
             continue
-        if loop.approval_stalled and not is_structured_monitor_loop(loop):
-            # Paused for approval: no live timer is the intended state, and
-            # ``release_approval_hold`` re-arms it. Rescuing it here would only
-            # wake a tick that holds again, every pass, for as long as it waits.
+        if (
+            loop.approval_stalled
+            and not is_structured_monitor_loop(loop)
+            and not _held_tick_rearms(loop)
+        ):
+            # Paused for approval with no pull request to read (or ungated): no live
+            # timer is the intended state, and ``release_approval_hold`` re-arms it. A
+            # gated one that names a pull request re-arms itself to keep reading it
+            # (``subject_reads.hold_tick``), so it is rescued like any other.
             continue
         monitor = loop.monitor
         if monitor is not None and monitor.version != MONITOR_STATE_VERSION:

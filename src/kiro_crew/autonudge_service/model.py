@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 #: a cap would bring back a watch with nothing to watch.
 MONITOR_TERMINAL_REASON = "monitor_terminal"
 
+#: How often a sleeping ungated loop, or a held loop, reads its pull request
+#: (``subject_reads``); the reconciler rescues a held loop at the same cadence.
+SUBJECT_READ_SECS = 300.0
+
 #: ``stopped_reason`` for a loop whose own kill switch fired: the stop file at
 #: ``stop_sentinel_path`` existed when the timer woke. The file is how the agent
 #: declares the goal reached on a goal whose text carries ``{{STOP_FILE}}`` (the

@@ -1234,6 +1234,7 @@ _OWNER_ORDER = (
     "maintenance",
     "timers",
     "gate",
+    "subject_reads",
     "judge_tick",
     "firing",
     "mutations",
