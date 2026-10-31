@@ -11,8 +11,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.tool_gate import label_for
 from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
 from kiro_crew.autonudge import FINISHED_LOOP_REASONS, reason_in
 from kiro_crew.autonudge_authz import normalize_banner
@@ -107,22 +109,42 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
 async def _answer_slash_without_channel(
     state: DashboardState, slot: _ChatSlot, session_key: str, command: str, message: str = ""
 ) -> str:
+    """Answer a harness command the backend cannot run, on a KAS session.
+
+    The KAS spelling of :func:`_answer_slash_for_harness`, kept for the callers that
+    answer only ``/clear`` or are KAS by construction.
+    """
+    return await _answer_slash_for_harness(
+        state, slot, session_key, command, ACP_BACKEND_KAS, message
+    )
+
+
+async def _answer_slash_for_harness(
+    state: DashboardState,
+    slot: _ChatSlot,
+    session_key: str,
+    command: str,
+    backend: str,
+    message: str = "",
+) -> str:
     """Answer a harness command the backend cannot run, as a local command.
 
     ``/clear`` queues the discard ``reset_conversation`` queues and applies it
     through the same consumer, so the next turn starts with no memory of this
     conversation. The transcript stays, as it does for that tool. A session that
     refuses the discard (busy, sub-agents attached) keeps it queued for a later
-    turn boundary.
+    turn boundary. Any other command gets a notice naming *backend*'s harness as a
+    person reads it.
 
-    ``/model``, ``/tools`` and ``/mcp`` are answered from the dashboard's own state
-    (``kas_local_commands``); *message* is the whole command line, for
-    ``/model <id>``.
+    On KAS, ``/model``, ``/tools`` and ``/mcp`` are answered from the dashboard's own
+    state (``kas_local_commands``, which reads KAS's own registration); *message* is
+    the whole command line, for ``/model <id>``. Another harness gets the notice for
+    them.
 
     Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
     ``switched``, ``error``, ``no_session`` or ``unsupported_backend``.
     """
-    if command.lower() in KAS_LOCAL_INSPECT_COMMANDS:
+    if backend == ACP_BACKEND_KAS and command.lower() in KAS_LOCAL_INSPECT_COMMANDS:
         text, outcome = await answer_kas_inspect_command(
             state, slot, session_key, message or command
         )
@@ -151,7 +173,8 @@ async def _answer_slash_without_channel(
             )
     else:
         outcome = "unsupported_backend"
-        text = f"⚠ `{command}` doesn't work with KAS. It was not sent to the agent."
+        harness = "KAS" if backend == ACP_BACKEND_KAS else label_for(backend)
+        text = f"⚠ `{command}` doesn't work with {harness}. It was not sent to the agent."
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -761,7 +784,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):
             turn_exit.local_command = first_word
-            await _answer_slash_without_channel(state, slot, session_key, first_word, message)
+            await _answer_slash_for_harness(
+                state, slot, session_key, first_word, _command_backend, message
+            )
             return _Flow.END
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)

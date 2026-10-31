@@ -321,6 +321,7 @@ from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
+from kiro_crew.dashboard.kas_local_commands import served_slash_commands
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
     reject_if_kiro_unverified,
@@ -1602,13 +1603,12 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # the suggestion payload must not advertise them: a menu entry that only
     # ever produces a warning is an inert affordance.
     offered = _SLASH_COMMANDS - blocked_commands
-    # The same holds for a harness with no command channel: the slash gate
-    # answers each of its harness commands with a notice, so list only what the
-    # dashboard serves there. /compact stays: it has a gate of its own, which
-    # sends the engine's compaction verb or explains that the harness compacts
-    # by itself, and never gives that notice.
+    # The same holds for a harness with no command channel: the slash gate answers
+    # its commands with a notice, so list only what the dashboard serves there
+    # (served_slash_commands). /compact stays: it has a gate of its own.
     if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
+        served = served_slash_commands(cfg.agent.acp_backend, _DASHBOARD_SERVED_SLASH_COMMANDS)
+        offered = offered & (served | {"/compact"})
     return web.json_response(
         [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )

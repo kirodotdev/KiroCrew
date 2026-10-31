@@ -426,6 +426,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": None,
     # Every member: kiro-cli and KAS credits, claude/opencode/goose prompt-result tokens.
     "ACP_BACKENDS_REPORT_USAGE": None,
+    # Strands CLI 0.2.3: the -32603 a disposed backend answers, then a load in a
+    # second process.
+    "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -494,6 +497,7 @@ EXPECTED_AGENT_NAMES: dict[str, frozenset[str]] = {
     "pi": frozenset({"pi-acp"}),
     "deepseek": frozenset({"deepseek-harness-acp"}),
     "copilot": frozenset({"Copilot"}),
+    "strands": frozenset({"@strands-agents/cli"}),
 }
 
 # kiro-cli and KAS are one binary speaking one ``_kiro`` dialect, and KAS's
