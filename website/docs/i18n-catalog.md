@@ -20,6 +20,22 @@ legally do) is in [`docs/ci/i18n-gates.md`](../../docs/ci/i18n-gates.md).
   here (`.map(t => …)` over tabs, turns, tasks, themes), so a bare `t` gets
   shadowed and the call lands on a domain object instead.
 
+### Stored text is a value, never a key
+
+Text the dashboard did not write (a tool-step title built from the agent's
+command, a question-card option, a reminder, a command-bar query, a name) goes
+into a `{{placeholder}}` as an `i18nT()` value, or renders on its own with no
+translator call at all. It is never the key: i18next would look it up, fill its
+`{{...}}` placeholders and resolve its `$t(...)` references.
+
+`i18nT()` keeps every text value away from i18next: it translates the catalog
+string around an opaque placeholder and puts the value back afterwards, so the
+value shows exactly as stored and i18next never parses it. Numbers, booleans
+and i18next's own options (`count`, `lng`, `context`, ...) pass through
+unchanged. The `t` from `useTranslation()` hands values straight to i18next, so
+use `i18nT()` for a string that carries stored text. `i18n/literalValues.test.ts`
+pins the behaviour.
+
 `LanguageProvider` forces a re-RENDER of the tree on a language change, using
 `cloneElement` (which defeats React's referential-equality bailout) rather than a
 changing `key`. It deliberately does **not** remount, because a remount discards
