@@ -364,7 +364,10 @@ class TestCronCli:
                 channel=None,
                 approval_mode="auto",
             )
-            _cron(args)
+            # A missing job exits 1, like remove/pause/resume/trigger.
+            with pytest.raises(SystemExit) as exc:
+                _cron(args)
+            assert exc.value.code == 1
             assert "nonexist" in capsys.readouterr().out
             mock_sel.return_value.log_api_access.assert_called_once_with(
                 caller="cli",
