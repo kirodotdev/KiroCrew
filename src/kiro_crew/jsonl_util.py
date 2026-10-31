@@ -126,6 +126,12 @@ _find = bytes.find
 # truncate the biggest real sessions.
 RECORD_CAP = 128 * 1024 * 1024
 
+# Bytes per read in the record framer. Each read is one call that drops the GIL
+# for the syscall and must win it back; one per line, through an 8 KiB buffer,
+# made a 20 MB transcript scan take 953 ms beside three busy Python threads, where
+# it takes 18 ms alone. A megabyte per read keeps those hand-backs rare.
+_FRAME_CHUNK = 1 << 20
+
 # Public so a caller can tell this refusal from an unrelated EINVAL, which shares its errno.
 NOT_REGULAR_FILE = "refusing a non-regular file"
 
@@ -319,6 +325,45 @@ def _frames(handle: IO[bytes], cap: int) -> Iterator[bytes | _Oversized]:
         yield frame
 
 
+class _ChunkedLines:
+    """``readline(size)`` with binary-file semantics, served from large reads.
+
+    Returns up to *size* bytes, stopping after the first ``\\n``; at end of file
+    whatever is left, then ``b""``. The read-ahead is walked by offset and only
+    the returned line is copied, so a chunk of many short lines costs linear time.
+    """
+
+    __slots__ = ("_read", "_buf", "_pos")
+
+    def __init__(self, handle: IO[bytes]) -> None:
+        self._read = handle.read
+        self._buf = b""
+        self._pos = 0
+
+    def readline(self, size: int) -> bytes:
+        parts: list[bytes] = []
+        want = size
+        while want > 0:
+            if self._pos >= len(self._buf):
+                # Never more than one chunk: callers ask for up to the record cap
+                # (128 MiB), and a read that size would pull the rest of the file
+                # in for a page that needs one stride. A longer record is joined
+                # from successive chunks by this loop.
+                self._buf = self._read(_FRAME_CHUNK)
+                self._pos = 0
+                if not self._buf:
+                    break
+            stop = min(len(self._buf), self._pos + want)
+            nl = self._buf.find(b"\n", self._pos, stop)
+            end = stop if nl == -1 else nl + 1
+            parts.append(self._buf[self._pos : end])
+            want -= end - self._pos
+            self._pos = end
+            if nl != -1:
+                break
+        return parts[0] if len(parts) == 1 else b"".join(parts)
+
+
 def _frames_with_offsets(
     handle: IO[bytes], cap: int
 ) -> Iterator[tuple[int, int, bytes | _Oversized]]:
@@ -339,6 +384,12 @@ def _frames_with_offsets(
     except (AttributeError, OSError):
         buf_offset = 0
     consumed = buf_offset
+    # Lines served from _FRAME_CHUNK reads when the handle offers ``read``, else
+    # the handle's own ``readline``. Both answer the same calls with the same
+    # bytes, so framing and offsets are identical; only the syscalls differ. A
+    # chunk read moves the handle past the record a caller stops at, so every
+    # caller takes positions from the yielded offsets, never from ``tell``.
+    readline = _ChunkedLines(handle).readline if hasattr(handle, "read") else handle.readline
     # True while discarding the remainder of an over-cap record, whose own
     # terminator is what ends the discard.
     dropping = False
@@ -351,7 +402,7 @@ def _frames_with_offsets(
         # could not assemble one and would refuse it.
         # The max(2, ...) keeps a read able to see a whole CRLF once the buffer is
         # already full, so a \r there is still resolvable rather than deadlocked.
-        chunk = handle.readline(max(2, cap + 2 - len(buf)))
+        chunk = readline(max(2, cap + 2 - len(buf)))
         if not chunk:
             break
         buf += chunk
