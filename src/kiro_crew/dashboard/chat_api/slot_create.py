@@ -232,6 +232,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # The title is applied after the mint, so its type is checked here: a
+    # non-string one would raise there, a 500 after the slot was made. Falsy
+    # values (null, "", 0, []) still mean "no title", as before.
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    raw_title = body.get("title") or ""
+    title_error = string_field_error("title", raw_title)
+    if title_error is not None:
+        return title_error
     # Remote-dispatch preview (RFC conductor-remote-dispatch §2b): an owner's
     # work-item create on a crew short of memory, CPU or disk is refused before
     # anything is read or minted, and every owner create reply carries the
@@ -753,7 +762,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Pin title if explicitly provided (prevents auto-title from overwriting).
         # A cron caller uses this route as both create and reopen. Its title names
         # the new session, but a later reopen must not undo a user's rename.
-        title = (body.get("title") or "").strip()[:200] if isinstance(body, dict) else ""
+        title = raw_title.strip()[:200]
         if cron_creator and (not is_new_slot or reopening_persisted_cron):
             title = ""
         if title:

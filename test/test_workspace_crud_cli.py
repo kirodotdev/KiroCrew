@@ -299,6 +299,26 @@ class TestWorkspaceList:
         assert "staging" in out
         assert "workspace-staging" in out
 
+    def test_list_prints_each_row_on_one_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        data = _base_config()
+        data["workspaces"]["staging"] = {"dir": "work\nspace\x07-staging"}
+        cfg_path = _write_config(tmp_path, data)
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "workspace", "list"]),
+        ):
+            main()
+
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line per workspace: the newline did not split a row.
+        assert len(lines) == 3
+        row = next(line for line in lines if line.startswith("staging "))
+        assert "work\\x0aspace-staging" in row
+        assert "\x07" not in row
+
 
 # ── Create errors (Req 5.4, 5.5) ──
 

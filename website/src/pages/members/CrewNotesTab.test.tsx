@@ -58,6 +58,20 @@ describe('CrewNotesTab (the mate\'s own notes)', () => {
     expect(notes.querySelector('[contenteditable="true"]')).toBeNull()
   })
 
+  it('names the mate by its display name in the agent-only line, never the internal key', async () => {
+    memberBriefing.mockResolvedValue(briefing())
+    renderWithProviders(
+      <CrewNotesTab slug="oncall" member="member-oncall-1a2b" displayName="On-call" header={null} visible />,
+    )
+    const line = screen.getByTestId('member-notes-agent-only')
+    expect(line).toHaveTextContent(
+      'On-call writes these notes for itself as it works. You can read them here, but not change them.',
+    )
+    expect(line).not.toHaveTextContent('member-oncall-1a2b')
+    // The read itself stays keyed by the internal name.
+    await waitFor(() => expect(memberBriefing).toHaveBeenCalledWith('oncall', 'member-oncall-1a2b'))
+  })
+
   it('renders the briefing as markdown, dated, keyed by slug and exact name', async () => {
     memberBriefing.mockResolvedValue(briefing())
     renderNotes()

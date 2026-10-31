@@ -398,10 +398,18 @@ def _artifact(args: argparse.Namespace) -> None:
             print("No artifacts.")
             return
         for a in items:
-            tags = f"  [{', '.join(a.get('tags') or [])}]" if a.get("tags") else ""
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
+            tags = (
+                f"  [{safe_terminal_line(', '.join(str(t) for t in a.get('tags') or []))}]"
+                if a.get("tags")
+                else ""
+            )
             print(
-                f"{a.get('slug', '?'):<40s}  v{a.get('version', '?'):<3} "
-                f"{a.get('kind', '?'):<10}{tags}  {a.get('name', '?')}"
+                f"{safe_terminal_line(str(a.get('slug', '?'))):<40s}  "
+                f"v{safe_terminal_line(str(a.get('version', '?'))):<3} "
+                f"{safe_terminal_line(str(a.get('kind', '?'))):<10}{tags}  "
+                f"{safe_terminal_line(str(a.get('name', '?')))}"
             )
         return
 
