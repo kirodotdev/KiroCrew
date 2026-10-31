@@ -627,6 +627,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # pi launch path, before the sandbox is built, so a pi session refuses with a message
     # that names the directory it actually resolves.
     "pi-gate",
+    # KAS MCP launch snapshots (``acp.kas_env_launch``): the env values a server's
+    # spec declares, kept off the wire. The launcher a KAS child execs reads them,
+    # so the leaf must stay visible in the sandbox; a write would choose the command
+    # and environment a later server start runs, so it is sealed. Pre-created and
+    # no-follow for the ``pi-gate`` reasons above.
+    "kas-mcp-launch",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -918,6 +924,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # one lazily to avoid a load-time cycle, so importing its constant here would
     # close the cycle from the other side. The seal lists above spell it the same way.
     "pi-gate",
+    # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
+    # (not an enforced harness's) starts the launcher that reads them.
+    "kas-mcp-launch",
 )
 
 #: Leaves an ENFORCED harness's child MAY read. The other half of the pair above.

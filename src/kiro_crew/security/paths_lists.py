@@ -741,6 +741,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the launcher and read the sealed extension. This floor still keeps the agent's
     # own file tools out; the controls cover different readers rather than cancelling.
     "pi-gate",
+    # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
+    # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
+    "kas-mcp-launch",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.

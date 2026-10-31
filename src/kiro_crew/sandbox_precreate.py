@@ -131,6 +131,10 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
     # including the first pi spawn on a fresh install.
     "pi-gate",
+    # KAS MCP launch snapshots: the launcher reads a snapshot by name and refuses a
+    # missing one, so an empty directory means what an absent one does, and the
+    # bind is live, so a snapshot the gateway writes later is seen.
+    "kas-mcp-launch",
     # Empty directories are absent-equivalent to the approval and resolution readers.
     # Pre-creation gives Linux concrete bind targets on a fresh install.
     "mcp-launch-approvals",
@@ -173,6 +177,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "models",
     "redaction-allow",
     "pi-gate",
+    "kas-mcp-launch",
     "mcp-launch-approvals",
     "mcp/resolved",
     "template-mcp-additions",
@@ -247,6 +252,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "pi-gate": (
         "sealed pi gate runtime",
         "the agent could plant the launcher a later pi session execs out of",
+    ),
+    "kas-mcp-launch": (
+        "sealed KAS MCP launch snapshots",
+        "the agent could choose the command and environment a later MCP server start runs",
     ),
     "mcp-launch-approvals": (
         "sealed MCP launch approvals",
