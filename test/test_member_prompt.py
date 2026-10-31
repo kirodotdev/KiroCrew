@@ -885,6 +885,126 @@ class TestMemberSectionInjection:
         assert "This week: crash issues." not in ctx
 
 
+class TestTemporaryScopeWithholdsBriefing:
+    """A temporary session's own prefix promises no memory reads, so the member
+    briefing — the agent-writable working memory — must be withheld on every V1
+    path that injects the member section, exactly as the V2 essentials envelope
+    already withholds it."""
+
+    def _record(self):
+        """A legacy V1 member execution record (no member_id) under temporary scope."""
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            member_id=None,
+            selection_kind="member",
+            selection_name=CREW,
+            store=SimpleNamespace(legacy_name=""),
+            memory_mode="temporary",
+            template_id="",
+        )
+
+    def _seed_briefing(self) -> None:
+        bp = member_briefing_path(CREW)
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text("This week: crash issues.", encoding="utf-8")
+
+    def _assert_withheld(self, text: str) -> None:
+        # ASCII-only on purpose: build_message folds the em-dash of the real
+        # header to "--" in its final punctuation translation, while a bare
+        # session context keeps it.
+        assert "withheld by this turn's memory/privacy scope" in text
+        # Where briefing reads are supported the body must not ride along; on
+        # Windows the read fails closed regardless, so the placeholder above is
+        # the platform-independent signal.
+        assert "This week: crash issues." not in text
+
+    def test_fresh_session_start_withholds_the_briefing(self, tmp_path):
+        self._seed_briefing()
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            text = _builder(tmp_path).build_session_context(
+                session_key="dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                execution_context=self._record(),
+            )
+        self._assert_withheld(text)
+
+    def test_slim_resume_withholds_the_briefing(self, tmp_path):
+        self._seed_briefing()
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            message, _hook = _builder(tmp_path).build_message(
+                "status?",
+                True,
+                "dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                resumed=True,
+                execution_context=self._record(),
+            )
+        self._assert_withheld(message)
+
+    def test_post_compaction_reinjection_withholds_the_briefing(self, tmp_path):
+        self._seed_briefing()
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            message, _hook = _builder(tmp_path).build_message(
+                "status?",
+                False,
+                "dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                needs_reinjection=True,
+                execution_context=self._record(),
+            )
+        self._assert_withheld(message)
+
+    def test_excluded_memory_group_withholds_the_briefing(self, tmp_path):
+        # A normal (non-temporary) turn whose scope excludes the memory group
+        # withholds the briefing too, the same verdict the V2 envelope reaches.
+        self._seed_briefing()
+        record = self._record()
+        record.memory_mode = ""
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            text = _builder(tmp_path).build_session_context(
+                session_key="dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                execution_context=record,
+                context_groups=frozenset({"lessons", "project"}),
+            )
+        self._assert_withheld(text)
+
+    @pytest.mark.parametrize("mode", ["", "incognito"])
+    def test_scopes_that_allow_reads_keep_the_briefing(self, tmp_path, mode):
+        # Incognito blocks writes only, so it still reads the briefing.
+        self._seed_briefing()
+        record = self._record()
+        record.memory_mode = mode
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            text = _builder(tmp_path).build_session_context(
+                session_key="dashboard:member-code-reviewer",
+                agent=CREW,
+                member=CREW,
+                execution_context=record,
+            )
+        assert "withheld by this turn's memory/privacy scope" not in text
+
+    @pytest.mark.parametrize(
+        ("blocks_reads", "groups", "expected"),
+        [
+            (False, None, True),
+            (False, frozenset({"memory"}), True),
+            (False, frozenset({"lessons"}), False),
+            (True, None, False),
+            (True, frozenset({"memory"}), False),
+        ],
+    )
+    def test_briefing_reads_allowed_predicate(self, blocks_reads, groups, expected):
+        from kiro_crew.context_assembly.member import briefing_reads_allowed
+
+        assert briefing_reads_allowed(blocks_reads, groups) is expected
+
+
 def _make_rules_app() -> web.Application:
     from kiro_crew.dashboard.handlers.members import (
         api_member_rules_get,
