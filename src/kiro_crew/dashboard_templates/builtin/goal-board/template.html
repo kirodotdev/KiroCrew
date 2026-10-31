@@ -161,7 +161,10 @@
       }
       function applyStatic() {
         var nodes = document.querySelectorAll('[data-i18n]');
-        for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
+        for (var i = 0; i < nodes.length; i++) {
+          var word = i18n(nodes[i].getAttribute('data-i18n'));
+          if (nodes[i].textContent !== word) nodes[i].textContent = word;
+        }
       }
 
       // The states the work ledger stamps. Colour per state, named here rather than
@@ -292,13 +295,16 @@
         return { items: n('items'), accepted: n('accepted'), rejected: n('rejected'), abandoned: n('abandoned') };
       }
 
+      // Each block keeps its DOM until what it shows changes. A refill that moves one
+      // field must not rebuild the rest, or every glow, blink and shimmer restarts.
+      var statesSignature = null;
+      var doneSignature = null;
+      var youSignature = null;
+
       function drawStates(list) {
         var bar = document.getElementById('states');
         var tally = document.getElementById('tally');
         if (!bar || !tally) return;
-        bar.textContent = '';
-        bar.className = 'states' + (bar.getAttribute('data-drawn') ? '' : ' grow');
-        tally.textContent = '';
         var counts = {};
         var order = [];
         for (var i = 0; i < list.length; i++) {
@@ -314,12 +320,18 @@
           counts[closing[c]] += gone[closing[c]];
         }
         var total = list.length + gone.items;
-        if (total) bar.setAttribute('data-drawn', '1');
         // Known states first in their declared order, then anything the ledger used
         // that this page does not know, so a new state shows up rather than hiding.
         var seq = [];
         for (var k = 0; k < STATES.length; k++) if (counts[STATES[k][0]]) seq.push(STATES[k][0]);
         for (var o = 0; o < order.length; o++) if (seq.indexOf(order[o]) === -1) seq.push(order[o]);
+        var signature = JSON.stringify([locale(), total, seq.map(function (s) { return [s, counts[s]]; })]);
+        if (signature === statesSignature) return;
+        statesSignature = signature;
+        bar.textContent = '';
+        bar.className = 'states' + (bar.getAttribute('data-drawn') ? '' : ' grow');
+        tally.textContent = '';
+        if (total) bar.setAttribute('data-drawn', '1');
         for (var j = 0; j < seq.length; j++) {
           var state = seq[j];
           var seg = document.createElement('i');
@@ -346,11 +358,20 @@
           if (needsYou(list[i])) ask.push(list[i]);
         }
         var gone = forgotten();
-        done.textContent = '';
-        var b = document.createElement('b');
-        b.textContent = i18n('done_of', { d: acc + gone.accepted, n: list.length + gone.items });
-        done.appendChild(b);
-        done.appendChild(document.createTextNode(i18n('running', { n: run }) + ' \u00b7 ' + i18n('waiting', { n: ask.length })));
+        var signature = JSON.stringify([locale(), acc + gone.accepted, list.length + gone.items, run, ask.length]);
+        if (signature !== doneSignature) {
+          doneSignature = signature;
+          done.textContent = '';
+          var b = document.createElement('b');
+          b.textContent = i18n('done_of', { d: acc + gone.accepted, n: list.length + gone.items });
+          done.appendChild(b);
+          done.appendChild(document.createTextNode(i18n('running', { n: run }) + ' \u00b7 ' + i18n('waiting', { n: ask.length })));
+        }
+        signature = JSON.stringify([locale(), ask.map(function (it) {
+          return [it.item_id, it.title, it.status, it.reason, it.summary, optionsFor(text(it.item_id) || '')];
+        })]);
+        if (signature === youSignature) return;
+        youSignature = signature;
         you.textContent = '';
         var box = document.createElement('div');
         if (!ask.length) { box.className = 'calm'; box.textContent = i18n('calm'); you.appendChild(box); return; }
@@ -388,14 +409,33 @@
         you.appendChild(box);
       }
 
+      // Item cards live for this document's lifetime, keyed by id. A refill rebuilds
+      // only the cards whose item changed; the rest keep their nodes and motion.
+      var itemNodes = {};
+      var itemSignatures = {};
+      var emptyNode = null;
+
       function drawItems(list) {
         var host = document.getElementById('items');
         if (!host) return;
-        host.textContent = '';
+        if (list.length && emptyNode) { emptyNode.remove(); emptyNode = null; }
+        var keep = {};
         for (var i = 0; i < list.length; i++) {
           var it = list[i];
-          var card = document.createElement('div');
           var id = text(it.item_id) || String(i);
+          if (keep[id]) id += '#' + i;
+          keep[id] = true;
+          var signature = JSON.stringify([locale(), it]);
+          var card = itemNodes[id];
+          if (card && itemSignatures[id] === signature) {
+            // Unchanged: the same node stays, moved only when the order changed.
+            if (host.children[i] !== card) host.insertBefore(card, host.children[i] || null);
+            continue;
+          }
+          if (card) card.remove();
+          card = document.createElement('div');
+          itemNodes[id] = card;
+          itemSignatures[id] = signature;
           card.className = 'item' + (seen[id] ? '' : ' pop') + (live(it) ? ' live' : '') + (needsYou(it) ? ' you' : '');
           if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
           seen[id] = true;
@@ -451,13 +491,21 @@
           if (summary) card.appendChild(line(i18n('reported'), summary));
           var worker = text(it.spender);
           if (worker) card.appendChild(line(i18n('worker'), worker));
-          host.appendChild(card);
+          host.insertBefore(card, host.children[i] || null);
         }
-        if (!list.length) {
-          var empty = document.createElement('div');
-          empty.className = 'line';
-          empty.textContent = i18n('empty');
-          host.appendChild(empty);
+        Object.keys(itemNodes).forEach(function (id) {
+          if (keep[id]) return;
+          itemNodes[id].remove();
+          delete itemNodes[id];
+          delete itemSignatures[id];
+        });
+        var emptyText = list.length ? null : i18n('empty');
+        if (emptyNode && emptyNode.textContent !== emptyText) { emptyNode.remove(); emptyNode = null; }
+        if (emptyText && !emptyNode) {
+          emptyNode = document.createElement('div');
+          emptyNode.className = 'line';
+          emptyNode.textContent = emptyText;
+          host.appendChild(emptyNode);
         }
       }
 
@@ -480,9 +528,13 @@
         if (note) note.textContent = String(list.length + forgotten().items);
       }
 
-      render();
-      window.addEventListener('load', render);
-      window.addEventListener('message', function () { setTimeout(render, 0); });
+      // The frame bootstrap registered first and fills bound cells, so drawing after
+      // its fill keeps the dashes and the item count from being overwritten.
+      if (document.readyState === 'loading') window.addEventListener('DOMContentLoaded', render, { once: true });
+      else render();
+      // The composed frame dispatches this after it applies a refill. Listening to
+      // every message redrew the page for unrelated frame traffic.
+      window.addEventListener('kirocrew-dashboard', render);
     }());
   </script>
 </div>
