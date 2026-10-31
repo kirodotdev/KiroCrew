@@ -316,6 +316,22 @@ One card line stays unavailable on pi, on a driven observation:
   pre-approve. That is a change to how side sessions launch, not a membership edit,
   and it has not been built.
 
+### Strands: the owner, not the name, classifies a call
+
+The Strands CLI's `tool_call` card states a `kind` guessed from substrings of
+the tool name, and its permission frame describes the interrupt, not the call.
+Crew's gate module therefore writes the call into the interrupt as the gate
+envelope with an `owner` read off the tool object (`builtin`, `custom`,
+`mcp:<server>`), and the host classifies from owner and name only
+(`permission_requests.strands_envelope_identity`). Unlike pi, a Strands name
+CAN prove a built-in, because ownership is the object identity the harness's
+own factory built, not the name a project registered. A frame that is not the
+envelope, or whose owner cannot be read, is refused. A Strands MCP tool meets a
+hook matcher by its MCP forms only (`hooks.pre_tool_match_names`), never by its
+bare name, so `@docs/web_fetch` does not run a `web_fetch` hook. `ACP_BACKENDS_META_IDENTITY`
+does not take strands: its refusal keys on the card, which this harness never
+trusts, and the envelope refusal already covers every request.
+
 ### Heartbeat tools on a harness with no adapter-authored tool identity
 
 The heartbeat agent has no approver behind it, so `_heartbeat_approval`
