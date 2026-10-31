@@ -28,7 +28,7 @@ from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers_parts.backend_errors import is_context_overflow_error
-from kiro_crew.llm_helpers_parts.model_fallback import first_advertised_fallback
+from kiro_crew.llm_helpers_parts.model_fallback import first_advertised_fallback, known_backend
 from kiro_crew.llm_helpers_parts.tool_approval import _steer_host_deny
 from kiro_crew.llm_helpers_parts.turn_usage import (
     _billing_stats,
@@ -40,6 +40,10 @@ from kiro_crew.sel import sel as _sel
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.llm_helpers")
+
+
+class BackgroundBackendMismatch(RuntimeError):
+    """The acquired background session is not on the backend the caller required."""
 
 
 def _raise_if_unfinished(event: object, text: str) -> None:
@@ -84,6 +88,7 @@ async def run_bg_oneliner(
     max_output_bytes: int | None = None,
     retry_rejected_model: bool = True,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    expected_backend: str | None = None,
 ) -> str:
     """Stream a single prompt through an ephemeral background session and return
     the accumulated text.
@@ -128,6 +133,12 @@ async def run_bg_oneliner(
     ``retry_rejected_model=False`` disables the extra reactive model call for a
     caller that accounts each attempt against a hard call budget. Neither changes
     the configured-model resolution or the default behavior of other callers.
+
+    ``expected_backend`` names the backend the ACQUIRED session must run on: a
+    handle on any other backend, or one whose backend cannot be read, is destroyed
+    unprompted and :class:`BackgroundBackendMismatch` raised. The same shape as the
+    ``strict_model`` post-condition: a check on what was handed over, not on the
+    configuration read before the acquisition.
     """
     # Pinned before the acquisition below, not in the teardown that writes it: a
     # slot reset, switch or compaction gives the successor a new ACP session id,
@@ -263,6 +274,10 @@ async def run_bg_oneliner(
     # provider instead of trusting the reported percentage.
     overflowed = False
     try:
+        if expected_backend is not None and known_backend(session) != expected_backend:
+            raise BackgroundBackendMismatch(
+                "background session is not on the backend this call requires"
+            )
         try:
             return await _run(model)
         except AcpError as exc:

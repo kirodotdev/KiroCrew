@@ -146,6 +146,10 @@ export interface DecisionModelRecord {
   /** Whether the switch took. `true` for a row that predates the field: only an
    *  observed failure writes `false`, so an older row must not read as one. */
   applied: boolean
+  /** Which oracle answered the tier question: `jev` or `llm`. `null` on a row
+   *  that predates the field, which is a row Jev answered -- the only lane there
+   *  was -- so the panel prints nothing rather than a guessed name. */
+  lane: string | null
   /** The model the turn RAN on, when that was observed. `''` otherwise. */
   modelUsed: string
   /** Why the decision failed, or `null` when it did not. */
@@ -481,6 +485,9 @@ export function readModelRecord(raw: unknown): DecisionModelRecord | null {
     // it existed -- neither is a switch that did not take.
     applied: root.applied !== false,
     modelUsed: typeof root.model_used === 'string' ? root.model_used.trim() : '',
+    // Read, never derived: which oracle answered is the gate's resolution of
+    // `auto` against the keystone, and this side holds neither.
+    lane: typeof root.lane === 'string' && root.lane.trim() ? root.lane.trim() : null,
     error,
   }
 }

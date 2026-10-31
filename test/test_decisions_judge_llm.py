@@ -941,7 +941,9 @@ class TestTheCardsRowForTheJudge:
         rows = {row["id"]: row for row in handlers._points({}, permits=True)}
         assert rows[gate.JUDGE_POINT]["lane"] == gate.LANE_LLM
         assert rows[gate.JUDGE_POINT]["status"] == handlers._POINT_ACTIVE
-        assert all("lane" not in row for name, row in rows.items() if name != gate.JUDGE_POINT)
+        # A lane belongs to a row that has two; every one-lane row carries none. The
+        # route point is the other two-lane row and is asserted in its own suite.
+        assert all("lane" not in row for name, row in rows.items() if name not in gate.LANE_POINTS)
 
     def test_a_pinned_jev_fail_closes_on_an_unregistered_scope(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1032,7 +1034,7 @@ class TestTheCardsRowForTheJudge:
         """
         asked: list[str] = []
 
-        def factory(model: str):
+        def factory(model: str, _source: impl_llm.JudgeSource):
             asked.append(model)
 
             async def _run(_prompt: str) -> str:
@@ -1061,7 +1063,7 @@ class TestTheCardsRowForTheJudge:
         async def _fake(_prompt: str) -> str:
             return _body()
 
-        def _factory(_model: str):
+        def _factory(_model: str, _source: impl_llm.JudgeSource):
             raise AssertionError("the factory must not be consulted")
 
         impl_llm.set_runner(_fake)

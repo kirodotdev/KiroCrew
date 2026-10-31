@@ -82,6 +82,8 @@ describe('readModelRecord', () => {
       truncated: 0,
       applied: true,
       modelUsed: '',
+      // The wire carries no lane, so the reader names none rather than guessing one.
+      lane: null,
       error: null,
     })
   })
@@ -269,6 +271,40 @@ describe('the model row', () => {
     render(<DecisionStrip record={record} />)
     expect(screen.getByTestId('decision-strip-right-jev')).toBeInTheDocument()
     expect(screen.queryByTestId('decision-strip-right-baseline')).toBeNull()
+    expect(screen.queryByTestId('decision-strip-right-llm')).toBeNull()
+    expect(screen.getByTestId('decision-strip-rate-label-jev')).toHaveTextContent('Jev')
+  })
+
+  it('files the verdict under the small model when that lane rated the turn', () => {
+    // The thumbs rate the judge that answered. A record the small-model lane wrote
+    // sends its verdict as side `llm`, and every label names the small model: a
+    // verdict on it recorded against Jev would score Jev for a tier it never picked,
+    // which is the one thing the feedback fold must never do.
+    const onLlm = readModelRecord({ ...MODEL_WIRE, lane: 'llm' })!
+    render(<DecisionStrip record={onLlm} />)
+    expect(screen.getByTestId('decision-strip-right-llm')).toBeInTheDocument()
+    expect(screen.queryByTestId('decision-strip-right-jev')).toBeNull()
+    expect(screen.getByTestId('decision-strip-rate-label-llm')).toHaveTextContent('The small model')
+    expect(screen.getByTestId('decision-strip-right-llm'))
+      .toHaveAttribute('aria-label', 'The small model picked the right model')
+    expect(screen.getByTestId('decision-strip-wrong-llm'))
+      .toHaveAttribute('aria-label', 'The small model picked the wrong model')
+    // And the collapsed line opens with the judge that answered, not with Jev.
+    const pick = screen.getByTestId('decision-strip-model-pick').textContent ?? ''
+    expect(pick).toContain('The small model: complex')
+    expect(pick).not.toContain('Jev')
+  })
+
+  it('keeps the Jev side for a row that names Jev, and for one that names no lane', () => {
+    // An older row carries no lane and was answered by Jev, the only lane there was;
+    // a row naming `jev` says so outright. Neither may be read as the small model.
+    for (const wire of [{ ...MODEL_WIRE, lane: 'jev' }, MODEL_WIRE]) {
+      render(<DecisionStrip record={readModelRecord(wire)!} />)
+      expect(screen.getByTestId('decision-strip-right-jev')).toBeInTheDocument()
+      expect(screen.queryByTestId('decision-strip-right-llm')).toBeNull()
+      expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('Jev: complex')
+      cleanup()
+    }
   })
 
   it('prints no score when the answer carried none', () => {

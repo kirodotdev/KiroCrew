@@ -945,6 +945,15 @@ class AcpSessionHandle:
         return self._runtime.agent_version
 
     @property
+    def acp_backend(self) -> str:
+        """The ACP backend the shared process speaks (``""`` is kiro-cli).
+
+        Delegates to the runtime because the backend is per process, not per
+        session: every handle on one runtime reports the same value.
+        """
+        return self._runtime.acp_backend
+
+    @property
     def initialize_result(self) -> dict:
         """The shared process's ``initialize`` result (``{}`` until its handshake)."""
         init = getattr(self._runtime, "initialize_result", None)

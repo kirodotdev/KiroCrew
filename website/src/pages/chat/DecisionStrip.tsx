@@ -5,7 +5,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
-import { DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
+import { DECISIONS_LANE_LLM, DECISIONS_LIVE_POINT } from '../settings/decisionsPreview'
 import {
   isModelRecord,
   type DecisionModelRecord,
@@ -41,13 +41,18 @@ function Detail({ label, value }: { label: string; value: string }) {
 /**
  * The transcript's receipt for one model-routing decision.
  *
- * Collapsed it is one line: the point, the tier Jev answered and the model that
- * tier routed the turn to, the score, how long the decision took, and the model
- * the turn would otherwise have used. The last one is what makes the row
+ * Collapsed it is one line: the point, the tier the judge answered and the model
+ * that tier routed the turn to, the score, how long the decision took, and the
+ * model the turn would otherwise have used. The last one is what makes the row
  * actionable -- "complex" alone says nothing a reader can disagree with, while
  * "complex, so opus-5 instead of opus-4.8" is a claim about this reply.
  *
- * ONE thumbs pair, side `jev`. There is no second answer to rate: the alternative
+ * ONE thumbs pair, on the side of the judge that answered: `llm` when the record
+ * says the small-model lane rated the turn, `jev` otherwise -- an older row
+ * carries no lane and was answered by Jev, the only lane there was. The side is
+ * derived from the record and never fixed, because a verdict is filed under the
+ * judge it rates, and a small-model verdict recorded against Jev would score Jev
+ * for a tier it never picked. There is no second answer to rate: the alternative
  * is not another judgement but the absence of one, so a `baseline` pair would ask
  * the reader to rate "whatever the session was on", which is not a decision
  * anybody made about this turn.
@@ -66,8 +71,30 @@ function ModelRouteStrip({
 }) {
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const panelId = useId()
-  const rightJev = i18nT('pages.chat.decisionStrip.rate_right_model')
-  const wrongJev = i18nT('pages.chat.decisionStrip.rate_wrong_model')
+  // Which judge rated the turn decides which judge the thumbs rate and which name
+  // the collapsed line opens with. Only the small-model lane is matched: a row
+  // naming Jev, a row naming no lane (older rows) and a row naming a lane this
+  // build does not know all read as Jev here, because `jev` is the one side the
+  // verdict route accepts that does not claim the small model answered.
+  const onSmallModel = record.lane === DECISIONS_LANE_LLM
+  const side = onSmallModel ? 'llm' : 'jev'
+  const judgeLabel = i18nT(
+    onSmallModel ? 'pages.chat.decisionStrip.rate_llm' : 'pages.chat.decisionStrip.rate_jev',
+  )
+  const rightJudge = i18nT(
+    onSmallModel
+      ? 'pages.chat.decisionStrip.rate_right_model_llm'
+      : 'pages.chat.decisionStrip.rate_right_model',
+  )
+  const wrongJudge = i18nT(
+    onSmallModel
+      ? 'pages.chat.decisionStrip.rate_wrong_model_llm'
+      : 'pages.chat.decisionStrip.rate_wrong_model',
+  )
+  const tierLine = i18nT(
+    onSmallModel ? 'pages.chat.decisionStrip.model_tier_llm' : 'pages.chat.decisionStrip.model_tier',
+    { tier: record.tier },
+  )
   // An unpinned tier applied no model, and the row says so rather than leaving a
   // gap where an id belongs: every tier ships unpinned, so this is the state most
   // readers see first, and it is what tells them there is something to pin.
@@ -114,7 +141,7 @@ function ModelRouteStrip({
             {i18nT('pages.chat.decisionStrip.point_model_route')}{' \u00B7'}
           </span>
           <span className="truncate min-w-0" data-testid="decision-strip-model-pick">
-            {i18nT('pages.chat.decisionStrip.model_tier', { tier: record.tier })}
+            {tierLine}
             {' '}
             {/* The arrow is decoration: the sentence either side already reads
                 "tier, then model", so a screen reader gains nothing from it. */}
@@ -151,10 +178,10 @@ function ModelRouteStrip({
         </button>
         <VerdictThumbs
           turnId={record.turnId}
-          side="jev"
-          label={i18nT('pages.chat.decisionStrip.rate_jev')}
-          rightLabel={rightJev}
-          wrongLabel={wrongJev}
+          side={side}
+          label={judgeLabel}
+          rightLabel={rightJudge}
+          wrongLabel={wrongJudge}
         />
       </div>
       {expanded && (
@@ -168,6 +195,25 @@ function ModelRouteStrip({
             value={record.applied ? chosen : record.modelUsed || baseline}
           />
           <Detail label={i18nT('pages.chat.decisionStrip.model_baseline_label')} value={baseline} />
+          {/* Which oracle put the turn in its tier. This is the one point besides the
+              wake judge with two of them, and a reader who disagrees with a tier needs
+              to know which model to disagree with. Drawn only when the row carries it:
+              an older row was answered by Jev, the only lane there was, and printing a
+              guessed name over it would be a claim the record does not make. Both
+              known lanes are matched by name and anything else is printed raw: a
+              lane this build does not know is still the record's word, not "Jev". */}
+          {record.lane !== null && (
+            <Detail
+              label={i18nT('pages.chat.decisionStrip.model_lane_label')}
+              value={
+                onSmallModel
+                  ? i18nT('pages.chat.decisionStrip.model_lane_llm')
+                  : record.lane === 'jev'
+                    ? i18nT('pages.chat.decisionStrip.model_lane_jev')
+                    : record.lane
+              }
+            />
+          )}
           <Detail
             label={i18nT('pages.chat.decisionStrip.history_chars_label')}
             value={fmtNumber(record.historyChars)}

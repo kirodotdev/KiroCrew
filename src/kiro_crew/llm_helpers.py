@@ -100,6 +100,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         transient_retry_delay,
     )
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
+        BackgroundBackendMismatch,
         _background_crew_log_owner,
         _cleanup_memory_consolidation_session,
         _lite_spec_unconfirmed,
@@ -127,6 +128,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         fallback_rewound_transient_budget,
         fallback_story_of,
         first_advertised_fallback,
+        known_backend,
         latch_route_baseline,
         next_fallback_candidate,
         pick_epoch_host,

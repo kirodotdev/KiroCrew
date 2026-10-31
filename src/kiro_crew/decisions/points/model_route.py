@@ -701,6 +701,7 @@ async def routed_model(
     retried: bool = False,
     track: bool = True,
     rate_of: Callable[[str], float | None] | None = None,
+    backend: str | None = None,
     scopes: Sequence[str] = (),
 ) -> dict[str, Any] | None:
     """The model this turn should run on, or ``None`` to leave it alone.
@@ -773,6 +774,11 @@ async def routed_model(
             "history_chars": trace.get("history_chars", 0),
             "truncated": trace.get("truncated", 0),
         }
+        # The gate reports the lane it resolved on the receipt, so the outcome row
+        # can say which oracle answered without this module learning the rule that
+        # picks one. Read from the receipt and never inferred from config here: the
+        # gate resolves ``auto`` against the keystone, which this point never reads.
+        receipt: dict[str, Any] = {}
         answers = await core.decide(
             POINT,
             state,
@@ -780,8 +786,10 @@ async def routed_model(
             session_key=session_key,
             config=config,
             extra=extra,
+            backend=backend,
             scopes=scopes,
             unclipped=text,
+            receipt=receipt,
         )
     except asyncio.CancelledError:
         raise
@@ -791,6 +799,7 @@ async def routed_model(
         logger.debug("model.route: keeping the session's own model", exc_info=True)
         return None
     latency_ms = int((time.monotonic() - started) * 1000)
+    lane = str(receipt.get("lane") or "")
     answered = tier = read_tier(answers)
     if not tier:
         return None
@@ -815,6 +824,7 @@ async def routed_model(
             tier=tier,
             latency_ms=latency_ms,
             error=ERROR_UNKNOWN_MODEL,
+            lane=lane,
         )
         return None
     routed: dict[str, Any] = {
@@ -824,6 +834,7 @@ async def routed_model(
         "model_chosen": chosen,
         "baseline_model": current_model or "",
         "latency_ms": latency_ms,
+        "lane": lane,
     }
     if chosen and tier in derived_tiers:
         routed["source"] = SOURCE_DERIVED
@@ -842,6 +853,13 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
     ``latency_ms`` is deliberately NOT here: it is a core row field
     (:func:`~kiro_crew.decisions.log.build_row`), so the row carries it at top
     level and an ``extra`` naming it would be dropped.
+
+    ``lane`` names the oracle that answered -- ``jev`` or ``llm`` -- because this is
+    the one point besides the wake judge that has two, and an operator reading a
+    tier they disagree with needs to know which model to disagree with. Written
+    only when the gate reported one, so a row from a build that predates the field
+    and a row from one that has it read the same way: absent means Jev, the only
+    lane there was.
     """
     row = {
         "turn_id": routed.get("turn_id"),
@@ -860,6 +878,9 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
     # Present only when derivation was on and had no price to derive from.
     if routed.get("derive"):
         row["derive"] = str(routed.get("derive"))
+    lane = str(routed.get("lane") or "")
+    if lane:
+        row["lane"] = lane
     # Present only on an APPLY: an unpinned tier switches nothing, so a row saying
     # "not applied" there would name a failure where the shipped state is no pin.
     if "applied" in routed:
@@ -924,6 +945,7 @@ def record_error(
     latency_ms: int,
     error: str,
     p: float | None = None,
+    lane: str = "",
 ) -> None:
     """One row for a tier that arrived and could not be applied. Never raises.
 
@@ -934,11 +956,15 @@ def record_error(
 
     *p* is the refused answer's own probability, recorded when the category is
     about the ANSWER rather than about a model id: a reader tells the two window
-    rules apart by whether that number clears the floor.
+    rules apart by whether that number clears the floor. *lane* is the oracle that
+    answered, on the same terms :func:`build_outcome` gives it: written when known,
+    absent otherwise.
     """
     extra: dict[str, Any] = {"turn_id": turn_id, "tier": tier}
     if p is not None:
         extra["p"] = p
+    if lane:
+        extra["lane"] = lane
     try:
         _log.append(
             _log.build_row(
@@ -1032,6 +1058,7 @@ async def routed_spawn_model(
     run_id: str = "",
     config: Any | None = None,
     rate_of: Callable[[str], float | None] | None = None,
+    backend: str | None = None,
 ) -> tuple[str, str]:
     """``(model, tier)`` for an UNPINNED sub-agent start, or ``("", "")`` to leave it.
 
@@ -1062,6 +1089,7 @@ async def routed_spawn_model(
         config=config,
         track=False,
         rate_of=rate_of,
+        backend=backend,
         # The task is a TOOL-CALL ARGUMENT (the agent wrote it into ``spawn_run``),
         # not text the owner typed, so it may leave the machine only under the
         # keystone's ``tool_args`` scope -- the consent ``tool.risk`` rides for the
@@ -1088,6 +1116,7 @@ async def routed_spawn_model(
             latency_ms=int(routed.get("latency_ms") or 0),
             error=ERROR_WINDOW_REFUSED,
             p=routed.get("p"),
+            lane=str(routed.get("lane") or ""),
         )
         return "", tier
     outcome = dict(routed)

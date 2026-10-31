@@ -36,6 +36,9 @@ _SCHEMA_DECLARES_NO_ENUM: dict[str, str] = {
     "dashboard.user_technical_level": "plain string in the schema",
     # The schema types it as a string; Settings offers ``JUDGE_PROVIDERS``.
     "decisions.nudge_wake.provider": "plain string in the schema",
+    # Same shape as the wake judge's provider above: the routing judge's provider
+    # is a plain string in the schema and Settings offers ``JUDGE_PROVIDERS``.
+    "decisions.model_route_judge.provider": "plain string in the schema",
 }
 
 
