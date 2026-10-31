@@ -20339,6 +20339,7 @@
       "name_not_saved_keep_field_open": "Gateway sin conexión — aún no se ha guardado. Deja este campo abierto y vuelve a conectarte; si lo cierras, se descarta el nombre.",
       "optimize": "optimizar",
       "rename_folders": "cambiar el nombre de las carpetas",
+      "rename_sessions": "cambiar el nombre de las sesiones",
       "resume_sessions": "reanudar sesiones",
       "save_folder_names": "guardar nombres de carpetas",
       "send": "enviar",

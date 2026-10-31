@@ -262,6 +262,7 @@ function ChatSidebar({
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
     suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
+    renameOfflineSlot, renameOfflineScope,
     onMenuCloseAutoFocus,
   } = useSessionRename({ dispatch, store, queryClient })
   const { autoTitleError, setAutoTitleError, onAutoTitle } = useSessionAutoTitle({ dispatch, store })
@@ -748,6 +749,7 @@ function ChatSidebar({
   // reference, so none of these may take a new identity per render.
   const rowActions = useMemo(() => ({
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
+    renameOfflineSlot, renameOfflineScope,
     onDuplicate: sessionActions.duplicate, onCloseSession: sessionActions.close,
     onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab, onOpenSource: stableOpenSource,
     onOpenPeerSession: openPeerSession,
@@ -757,6 +759,7 @@ function ChatSidebar({
     onDropSessionRef, canStageSessionRef,
   }), [
     renameInputRef, onRenameStart, onRenameChange, onRenameCommit, onRenameCancel, onAutoTitle, slotRenameEnterRef,
+    renameOfflineSlot, renameOfflineScope,
     sessionActions.duplicate, sessionActions.close, onMenuCloseAutoFocus, onSelectSlot, onOpenSlotInNewTab,
     stableOpenSource, openPeerSession, startBoardCardDrag, endNativeSessionDrag, reorderPinnedByKeyboard,
     reorderManualByKeyboard, openElsewhere, toggleConductorExpanded,

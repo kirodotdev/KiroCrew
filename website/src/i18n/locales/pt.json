@@ -20339,6 +20339,7 @@
       "name_not_saved_keep_field_open": "Gateway offline — ainda não foi salvo. Deixe este campo aberto e reconecte; se fechá-lo, o nome é descartado.",
       "optimize": "otimizar",
       "rename_folders": "renomear pastas",
+      "rename_sessions": "renomear sessões",
       "resume_sessions": "retomar sessões",
       "save_folder_names": "salvar nomes de pastas",
       "send": "enviar",

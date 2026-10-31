@@ -20010,6 +20010,7 @@
       "name_not_saved_keep_field_open": "Gateway offline — noch nicht gespeichert. Lass dieses Feld offen und verbinde neu; wenn du es schließt, wird der Name verworfen.",
       "optimize": "das Optimieren",
       "rename_folders": "das Umbenennen von Ordnern",
+      "rename_sessions": "das Umbenennen von Sitzungen",
       "resume_sessions": "das Fortsetzen von Sitzungen",
       "save_folder_names": "das Speichern von Ordnernamen",
       "send": "das Senden",

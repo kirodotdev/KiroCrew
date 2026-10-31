@@ -20339,6 +20339,7 @@
       "name_not_saved_keep_field_open": "Passerelle hors ligne — pas encore enregistré. Laisse ce champ ouvert et reconnecte-toi ; si tu le fermes, le nom est abandonné.",
       "optimize": "optimiser",
       "rename_folders": "renommer des dossiers",
+      "rename_sessions": "renommer des sessions",
       "resume_sessions": "reprendre des sessions",
       "save_folder_names": "enregistrer des noms de dossiers",
       "send": "envoyer",
