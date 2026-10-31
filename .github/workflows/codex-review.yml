@@ -1280,7 +1280,7 @@ jobs:
           (steps.adj_input.outputs.adjudicable != '' && steps.adj_input.outputs.adjudicable != '0')
           || (steps.adj_input.outputs.fenced != '' && steps.adj_input.outputs.fenced != '0')
           )
-        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
         with:
           use_bedrock: "true"
           github_token: ${{ secrets.GITHUB_TOKEN }}
