@@ -1092,7 +1092,9 @@ Metrics: a lane key is a session key and so never a metric attribute (the
 data instead: `GET /api/spawn/lanes` (`admission.lane_snapshot_async()`): per-lane
 `queued` / `running` / `waiting` / `weight`, the scheduler credit, and the
 `CapacityView` (`cap_total`, `roots_cap`, `running`, `child_reserve`,
-`reserve_active`, `waiting_parents`, `lifted_from`). A closed
+`reserve_active`, `waiting_parents`, `lifted_from`). A live run counts once:
+`waiting` when it has released its slot, else `running`. Its resume entry in the
+window (`entry_is_resident_resume`) is not also counted as `queued`. A closed
 `lane_kind ∈ {system, session}` attribute on `kirocrew.taskq.depth` is left to
 the health sampler.
 
