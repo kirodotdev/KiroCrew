@@ -11144,6 +11144,8 @@
       "default_profile": "Perfil padrão",
       "deploy": "Implantar",
       "deploy_anyway": "Implantar mesmo assim",
+      "pending_deploy_failed_status": "Falha ao confirmar ({{status}})",
+      "dismiss_failed_status": "Falha ao descartar ({{status}})",
       "deploy_artifact": "Implantar {{name}}",
       "deploy_profile_for_slug": "Perfil de implantação para {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Implantar / Retirar / Destruir exigem confirmação explícita\n              (nunca são aprovados automaticamente) e emitem um evento de auditoria SEL.",

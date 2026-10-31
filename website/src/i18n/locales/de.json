@@ -10981,6 +10981,8 @@
       "default_profile": "Standardprofil",
       "deploy": "Bereitstellen",
       "deploy_anyway": "Trotzdem bereitstellen",
+      "pending_deploy_failed_status": "Bestätigen fehlgeschlagen ({{status}})",
+      "dismiss_failed_status": "Schließen fehlgeschlagen ({{status}})",
       "deploy_artifact": "{{name}} bereitstellen",
       "deploy_profile_for_slug": "Bereitstellungsprofil für {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Bereitstellen / Zurückziehen / Zerstören erfordern jeweils eine ausdrückliche Bestätigung\n              (niemals automatisch genehmigt) und lösen ein SEL-Audit-Ereignis aus.",

@@ -34,10 +34,11 @@ interface FetchCfg {
   preview?: { status: number; body: Json }
   /** answer for the SECOND (confirm: true) call */
   commit?: { status: number; body: Json }
-  confirmPending?: { status: number; body: Json }
+  /** a string body is sent as raw text, the way a proxy's error page arrives */
+  confirmPending?: { status: number; body: Json | string }
   /** answer for POST /api/deploy/deploy (the direct-deploy preview/confirm) */
   deploy?: { status: number; body: Json }
-  dismissPending?: { status: number; body: Json }
+  dismissPending?: { status: number; body: Json | string }
 }
 
 interface Call { url: string; method: string; body: Json | null }
@@ -57,12 +58,13 @@ function installFetch(cfg: FetchCfg = {}): Call[] {
   // `text()` and `headers` are what the shared `toApiError` factory reads on a
   // non-2xx reply. An empty-object body stands in for "no body" here, so the
   // factory's `HTTP <status>` fallback is what the notice shows for it.
-  const reply = (status: number, data: Json) =>
+  // A string body is raw text, so `json()` rejects on it like a real Response.
+  const reply = (status: number, data: Json | string) =>
     ({
       ok: status < 400,
       status,
-      json: async () => data,
-      text: async () => (Object.keys(data).length ? JSON.stringify(data) : ''),
+      json: async () => (typeof data === 'string' ? JSON.parse(data) : data),
+      text: async () => (typeof data === 'string' ? data : Object.keys(data).length ? JSON.stringify(data) : ''),
       headers: { get: () => null },
     }) as unknown as Response
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
@@ -745,5 +747,29 @@ describe('ArtifactDeployPage — pending confirmations', () => {
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
     expect(await screen.findByText('Dismiss failed (500)')).toBeInTheDocument()
+  })
+
+  // A proxy in front of the gateway answers 502 with its own HTML page, which
+  // is not JSON: the card shows the status, never a parse error.
+  it('reports a confirm that a proxy answered with an HTML 502 by its status', async () => {
+    installFetch({
+      pending: [pendingEntry()],
+      confirmPending: { status: 502, body: '<!DOCTYPE html><html><body><h1>502 Bad Gateway</h1></body></html>' },
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Deploy' }))
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'I understand, publish publicly' }),
+    )
+    expect(await screen.findByText('Confirm failed (502)')).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token/)).toBeNull()
+  })
+
+  it('reports a dismiss that a proxy answered with a plain-text 502 by its text', async () => {
+    installFetch({ pending: [pendingEntry()], dismissPending: { status: 502, body: 'upstream connect error' } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }))
+    expect(await screen.findByText('upstream connect error')).toBeInTheDocument()
+    expect(screen.queryByText(/JSON|Unexpected token/)).toBeNull()
   })
 })

@@ -10818,6 +10818,8 @@
       "default_profile": "默认配置文件",
       "deploy": "部署",
       "deploy_anyway": "仍然部署",
+      "pending_deploy_failed_status": "确认失败（{{status}}）",
+      "dismiss_failed_status": "忽略失败（{{status}}）",
       "deploy_artifact": "部署 {{name}}",
       "deploy_profile_for_slug": "{{slug}} 的部署配置文件",
       "deploy_recall_destroy_each_require_explicit_conf": "部署 / 撤回 / 销毁 都需要显式确认\n              （从不自动批准），并会发出 SEL 审计事件。",

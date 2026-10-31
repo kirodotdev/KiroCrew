@@ -11144,6 +11144,8 @@
       "default_profile": "Profilo predefinito",
       "deploy": "Esegui il deploy",
       "deploy_anyway": "Esegui il deploy comunque",
+      "pending_deploy_failed_status": "Conferma non riuscita ({{status}})",
+      "dismiss_failed_status": "Ignora non riuscito ({{status}})",
       "deploy_artifact": "Esegui il deploy di {{name}}",
       "deploy_profile_for_slug": "Profilo di deploy per {{slug}}",
       "deploy_recall_destroy_each_require_explicit_conf": "Deploy / Richiama / Distruggi richiedono ciascuno una conferma esplicita\n              (mai approvati automaticamente) ed emettono un evento di audit SEL.",

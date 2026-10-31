@@ -4861,6 +4861,8 @@
       "default": "default",
       "default_profile": "Default profile",
       "deploy_anyway": "Deploy anyway",
+      "pending_deploy_failed_status": "Confirm failed ({{status}})",
+      "dismiss_failed_status": "Dismiss failed ({{status}})",
       "fullstack_also_requires_the_permissions_boundary": "Fullstack also requires the permissions-boundary policy below — create it BEFORE the first deploy (role creation is conditioned on it).",
       "make_default": "Make default",
       "not_reachable": "not reachable",
