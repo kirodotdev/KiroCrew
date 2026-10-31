@@ -1342,6 +1342,11 @@ _TOOLS_SETTINGS_FAMILY: dict[str, str] = {
 #: outside ``.*`` it is a quantifier on the character before it.
 _REGEX_METACHARACTERS = frozenset(".^$*+?()[]{}|\\")
 
+#: Shell redirect operators. KAS matches a shell rule against the command's
+#: words, and a redirect and its target are not among them, so a deny written
+#: to match one never sees it.
+_REDIRECT_CHARACTERS = frozenset("<>")
+
 
 def _regex_to_glob(pattern: str) -> str | None:
     """A kiro-cli regex (anchored ``\\A..\\z``) as a KAS glob, or ``None``.
@@ -1494,6 +1499,12 @@ def tools_settings_to_permissions(
                 f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
             )
             rules.extend(_chunked_rules("shell", "deny", denied))
+            # kiro-cli matches the regex over the whole command line; KAS matches
+            # the glob over the command's words, which do not include a redirect
+            # or its target. The deny still travels, since it does stop
+            # the character inside a word, but the entry is named as not carried.
+            if any(set(glob) & _REDIRECT_CHARACTERS for glob in denied):
+                lost.append(f"{tool}.deniedCommands")
             # No rule either: Crew's gate refuses every shell call the spec's
             # usable `allowedCommands` do not match (`spec_shell_allowlist`).
             handled.add("denyByDefault")
