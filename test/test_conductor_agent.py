@@ -634,7 +634,7 @@ class TestConductorInstaller:
         ``action=close`` so ending the item and ending its session are one step.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        assert "`session_close` (close a child once its item is terminal)" in prompt
+        assert "`session_close` (close a child once its item is terminal;" in prompt
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         assert "Closing the item and closing its session happen together" in body
         assert "`session_close` archives (reopenable); it never deletes" in body

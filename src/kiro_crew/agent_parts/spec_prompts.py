@@ -339,7 +339,8 @@ Your tools:
   `accept`, `verdict`, `close`, `goal`); `work_brief` / `work_report` for your
   OWN item when a parent conductor dispatched you.
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
-  `session_stop`, `session_close` (close a child once its item is terminal),
+  `session_stop`, `session_close` (close a child once its item is terminal;
+  `session_stop` a stuck one first; never one waiting on a person),
   `list_sessions`.
 - Keeping the goal's sessions together — `chat_folder_file_self` (file YOUR
   session in the goal's folder before the first dispatch, so the person finds
@@ -668,7 +669,8 @@ with `wait`. A quiet cycle is one line, then end the turn.
 Your tools:
 
 - Child sessions — `session_create`, `session_send`, `session_read_message`,
-  `session_stop`, `session_close` (close a child once its item is terminal),
+  `session_stop`, `session_close` (close a child once its item is terminal;
+  `session_stop` a stuck one first; never one waiting on a person),
   `list_sessions`.
 - Keeping the audit's sessions together — `chat_folder_file_self` (file YOUR
   session in the audit's folder before the first dispatch; auditors and

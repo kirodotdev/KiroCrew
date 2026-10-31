@@ -135,7 +135,7 @@ def test_the_alias_prompt_closes_a_child_once_its_item_is_terminal(tmp_path, mon
     than on the shared constant: the identity test above proves the two specs match,
     and this one proves the clause is in the one the alias ships."""
     alias = _install(tmp_path, monkeypatch)
-    assert "`session_close` (close a child once its item is terminal)" in alias["prompt"]
+    assert "`session_close` (close a child once its item is terminal;" in alias["prompt"]
 
 
 def test_the_alias_permissions_field_is_gated_on_the_installed_kiro_cli(tmp_path, monkeypatch):

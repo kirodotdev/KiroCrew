@@ -1521,7 +1521,7 @@ KAS backend the wire agent projection additionally grants the server in
 conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `chat_folder_tree`,
 `chat_folder_create`, `chat_folder_file_self`, `session_create`,
 `session_read_message`, `session_status`) plus `session_send`,
-`session_broadcast`, `session_stop` and `session_retry` — the write verbs are safe to auto-approve for a member *specifically* because the
+`session_broadcast`, `session_stop`, `session_retry` and `session_close` — the write verbs are safe to auto-approve for a member *specifically* because the
 `created_by` ownership fence above bounds them to worker sessions the member
 itself opened. Member sessions also bypass the provider warm pool
 (`bypass_member`): a pooled child was spawned with no session key on the
@@ -2256,7 +2256,9 @@ session before closing it. Close waives the self-target refusal
 (`allow_self=True`, as release does) on both its admission gate and its pre-pop
 re-check, so a session that has finished its one job can archive its own tab; the
 self-close cancels the caller's own running turn, which is the turn that asked
-for it, and every other caller and target rule still applies. It reuses the dashboard's own close path
+for it, and every other caller and target rule still applies. A crewmate's own
+DM thread (`mode == DM_SLOT_MODE`) is the exception and is refused
+`member_thread_self_close`: only the person dismisses it. It reuses the dashboard's own close path
 (`close_slot`), the same sequence the ✕ button runs: a synchronous tombstone,
 auto-nudge-loop retirement BEFORE the awaits so no nudge resurrects the tab, the
 owning app's close hook with rollback, persist-as-closed, and per-tab session

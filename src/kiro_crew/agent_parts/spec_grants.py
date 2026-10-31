@@ -300,11 +300,18 @@ _CONDUCTOR_DASHBOARD_GRANTS: tuple[str, ...] = (
 #: And it refuses a turn that finished or was stopped (``turn_not_failed``).
 #: Restarting a worker whose turn timed out is the patrol step the verb exists
 #: for, and that step runs with nobody at the keyboard.
+#: ``session_close`` joins under the same fence: ``close_target`` runs
+#: ``authorize_target``, so a member closes only worker sessions it created or
+#: manages, and ``close_target`` refuses a crewmate's own thread. A close archives
+#: (reopenable from History), never deletes. Closing a finished or stuck worker is
+#: the cleanup step of the same unattended loop; without the grant those workers
+#: stay open until a person closes each one.
 _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
     "@kirocrew-dashboard/session_send",
     "@kirocrew-dashboard/session_broadcast",
     "@kirocrew-dashboard/session_stop",
     "@kirocrew-dashboard/session_retry",
+    "@kirocrew-dashboard/session_close",
 )
 
 
