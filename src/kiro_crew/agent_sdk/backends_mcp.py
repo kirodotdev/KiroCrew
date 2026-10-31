@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # ── Capability: where a harness gets its MCP servers ──
@@ -139,6 +140,14 @@ from kiro_crew.agent_sdk.backends import (
 # The array still carries the stdio elements on the wire because the session report
 # and the mount check read their roster from it, and each transport has exactly one
 # channel that mounts it, so nothing is mounted twice.
+#
+# strands is a member on pi's terms, one step further: the array is composed like
+# every member's, and none of it goes on the wire. The Strands CLI refuses a
+# non-empty ``session/new`` array in its Python-project mode, so the strands launch
+# writes the whole composition to an owner-only ``--mcp-config`` file
+# (``acp.harness.strands``) and the CLI mounts it at start, with its own discovery of
+# other tools' MCP files switched off. Captured as a round trip:
+# ``test/fixtures/acp_frames/strands/mcp-stdio-mount-live.jsonl``.
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -148,6 +157,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -371,6 +381,12 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # session's own directory WITHOUT a permission request (measured -- its ``view``
 # ran unasked), so ``_deny_zero_tools`` never sees that call and a total ban cannot
 # be honoured.
+#
+# strands is a member on pi's grounds: Crew's gate module raises an interrupt for
+# EVERY tool call of every Strands ``Agent`` in the process -- built-in, the
+# project's own, vended or MCP -- which the CLI forwards as
+# ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
+# mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -379,6 +395,7 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
     }
 )
 

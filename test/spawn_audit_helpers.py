@@ -169,6 +169,28 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # canary values, never the key. Called from a worker thread, never the
         # event loop.
         "acp/harness/deepseek.py::_verify_deepseek_gate",
+        # The Strands gate read-back, the same shape as the pi and DeepSeek ones above:
+        # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async`` in
+        # ``StrandsLaunch._prove_gate`` before it reaches this function, so the sandbox
+        # and credential mask are applied by the caller. Nothing in it is
+        # agent-influenced -- the ``strands`` binary from its ``ACP_BACKEND_LAUNCH``
+        # row, the sealed gate module from the owner-only gate-artifact directory, and
+        # the marker path from the probe's OWN private scratch window. stdin carries
+        # two fixed requests (``initialize``, ``session/new``) and is closed once the
+        # marker exists; a ``finally`` kills and reaps the probe on every exit path.
+        # The env adds the configured key NAMES under canary values through the
+        # one-time key file, never a key. Called from a worker thread, never the
+        # event loop.
+        "acp/harness/strands.py::_verify_strands_gate",
+        # The Strands gate module's child-environment probe. It runs INSIDE the
+        # Strands CLI's Python worker -- itself the sandboxed, credential-masked child
+        # Kiro Crew spawned -- and never in the gateway. ONE fixed argv:
+        # ``sys.executable -c <constant probe source> <the withheld NAMES>``, through
+        # the local sandbox's own ``_stream_process`` (the path the agent's shell
+        # commands take, which is exactly what it proves), to report which names a
+        # child still sees. No agent value reaches it; it runs once at load, before
+        # any tool call.
+        "agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py::in_thread",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's

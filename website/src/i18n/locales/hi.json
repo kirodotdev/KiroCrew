@@ -13899,7 +13899,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "चैट पर लाइव स्क्रॉल और ऐंकर डायग्नोस्टिक्स दिखाता है",
