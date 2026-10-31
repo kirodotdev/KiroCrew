@@ -136,9 +136,11 @@ class StrandsMirror(AgentConfigMirror):
                 "than resources",
             ),
             Concern.HOOKS: Ruling(
-                _D.WITHHELD,
-                "this backend is not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS, so a saved "
-                "hooks block is reported as a projection gap rather than claimed",
+                _D.TRANSLATED,
+                "the Strands CLI has no Kiro hook runner, so the harness never receives "
+                "the spec's hooks block, and Crew's turn loop runs it instead "
+                "(agent_sdk/spec_hooks.py, ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS); tool "
+                "matchers meet the Strands built-ins through acp/harness_tool_names.py",
             ),
         }
 

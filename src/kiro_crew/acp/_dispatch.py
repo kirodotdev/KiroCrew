@@ -72,6 +72,7 @@ from kiro_crew.acp_backends import (  # noqa: F401
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_META_IDENTITY,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
@@ -614,6 +615,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SPEC_OPTION_KINDS,
         _WORKSPACE_PATH_ARGUMENTS,
         GATE_ENVELOPE_MARKER,
+        STRANDS_BUILTIN_TOOL_KINDS,
+        StrandsCallIdentity,
         _anchored_in_workspace,
         _workspace_call_arguments,
         build_permission_event,
@@ -623,6 +626,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         kas_consent_tool,
         pi_mcp_title,
         reject_option_id,
+        strands_envelope_identity,
     )
     from kiro_crew.acp._dispatch_parts.session_update_parser import (  # noqa: F401
         _MESSAGE_ID_MAX_CHARS,

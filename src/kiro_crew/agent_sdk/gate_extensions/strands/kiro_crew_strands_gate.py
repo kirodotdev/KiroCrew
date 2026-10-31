@@ -8,9 +8,11 @@ operator's own project, by a sub-agent tool -- carries a ``BeforeToolCallEvent``
 that raises one interrupt per tool call. The CLI forwards each interrupt to Kiro Crew
 and answers it with the approval; anything but an approval cancels the call.
 
-The interrupt carries Kiro Crew's gate envelope (``kiro-crew-gate``): the tool's name
-and arguments as this module read them off the Strands event, keyed by the nonce Kiro
-Crew put in this process's environment. The nonce, the marker path and the other
+The interrupt carries Kiro Crew's gate envelope (``kiro-crew-gate``): the tool's name,
+its owner (``builtin``, ``custom`` or ``mcp:<server>``, read off the tool OBJECT
+Strands resolved), its ``toolUseId`` and its arguments, keyed by the nonce Kiro Crew
+put in this process's environment. Kiro Crew classifies the call from the owner and
+name only. The nonce, the marker path and the other
 ``KIROCREW_STRANDS_*`` values are removed from ``os.environ`` on import, so no tool
 or shell this agent runs inherits them.
 
@@ -210,28 +212,55 @@ _WITHHELD_UPPER = frozenset(name.upper() for name in WITHHELD)
 #: calls cannot ask, so under this gate it would only fail.
 DEFAULT_BUILTIN_TOOLS = ["shell", "read", "write", "edit", "web_fetch"]
 
-#: Kind for the harness's own built-ins, matching what the CLI's ACP projection
-#: puts on their ``tool_call`` frames, keyed by name AND by the module that defines
-#: the tool's function in strands-harness 0.3.3 / strands-agents 1.63.0. A name alone
-#: is no evidence: an operator's project may define its own ``read`` that writes, and
-#: a ``read`` kind is one Kiro Crew's read-only tier approves without asking. So a
-#: tool gets a built-in kind only when its function comes from the built-in's own
-#: module; every other tool is ``other``.
-_BUILTIN_KINDS = {
-    "shell": ("execute", "strands.vended_tools.shell.shell"),
-    "read": ("read", "strands_harness.tools.file_tools"),
-    "write": ("edit", "strands_harness.tools.file_tools"),
-    "edit": ("edit", "strands_harness.tools.file_tools"),
-    "web_fetch": ("fetch", "strands_harness.tools.web_fetch"),
-}
+#: ``owner`` values of the envelope. Kiro Crew classifies a call from the owner and
+#: the name together and never from the name alone, so a project's own tool called
+#: ``read`` is not judged as the harness's file reader.
+OWNER_BUILTIN = "builtin"
+OWNER_CUSTOM = "custom"
+OWNER_MCP_PREFIX = "mcp:"
+
+#: The harness's own built-in tool OBJECTS, by ``id``: each one ``strands_harness``
+#: built in its ``_builtin_tools`` factory under its own slot name. A tool is
+#: ``builtin`` only when it is one of these objects; a tool merely NAMED like one
+#: is ``custom``. Strong references, so an ``id`` is never reused while recorded:
+#: a process serves one session and builds a handful of these per agent.
+_BUILTIN_TOOL_OBJECTS: dict[int, object] = {}
+
+_harness_agent_module = importlib.import_module("strands_harness.agent")
+_original_builtin_tools = _harness_agent_module._builtin_tools
+
+
+def _recording_builtin_tools(*args: Any, **kwargs: Any) -> Any:
+    """``strands_harness``'s built-in factory, recording the objects it builds.
+
+    The factory returns ``{tool_name: tool}`` in the order of
+    ``BUILTIN_TOOL_NAMES``, one per slot. A tool is recorded only when the mapping
+    has exactly one entry per slot and the tool still carries its slot's name: a
+    project that renamed a built-in (``{"shell": {"name": "read"}}``) gets that
+    tool judged as ``custom``, never as the built-in its new name spells.
+    """
+    tools = _original_builtin_tools(*args, **kwargs)
+    slots = tuple(strands_harness.BUILTIN_TOOL_NAMES)
+    if isinstance(tools, dict) and len(tools) == len(slots):
+        for slot, tool in zip(slots, tools.values()):
+            if getattr(tool, "tool_name", None) == slot:
+                _BUILTIN_TOOL_OBJECTS[id(tool)] = tool
+    return tools
+
+
+_harness_agent_module._builtin_tools = _recording_builtin_tools
 
 
 def _tool_identity(event: BeforeToolCallEvent) -> tuple[str, str]:
-    """The title and kind Kiro Crew judges this call by.
+    """The title and owner Kiro Crew judges this call by.
 
     An MCP tool is named ``mcp__<server>__<tool>``, the spelling Kiro Crew's rules
     bind to on every harness, from the tool object Strands resolved rather than
-    from the prefixed name the model sees.
+    from the prefixed name the model sees, and its owner is ``mcp:<server>``. An
+    MCP tool whose server or tool name cannot be read is owned by ``mcp:`` with no
+    server, which Kiro Crew refuses. A built-in is the object the harness built
+    (:data:`_BUILTIN_TOOL_OBJECTS`), titled by its own name. Every other tool is
+    ``custom``: its name is not evidence of what it does.
     """
     name = str(event.tool_use.get("name", ""))
     tool = event.selected_tool
@@ -239,18 +268,11 @@ def _tool_identity(event: BeforeToolCallEvent) -> tuple[str, str]:
         server = getattr(tool.mcp_client, "client_name", None)
         original = getattr(tool.mcp_tool, "name", None)
         if isinstance(server, str) and server and isinstance(original, str) and original:
-            return f"mcp__{server}__{original}", "other"
-    builtin = _BUILTIN_KINDS.get(name)
-    if builtin is not None and _defining_module(tool) == builtin[1]:
-        return name, builtin[0]
-    return name, "other"
-
-
-def _defining_module(tool: object) -> str:
-    """The module the tool's function was defined in, or ``""`` when it has none."""
-    func = getattr(tool, "_tool_func", None)
-    module = getattr(func, "__module__", None)
-    return module if isinstance(module, str) else ""
+            return f"mcp__{server}__{original}", f"{OWNER_MCP_PREFIX}{server}"
+        return name, OWNER_MCP_PREFIX
+    if tool is not None and _BUILTIN_TOOL_OBJECTS.get(id(tool)) is tool:
+        return str(getattr(tool, "tool_name", name)), OWNER_BUILTIN
+    return name, OWNER_CUSTOM
 
 
 class AskKiroCrew(HookProvider):
@@ -261,12 +283,15 @@ class AskKiroCrew(HookProvider):
 
     def ask(self, event: BeforeToolCallEvent) -> None:
         tool_use = event.tool_use
-        title, kind = _tool_identity(event)
+        title, owner = _tool_identity(event)
+        # No ``kind``: Kiro Crew derives it from ``owner`` and ``tool`` itself.
+        # ``toolCallId`` is Strands' ``toolUseId``, the id the CLI puts on this
+        # call's ``tool_call`` card, so the request joins its card.
         envelope = {
             ENVELOPE_MARKER: 1,
             "nonce": NONCE,
             "tool": title,
-            "kind": kind,
+            "owner": owner,
             "toolCallId": str(tool_use.get("toolUseId", "")),
             "input": tool_use.get("input", {}),
         }
