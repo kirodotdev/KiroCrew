@@ -118,6 +118,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "social_share_enabled",
             "social_share_sites",
             "decisions_enabled",
+            "browse_enabled",
             "model_picker_hidden_models",
             "model_picker_configured",
             "upload_max_mb",
@@ -697,6 +698,12 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     # Both rows evaluated in one hop, each audited once, never short-circuited.
     hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
+    # Same again for the browser: Settings -> Browser and the live card show the
+    # policy line instead of their controls. Presentation only; every browser route
+    # and the engine refuse on their own (``browser_harness/governance.py``).
+    from kiro_crew.browser_harness.governance import browse_denied_async
+
+    browse_denied = await browse_denied_async(audit=False)
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -759,6 +766,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # the Decisions (Jev) feature-preview card; the owner's own switch is
             # the keystone behind `/api/decisions/consent`, never a field here.
             "decisions_enabled": not decisions_denied,
+            # Read-only: the `capabilities.browse` governance answer. False makes
+            # Settings -> Browser and the live browser card say browsing is off by
+            # policy, with no install or takeover control.
+            "browse_enabled": not browse_denied,
             # Read-write (unlike the host allowlists above): a rule only changes
             # how this dashboard RENDERS text -- it grants no fetch and no CLI
             # any authority -- so the settings editor may manage it.

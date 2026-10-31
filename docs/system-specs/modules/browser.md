@@ -992,6 +992,32 @@ because a fallback would let browsing continue and defeat the control
 (`mcp_core_parts/governance.py`). The browser-not-installed case is a plain
 refusal that points at Settings → Browser.
 
+**One deny turns the whole browser off.** The shim's check is not the only one:
+the gateway asks the same row, fail-closed, wherever it drives, shows or
+installs the browser (`browser_harness/governance.py`, refusals shaped by
+`dashboard/handlers/browser_policy.py`):
+
+| Entry point | Where it is checked |
+|---|---|
+| `POST /api/browser/op` and every op, reflex loops included | the route, then `HarnessSupervisor.call` before each helper |
+| the engine starting (browser, relay, daemon, credential apply) | `HarnessSupervisor._start` |
+| hand-back and quick-ask polls of a parked tool call | the two poll routes; the tool ends its wait on `policy_denied` |
+| takeover claim and input, visibility, frame acks, "Open in browser", "Open live" | `handlers/browser_live._run` |
+| quick-ask answer (fill, take over, done) | `handlers/browser_ask.api_browser_ask_answer` |
+| turn replay (list, detail, frames) | `handlers/browser_recordings._gate` |
+| Settings → Browser status, Install, Connect | `handlers/browser_harness_status` |
+| startup auto-install and warm connect | `auto_setup_browser_harness` (`policy_denied` outcome) |
+
+Hand back, Close and Disconnect stay open, because each only ends something. A
+refusal is 403 `policy_denied`, and the first one also stops a browser that is
+still running. The engine itself reads the ceiling with no surface (the policy);
+a surface-bound profile is enforced where the caller is known (the shim, the op
+route with the shim's session key, and the owner routes on `dashboard:ui`). The
+dashboard reads `browse_enabled` from `GET /api/dashboard/config`: Settings →
+Browser and the live card then show "Browsing is turned off by your
+organization's policy" with no install or takeover control. Computer use is not
+governed by this row.
+
 `navigate` auto-drives only public HTTP(S) targets. Literal loopback, private,
 link-local, reserved, alternate- or percent-encoded IP or host name, non-ASCII
 host, parser-differential and non-HTTP forms are refused; DNS names are not
@@ -1184,7 +1210,7 @@ modifies it, and the row is silent when the directory is absent.
 | A provider widens what it may set | off unless `browser.credentials.enabled`; cookies outside BOTH its declared domains and `browser.credentials.domains` are dropped; every cookie is a session cookie; the provider adds no launch switch |
 | A provider reads a file the agent planted | `credential_files.read_source_file`: `O_NOFOLLOW`, `fstat` on the open descriptor, owner uid, no group/other bits, size cap |
 | Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied TWICE by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. **Accepted residual:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved |
-| Governance | `capabilities.browse` is checked on every call and a denial never falls back |
+| Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
 | Preview tab | native view, deny-all partition, no agent channel, local origins only |
 

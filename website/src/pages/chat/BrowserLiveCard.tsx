@@ -1,8 +1,13 @@
-import { memo, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { memo, useCallback, useContext, useEffect, useId, useRef, useState } from 'react'
+import { QueryClientContext, useQuery } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
+import { ShieldOff } from 'lucide-react'
 import { useInRouterContext, useNavigate } from 'react-router-dom'
 
 import type { ChatMessage } from '../../types'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { i18nT } from '../../i18n/t'
+import { browsePolicyOff } from '../../lib/browsePolicy'
 import type { BrowserHandbackSaid } from '../../api/client/browserLive'
 import { browserLiveStore, useBrowserLiveCurrent, useBrowserLiveIsCurrent, useBrowserLiveTurn, type BrowserLiveTurn } from '../../hooks/useBrowserLive'
 import { browserStageStore, stageTurnId, useBrowserStage } from '../../hooks/useBrowserLive.stage'
@@ -78,6 +83,10 @@ export interface BrowserLiveCardProps {
   running: boolean
   /** Navigate to a dashboard path (Settings -> Browser). */
   goTo: (to: string) => void
+  /** A policy turned browsing off (`browse_enabled: false`): the card is one line,
+   *  with no takeover, live, replay or expand control. The gateway refuses those
+   *  routes on its own; this only stops offering them. */
+  policyOff?: boolean
 }
 
 type View = 'allow' | 'live' | 'done'
@@ -91,7 +100,7 @@ function viewFor(turn: BrowserLiveTurn): View {
   }
 }
 
-function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo }: BrowserLiveCardProps) {
+function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, policyOff = false }: BrowserLiveCardProps) {
   useLanguageGeneration()
   const turn = useBrowserLiveTurn(sessionKey, anchorKey, running, anchorTs)
   const reduce = useReducedMotion()
@@ -127,7 +136,8 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo }: Bro
       io.disconnect()
       browserLiveStore.setVisible(sessionKey, instanceId, false, turnId)
     }
-  }, [sessionKey, instanceId, turnId])
+    // `policyOff` swaps the root for the policy line and back: observe the new root.
+  }, [sessionKey, instanceId, turnId, policyOff])
 
   const inControl = turn?.state === 'in_control'
   // Focus the frame the moment control arrives, so keys go to the page at once,
@@ -169,6 +179,19 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo }: Bro
   const bringBack = useCallback(() => browserStageStore.close(sessionKey), [sessionKey])
 
   if (!turn) return null
+  if (policyOff) {
+    return (
+      <div className="px-4 mx-auto w-full py-1" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
+        <div
+          data-testid="browser-live-policy-off"
+          className="flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2 text-[13px] text-muted"
+        >
+          <ShieldOff size={14} className="shrink-0" aria-hidden />
+          {i18nT('pages.settings.browserPanel.policy_off')}
+        </div>
+      </div>
+    )
+  }
   const view = viewFor(turn)
   const staged = !!stage && stageTurnId(stage, current?.turnId ?? null) === turn.turnId
   const grown = inControl && !staged
@@ -242,8 +265,27 @@ function BrowserLiveCardWithRouter(props: Omit<BrowserLiveCardProps, 'goTo'>) {
 
 const assignLocation = (to: string) => { window.location.assign(to) }
 
-function BrowserLiveCardRoot(props: Omit<BrowserLiveCardProps, 'goTo'>) {
+type RootProps = Omit<BrowserLiveCardProps, 'goTo' | 'policyOff'>
+
+function BrowserLiveCardRouted(props: Omit<BrowserLiveCardProps, 'goTo'>) {
   return useInRouterContext() ? <BrowserLiveCardWithRouter {...props} /> : <BrowserLiveCard {...props} goTo={assignLocation} />
+}
+
+/** The governance answer, from the dashboard config query every chat page already holds. */
+function BrowserLiveCardGoverned(props: RootProps) {
+  const { data } = useQuery<{ browse_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: fetchDashboardConfig,
+    staleTime: 30_000,
+  })
+  return <BrowserLiveCardRouted {...props} policyOff={browsePolicyOff(data)} />
+}
+
+/** A host with no query client (an embed) cannot read the answer; the gateway still refuses. */
+function BrowserLiveCardRoot(props: RootProps) {
+  return useContext(QueryClientContext) != null
+    ? <BrowserLiveCardGoverned {...props} />
+    : <BrowserLiveCardRouted {...props} />
 }
 
 export { hostOf }

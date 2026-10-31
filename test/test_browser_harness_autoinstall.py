@@ -20,6 +20,7 @@ from kiro_crew.browser_harness import discover
 from kiro_crew.browser_harness import install as harness_install
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
 from kiro_crew.dashboard.handlers import browser_harness_status as routes
+from kiro_crew.testing.wait import await_until
 
 #: A gateway's environment: none of the skip markers set.
 _GATEWAY_ENV: dict[str, str] = {}
@@ -216,7 +217,10 @@ async def test_settings_sees_the_auto_job_running_and_refuses_a_second(
     _current(monkeypatch, False)
     release = asyncio.Event()
 
+    entered = asyncio.Event()
+
     async def slow_install(home, progress, *, components, refresh=False):
+        entered.set()
         await release.wait()
         return harness_install.install_state(home)
 
@@ -228,10 +232,7 @@ async def test_settings_sees_the_auto_job_running_and_refuses_a_second(
     task = asyncio.create_task(
         routes.auto_setup_browser_harness(state, supervisor=sup, environ=_GATEWAY_ENV)
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if hasattr(state, "_browser_harness_install_job"):
-            break
+    await await_until(entered, what="the auto job's install began")
     assert routes._install_active(state)
 
     class _Req:

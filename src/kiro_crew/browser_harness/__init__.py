@@ -16,6 +16,8 @@ Module map, in the order a first run touches them:
 * :mod:`.relay` -- the one CDP connection, shared between the daemon and the gateway.
 * :mod:`.supervisor` -- browser, relay and daemon lifecycle; the ``status()`` the
   Settings page and the live card read.
+* :mod:`.governance` -- ``capabilities.browse`` on the gateway: one deny turns all
+  of the above off.
 
 Design: ``docs/request-for-change/rfc-browser-live-harness.md``.
 """

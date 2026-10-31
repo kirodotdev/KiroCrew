@@ -13,7 +13,7 @@
  * There is no first-run step list: the gateway installs the engine on its own and
  * the main card shows it installing.
  */
-import { Lock } from 'lucide-react'
+import { Lock, ShieldOff } from 'lucide-react'
 
 import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsCard, SettingsSection } from '../../components/settings'
@@ -28,7 +28,19 @@ export function BrowserPanel() {
   const s = useBrowserSettings()
   const { status, config, view, setConfig, patch, install, test, disconnect } = s
 
-  if (status.isLoading || config.isLoading) {
+  if (s.policyOff) {
+    // A policy turned browsing off: no install, connect or setting row to offer.
+    return (
+      <SettingsCard>
+        <p className="flex items-center gap-1.5 m-0 text-[13px] text-muted" data-testid="browser-policy-off">
+          <ShieldOff size={14} className="shrink-0" aria-hidden />
+          {i18nT('pages.settings.browserPanel.policy_off')}
+        </p>
+      </SettingsCard>
+    )
+  }
+
+  if (s.policyPending || status.isLoading || config.isLoading) {
     return (
       <SettingsSection title={i18nT('pages.settings.browserPanel.title')}>
         <SettingsCard>

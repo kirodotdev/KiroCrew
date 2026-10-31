@@ -25,12 +25,14 @@ from aiohttp import web
 
 from kiro_crew.browser_harness import quick_ask as qa
 from kiro_crew.browser_harness.budgets import ASK_WAIT_S
+from kiro_crew.browser_harness.governance import DENIED_CODE
 from kiro_crew.browser_harness.live_hub import LiveHub, get_live_hub
 from kiro_crew.browser_harness.takeover import USER
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +199,10 @@ async def api_browser_ask_poll(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    # A deny ends the parked ask: the tool reads the code and stops waiting.
+    denied = await browse_refusal(session_key=body["session_key"], audit=False)
+    if denied is not None:
+        return denied
     hub = get_live_hub()
     key = live_session_key(body["session_key"])
     sess = hub.get(key)
@@ -238,6 +244,9 @@ async def api_browser_ask_answer(request: web.Request) -> web.Response:
     refusal = await require_owner_dashboard_request(request, "browser_ask_answer")
     if refusal is not None:
         return _fail(403, "not_owner", "owner_only")
+    # Nothing is filled into the page under a deny; the card names the word.
+    if await browse_refusal() is not None:
+        return _fail(403, DENIED_CODE)
     body, err = await read_bounded_json(request, max_bytes=qa.ANSWER_BODY_MAX)
     if err is not None or body is None:
         if err is not None and err.status == 413:

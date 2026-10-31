@@ -407,3 +407,39 @@ describe('a frame that lands after a quick turn ended', () => {
     expect(browserLiveStore.sessionTurns(S).find(t => t.turnId === 't1')!.ring.length).toBe(1)
   })
 })
+
+describe('BrowserLiveCard under a policy that turns browsing off', () => {
+  const governed = async (browseEnabled: boolean) => {
+    const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query')
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ browse_enabled: browseEnabled } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={qc}>{card()}</QueryClientProvider>)
+    return qc
+  }
+
+  it('is one line with no takeover, live or replay control', async () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    await governed(false)
+    const line = await screen.findByTestId('browser-live-policy-off')
+    expect(line).toHaveTextContent(i18next.t('pages.settings.browserPanel.policy_off'))
+    expect(screen.queryByTestId('browser-live-card')).toBeNull()
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('watches its own visibility again once the policy is lifted', async () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    const qc = await governed(false)
+    await screen.findByTestId('browser-live-policy-off')
+    act(() => qc.setQueryData(['dashboardConfig'], { browse_enabled: true }))
+    const root = await screen.findByTestId('browser-live-card')
+    expect(observed.map(o => o.el)).toContain(root)
+  })
+
+  it('is the live card as before when the policy permits', async () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    await governed(true)
+    await waitFor(() => expect(api.dashboardConfig).toHaveBeenCalled())
+    expect(screen.getByTestId('browser-live-card')).toHaveAttribute('data-state', 'live')
+    expect(screen.queryByTestId('browser-live-policy-off')).toBeNull()
+  })
+})

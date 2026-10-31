@@ -11,6 +11,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type BrowserInstallRequest, type BrowserStatusData, type BrowserTestData } from '../../api/client'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { browsePolicyOff } from '../../lib/browsePolicy'
 
 export const BROWSER_STATUS_KEY = ['browserStatus'] as const
 const CONFIG_KEY = ['kirocrewConfig'] as const
@@ -89,9 +91,19 @@ export function statusIsBusy(d: BrowserStatusData | undefined): boolean {
 export function useBrowserSettings() {
   const qc = useQueryClient()
 
+  const dashCfg = useQuery<{ browse_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: fetchDashboardConfig,
+    staleTime: 30_000,
+  })
+  const policyOff = browsePolicyOff(dashCfg.data)
+
   const status = useQuery<BrowserStatusData>({
     queryKey: BROWSER_STATUS_KEY,
     queryFn: api.getBrowserStatus,
+    // Under a deny the gateway answers every browser route with 403: nothing to
+    // read. Wait for the answer first; a failed config read still lets it run.
+    enabled: !dashCfg.isLoading && !policyOff,
     // Stale at once, so returning to the page re-reads: a browser connected
     // from a chat turn becomes visible without waiting for the idle poll.
     staleTime: 0,
@@ -130,6 +142,8 @@ export function useBrowserSettings() {
   })
 
   return {
+    policyOff,
+    policyPending: dashCfg.isLoading,
     status,
     config,
     view: viewOf(config.data),

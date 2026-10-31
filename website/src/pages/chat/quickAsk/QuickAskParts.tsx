@@ -155,6 +155,7 @@ export function QuickAskZoom({ zoom, children }: { zoom: CSSProperties | null; c
 /** What a refused answer says. The gateway's code is never shown raw. */
 export function answerErrorText(code: string): string {
   if (code === 'no_field') return i18nT('pages.chat.quickAsk.error_no_field')
+  if (code === 'policy_denied') return i18nT('pages.settings.browserPanel.policy_off')
   return code === 'origin_changed' || code === 'stale'
     ? i18nT('pages.chat.quickAsk.error_page_changed')
     : i18nT('pages.chat.quickAsk.error_send_failed')

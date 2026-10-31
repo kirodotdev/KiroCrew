@@ -44,8 +44,10 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.browser_harness import install as harness_install
+from kiro_crew.browser_harness.governance import HOST_KEY, browse_denied_async
 from kiro_crew.browser_harness.supervisor import CONNECTED, HarnessSupervisor, get_supervisor
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +219,9 @@ async def api_browser_harness_status(request: web.Request) -> web.Response:
     denied = _deny_non_owner(request, OP_STATUS)
     if denied is not None:
         return denied
+    denied = await browse_refusal(audit=False)
+    if denied is not None:
+        return denied
     return web.json_response(await asyncio.to_thread(_status_payload, request))
 
 
@@ -229,6 +234,9 @@ async def api_browser_harness_install(request: web.Request) -> web.Response:
     without it the ordinary install keeps a healthy existing copy.
     """
     denied = _deny_non_owner(request, OP_INSTALL)
+    if denied is not None:
+        return denied
+    denied = await browse_refusal()
     if denied is not None:
         return denied
     state = request.app["state"]
@@ -256,6 +264,9 @@ async def api_browser_harness_install(request: web.Request) -> web.Response:
 async def api_browser_harness_test(request: web.Request) -> web.Response:
     """POST /api/browser/test -- connect with a bounded wait, report the state reached."""
     denied = _deny_non_owner(request, OP_TEST)
+    if denied is not None:
+        return denied
+    denied = await browse_refusal()
     if denied is not None:
         return denied
     report = await _supervisor(request).test(TEST_WAIT_SECS)
@@ -346,6 +357,7 @@ AUTO_INSTALL_RUNNING = "install_running"
 AUTO_INSTALL_FAILED = "install_failed"
 AUTO_READY = "ready"
 AUTO_WARMED = "warmed"
+AUTO_POLICY_DENIED = "policy_denied"
 
 
 def _auto_skipped(environ: Mapping[str, str]) -> bool:
@@ -416,6 +428,9 @@ async def auto_setup_browser_harness(
     if getattr(state, "_browser_harness_auto_attempted", False):
         return AUTO_ALREADY_ATTEMPTED
     state._browser_harness_auto_attempted = True
+    # A fleet that turned browsing off gets no install and no warm browser.
+    if await browse_denied_async(HOST_KEY):
+        return AUTO_POLICY_DENIED
     if _install_active(state):
         return AUTO_INSTALL_RUNNING
     sup = supervisor if supervisor is not None else get_supervisor(config_dir())

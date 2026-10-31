@@ -17,6 +17,7 @@ vi.mock('../../api/client', async (importOriginal) => {
       disconnectBrowser: vi.fn(),
       kirocrewConfig: vi.fn(),
       patchConfig: vi.fn(),
+      dashboardConfig: vi.fn(),
     },
   }
 })
@@ -60,6 +61,7 @@ const mocked = api as unknown as {
   disconnectBrowser: ReturnType<typeof vi.fn>
   kirocrewConfig: ReturnType<typeof vi.fn>
   patchConfig: ReturnType<typeof vi.fn>
+  dashboardConfig: ReturnType<typeof vi.fn>
 }
 
 beforeEach(async () => {
@@ -70,6 +72,7 @@ beforeEach(async () => {
   mocked.disconnectBrowser.mockReset().mockResolvedValue(status({ connection: 'disconnected', browser: null }))
   mocked.kirocrewConfig.mockReset().mockResolvedValue(config())
   mocked.patchConfig.mockReset().mockResolvedValue({ ok: true })
+  mocked.dashboardConfig.mockReset().mockResolvedValue({ browse_enabled: true })
 })
 
 afterEach(() => {
@@ -469,5 +472,25 @@ describe('BrowserPanel - sign-in for Kiro’s Chromium', () => {
     fireEvent.change(input, { target: { value: ' .Example.COM ' } })
     fireEvent.click(screen.getByTestId('browser-cred-domain-add'))
     await waitFor(() => expect(mocked.patchConfig).toHaveBeenCalledWith('browser.credentials.domains', ['example.com']))
+  })
+})
+
+describe('BrowserPanel under a policy that turns browsing off', () => {
+  it('says so and offers no install, connect or setting row', async () => {
+    mocked.dashboardConfig.mockResolvedValue({ browse_enabled: false })
+    mocked.getBrowserStatus.mockResolvedValue(status({ installed: false }))
+    renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByTestId('browser-policy-off')).toHaveTextContent(
+      "Browsing is turned off by your organization's policy",
+    )
+    expect(screen.queryByTestId('browser-primary-card')).toBeNull()
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull()
+    expect(mocked.getBrowserStatus).not.toHaveBeenCalled()
+  })
+
+  it('keeps the page as it was when the policy permits', async () => {
+    renderWithProviders(<BrowserPanel />)
+    expect(await screen.findByTestId('browser-primary-card')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-policy-off')).toBeNull()
   })
 })

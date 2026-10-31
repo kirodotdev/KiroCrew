@@ -9106,6 +9106,7 @@
       "browserPanel": {
         "install_request_failed": "Could not start the install.",
         "title": "Browser",
+        "policy_off": "Browsing is turned off by your organization's policy",
         "status_stale": "Cannot read the browser status right now, so what is shown may be out of date.",
         "config_unavailable": "Could not load the browser settings, so they cannot be changed right now.",
         "save_failed": "Could not save the setting.",

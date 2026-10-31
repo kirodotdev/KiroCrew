@@ -50,7 +50,9 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover, install
+from kiro_crew.browser_harness import HARNESS_VERSION, budgets, credentials, discover
+from kiro_crew.browser_harness import governance as browse_governance
+from kiro_crew.browser_harness import install
 from kiro_crew.browser_harness.env import daemon_env
 from kiro_crew.browser_harness.relay import (
     CdpRelay,
@@ -252,6 +254,8 @@ class HarnessSupervisor:
         self._ensure_lock = LoopBoundLock()
         self._call_lock = LoopBoundLock()
         self._ensure_task: asyncio.Task[HarnessHandle] | None = None
+        #: The stop a ``capabilities.browse`` deny started (:meth:`stop_soon`).
+        self._stop_task: asyncio.Task[None] | None = None
         self._request_ids = itertools.count(1)
         #: A helper round trip; tests shorten it.
         self.call_timeout = CALL_TIMEOUT_SECS
@@ -383,6 +387,17 @@ class HarnessSupervisor:
         handle = self._handle
         return handle is not None and not handle.relay.closed and _alive(handle.daemon)
 
+    @property
+    def holds_browser(self) -> bool:
+        """Anything is up or coming up: a handle (even one whose daemon died) or a start.
+
+        What a policy stop asks, rather than :attr:`connected`: a browser whose daemon
+        exited still runs its pages, and a start parked on Chrome's Allow sheet would
+        finish once Allow is clicked.
+        """
+        task = self._ensure_task
+        return self._handle is not None or (task is not None and not task.done())
+
     # ── lifecycle ──
 
     async def ensure(self) -> HarnessHandle:
@@ -421,6 +436,19 @@ class HarnessSupervisor:
             await self._teardown()
         self._set(DISCONNECTED, "")
 
+    def stop_soon(self) -> asyncio.Task[None]:
+        """Start :meth:`stop` once, or return the one already running.
+
+        For the policy stops (``browser_harness.governance``): every refused route and
+        helper asks for one, and a second ``stop()`` cancelling the start a first one
+        is still tearing down would interrupt that cleanup and leak the browser.
+        """
+        task = self._stop_task
+        if task is None or task.done():
+            task = asyncio.create_task(self.stop(), name="browser-harness-policy-stop")
+            self._stop_task = task
+        return task
+
     async def test(self, wait_secs: float) -> dict[str, Any]:
         """``ensure()`` with a bounded wait, then the status; the Allow sheet outlasts it."""
         task = self.ensure_in_background()
@@ -428,6 +456,11 @@ class HarnessSupervisor:
             await asyncio.wait_for(asyncio.shield(task), wait_secs)
         except asyncio.TimeoutError:
             pass
+        except asyncio.CancelledError:
+            # The start was stopped by someone else (Disconnect, a policy stop): report
+            # the status. A cancel of THIS call leaves the shielded start running.
+            if not task.cancelled():
+                raise
         except Exception:  # noqa: BLE001 - the failure is in status()["detail"]
             pass
         # status() reads the config: off the loop.
@@ -457,6 +490,11 @@ class HarnessSupervisor:
         unknown = sorted(set(kwargs) - set(accepted))
         if unknown:
             raise HelperError(f"{helper}: unexpected arguments {unknown}")
+        # Every helper an op or a reflex loop runs passes here, so a deny that lands
+        # mid-op stops it at its next step, and the running browser with it.
+        if await browse_governance.browse_denied_async(browse_governance.HOST_KEY, audit=False):
+            await asyncio.shield(self.stop_soon())
+            raise browse_governance.BrowsingDenied()
         handle = await self.ensure()
         async with self._call_lock:
             if not _alive(handle.worker):
@@ -501,6 +539,10 @@ class HarnessSupervisor:
             return None
 
     async def _start(self) -> HarnessHandle:
+        # Nothing is launched, and no credential is pulled, under a deny.
+        if await browse_governance.browse_denied_async(browse_governance.HOST_KEY):
+            self._set(DISCONNECTED, browse_governance.DENIED_TEXT)
+            raise browse_governance.BrowsingDenied()
         # Disk reads and the discovery probes (stat, plist, which) run off the loop:
         # ``ensure()`` is awaited from HTTP handlers on the gateway's one loop.
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -530,6 +572,10 @@ class HarnessSupervisor:
                 self._set(WAITING_ALLOW, "click Allow in the browser's remote debugging prompt")
             relay_url = await relay.start(upstream)
             relay.on_upstream_closed = self._on_upstream_closed
+            # Again after the Allow wait, which has no deadline: a deny that landed
+            # meanwhile must not finish the start.
+            if await browse_governance.browse_denied_async(browse_governance.HOST_KEY):
+                raise browse_governance.BrowsingDenied()
             # Before the daemon: no agent op can reach the browser until this returns.
             await self._apply_credentials(relay, choice, "start")
             daemon = await self._start_daemon(state.python, relay_url)
@@ -541,6 +587,10 @@ class HarnessSupervisor:
             # happens to reap it as a stray.
             await self._abandon_start(relay, browser_proc, daemon)
             self._set(DISCONNECTED, "")
+            raise
+        except browse_governance.BrowsingDenied:
+            await self._abandon_start(relay, browser_proc, daemon)
+            self._set(DISCONNECTED, browse_governance.DENIED_TEXT)
             raise
         except Exception as exc:
             await self._abandon_start(relay, browser_proc, daemon)

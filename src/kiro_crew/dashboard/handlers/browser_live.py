@@ -10,6 +10,9 @@ nobody else's:
   or mark its own card visible.
 * Then the owner check, :func:`require_owner_dashboard_request`: a non-owner
   dashboard session, an app token or an anonymous caller gets 403 ``owner_only``.
+* Then ``capabilities.browse``: under a deny every route that shows or drives the
+  browser is 403 ``policy_denied`` (``handlers/browser_policy.py``); release and
+  close, which only end something, still answer.
 * Then the session: ``session_key`` must name a slot this dashboard owns
   (``state._slots``, after the ``dashboard:`` prefix is folded off), else 404
   ``unknown_session``. The card cannot steer another instance's stream.
@@ -51,6 +54,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
 )
+from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
 
 logger = logging.getLogger(__name__)
@@ -110,11 +114,23 @@ def _owned_session_key(request: web.Request, body: dict[str, Any]) -> str | None
 Action = Callable[[LiveHub, str, dict[str, Any]], Awaitable[dict[str, Any] | web.Response]]
 
 
-async def _run(request: web.Request, operation: str, action: Action) -> web.Response:
-    """The shared shape: gate, body, session, one hub call."""
+#: How a route asks ``capabilities.browse``: audited (someone acted), unaudited (a
+#: per-frame or per-key leg, which would write a row per repeat), or not at all (it
+#: only ends something, so a deny must not block it).
+AUDITED, QUIET, UNGATED = "audited", "quiet", "ungated"
+
+
+async def _run(
+    request: web.Request, operation: str, action: Action, *, policy: str = AUDITED
+) -> web.Response:
+    """The shared shape: gate, policy, body, session, one hub call."""
     refusal = await _owner_gate(request, operation)
     if refusal is not None:
         return refusal
+    if policy != UNGATED:
+        refusal = await browse_refusal(audit=policy == AUDITED)
+        if refusal is not None:
+            return refusal
     body, err = await read_bounded_json(request, max_bytes=_MAX_BODY_BYTES)
     if err is not None or body is None:
         return err if err is not None else _error("invalid_json", "invalid JSON", 400)
@@ -146,7 +162,7 @@ async def api_browser_live_visibility(request: web.Request) -> web.Response:
         await hub.set_visible(key, visible, tab)
         return {"visible": visible}
 
-    return await _run(request, "browser_live_visibility", act)
+    return await _run(request, "browser_live_visibility", act, policy=QUIET)
 
 
 async def api_browser_live_ack(request: web.Request) -> web.Response:
@@ -161,7 +177,7 @@ async def api_browser_live_ack(request: web.Request) -> web.Response:
             return _error("invalid_stream", "stream must be a short string", 400)
         return {"acked": hub.ack(key, seq, stream)}
 
-    return await _run(request, "browser_live_ack", act)
+    return await _run(request, "browser_live_ack", act, policy=QUIET)
 
 
 async def api_browser_input_claim(request: web.Request) -> web.Response:
@@ -203,7 +219,7 @@ async def api_browser_input_release(request: web.Request) -> web.Response:
         delivered = await hub.release(key, note=said.get("note", ""), choice=said.get("choice", ""))
         return {"in_control": False, "delivered": delivered}
 
-    return await _run(request, "browser_input_release", act)
+    return await _run(request, "browser_input_release", act, policy=UNGATED)
 
 
 async def api_browser_input_event(request: web.Request) -> web.Response:
@@ -225,7 +241,7 @@ async def api_browser_input_event(request: web.Request) -> web.Response:
             out["focus"] = await hub.focused_field(key)
         return out
 
-    return await _run(request, "browser_input_event", act)
+    return await _run(request, "browser_input_event", act, policy=QUIET)
 
 
 async def api_browser_live_open_in_browser(request: web.Request) -> web.Response:
@@ -296,7 +312,7 @@ async def api_browser_live_close(request: web.Request) -> web.Response:
     async def act(hub: LiveHub, key: str, body: dict[str, Any]) -> dict[str, Any] | web.Response:
         return {"closed": await hub.close_view(key)}
 
-    return await _run(request, "browser_live_close", act)
+    return await _run(request, "browser_live_close", act, policy=UNGATED)
 
 
 def refresh_live_config(hub: LiveHub) -> None:

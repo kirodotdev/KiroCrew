@@ -320,6 +320,16 @@ describe('quick ask: answer and secrets', () => {
     expect(screen.getByTestId('quick-ask-sheet')).toBeInTheDocument()
   })
 
+  it('a policy that turned browsing off is named, and nothing is filled', async () => {
+    writes.answer.mockRejectedValueOnce(Object.assign(new Error('403'), { body: '{"ok":false,"error":"policy_denied","code":"policy_denied"}' }))
+    show(asks.text)
+    type(screen.getByTestId('quick-ask-text'), 'me@example.com')
+    fireEvent.click(screen.getByTestId('quick-ask-primary'))
+    expect(await screen.findByTestId('quick-ask-error')).toHaveTextContent(
+      i18next.t('pages.settings.browserPanel.policy_off'),
+    )
+  })
+
   it('an HTTP refusal is read from its body', async () => {
     writes.answer.mockRejectedValueOnce(Object.assign(new Error('409'), { body: '{"error":"origin_changed"}' }))
     show(asks.text)

@@ -38,8 +38,11 @@ the hub's release signal.
 
 The URL gate (public http(s) only, plus the operator's listed loopback origins)
 and the ``capabilities.browse`` governance check run in the shim BEFORE the
-post; this route trusts its one caller for those and enforces what only the
-gateway can see: who holds the browser, which tabs the agent owns.
+post. The route asks ``capabilities.browse`` again itself, fail-closed (403
+``policy_denied``, ``handlers/browser_policy.py``), and so does every helper the
+op runs (``HarnessSupervisor.call``), so a deny that lands mid-op ends it with the
+same code. Beyond that it enforces what only the gateway can see: who holds the
+browser, which tabs the agent owns.
 
 The live card (``browser_harness.live_hub``) is driven from here too, because
 this is the one place that knows both the session and the browser: the FIRST
@@ -79,13 +82,23 @@ from kiro_crew.browser_harness.budgets import (
     SLOW_OP_TIMEOUT_S,
 )
 from kiro_crew.browser_harness.decide import BrowserDecisions
+from kiro_crew.browser_harness.governance import (
+    DENIED_CODE,
+    DENIED_TEXT,
+    HOST_KEY,
+    BrowsingDenied,
+    browse_denied_async,
+    stop_running_harness,
+)
 from kiro_crew.browser_harness.live_hub import (
     STATE_DONE,
+    STATE_ERROR,
     STATE_WAITING_ALLOW,
     LiveHub,
     get_live_hub,
 )
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -257,6 +270,9 @@ async def _supervisor(hub: LiveHub, key: str) -> Any:
     while True:
         done, _pending = await asyncio.wait({task}, timeout=_ENSURE_POLL_S)
         if done:
+            if task.cancelled():
+                # Someone else stopped the start (Disconnect, or a policy stop).
+                raise _StartStopped("the browser start was stopped")
             task.result()  # raises what ensure() raised
             return instance
         # ``status()`` stats the install marker and, before the first start settles
@@ -273,6 +289,24 @@ async def _supervisor(hub: LiveHub, key: str) -> Any:
             )
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(str(status.get("detail") or "the browser did not come up in time"))
+
+
+class _StartStopped(RuntimeError):
+    """The background start this op waited on was cancelled by another caller."""
+
+
+def _end_allow_wait(hub: LiveHub, key: str) -> None:
+    """A start parked on Chrome's Allow sheet put the card in waiting_allow: end it."""
+    sess = hub.get(key)
+    if sess is not None and sess.state == STATE_WAITING_ALLOW:
+        hub.set_state(key, STATE_ERROR)
+
+
+def _start_denied(request: web.Request, hub: LiveHub, key: str) -> web.Response:
+    """The op's answer when a deny stopped the browser before it came up."""
+    _end_allow_wait(hub, key)
+    _audit(request, "denied", DENIED_CODE)
+    return web.json_response({"ok": False, "code": DENIED_CODE, "error": DENIED_TEXT}, status=403)
 
 
 def _open_turn(hub: LiveHub, key: str) -> None:
@@ -409,11 +443,24 @@ async def api_browser_op(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    # The shim asked (and audited) the same row before posting; this is the
+    # gateway's own check, which a direct POST cannot skip and which fails closed.
+    denied = await browse_refusal(session_key=session_key, audit=False)
+    if denied is not None:
+        _audit(request, "denied", DENIED_CODE)
+        return denied
     hub = get_live_hub()
     key = live_session_key(session_key)
     _open_turn(hub, key)
     try:
         supervisor = await _supervisor(hub, key)
+    except BrowsingDenied:
+        return _start_denied(request, hub, key)
+    except _StartStopped as exc:
+        if await browse_denied_async(session_key, audit=False):
+            return _start_denied(request, hub, key)
+        _end_allow_wait(hub, key)
+        return web.json_response({"ok": False, "code": "browser_error", "error": str(exc)})
     except Exception as exc:  # noqa: BLE001 - the browser plane failed to come up
         logger.warning("browser op: supervisor unavailable: %s", exc)
         return web.json_response({"ok": False, "code": "browser_error", "error": _safe(exc)})
@@ -558,6 +605,10 @@ async def api_browser_handback(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "session_key required", "code": "session_key_required"}, status=400
         )
+    # A deny ends a parked op: the tool reads the code and stops waiting.
+    denied = await browse_refusal(session_key=session_key, audit=False)
+    if denied is not None:
+        return denied
     hub = get_live_hub()
     key = live_session_key(session_key)
     if "options" in body:
@@ -612,6 +663,9 @@ async def _fenced_op(
             from kiro_crew.dashboard.handlers.browser_ask import run_ask
 
             result = await asyncio.wait_for(run_ask(hub, key, args), timeout=OP_TIMEOUT_S)
+            denied = await _denied_after_op(request)
+            if denied is not None:
+                return denied
             _audit(request, "allowed")
             return result
         task = asyncio.ensure_future(harness_ops.run_op(op, args, ctx))
@@ -629,16 +683,37 @@ async def _fenced_op(
     except asyncio.TimeoutError:
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
+    except BrowsingDenied:
+        # A deny landed mid-op: the engine has stopped (``HarnessSupervisor.call``).
+        _audit(request, "denied", DENIED_CODE)
+        return harness_ops.refusal(DENIED_CODE, DENIED_TEXT)
     except Exception as exc:  # noqa: BLE001 - a helper or the daemon raised
         logger.warning("browser op %s failed: %s", op, exc)
         _audit(request, "error", type(exc).__name__)
         return {"ok": False, "code": "browser_error", "error": _safe(exc)}
+    denied = await _denied_after_op(request)
+    if denied is not None:
+        return denied
     _audit(request, "allowed")
     if not hub.in_control(key):
         refused = await follow_current_tab(hub, key, supervisor)
         if refused is not None:
             return refused
     return result
+
+
+async def _denied_after_op(request: web.Request) -> dict[str, Any] | None:
+    """The refusal when a deny landed while an op ran, else ``None``.
+
+    For an op that caught the refusal itself (a reflex loop reads a refused helper as
+    an unreadable page) or one whose deny landed after its last helper: the answer
+    still says why it stopped, and the browser stops too.
+    """
+    if not await browse_denied_async(HOST_KEY, audit=False):
+        return None
+    stop_running_harness()
+    _audit(request, "denied", DENIED_CODE)
+    return harness_ops.refusal(DENIED_CODE, DENIED_TEXT)
 
 
 def _safe(exc: BaseException) -> str:

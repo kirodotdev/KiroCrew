@@ -17301,6 +17301,7 @@
         "preparing_desc": "Installation en cours. Tu peux discuter en attendant.",
         "preparing_title": "Préparation du navigateur",
         "privacy_footer": "Rien n’est envoyé. Les données d’usage et le navigateur cloud sont désactivés.",
+        "policy_off": "La navigation est désactivée par la politique de ton organisation",
         "retry": "Réessayer",
         "setup_failed_title": "La configuration du navigateur a échoué",
         "waiting_allow_desc": "Chrome pose la question. Clique sur Autoriser.",

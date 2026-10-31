@@ -196,7 +196,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # the agent browsing through the tool, not only through the shell
     # ``commands`` path. Default True (on) — like memory_writes, an ordinary capability
     # that is available unless a policy explicitly sets
-    # ``{"capabilities": {"browse": {"enabled": false}}}``.
+    # ``{"capabilities": {"browse": {"enabled": false}}}``. One deny turns the whole
+    # browser off: the gateway asks this row again at every browser route and in the
+    # engine itself (``browser_harness/governance.py``), and
+    # ``GET /api/dashboard/config`` reports it as ``browse_enabled``.
     "capabilities.browse": ScopeSpec(CAPABILITY, capability_default=True),
     # Inner ``events`` ruleset (``identifier`` matcher): which hook trigger events
     # may fire a script hook once the capability is on, by event name --

@@ -20,7 +20,8 @@ directions on purpose:
 
 * **Governance** (``capabilities.browse``): a denial refuses OUTRIGHT. There is
   no other browser to fall back to, and there must not be one, or the control
-  would not control anything.
+  would not control anything. The gateway asks the same row again, fail-closed,
+  and answers ``policy_denied``; that code ends a parked hand-back or ask wait too.
 * **The navigate gate**: only a public http(s) URL, or a loopback ``host:port``
   the OPERATOR listed in ``dashboard.browser_local_origins``, is ever opened.
   Everything else (loopback, private, link-local, the cloud metadata address, a
@@ -49,6 +50,7 @@ from kiro_crew import mcp_core
 from kiro_crew.browser_harness import budgets
 from kiro_crew.browser_harness import quick_ask as qa
 from kiro_crew.browser_harness import url_gate
+from kiro_crew.browser_harness.governance import DENIED_CODE, DENIED_TEXT
 from kiro_crew.browser_harness.ops import OPS, SLOW_OPS
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_shared import DeferredTool
@@ -414,7 +416,19 @@ def _result_text(op: str, result: Any) -> str:
     return _redacted(f"Browser {op}: {json.dumps(fields, default=str)}")[:_RESULT_CAP]
 
 
+#: The gateway's own ``capabilities.browse`` refusal (``browser_harness/governance.py``),
+#: worded as the shim's pre-check words it. Final: the agent must not retry.
+_POLICY_DENIED_TEXT = f"Error: {DENIED_TEXT}"
+
+
+def _policy_denied(payload: Any) -> bool:
+    """The gateway answered ``policy_denied`` (any status): browsing is off by policy."""
+    return isinstance(payload, dict) and payload.get("code") == DENIED_CODE
+
+
 def _error_text(code: str, detail: str) -> str:
+    if code == DENIED_CODE:
+        return _POLICY_DENIED_TEXT
     if code == "not_installed":
         return _NOT_INSTALLED_TEXT
     if code == "user_in_control":
@@ -464,6 +478,8 @@ def _settle(op: str, status: int | None, payload: Any) -> str | None:
     means the person has the browser: the caller parks and polls for the hand-back
     instead of returning.
     """
+    if _policy_denied(payload):
+        return _POLICY_DENIED_TEXT
     said = _handed_back_text(payload.get("handed_back")) if isinstance(payload, dict) else ""
     if status == 200 and isinstance(payload, dict) and payload.get("ok") is True:
         return _result_text(op, payload.get("result")) + said
@@ -541,6 +557,8 @@ class _HandbackWait(DeferredTool):
         status, payload = _post_handback(
             self.body_key, self.session_header, budgets.HANDBACK_CALL_TIMEOUT_S, **extra
         )
+        if _policy_denied(payload):
+            return _POLICY_DENIED_TEXT
         released = status == 200 and isinstance(payload, dict) and payload.get("released") is True
         if not released:
             return None
@@ -779,6 +797,8 @@ class _AskWait(DeferredTool):
         status, payload = _post_ask_poll(
             self.body_key, self.ask_id, self.session_header, budgets.ASK_CALL_TIMEOUT_S
         )
+        if _policy_denied(payload):
+            return _POLICY_DENIED_TEXT
         if status != 200 or not isinstance(payload, dict) or payload.get("done") is not True:
             return None
         outcome = str(payload.get("outcome") or "")

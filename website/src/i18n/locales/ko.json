@@ -16705,6 +16705,7 @@
         "preparing_desc": "설치 중입니다. 그동안 채팅할 수 있습니다.",
         "preparing_title": "브라우저 준비 중",
         "privacy_footer": "아무것도 업로드하지 않습니다. 사용 데이터와 클라우드 브라우저는 꺼져 있습니다.",
+        "policy_off": "조직의 정책에 따라 브라우저 사용이 꺼져 있습니다",
         "retry": "다시 시도",
         "setup_failed_title": "브라우저 설정 실패",
         "waiting_allow_desc": "Chrome이 묻고 있습니다. 거기서 허용을 누르세요.",

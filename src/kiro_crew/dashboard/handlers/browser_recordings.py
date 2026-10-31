@@ -33,6 +33,7 @@ from aiohttp import web
 from kiro_crew.browser_harness.live_hub import redact_wire
 from kiro_crew.browser_harness.recording import FRAME_NAME_RE, TURN_ID_RE, get_recorder
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.browser_policy import browse_refusal
 from kiro_crew.dashboard.state import _normalize_slot_key
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,14 @@ def _audit(request: web.Request, operation: str, outcome: str, error: str = "") 
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
 
 
-async def _gate(request: web.Request, operation: str) -> tuple[str | None, web.Response | None]:
-    """The owned slot key the path names, or the refusal to answer instead."""
+async def _gate(
+    request: web.Request, operation: str, *, audit: bool = True
+) -> tuple[str | None, web.Response | None]:
+    """The owned slot key the path names, or the refusal to answer instead.
+
+    A ``capabilities.browse`` deny refuses the replay too (``browser_policy``); a
+    frame is read unaudited, since one replay reads hundreds.
+    """
     if request.get("internal_auth") is True:
         _audit(request, operation, "denied", "internal secret refused")
         return None, web.json_response(
@@ -83,6 +90,9 @@ async def _gate(request: web.Request, operation: str) -> tuple[str | None, web.R
             headers=_NO_STORE,
         )
     refusal = await require_owner_dashboard_request(request, operation)
+    if refusal is not None:
+        return None, refusal
+    refusal = await browse_refusal(audit=audit)
     if refusal is not None:
         return None, refusal
     raw = request.match_info.get("session", "")
@@ -128,7 +138,7 @@ async def api_browser_recording_get(request: web.Request) -> web.Response:
 
 async def api_browser_recording_frame(request: web.Request) -> web.Response:
     """GET /api/browser/live/{session}/recordings/{turn_id}/frames/{i}.jpg: one masked frame."""
-    key, refusal = await _gate(request, "browser_recording_frame")
+    key, refusal = await _gate(request, "browser_recording_frame", audit=False)
     if refusal is not None:
         return refusal
     assert key is not None

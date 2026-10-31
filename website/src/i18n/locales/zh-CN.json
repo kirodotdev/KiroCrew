@@ -16705,6 +16705,7 @@
         "preparing_desc": "正在安装，你可以先聊天。",
         "preparing_title": "正在准备浏览器",
         "privacy_footer": "不上传任何数据，使用数据和云端浏览器已关闭。",
+        "policy_off": "浏览器已被你所在组织的策略关闭",
         "retry": "重试",
         "setup_failed_title": "浏览器没装好",
         "waiting_allow_desc": "Chrome 弹出了提示，点“允许”就好。",
