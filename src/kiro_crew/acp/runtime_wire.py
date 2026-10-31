@@ -23,9 +23,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew import kiro_sandbox_conflict
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.runtime_start import _cold_start_counts
-from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead
+from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead, AcpRuntimeError
 from kiro_crew.acp.transport_framing import (
     _RESPONSE_WRITE_BOUND_SECS,
     RequestWriteResult,
@@ -643,6 +644,21 @@ async def _send_and_await(
     started = time.monotonic()
     try:
         result = await asyncio.wait_for(future, timeout=timeout)
+    except AcpRuntimeError as exc:
+        # The error answer to a session start. kiro-cli's own sandbox stops Crew's
+        # MCP servers starting, and its error names only the server; the hint names
+        # the setting. Exact type only: a subclass carries fields a caller reads.
+        if type(exc) is not AcpRuntimeError or method not in (
+            METHOD_SESSION_NEW,
+            METHOD_SESSION_LOAD,
+        ):
+            raise
+        hint = await asyncio.to_thread(
+            kiro_sandbox_conflict.session_start_hint, str(exc), self._acp_backend
+        )
+        if not hint:
+            raise
+        raise AcpRuntimeError(f"{exc}. {hint}") from exc
     except asyncio.TimeoutError:
         if method == METHOD_SESSION_NEW:
             # The answer may still come, and it names a session the runtime

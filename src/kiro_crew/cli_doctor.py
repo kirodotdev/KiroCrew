@@ -57,6 +57,7 @@ from kiro_crew import (  # noqa: F401
     diagnostics,
     gateway_lock,
     host_task_sizing,
+    kiro_sandbox_conflict,
     platform_compat,
     resource_status,
     sandbox,
@@ -466,6 +467,20 @@ def _doctor_enterprise_sign_in(issues: list[str]) -> None:
         issues.append(f"enterprise sign-in: {line[2:].strip()}")
 
 
+def _selected_roles_run_kiro_cli(cfg: KiroCrewConfig) -> tuple[bool, bool]:
+    """Which selected roles spawn kiro-cli: ``(kiro_role, relay_kas_role)``.
+
+    The Kiro CLI backend, or KAS served through kiro-cli's relay, as the main
+    backend or as the crewmate backend. Both fields arrive already resolved by the
+    loader's selection gate. Positive tests, so a harness added later does not
+    inherit a fatal row for a binary it never runs.
+    """
+    selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+    kiro_role = ACP_BACKEND_KIRO in selected
+    relay_kas_role = not cfg.agent.kas_bundle and ACP_BACKEND_KAS in selected
+    return kiro_role, relay_kas_role
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -798,6 +813,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         # After the probe, deliberately: the probe reporting green is the exact
         # condition this section exists to explain.
         _doctor_mcp_governance(agent_path, issues, gated_off=gated_off)
+    # After the probe for the same reason: the probe starts kirocrew-core outside
+    # kiro-cli's own sandbox, so it passes on the host where that sandbox stops every
+    # session. Fatal only when a selected role spawns kiro-cli.
+    confinement._doctor_kiro_sandbox_blocks_crew_mcp(
+        issues, required=any(_selected_roles_run_kiro_cli(cfg))
+    )
 
     # ── Python Runtime ──
     print("\nRuntime")
@@ -918,9 +939,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # launcher's sibling chat binary instead (``services.kas_relay_entry``), so
     # that binary is probed for the relay role while the launcher's delegate
     # is still probed for a selected Kiro CLI role.
-    selected = (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
-    kiro_role = ACP_BACKEND_KIRO in selected
-    relay_kas_role = not cfg.agent.kas_bundle and ACP_BACKEND_KAS in selected
+    kiro_role, relay_kas_role = _selected_roles_run_kiro_cli(cfg)
     services._doctor_kiro_chat_delegate(
         kiro,
         issues,

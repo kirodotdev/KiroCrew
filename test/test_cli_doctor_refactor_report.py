@@ -906,6 +906,39 @@ def test_chat_delegate_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
     }
 
 
+@pytest.mark.parametrize(
+    ("backend", "member_backend", "kas_bundle", "required"),
+    [
+        (ACP_BACKEND_KIRO, "claude", False, True),
+        (ACP_BACKEND_KAS, "claude", False, True),
+        (ACP_BACKEND_KAS, ACP_BACKEND_KAS, True, False),
+        ("claude", "claude", False, False),
+        ("claude", ACP_BACKEND_KAS, False, True),
+        ("claude", ACP_BACKEND_KIRO, True, True),
+    ],
+)
+def test_kiro_sandbox_row_is_fatal_only_for_a_harness_that_spawns_kiro_cli(
+    host, capsys, monkeypatch, backend, member_backend, kas_bundle, required
+) -> None:
+    """kiro-cli's own sandbox blocks Crew's MCP servers only in a kiro-cli spawn."""
+    from kiro_crew.doctor_checks import confinement
+
+    _ready(host)
+    host.cfg.agent.acp_backend = backend
+    host.cfg.agent.member_acp_backend = member_backend
+    host.cfg.agent.kas_bundle = kas_bundle
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        confinement,
+        "_doctor_kiro_sandbox_blocks_crew_mcp",
+        lambda issues, **kwargs: seen.append(kwargs),
+    )
+
+    host.run(capsys)
+
+    assert seen == [{"required": required}]
+
+
 _BUNDLE = """\
 Kiro Crew Doctor 👻
 
