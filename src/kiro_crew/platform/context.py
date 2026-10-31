@@ -628,6 +628,14 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "milestones.py::_policy_permits": (
+        "no-context answer is 'not permitted': with no installed policy the "
+        "milestone hooks count nothing, write no state and emit no metric, which "
+        "is the denial direction. The gateway and the MCP servers install a "
+        "context at boot, so only an unbooted process (a bare test) is affected; "
+        "composing one here would install process-wide state from a hook's "
+        "worker thread."
+    ),
     "security/redaction.py::_token_param_exempt_prefixes": (
         "no-context answer is the empty prefix set, which means MORE redaction: "
         "pass 4 redacts every `token=` URL value. The lookup can only skip a "

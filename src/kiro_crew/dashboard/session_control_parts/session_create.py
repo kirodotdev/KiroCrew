@@ -1483,6 +1483,12 @@ async def create_session(
             "lineage_recorded": "true" if lineage_recorded else "false",
         },
     )
+    # The "parallel chats" milestone: counted here, where the child session
+    # exists, rather than at the tool result, which reports a refusal as an
+    # ordinary completed call. Never raises.
+    from kiro_crew.milestones import record as record_milestone
+
+    record_milestone("parallel-chats")
     return {
         "ok": True,
         "target": slot.key,

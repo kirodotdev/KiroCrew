@@ -34,6 +34,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
     split_namespaced_channel_id,
 )
+from kiro_crew.milestones import record as record_milestone
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -603,6 +604,10 @@ def get_or_create_slot(
         # block must not become a suspension point, or callers could observe
         # a half-configured slot.
         increment_user_session_count_off_loop()
+        # Milestones derive state only from persistent, non-ephemeral chats.
+        # The write runs off-loop and never raises.
+        if not ephemeral and memory_mode in (None, "", "persistent"):
+            record_milestone("chats-opened")
     if memory_mode and memory_mode != "persistent":
         self._restricted_keys.add(f"dashboard:{name}")
     if ephemeral:

@@ -19,6 +19,7 @@ import hmac as _hmac
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew import milestones
 from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules
@@ -195,6 +196,9 @@ def create(
         ARTIFACTS_CREATED,
         {"kind": kind, "source": source, "kind_auto": bool(kind_auto)},
     )
+    # The "first widget" milestone, counted after the write like the counter
+    # above. Best-effort and off the loop; it never raises.
+    milestones.record("widgets")
     return art
 
 

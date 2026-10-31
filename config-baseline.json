@@ -8167,6 +8167,7 @@
         "tips_enabled": true,
         "feature_videos_enabled": false,
         "feature_videos_cache_max_mb": 500.0,
+        "milestones_enabled": true,
         "folder_suggestions_enabled": true,
         "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
@@ -9656,6 +9657,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 500.0
+    },
+    {
+      "path": "dashboard.milestones_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Milestones Enabled",
+      "help": "Show the milestones indicator, panel, new-chat feature cards and quiet notices. Off hides them; counting continues, so turning it back on shows true progress.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.folder_suggestions_enabled",

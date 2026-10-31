@@ -441,6 +441,15 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "capabilities.feature_videos_download": ScopeSpec(
         CAPABILITY, capability_default=True, scope_matchers={"hosts": "host"}
     ),
+    # The milestones table (``milestones.py``): the top-bar indicator, panel,
+    # new-chat feature cards and quiet notices. Local only -- no egress, no model
+    # call -- so this is a presentation switch a managed fleet may pin off, and it
+    # outranks ``dashboard.milestones_enabled``. Read through ``policy_permits``
+    # by ``GET /api/milestones``; a denial answers ``enabled: false``. Default
+    # True keeps the feature for the standalone user; the enterprise baseline
+    # keeps it off until a policy names it, like every other capability row.
+    # Data row only.
+    "capabilities.milestones": ScopeSpec(CAPABILITY, capability_default=True),
     # The Jev decision seam: an enabled, sampled session sends message excerpts and
     # skill descriptions to an external, PAID provider endpoint and spends the
     # operator's account to do it. The keystone ``decisions_consent.json`` is the
