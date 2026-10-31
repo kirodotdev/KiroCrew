@@ -646,6 +646,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     from kiro_crew.sandbox_staging import (  # noqa: F401
         _AUTH_STORE_LEGACY_TEMP_PREFIX,
         _AUTH_STORE_PUBLISHED_KEY_LEAF,
+        _LEGACY_AUTH_SWEEP_CLEAN,
         _MD_NOTEBOOK_STATE_COMPONENTS,
         LiveTargetUnfitness,
         _live_target_irregular_detail,

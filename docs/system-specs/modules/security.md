@@ -508,7 +508,13 @@ condition, and the next start mints a fresh key after which this sweep removes t
 That sweep is bounded to names carrying the leaf, and the bound is load-bearing rather than
 conservative: the data home is shared and `atomic_write` stages `tmp<random>.tmp` there for
 unrelated stores, so a wider pattern would unlink another component's in-flight temp between
-its `mkstemp` and its rename. A pre-upgrade `refresh_chains.json` temp carries that
+its `mkstemp` and its rename. A clean pass over the LIVE home is remembered for the rest of
+the process, keyed by that directory's identity, so later spawns skip listing it (the live root
+holds every `session_token_*.sig` mapping): it is masked, and this build's publisher stages only
+in the masked staging directory, so a legacy-shaped name can appear there after a clean pass
+only from a concurrently running pre-upgrade `kirocrew`, whose temp the next process start
+sweeps. A pass that saw a match is never remembered, and every other root is listed on every
+pass, since a sandbox can write into an unmasked unused home. A pre-upgrade `refresh_chains.json` temp carries that
 leaf-less name and so cannot be told apart from a live one, so it is not swept. The
 keystone-artifact suffix rule covers a `.tmp` or `.lock` name in a keystone leaf's own
 directory, but it lives in `security.paths` and gates the agent's FILE TOOLS only: no OS

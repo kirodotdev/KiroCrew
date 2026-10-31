@@ -277,6 +277,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _ensure_event_loop,
     _fake_computer_use_backend,
     _forget_enterprise_profile_pin,
+    _forget_legacy_auth_sweep_clean_roots,
     _forget_sandbox_launch_mark,
     _fresh_reexec_environment,
     _history_cleanup_throttle_closed,

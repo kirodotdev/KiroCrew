@@ -213,6 +213,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _migrate_md_notebook_legacy_state _member_records_move
         _AUTH_STORE_PUBLISHED_KEY_LEAF _AUTH_STORE_LEGACY_TEMP_PREFIX
         _reconcile_auth_store_staging_links _sweep_legacy_auth_store_temps
+        _LEGACY_AUTH_SWEEP_CLEAN
         _sweep_one_md_notebook_state_dir _materialize_md_notebook_mask_targets
         """.split()),
     "kiro_crew.sandbox_workspace": tuple("""
