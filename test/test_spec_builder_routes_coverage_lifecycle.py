@@ -1014,10 +1014,15 @@ class TestTeardownFailureBranches:
 
     def test_a_slot_that_rejects_the_synthesis_reset_is_tolerated(self):
         class _NoSynthesis:
+            def __init__(self):
+                object.__setattr__(self, "_queue", ["queued"])
+
             def __setattr__(self, name, value):
                 raise RuntimeError("frozen slot")
 
-        r._discard_queued_work(_NoSynthesis())  # must not raise
+        slot = _NoSynthesis()
+        r._discard_queued_work(slot)
+        assert slot._queue == []
 
 
 class TestDeleteRaceBranches:

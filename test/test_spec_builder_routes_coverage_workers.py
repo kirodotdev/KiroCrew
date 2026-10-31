@@ -36,6 +36,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_facade import routes as r
 _no_autonudge = spec_builder_routes_coverage_helpers._no_autonudge
 _pin_state_dir = spec_builder_routes_coverage_helpers._pin_state_dir
 _quiet_sel = spec_builder_routes_coverage_helpers._quiet_sel
+_real_nudge = spec_builder_routes_coverage_helpers._real_nudge
 
 
 # -- git ----------------------------------------------------------------------
@@ -755,15 +756,17 @@ class TestHaltExecution:
         assert order == ["sentinel", "loop", "turn"]
 
     @pytest.mark.asyncio
-    async def test_a_missing_sentinel_is_not_fatal_because_the_two_stops_are(self, tmp_path):
-        with (
-            mock.patch.object(r, "_write_stop_sentinel_for_spec", return_value=False),
-            mock.patch.object(r, "_remove_nudge_loop", mock.AsyncMock()) as loop,
-            mock.patch.object(r, "_halt_active_turn", mock.AsyncMock()) as turn,
-        ):
-            await r._halt_execution(_State(), "demo", tmp_path, reason="user stop")
-        loop.assert_awaited_once()
-        turn.assert_awaited_once()
+    async def test_a_missing_sentinel_is_not_fatal_because_the_two_stops_are(
+        self, tmp_path, monkeypatch
+    ):
+        slot = _Slot(r._slot_key("demo"), running=True)
+        slot._queue.append("next task")
+        state = _State(**{slot.key: slot})
+        async with _real_nudge(tmp_path / "nudge", monkeypatch) as (svc, _loop):
+            with mock.patch.object(r, "_write_stop_sentinel_for_spec", return_value=False):
+                await r._halt_execution(state, "demo", tmp_path, reason="user stop")
+            assert svc.get_by_slot(r._slot_key("demo")) is None
+        assert slot._queue == []
 
 
 # -- transcript relay ---------------------------------------------------------
