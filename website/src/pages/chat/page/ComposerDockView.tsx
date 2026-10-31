@@ -57,6 +57,7 @@ import FollowUpCard from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
+import QueueHoldNotice from '../../../components/QueueHoldNotice'
 import SubagentProgressBar from '../SubagentProgressBar'
 import TaskProgressBar from '../TaskProgressBar'
 import type { ChatConfig } from '../ChatSettings'
@@ -253,7 +254,9 @@ interface ComposerDockViewProps {
   keepQuestionAnswer: (text: string, questions?: { question: string; }[]) => void
   queuedMessages: ChatMessage[]
   queuePendingIds: ReadonlySet<string>
-  steer: (opts?: { auto?: boolean; text?: string; }) => void
+  queueInterruptNotice: string | null
+  queueInterruptBlockedTitle: string | null
+  steer:(opts?: { auto?: boolean; text?: string; }) => void
   stopTurn: () => void
   systemDeliveryCount: number
   handleEditLastRequest: () => void
@@ -313,7 +316,7 @@ export default function ComposerDockView({
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
-  queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
+  queuePendingIds, queueInterruptNotice, queueInterruptBlockedTitle, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove,
   composerSessionControls, crewModeOffered, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
@@ -402,7 +405,9 @@ export default function ComposerDockView({
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
-              <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
+              {/* No hand-off: this page may hold an unsaved composer draft. */}
+              <QueueHoldNotice message={queueInterruptNotice} />
+              <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} interruptBlockedTitle={queueInterruptBlockedTitle} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
               <div ref={inputAreaRef} className="relative z-10 dock-inert">

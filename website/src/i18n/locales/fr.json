@@ -20992,5 +20992,9 @@
     "apply_replace_n": "Remplacer les consignes et ajouter {{count}}",
     "current_directions": "Consignes actuelles (seront remplacées) : {{directions}}",
     "done_replaced": "Consignes de comportement remplacées."
+  },
+  "queueActions": {
+    "stillStopping": "Arrêt en cours…",
+    "teardownPending": "Le tour précédent est encore en cours d’arrêt. Ton message est en attente et sera envoyé une fois l’arrêt terminé."
   }
 }

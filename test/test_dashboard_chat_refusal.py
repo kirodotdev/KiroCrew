@@ -575,9 +575,20 @@ class TestRunChatEarlyExitHandOff:
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.title_then_refresh", title)
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
         slot.queue_insert(0, "/prompts", kind="")
+        from kiro_crew.dashboard.chat_runner import spawn_guarded_turn
 
-        first = await self._run(state, slot, "answer me")
-        await await_successor(slot, first)
+        successors = []
+
+        def capture_successor(*args, **kwargs):
+            task = spawn_guarded_turn(*args, **kwargs)
+            successors.append(task)
+            return task
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", capture_successor)
+        await self._run(state, slot, "answer me")
+        assert len(successors) == 1
+        await await_until(successors[0])
+        assert not slot._queue
         for task in list(state._background_tasks):
             await await_until(task, what="a background task finishing")
 

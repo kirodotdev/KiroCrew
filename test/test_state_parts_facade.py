@@ -416,6 +416,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_closing": ("value", "0"),
     "_compacting": ("value", "False"),
     "_preparing_count": ("value", "0"),
+    "_preparing_task": ("value", "None"),
+    "_stop_teardown_task": ("value", "None"),
     "_compaction_continue_retries": ("value", "0"),
     "_compaction_fail_cooldown_until": ("value", "0.0"),
     "_compaction_fail_streak": ("value", "0"),

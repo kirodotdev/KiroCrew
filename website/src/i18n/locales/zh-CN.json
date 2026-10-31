@@ -20332,5 +20332,9 @@
     "apply_replace_n": "替换行为指引并添加 {{count}} 项",
     "current_directions": "当前行为指引（将被替换）：{{directions}}",
     "done_replaced": "已替换行为指引。"
+  },
+  "queueActions": {
+    "stillStopping": "仍在停止…",
+    "teardownPending": "上一轮仍在停止中。消息已排队，停止后将自动发送。"
   }
 }

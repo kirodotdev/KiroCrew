@@ -496,6 +496,26 @@ def _record_queued_crew_steers(state: DashboardState, consumed: list[dict]) -> N
             logger.warning("crew steer: a queued steer was not recorded", exc_info=True)
 
 
+_queue_handoff_context: ContextVar[
+    tuple[asyncio.Task[Any] | None, asyncio.Task[Any] | None] | None
+] = ContextVar("queue_handoff_context", default=None)
+
+
+async def _start_next_queued_turn_for_handoff(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    handoff_owner: asyncio.Task[Any] | None,
+    **options: Any,
+) -> bool:
+    """Carry the retiring owner through one drain without changing its base signature."""
+    token = _queue_handoff_context.set((asyncio.current_task(), handoff_owner))
+    try:
+        return await _start_next_queued_turn(state, slot, **options)
+    finally:
+        _queue_handoff_context.reset(token)
+
+
 async def _start_next_queued_turn(
     state: DashboardState,
     slot: _ChatSlot,
@@ -517,7 +537,8 @@ async def _start_next_queued_turn(
     (:func:`_mark_turn_end`). ``end_batch`` says the caller read the synthesis
     fire gate as ``clear`` with the floor held, so a user message drained here
     also zeroes the batch's completion-turn count; the drain itself reads no
-    store.
+    store. The task-scoped handoff context lets the retiring runner dispatch
+    its successor; external retries still wait for teardown to finish.
     """
 
     from kiro_crew.dashboard import gateway_notice as gn
@@ -534,6 +555,19 @@ async def _start_next_queued_turn(
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
     # the queue head is that turn's own recovery; the dequeue re-decides then.
+    handoff = _queue_handoff_context.get()
+    # Child tasks inherit context, but only this exact caller may use the handoff.
+    handoff_owner = (
+        handoff[1] if handoff is not None and handoff[0] is asyncio.current_task() else None
+    )
+    teardown = slot._stop_teardown_task
+    if (
+        teardown is not None
+        and not teardown.done()
+        and (handoff_owner is not teardown or slot.task is not teardown)
+    ):
+        return False
+
     turn_ended = False
     if predecessor_actor and not _is_own_recovery(
         slot._queue[:1], predecessor_actor, predecessor_turn_id

@@ -1585,6 +1585,12 @@ flow again. Replay remains merge-only and idempotent.
 
 ## Dashboard (`dashboard/`)
 
+The stop-settle deadline uses the handlers facade's `_stop_settle_wait`
+dependency, so tests can expire that wait without rebinding the shared
+`asyncio` module. The runner's `_hand_off_queue` requeues steers before
+calling `_start_next_queued_turn` directly, with the retiring task identity
+scoped to that call and reset on every exit.
+
 `responsive_chat.py` coordinates owner-authenticated mate human priority on
 the existing send, steer and queue paths. Its prompt guidance and raw-to-wire
 steer identities are process-local; user rows retain the original text. Responsive
@@ -1594,6 +1600,20 @@ still comes only from authenticated dashboard claims, never caller metadata. The
 admission, cancellation, burst and pending-interaction limits are owned by
 [session](session.md#responsive-human-sends-in-a-mate-dm); the conversation
 presentation is owned by [crew-mode](crew-mode.md#a-mates-chat).
+
+An interrupt response with `queue_held: true` leaves the selected queue card
+queued; the backend starts the queue once teardown ends. ChatPage and ChatPane
+show the same informational notice immediately above QueueStack, using its
+hourglass glyph and localized copy saying the message sends once the turn stops.
+While the slot's `stop_teardown` summary flag is true, every card's lightning
+button is disabled with a "Still stopping…" tooltip, and the notice shows while
+any card is drawn, pressed or not, because touch screens never show a `title`.
+A held press keeps the notice until that flag becomes false, the card retires, or
+the user leaves the slot. A delayed held
+response cannot restore it after teardown has settled. The frontend sends no
+automatic retry and does not change queue order.
+Pending controls follow the current queued IDs. A reply from an earlier slot
+visit cannot release or relatch a newer request after the user returns.
 
 The Developer → Config MCP Tool Search toggle saves `agent.tool_search` as a
 boolean through `PATCH /api/config/kirocrew`. The config watcher refreshes the
@@ -2196,7 +2216,9 @@ specified compatibility change.
 ### Chat runner composition (`chat_runner.py` + `chat_turn/`)
 
 `dashboard/chat_runner.py` is the turn runtime's only import path and its only
-patch surface. It defines the turn entry `_run_chat`. Every other coroutine a task
+patch surface. It defines the turn entry `_run_chat`. The preparation-task
+identity is carried on `_ChatTurn`; `queue_cycle._turn_record_outcome` clears
+its slot marker only if that identity still owns it. Every other coroutine a task
 is started with lives in the owner of its responsibility, beside the function that
 starts it: `_start_next_queued_turn` in `queue_drain`, `_run_pending_synthesis`,
 `_launch_synthesis`, the synthesis re-check and `_finish_queue_cycle` in

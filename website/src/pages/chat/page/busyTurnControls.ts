@@ -323,6 +323,8 @@ export function useBusyTurnControls({
     onEdit: handleEditQueued,
     onReorder: handleReorderQueued,
     pendingIds: queuePendingIds,
+    interruptNotice: queueInterruptNotice,
+    interruptBlockedTitle: queueInterruptBlockedTitle,
   } = useQueuedMessageActions({
     slot: activeSlot,
     allQueued: allQueuedMessages,
@@ -433,7 +435,8 @@ export function useBusyTurnControls({
   }
   return {
     queuedMessages, systemDeliveryCount, steer, stopTurn, keepQuestionAnswer, answerQuestionCard,
-    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds,
+    handleCancelQueued, handleInterruptQueued, handleEditQueued, handleReorderQueued, queuePendingIds, queueInterruptNotice,
+    queueInterruptBlockedTitle,
     handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
   }
 }

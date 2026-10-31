@@ -20662,5 +20662,9 @@
     "apply_replace_n": "Anweisungen ersetzen und {{count}} hinzufügen",
     "current_directions": "Aktuelle Anweisungen (werden ersetzt): {{directions}}",
     "done_replaced": "Verhaltensanweisungen ersetzt."
+  },
+  "queueActions": {
+    "stillStopping": "Wird noch beendet…",
+    "teardownPending": "Der vorherige Durchlauf wird noch beendet. Deine Nachricht ist in der Warteschlange und wird gesendet, sobald er beendet ist."
   }
 }

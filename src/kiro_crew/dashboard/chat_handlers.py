@@ -13,6 +13,7 @@ import threading
 import time  # noqa: F401
 import uuid  # noqa: F401
 import weakref
+from asyncio import wait_for as _stop_settle_wait  # noqa: F401
 from collections.abc import Awaitable, Callable, Iterable, Mapping  # noqa: F401
 from datetime import datetime, timezone  # noqa: F401
 from itertools import islice  # noqa: F401
@@ -330,6 +331,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_target,
+    _cancel_terminal_stop_task,
     _compaction_in_flight,
     _make_stop_resolver,
     _open_stop_event_card,
@@ -390,6 +392,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _context_usage_payload,
+    _drain_parked_queues,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,

@@ -309,6 +309,8 @@ class _ChatSlot:
         "_turn_in_flight_prompt",
         "_active_turn_session_key",
         "_responsive",
+        "_preparing_task",
+        "_stop_teardown_task",
         "_side",
         "_acp_client",
         "_last_turn_awaiting_permission",
@@ -546,6 +548,8 @@ class _ChatSlot:
     linked_session_key: str
     _active_turn_session_key: str
     _responsive: Any
+    _preparing_task: asyncio.Task[Any] | None
+    _stop_teardown_task: asyncio.Task[Any] | None
     _side: SideState | None
     _acp_client: None
     _last_turn_awaiting_permission: bool
@@ -925,7 +929,12 @@ class _ChatSlot:
 
         See ``docs/system-specs/modules/session.md``.
         """
-        return bool(self.turn_running or self._turn_admission_reserved)
+        teardown = self._stop_teardown_task
+        return bool(
+            self.turn_running
+            or self._turn_admission_reserved
+            or (teardown is not None and not teardown.done())
+        )
 
     @property
     def queue_depth(self) -> int:

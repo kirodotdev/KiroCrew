@@ -20662,5 +20662,9 @@
     "apply_replace_n": "নির্দেশনা বদলাও ও {{count}}টি যোগ করো",
     "current_directions": "বর্তমান নির্দেশনা (বদলে যাবে): {{directions}}",
     "done_replaced": "আচরণ-নির্দেশনা বদলানো হয়েছে।"
+  },
+  "queueActions": {
+    "stillStopping": "এখনও থামছে…",
+    "teardownPending": "আগের পালাটি এখনও থামছে। তোমার বার্তাটি সারিতে আছে এবং থামা শেষ হলেই পাঠানো হবে।"
   }
 }

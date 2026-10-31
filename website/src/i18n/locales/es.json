@@ -20992,5 +20992,9 @@
     "apply_replace_n": "Sustituir directrices y agregar {{count}}",
     "current_directions": "Directrices actuales (se sustituirán): {{directions}}",
     "done_replaced": "Se sustituyeron las directrices de comportamiento."
+  },
+  "queueActions": {
+    "stillStopping": "Aún se está deteniendo…",
+    "teardownPending": "El turno anterior aún se está deteniendo. Tu mensaje está en la cola y se enviará cuando se detenga."
   }
 }

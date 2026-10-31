@@ -10352,5 +10352,9 @@
     "apply_replace_n": "Replace directions and add {{count}}",
     "current_directions": "Current directions (will be replaced): {{directions}}",
     "done_replaced": "Behavior directions replaced."
+  },
+  "queueActions": {
+    "stillStopping": "Still stopping…",
+    "teardownPending": "The previous turn is still stopping. Your message is queued and will send once it stops."
   }
 }

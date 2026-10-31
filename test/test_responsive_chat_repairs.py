@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,7 @@ from kiro_crew.dashboard import responsive_chat as rc
 from kiro_crew.dashboard.chat_delivery import queue_entry_view
 from kiro_crew.dashboard.handlers import ask_question
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.wait import await_until, until_parked
 
 fixture = _responsive_fixture
 
@@ -313,6 +315,73 @@ async def test_no_send_rollback_does_not_overwrite_new_owner(fixture):
         assert rc.turn_state(slot).recovery is newer_recovery
     finally:
         slot.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_idle_preparation_stop_wakes_retained_priority_after_early_drain(
+    fixture, monkeypatch
+):
+    state, slot, request, *_ = fixture
+    state.sessions.stop_turn = AsyncMock(return_value="idle")
+    blocked = asyncio.Event()
+    drained = asyncio.Event()
+    run = AsyncMock()
+    monkeypatch.setattr(chat_runner, "_run_chat", run)
+    drain_parked = chat_handlers._drain_parked_queues
+
+    async def prepare():
+        try:
+            await blocked.wait()
+        finally:
+            assert slot._stop_state == "soft_pending"
+            assert not await chat_runner._start_next_queued_turn(state, slot)
+            slot._preparing_task = None
+            slot.task = None
+
+    async def early_drain(st, keys):
+        await drain_parked(st, keys)
+        drained.set()
+
+    async def settle_wait(awaitable, timeout):
+        try:
+            return await asyncio.wait_for(awaitable, timeout=timeout)
+        finally:
+            # Force the teardown's idle drain to finish before Stop releases its posture.
+            await await_until(drained)
+            assert slot._stop_state == "soft_pending"
+            assert len(slot._queue) == 1
+            run.assert_not_called()
+
+    monkeypatch.setattr(chat_handlers, "_drain_parked_queues", early_drain)
+    monkeypatch.setattr(chat_handlers, "_stop_settle_wait", settle_wait)
+    turn = asyncio.create_task(prepare())
+    slot.task = slot._preparing_task = turn
+    rc.begin_turn(slot, protected=True)
+    try:
+        await until_parked(blocked)
+        response = await rc.accept(request, slot, "priority", None)
+        assert response.text is not None
+        receipt = json.loads(response.text)
+        assert receipt["queued"] is True
+        assert rc.priority_entry(slot._queue[0])
+
+        await chat_handlers.stop_slot_turn(state, slot)
+
+        assert turn.cancelled()
+        assert slot._stop_state == "idle"
+        assert slot._stop_teardown_task is None
+        assert slot.task is not None, "settled preparation Stop stranded the accepted message"
+        await await_until(slot.task)
+        run.assert_awaited_once()
+        assert run.call_args.args[2] == "priority"
+        assert not slot._queue
+        assert not slot._turn_admission_reserved
+    finally:
+        tasks = {task for task in (turn, slot.task) if task is not None}
+        for task in tasks:
+            task.cancel()
+        await await_until(asyncio.gather(*tasks, return_exceptions=True))
+        await await_until(asyncio.gather(*state._background_tasks))
 
 
 @pytest.mark.asyncio

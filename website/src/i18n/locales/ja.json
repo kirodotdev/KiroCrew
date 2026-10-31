@@ -20332,5 +20332,9 @@
     "apply_replace_n": "行動指示を置き換えて {{count}} 件を追加",
     "current_directions": "現在の行動指示（置き換えられます）：{{directions}}",
     "done_replaced": "行動指示を置き換えました。"
+  },
+  "queueActions": {
+    "stillStopping": "停止しています…",
+    "teardownPending": "前のターンを停止しています。メッセージはキューに残っており、停止が完了すると送信されます。"
   }
 }

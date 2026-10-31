@@ -20662,5 +20662,9 @@
     "apply_replace_n": "निर्देश बदलो और {{count}} जोड़ो",
     "current_directions": "मौजूदा निर्देश (बदल दिए जाएँगे): {{directions}}",
     "done_replaced": "व्यवहार निर्देश बदल दिए गए।"
+  },
+  "queueActions": {
+    "stillStopping": "अभी रुक रही है…",
+    "teardownPending": "पिछली बारी अभी रुक रही है। तुम्हारा संदेश कतार में है और रुकते ही भेज दिया जाएगा।"
   }
 }

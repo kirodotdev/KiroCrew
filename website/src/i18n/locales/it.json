@@ -20992,5 +20992,9 @@
     "apply_replace_n": "Sostituisci le indicazioni e aggiungi {{count}}",
     "current_directions": "Indicazioni attuali (verranno sostituite): {{directions}}",
     "done_replaced": "Indicazioni di comportamento sostituite."
+  },
+  "queueActions": {
+    "stillStopping": "Interruzione in corso…",
+    "teardownPending": "Il turno precedente si sta ancora interrompendo. Il messaggio è in coda e verrà inviato quando si ferma."
   }
 }

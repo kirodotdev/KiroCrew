@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { i18nT } from '../i18n/t'
 import { api } from '../api/client'
-import { useAppDispatch } from '../store'
+import { useAppDispatch, useAppSelector } from '../store'
 import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
@@ -54,6 +55,9 @@ export interface QueuedMessageActions {
   onReorder: (queueId: string, direction: 'next' | 'later') => void
   /** Feed straight to `QueueStack`'s `pendingIds`. */
   pendingIds: ReadonlySet<string>
+  interruptNotice: string | null
+  /** Feed straight to `QueueStack`'s `interruptBlockedTitle`. */
+  interruptBlockedTitle: string | null
 }
 
 export interface QueuedMessageActionsOptions {
@@ -132,6 +136,21 @@ export function useQueuedMessageActions({
   project,
 }: QueuedMessageActionsOptions): QueuedMessageActions {
   const dispatch = useAppDispatch()
+  const slotScope = useRef({ slot })
+  if (slotScope.current.slot !== slot) slotScope.current = { slot }
+  const teardownPending = useAppSelector(state => state.dashboard.slots?.find(row => row.key === slot)?.stop_teardown)
+  const [interruptHold, setInterruptHold] = useState<{ slot: string; queueId: string } | null>(null)
+  // Shown for the whole teardown, not only after a press: a touch screen never
+  // shows the disabled lightning button's `title`, so this is its only reason.
+  const interruptNotice = (teardownPending && visibleQueued.length > 0)
+    || (interruptHold?.slot === slot && teardownPending !== false
+      && allQueued.some(row => queueIdOf(row) === interruptHold?.queueId))
+    ? i18nT('queueActions.teardownPending') : null
+  const interruptBlockedTitle = teardownPending ? i18nT('queueActions.stillStopping') : null
+  useEffect(() => {
+    if (interruptHold && (interruptHold.slot !== slot || teardownPending === false
+      || !allQueued.some(row => queueIdOf(row) === interruptHold.queueId))) setInterruptHold(null)
+  }, [slot, teardownPending, allQueued, interruptHold])
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set())
 
   // Reads happen inside callbacks that must NOT be re-created when the queue
@@ -170,6 +189,10 @@ export function useQueuedMessageActions({
     [allQueued],
   )
   useEffect(() => {
+    setPendingIds(prev => {
+      if ([...prev].every(id => queuedIdSet.has(id))) return prev
+      return new Set([...prev].filter(id => queuedIdSet.has(id)))
+    })
     // Residual, deliberately: if that frame never arrives the control stays
     // disabled. That is the safe direction - it withholds a click that would
     // interrupt a turn the user did not aim at - and it clears on the next
@@ -272,14 +295,25 @@ export function useQueuedMessageActions({
 
   const onInterrupt = useCallback((queueId: string) => {
     if (!slot) return
+    const scope = slotScope.current
     markPending(queueId, true)
+    setInterruptHold(null)
     api.interruptSlot(slot, queueId).then(
-      // Accepted: the entry is being promoted, so stay latched until the row is
-      // gone rather than until this response landed.
-      () => setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId))),
+      response => {
+        if (slotScope.current !== scope) {
+          return
+        }
+        if (response?.queue_held) {
+          markPending(queueId, false)
+          setInterruptHold({ slot, queueId })
+          return
+        }
+        // A promoted entry stays latched until its queue_pop frame arrives.
+        setHeldUntilRetired(prev => (prev.has(queueId) ? prev : new Set(prev).add(queueId)))
+      },
       // Rejected: nothing was promoted and the card is still the same card, so
       // release at once and let the user try again.
-      () => markPending(queueId, false),
+      () => { if (slotScope.current === scope) markPending(queueId, false) },
     )
   }, [slot, markPending])
 
@@ -318,7 +352,7 @@ export function useQueuedMessageActions({
   }, [slot])
 
   return useMemo(
-    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds }),
-    [onCancel, onInterrupt, onEdit, onReorder, pendingIds],
+    () => ({ onCancel, onInterrupt, onEdit, onReorder, pendingIds, interruptNotice, interruptBlockedTitle }),
+    [onCancel, onInterrupt, onEdit, onReorder, pendingIds, interruptNotice, interruptBlockedTitle],
   )
 }

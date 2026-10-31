@@ -20332,5 +20332,9 @@
     "apply_replace_n": "지침 대체 및 {{count}}개 추가",
     "current_directions": "현재 지침(대체될 예정): {{directions}}",
     "done_replaced": "행동 지침을 대체했습니다."
+  },
+  "queueActions": {
+    "stillStopping": "아직 중지하는 중…",
+    "teardownPending": "이전 턴을 아직 중지하고 있습니다. 메시지는 대기열에 있으며 중지가 끝나면 전송됩니다."
   }
 }
