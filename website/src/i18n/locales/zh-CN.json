@@ -9209,7 +9209,8 @@
       "retry": "重试",
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为产物",
-      "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消"
+      "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消",
+      "open_artifact_named": "打开产物“{{slug}}”"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -15860,7 +15861,6 @@
       "view_list": "列表",
       "add_job": "添加任务",
       "agent": "代理 ·",
-      "and_their_run_history_this_action_cannot_be_undo": "及其运行历史。此操作无法撤销。",
       "ask_in_chat": "在聊天中询问",
       "batch_delete_failed": "批量删除失败",
       "browse_all_templates": "浏览全部模板",
@@ -15947,21 +15947,16 @@
       "running": "运行中",
       "schedule": "计划",
       "schedule_recurring_tasks_to_run_automatically_ch": "安排周期性任务自动运行 — 检查流水线、生成报告、监控服务，或任何代理能做的事。",
-      "scheduled_job_other": "{{count}} 个定时任务",
       "script_python": "脚本 · python",
       "select": "选择 {{name}}",
       "select_all_jobs": "选择所有任务",
       "select_deselect_all_jobs_matching_the_current_fi": "选择 / 取消选择所有可见任务（已折叠文件夹除外）",
-      "selected": "已选择",
       "start_from_a_pre_made_schedule": "从预设计划开始",
       "status": "状态",
       "strict": "严格",
-      "this_permanently_removes_the_selected_job_other": "会永久删除所选任务",
       "this_will_permanently_remove_the_scheduled_job_t": "将永久删除此定时任务，操作无法撤销。此操作无法撤销。",
-      "to_confirm": "以确认",
       "try_remind_me_to_check_my_pipeline_every_morning": "— 试试“提醒我每天早上检查流水线”",
       "type": "类型",
-      "type_verb_to_confirm": "请输入",
       "view_last_result": "查看最近一次结果",
       "writes_badge_tooltip": "此模板的定时任务会推送分支、开 PR 或修改 issue。它的防护约束只是对代理的指示，并非强制策略。",
       "writes_notice": "此模板的定时任务会在你的仓库里推送分支、开 PR 或修改 issue。提示词里的限制（例如“绝不推送到默认分支”）只是对代理的指示，并非强制策略 — 保存前请先看一遍提示词。",
@@ -16001,7 +15996,12 @@
       "all_crewmates": "所有队友",
       "details_tab": "详情",
       "logs_tab": "日志",
-      "delete_n_selected_jobs_other": "删除 {{count}} 个选中的任务"
+      "delete_n_selected_jobs_other": "删除 {{count}} 个选中的任务",
+      "n_selected_other": "已选择 {{count}} 项",
+      "delete_n_selected_other": "删除 {{count}} 个选中项",
+      "delete_n_scheduled_jobs_title_other": "删除 {{count}} 个定时任务？",
+      "bulk_delete_removes_jobs_and_history_other": "会永久删除所选任务及其运行历史。此操作无法撤销。",
+      "type_token_to_confirm": "输入 <token/> 以确认"
     },
     "servicesTab": {
       "channels": "聊天平台",

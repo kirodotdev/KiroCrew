@@ -806,4 +806,45 @@ describe('SchedulePage translated labels', () => {
 
     expect(screen.getByTitle('1 ausgewählten Job löschen')).toBeInTheDocument()
   })
+
+  // Japanese puts the count and the verb in a different order from English, so
+  // gluing translated fragments around the number read wrong ("2 選択済み",
+  // "選択されたジョブと その実行履歴…"). Each line must be one whole sentence.
+  it('renders the bulk-delete copy as whole sentences in Japanese', async () => {
+    const { api } = await import('../api/client')
+    const jobs = [mkJob({ id: 'job-1', name: 'Nightly report' }), mkJob({ id: 'job-2', name: 'Weekly digest' })]
+    vi.mocked(api).crons.mockResolvedValue({ jobs })
+    await i18next.changeLanguage('ja')
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    for (const name of ['Nightly report', 'Weekly digest']) {
+      fireEvent.click(within(screen.getByText(name).closest('tr')!).getByRole('checkbox'))
+    }
+
+    expect(screen.getByText('2 件選択済み')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '選択した 2 件を削除' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: '2 件のスケジュール済みジョブを削除しますか？' })).toBeInTheDocument()
+    expect(within(dialog).getByText('選択したジョブとその実行履歴を完全に削除します。この操作は取り消せません。')).toBeInTheDocument()
+    const label = dialog.querySelector('label[for="batch-delete-confirm"]')!
+    expect(label.textContent).toBe('確認するには delete と入力します')
+    expect(within(label as HTMLElement).getByText('delete').tagName).toBe('CODE')
+  })
+
+  it('describes one selected job in the singular, in English', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    fireEvent.click(within(screen.getByText('Nightly report').closest('tr')!).getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Delete 1 selected' }))
+    const dialog = await screen.findByRole('dialog')
+
+    expect(within(dialog).getByRole('heading', { name: 'Delete 1 scheduled job?' })).toBeInTheDocument()
+    expect(within(dialog).getByText(
+      'This permanently removes the selected job and its run history. This action cannot be undone.',
+    )).toBeInTheDocument()
+  })
 })

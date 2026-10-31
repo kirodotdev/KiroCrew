@@ -9209,7 +9209,8 @@
       "retry": "다시 시도",
       "save_failed": "저장 실패",
       "star_as_artifact": "아티팩트로 즐겨찾기",
-      "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다"
+      "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다",
+      "open_artifact_named": "아티팩트 ‘{{slug}}’ 열기"
     },
     "widgetPlaceholder": {
       "generating": "생성 중…"
@@ -15855,7 +15856,6 @@
       "actions": "작업",
       "add_job": "작업 추가",
       "agent": "에이전트 ·",
-      "and_their_run_history_this_action_cannot_be_undo": "및 실행 기록을 영구히 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
       "ask_in_chat": "채팅으로 요청",
       "batch_delete_failed": "일괄 삭제에 실패했습니다",
       "browse_all_templates": "모든 템플릿 둘러보기",
@@ -15944,21 +15944,16 @@
       "running": "실행 중",
       "schedule": "스케줄",
       "schedule_recurring_tasks_to_run_automatically_ch": "반복 태스크를 자동으로 실행하도록 예약하세요 — 파이프라인 확인, 리포트 생성, 서비스 모니터링 등 에이전트가 할 수 있는 모든 일이 가능합니다.",
-      "scheduled_job_other": "예약된 작업 {{count}}개",
       "script_python": "script · python",
       "select": "{{name}} 선택",
       "select_all_jobs": "모든 작업 선택",
       "select_deselect_all_jobs_matching_the_current_fi": "표시된 작업 전체 선택 / 선택 해제 (접힌 폴더 제외)",
-      "selected": "선택됨",
       "start_from_a_pre_made_schedule": "미리 만들어진 스케줄로 시작",
       "status": "상태",
       "strict": "엄격",
-      "this_permanently_removes_the_selected_job_other": "선택한 작업",
       "this_will_permanently_remove_the_scheduled_job_t": "예약된 작업이 영구히 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      "to_confirm": "입력하세요",
       "try_remind_me_to_check_my_pipeline_every_morning": "— ‘매일 아침 파이프라인을 확인하라고 알려줘’를 입력해 보세요",
       "type": "유형",
-      "type_verb_to_confirm": "확인하려면",
       "view_calendar": "캘린더",
       "view_executions": "실행 기록",
       "view_last_result": "마지막 결과 보기",
@@ -16001,7 +15996,12 @@
       "all_crewmates": "모든 크루메이트",
       "details_tab": "세부 정보",
       "logs_tab": "로그",
-      "delete_n_selected_jobs_other": "선택한 작업 {{count}}개 삭제"
+      "delete_n_selected_jobs_other": "선택한 작업 {{count}}개 삭제",
+      "n_selected_other": "{{count}}개 선택됨",
+      "delete_n_selected_other": "선택한 {{count}}개 삭제",
+      "delete_n_scheduled_jobs_title_other": "예약된 작업 {{count}}개를 삭제하시겠습니까?",
+      "bulk_delete_removes_jobs_and_history_other": "선택한 작업과 실행 기록을 영구히 삭제합니다. 이 작업은 되돌릴 수 없습니다.",
+      "type_token_to_confirm": "확인하려면 <token/>를 입력하세요"
     },
     "servicesTab": {
       "channels": "채팅 플랫폼",

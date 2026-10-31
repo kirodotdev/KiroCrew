@@ -9209,7 +9209,8 @@
       "retry": "再試行",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
-      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除"
+      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
+      "open_artifact_named": "アーティファクト「{{slug}}」を開く"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -15860,7 +15861,6 @@
       "view_list": "リスト",
       "add_job": "ジョブを追加",
       "agent": "エージェント ·",
-      "and_their_run_history_this_action_cannot_be_undo": "その実行履歴を完全に削除します。この操作は取り消せません。",
       "ask_in_chat": "チャットで質問",
       "batch_delete_failed": "一括削除に失敗しました",
       "browse_all_templates": "すべてのテンプレートを閲覧",
@@ -15947,21 +15947,16 @@
       "running": "実行中",
       "schedule": "スケジュール",
       "schedule_recurring_tasks_to_run_automatically_ch": "定期的なタスクを自動実行するようスケジュール設定 — パイプラインの確認、レポートの生成、サービスの監視、またはあなたのエージェントができることなら何でも。",
-      "scheduled_job_other": "{{count}} 件のスケジュール済みジョブ",
       "script_python": "script · Python",
       "select": "{{name}} を選択",
       "select_all_jobs": "すべてのジョブを選択",
       "select_deselect_all_jobs_matching_the_current_fi": "現在のフィルタに一致するすべてのジョブを選択/解除",
-      "selected": "選択済み",
       "start_from_a_pre_made_schedule": "既成スケジュールから開始",
       "status": "ステータス",
       "strict": "厳密",
-      "this_permanently_removes_the_selected_job_other": "選択されたジョブと",
       "this_will_permanently_remove_the_scheduled_job_t": "このスケジュール済みジョブを完全に削除します。この操作は取り消せません。",
-      "to_confirm": "と入力してください",
       "try_remind_me_to_check_my_pipeline_every_morning": "— 「毎朝パイプラインをチェックするよう通知して」を試してみてください",
       "type": "タイプ",
-      "type_verb_to_confirm": "確認のため",
       "view_last_result": "最後の結果を表示",
       "writes_badge_tooltip": "このテンプレートのジョブは、ブランチをプッシュし、プルリクエストを開き、イシューを編集します。そのガードレールはエージェントへの指示であり、強制されるポリシーではありません。",
       "writes_notice": "このテンプレートのジョブは、リポジトリ内のブランチをプッシュし、プルリクエストを開き、イシューを編集します。プロンプト内の制限（例：「デフォルトブランチには絶対にプッシュしない」）はエージェントへの指示であり、強制されるポリシーではありません — 保存する前にプロンプトを確認してください。",
@@ -16001,7 +15996,12 @@
       "all_crewmates": "すべてのクルーメイト",
       "details_tab": "詳細",
       "logs_tab": "ログ",
-      "delete_n_selected_jobs_other": "選択した {{count}} 件のジョブを削除"
+      "delete_n_selected_jobs_other": "選択した {{count}} 件のジョブを削除",
+      "n_selected_other": "{{count}} 件選択済み",
+      "delete_n_selected_other": "選択した {{count}} 件を削除",
+      "delete_n_scheduled_jobs_title_other": "{{count}} 件のスケジュール済みジョブを削除しますか？",
+      "bulk_delete_removes_jobs_and_history_other": "選択したジョブとその実行履歴を完全に削除します。この操作は取り消せません。",
+      "type_token_to_confirm": "確認するには <token/> と入力します"
     },
     "servicesTab": {
       "channels": "チャットプラットフォーム",
