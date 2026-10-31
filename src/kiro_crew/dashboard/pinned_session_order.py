@@ -16,12 +16,13 @@ agent cannot rewrite the order on disk and have a restart load it.
 
 Rules the writers follow:
 
-* No file at all means the person never reordered. Pinned rows then keep the
+* No file at all means no order was ever saved: neither a reorder nor the
+  sidebar's first-load seed (which saves the order it shows, so a person who
+  never reordered usually has a file too). Pinned rows then keep the
   sidebar's own sort, which is what they had before this store existed. A
   file holding an empty list is an order that was saved and has since emptied.
 * Pinning a session appends it to the end once an order has been saved, even
-  one that has since emptied. A person who never reordered keeps the plain
-  sort.
+  one that has since emptied. With no saved order it keeps the plain sort.
 * Unpinning a session removes it, so re-pinning later puts it at the end
   instead of back in an old slot.
 * A key whose live slot is unpinned is dropped on the next write. A key with
@@ -266,7 +267,7 @@ def after_pin_change(
 
     Unpinning removes the key. Pinning appends it once the person has ordered
     their pins at all (*stored*: an order was saved, even one that has since
-    emptied). A person who never reordered keeps the plain sort.
+    emptied). With no saved order the pin keeps the plain sort.
     """
     rest = [k for k in current if k != key]
     if now_pinned and (stored or rest):
