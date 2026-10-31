@@ -94,6 +94,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         spec_granted_builtins=e.spec_granted_builtins,
         # Same row: dropping this would leave every allowedCommands match prompting.
         spec_granted_commands=e.spec_granted_commands,
+        # Dropping this would let a `denyByDefault` spec's unlisted command run on
+        # this surface: the gate's spec-shell-allowlist row reads it.
+        spec_shell_allowlist=e.spec_shell_allowlist,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
         # Dropping this would let a READ_ONLY turn on an unproved dsh

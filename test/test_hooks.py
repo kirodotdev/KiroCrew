@@ -577,6 +577,7 @@ class TestHookGateKwargs:
         "kas_builtin_ids": "kas_builtin_ids",
         "spec_granted_builtins": "spec_granted_builtins",
         "spec_granted_commands": "spec_granted_commands",
+        "spec_shell_allowlist": "spec_shell_allowlist",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -604,6 +605,7 @@ class TestHookGateKwargs:
             kas_builtin_ids=True,
             spec_granted_builtins=frozenset({"execute_bash"}),
             spec_granted_commands=("git status",),
+            spec_shell_allowlist=("git log",),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -622,6 +624,7 @@ class TestHookGateKwargs:
             "kas_builtin_ids": True,
             "spec_granted_builtins": frozenset({"execute_bash"}),
             "spec_granted_commands": ("git status",),
+            "spec_shell_allowlist": ("git log",),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -653,6 +656,7 @@ class TestHookGateKwargs:
             "kas_builtin_ids": False,
             "spec_granted_builtins": frozenset(),
             "spec_granted_commands": (),
+            "spec_shell_allowlist": None,
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -751,6 +755,7 @@ class TestHookGateKwargs:
         probe.kas_builtin_ids = True
         probe.spec_granted_builtins = frozenset({"<spec_granted_builtins>"})
         probe.spec_granted_commands = ("<spec_granted_commands>",)
+        probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -780,7 +785,7 @@ class TestHookGateKwargs:
                 assert got[kwarg] is True
             elif kwarg == "spec_granted_builtins":
                 assert got[kwarg] == frozenset({f"<{attr}>"})
-            elif kwarg == "spec_granted_commands":
+            elif kwarg in ("spec_granted_commands", "spec_shell_allowlist"):
                 assert got[kwarg] == (f"<{attr}>",)
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg

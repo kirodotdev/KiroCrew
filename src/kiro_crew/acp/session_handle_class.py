@@ -638,6 +638,10 @@ class AcpSessionHandle:
         # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
         # them (``kas_permissions.crew_answered_commands``), answered the same way.
         self.kas_crew_answered_commands: tuple[str, ...] = ()
+        # The only shell commands the agent's spec lets run when it sets
+        # `toolsSettings.shell.denyByDefault` (``kas_permissions.spec_shell_allowlist``);
+        # None when it does not. The gate refuses every other shell call.
+        self.kas_spec_shell_allowlist: tuple[str, ...] | None = None
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.

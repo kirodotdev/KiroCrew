@@ -2378,6 +2378,26 @@ condition above still holds, so a matching command the deny floor, governance or
 `confirm_tools` refuses is still refused, and a command that chains, pipes,
 redirects, groups or substitutes is never granted whatever the pattern says.
 
+**KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
+`toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
+its usable `allowedCommands` recorded as the agent's shell allowlist
+(`kas_permissions.spec_shell_allowlist`, the same subset and 64-entry bound as
+above, possibly empty) whatever the governance ceiling says, since it is a
+restriction. The handle keeps it (`AcpSessionHandle.kas_spec_shell_allowlist`,
+re-read on a mode switch) and stamps it on its own agent's requests only
+(`AcpEvent.spec_shell_allowlist`; `None` on every other request). The gate's
+`spec-shell-allowlist` row, a `deny_policy` after governance and before every
+grant, refuses a shell call (`is_shell`, or `execute_bash` among its names, with
+no MCP server behind it) unless its recovered command is plain and one entry
+matches it whole, the test the grant row above uses. As a deny it holds under
+`ToolApprovalPolicy.AUTO_APPROVE` (`permission_floor.refusal_for`), so an
+unattended job refuses an unlisted command instead of running it, and an
+interactive session refuses it at once instead of prompting. An entry outside the
+subset, or past the bound, allows nothing: the row fails closed and the
+session-start notice names `allowedCommands`. A malformed record reads as an
+empty allowlist. A listed command still prompts: the author's own
+`denyByDefault` withholds the `allowedCommands` grant, as above.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every

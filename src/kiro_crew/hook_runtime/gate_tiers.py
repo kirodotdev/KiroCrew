@@ -1169,18 +1169,56 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the subset
     both engines read alike and matches it in linear time; any other grants nothing.
     """
-    from kiro_crew.platform import allowed_commands
-
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
         return False
-    command = call.command
+    return _command_matches_any(call.command, call.spec_granted_commands)
+
+
+def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
+    """Whether *command* is plain (no character of
+    :data:`kiro_crew.platform.allowed_commands.UNGRANTABLE_COMMAND_CHARS`) and one
+    of *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
+    it whole. ``None`` (no recovered command) matches nothing."""
+    from kiro_crew.platform import allowed_commands
+
     if not isinstance(command, str) or not allowed_commands.plain_command(command):
         return False
-    for pattern in call.spec_granted_commands:
+    for pattern in patterns:
         segments = allowed_commands.parse(pattern)
         if segments is not None and allowed_commands.matches(segments, command):
             return True
     return False
+
+
+def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS spec's ``toolsSettings.shell.denyByDefault``: refuse an unlisted command.
+
+    On kiro-cli such a spec refuses every shell command its ``allowedCommands``
+    do not match. KAS has no rule for it, so the session handle stamps the spec's
+    usable patterns on its own agent's permission requests
+    (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
+    sub-session's or native sub-agent's request carries ``None`` too), and this row
+    refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
+    server behind it) unless its recovered command passes the same match the
+    ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain,
+    one pattern matching whole, :func:`_command_matches_any`). A deny, so it holds on every approval policy,
+    ``AUTO_APPROVE`` included, and whatever grant row would follow.
+
+    A ``deny_policy``: the refusal is the spec's state, not a defect in the call,
+    so it does not count toward a cron's auto-pause. It only ever refuses.
+    """
+    call = facts.call
+    allowlist = call.spec_shell_allowlist
+    if allowlist is None or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    if _command_matches_any(call.command, allowlist):
+        return None
+    return ToolHookResult.deny_policy(
+        "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+        "and the command matches none of its allowedCommands"
+    )
 
 
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:

@@ -1136,6 +1136,12 @@ class AcpEvent:
     #: ``spec-builtin-grant`` tier approves a shell call whose recovered command
     #: fullmatches one. Empty everywhere else, which grants nothing.
     spec_granted_commands: tuple[str, ...] = ()
+    #: spec_shell_allowlist: on the same requests, the only shell commands the
+    #: agent's spec lets run when it sets ``toolsSettings.shell.denyByDefault``
+    #: (``AcpSessionHandle.kas_spec_shell_allowlist``); ``None`` when it does not.
+    #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
+    #: shell call.
+    spec_shell_allowlist: tuple[str, ...] | None = None
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``
