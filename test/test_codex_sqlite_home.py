@@ -11,6 +11,7 @@ with the ask.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -26,6 +27,7 @@ from kiro_crew.acp.harness import SpawnContext
 from kiro_crew.acp.harness import codex as codex_mod
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness.base import SpawnPlan
+from kiro_crew.acp.harness.codex import _read_codex_mcp_server_names
 from kiro_crew.acp.types import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
 SQLITE_HOME = "CODEX_SQLITE_HOME"
@@ -167,3 +169,120 @@ def test_the_seed_is_skipped(tmp_path, env, env_var, has_scratch):
 def test_a_plan_without_a_seed_is_a_no_op(tmp_path):
     plan = SpawnPlan(argv=["codex"], private_state_env=SQLITE_HOME)
     runtime_mod._seed_private_state({}, plan, tmp_path)
+
+
+# ── Background sessions: per-server MCP disable via CODEX_CONFIG ──
+
+_BACKGROUND = "kirocrew-lite"  # session.BACKGROUND_AGENT
+
+
+def _bg_ctx(tmp_path: Path, environ: dict[str, str] | None = None) -> SpawnContext:
+    return SpawnContext(
+        agent=_BACKGROUND, work_dir=str(tmp_path), model=None, environ=environ or {}, home=tmp_path
+    )
+
+
+# ── _read_codex_mcp_server_names ──
+
+
+def test_read_mcp_server_names_section_headers(tmp_path):
+    """Standard [mcp_servers.<name>] headers are extracted."""
+    (tmp_path / "config.toml").write_text(
+        "[mcp_servers.my-server]\ncommand = 'npx'\n\n[mcp_servers.another]\ncommand = 'python'\n",
+        encoding="utf-8",
+    )
+    assert _read_codex_mcp_server_names(tmp_path / "config.toml") == ["my-server", "another"]
+
+
+def test_read_mcp_server_names_dotted_key(tmp_path):
+    """Dotted top-level keys mcp_servers.<name> = {...} are also extracted."""
+    (tmp_path / "config.toml").write_text(
+        'mcp_servers.evil2 = { command = "/bin/sh" }\n', encoding="utf-8"
+    )
+    names = _read_codex_mcp_server_names(tmp_path / "config.toml")
+    assert "evil2" in names
+
+
+def test_read_mcp_server_names_dotted_in_name(tmp_path):
+    """A quoted server name containing a dot is preserved as one name."""
+    (tmp_path / "config.toml").write_text(
+        "[mcp_servers.\"my.server\"]\ncommand = 'npx'\n", encoding="utf-8"
+    )
+    assert _read_codex_mcp_server_names(tmp_path / "config.toml") == ["my.server"]
+
+
+def test_read_mcp_server_names_malformed_toml(tmp_path):
+    """Malformed TOML returns an empty list, so no override is injected."""
+    (tmp_path / "config.toml").write_text("[mcp_servers.x\n", encoding="utf-8")
+    assert _read_codex_mcp_server_names(tmp_path / "config.toml") == []
+
+
+def test_read_mcp_server_names_empty_config(tmp_path):
+    """A config with no mcp_servers returns an empty list."""
+    (tmp_path / "config.toml").write_text('model = "gpt-4o"\n', encoding="utf-8")
+    assert _read_codex_mcp_server_names(tmp_path / "config.toml") == []
+
+
+def test_read_mcp_server_names_missing_file(tmp_path):
+    """A missing config.toml returns an empty list without raising."""
+    assert _read_codex_mcp_server_names(tmp_path / "config.toml") == []
+
+
+# ── apply_spawn_env injects CODEX_CONFIG for background sessions ──
+
+
+@pytest.mark.asyncio
+async def test_background_spawn_env_sets_codex_config_with_servers(codex_spawn_stubbed, tmp_path):
+    """After a background-runtime spawn, apply_spawn_env sets CODEX_CONFIG."""
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.srv1]\ncommand='npx'\n[mcp_servers.srv2]\ncommand='python'\n",
+        encoding="utf-8",
+    )
+    harness = harness_for(ACP_BACKEND_CODEX)
+    # populates self._bg_codex_config
+    await harness.resolve_spawn(_bg_ctx(tmp_path, {"CODEX_HOME": str(codex_home)}))
+
+    env: dict[str, str] = {}
+    harness.apply_spawn_env(env)
+
+    assert "CODEX_CONFIG" in env
+    config = json.loads(env["CODEX_CONFIG"])
+    assert config["mcp_servers"]["srv1"]["enabled"] is False
+    assert config["mcp_servers"]["srv2"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_background_spawn_env_does_not_overwrite_existing_codex_config(
+    codex_spawn_stubbed, tmp_path, caplog
+):
+    """apply_spawn_env does not overwrite an operator-set CODEX_CONFIG, and warns."""
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("[mcp_servers.srv1]\ncommand='npx'\n", encoding="utf-8")
+    harness = harness_for(ACP_BACKEND_CODEX)
+    await harness.resolve_spawn(_bg_ctx(tmp_path, {"CODEX_HOME": str(codex_home)}))
+
+    env: dict[str, str] = {"CODEX_CONFIG": '{"model":"custom"}'}
+    with caplog.at_level(logging.WARNING, logger=codex_mod.logger.name):
+        harness.apply_spawn_env(env)
+
+    # Operator's CODEX_CONFIG is preserved unchanged, and the skip is logged.
+    assert env["CODEX_CONFIG"] == '{"model":"custom"}'
+    assert any("CODEX_CONFIG is already set" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_foreground_apply_spawn_env_does_not_set_codex_config(codex_spawn_stubbed, tmp_path):
+    """Foreground sessions: apply_spawn_env does not inject CODEX_CONFIG."""
+    codex_home = tmp_path / "fake_codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text("[mcp_servers.srv1]\ncommand='npx'\n", encoding="utf-8")
+    ctx = _ctx(tmp_path, environ={"CODEX_HOME": str(codex_home)})
+    harness = harness_for(ACP_BACKEND_CODEX)
+    await harness.resolve_spawn(ctx)  # agent="a", not background
+
+    env: dict[str, str] = {}
+    harness.apply_spawn_env(env)
+    assert "CODEX_CONFIG" not in env
