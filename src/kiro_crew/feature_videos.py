@@ -175,6 +175,11 @@ class VideoEntry:
     #: offer, the ``seen``/``dismissed`` verdict, ``used_when`` and ``default_on``
     #: -- is the same plumbing a clip rides. Bundled catalog only.
     component: str = ""
+    #: Offered by ``/next``, the startup popup. ``False`` for a clip the dashboard
+    #: shows somewhere of its own (the Explore panel's intro card): it stays in
+    #: the catalog so ``/feedback`` records its ``seen``/``dismissed`` verdict,
+    #: but the popup never picks it. Bundled catalog only.
+    startup: bool = True
 
     # No ``payload()`` here on purpose. A catalog entry is not what reaches a
     # client: the client-facing shape is :meth:`Offer.payload`, which carries the
@@ -316,6 +321,20 @@ CATALOG: tuple[VideoEntry, ...] = (
         cta_route=f"/members?member={ASSISTANT_MEMBER_NAME}",
         default_on=True,
         component="crewmates",
+    ),
+    # "Kiro Crew in 15 seconds", the card at the top of the Explore panel (RFC
+    # 8.2). Explore is its only home, so the startup popup never offers it; the
+    # entry exists so the card's watched/closed verdict lands in this state file.
+    VideoEntry(
+        id="kiro-crew-intro",
+        feature="kiro-crew",
+        title="Kiro Crew in 15 seconds",
+        description="A short tour of what Kiro Crew does.",
+        src=f"{ASSET_PREFIX}kiro-crew-intro.mp4",
+        poster=f"{ASSET_PREFIX}kiro-crew-intro.jpg",
+        duration_s=15.0,
+        doc="dashboard.md",
+        startup=False,
     ),
 )
 
@@ -943,7 +962,7 @@ def _bundled_offers(default_on_only: bool = False) -> tuple[Offer, ...]:
             component=entry.component,
         )
         for entry in offerable()
-        if entry.default_on or not default_on_only
+        if entry.startup and (entry.default_on or not default_on_only)
     )
 
 

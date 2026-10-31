@@ -17190,7 +17190,10 @@
         "theme_experience": "エクスペリエンス",
         "theme_experience_sounds": "サウンド",
         "theme_experience_overlays": "オーバーレイ",
-        "theme_experience_persona": "ペルソナ"
+        "theme_experience_persona": "ペルソナ",
+        "milestones_hint": "トップバーに探索を、新しいチャットに「今日試す」カードを表示します。",
+        "milestones_save_failed": "探索の設定を保存できませんでした。もう一度お試しください。",
+        "milestones": "探索"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",
@@ -20665,5 +20668,86 @@
     "take_over_typing": "引き継ぐ",
     "take_over_typing_label": "{{name}} さんから入力を引き継ぎます。相手の下書きは相手の手元に残ります。",
     "take_over_failed": "入力を引き継げませんでした。"
+  },
+  "milestone": {
+    "pr_watch": {
+      "action": "プルリクエストを見張る",
+      "title": "初めての PR ウォッチ",
+      "starter_prompt": "次に貼る PR を見ていて、CI が緑になったら教えて。",
+      "blurb": "CI が緑になったりレビューが来たら知らせる"
+    },
+    "widgets": {
+      "blurb": "データをクリックできるカードにする",
+      "action": "ウィジェットを作る",
+      "title": "初めてのウィジェット",
+      "starter_prompt": "今週のカレンダーを表示するウィジェットを作って"
+    },
+    "chats_opened": {
+      "title": "開いたチャット",
+      "tier_other": "{{count}} チャット"
+    },
+    "mate": {
+      "starter_prompt": "Mate を紹介して",
+      "blurb": "使い始めを手伝ってくれるチームメイト",
+      "action": "ガイド役の Mate に会う",
+      "title": "Mate に会った"
+    },
+    "parallel_chats": {
+      "starter_prompt": "チャットを 2 つ同時に開いて：1 つは調査、もう 1 つはアウトライン作成",
+      "blurb": "1 つの作業を複数のチャットに分ける",
+      "action": "2 つのチャットを同時に動かす",
+      "title": "初めての並行チャット"
+    },
+    "slack": {
+      "starter_prompt": "Crew を私の Slack につないで",
+      "blurb": "Slack からも仕事を頼める",
+      "action": "Slack をつなぐ",
+      "title": "Slack に接続した"
+    },
+    "scheduled_task": {
+      "blurb": "毎朝のまとめのように、決まった時間に動く",
+      "action": "タスクをスケジュールする",
+      "title": "初めての定期タスク",
+      "starter_prompt": "毎朝、ブリーフをちょうだい"
+    },
+    "crew_mode": {
+      "starter_prompt": "次に説明する作業を数人のチームメイトに分けて並行で進めて。",
+      "blurb": "数人のチームメイトで 1 つの目標に取り組む",
+      "action": "Ultra Mode を試す",
+      "title": "Ultra Mode を使った"
+    },
+    "streak_best": {
+      "title": "最長連続日数",
+      "tier_other": "{{count}} 日連続"
+    }
+  },
+  "milestones": {
+    "intro_video_save_failed": "この動画を見た・閉じたことを保存できませんでした。もう一度お試しください。",
+    "your_progress": "あなたの進み具合",
+    "all_tried": "ここの機能はすべて試しました。",
+    "indicator_label_streak_other": "探索：{{total}} 機能中 {{done}} 試した、{{count}} 日連続",
+    "getting_started_result": "最初にできあがった成果",
+    "title": "探索",
+    "intro_video_title": "15 秒でわかる {{productName}}",
+    "try_today_none": "まずは下の「はじめに」から。",
+    "intro_video_watch": "見る",
+    "try_today": "今日試す",
+    "more_to_try": "こちらもどうぞ",
+    "indicator_label": "探索：{{total}} 機能中 {{done}} 試した",
+    "group_streak": "連続日数",
+    "getting_started_brief": "朝のブリーフを設定",
+    "notice_count_other": "探索に新着 {{count}} 件",
+    "pill_count": "探索 {{done}}/{{total}}",
+    "streak_short_other": "{{count}} 日連続",
+    "badges": "バッジ",
+    "notice_one": "達成：{{title}}",
+    "close": "探索を閉じる",
+    "try_it": "試す",
+    "intro_video_close": "動画を閉じる",
+    "mark_as_done": "完了にする",
+    "try_today_entry_other": "今日試す：新しい機能 {{count}} 件",
+    "load_failed": "探索を読み込めませんでした。",
+    "getting_started": "はじめに",
+    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日"
   }
 }

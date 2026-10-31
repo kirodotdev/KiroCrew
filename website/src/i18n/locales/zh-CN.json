@@ -17190,7 +17190,10 @@
         "theme_experience": "体验",
         "theme_experience_sounds": "音效",
         "theme_experience_overlays": "叠加层",
-        "theme_experience_persona": "角色设定"
+        "theme_experience_persona": "角色设定",
+        "milestones_hint": "在顶栏显示探索，并在新聊天里显示“今天试试”卡片。",
+        "milestones": "探索",
+        "milestones_save_failed": "无法保存探索设置。请重试。"
       },
       "importPanel": {
         "agent_data": "代理数据",
@@ -20665,5 +20668,86 @@
     "take_over_typing": "接手",
     "take_over_typing_label": "从 {{name}} 那里接手输入。对方的草稿会保留在对方那里。",
     "take_over_failed": "无法接手输入。"
+  },
+  "milestones": {
+    "getting_started_result": "第一个完成的成果",
+    "badges": "徽章",
+    "notice_one": "达成：{{title}}",
+    "intro_video_title": "15 秒了解 {{productName}}",
+    "intro_video_close": "关闭视频",
+    "streak_short_other": "连续 {{count}} 天",
+    "getting_started": "入门",
+    "try_today_entry_other": "今天试试：{{count}} 个新功能",
+    "more_to_try": "还可以看看",
+    "indicator_label": "探索：已试过 {{done}}/{{total}} 个功能",
+    "try_it": "试试",
+    "load_failed": "无法加载探索。",
+    "pill_count": "探索 {{done}}/{{total}}",
+    "notice_count_other": "探索里有 {{count}} 项新进展",
+    "getting_started_brief": "设置每日晨报",
+    "close": "关闭探索",
+    "group_streak": "连续天数",
+    "your_progress": "你的进度",
+    "try_today_none": "先从下面的“入门”开始。",
+    "streak_days_other": "{{count}} 天 · 最长 {{best}} 天",
+    "mark_as_done": "标为已完成",
+    "all_tried": "这里的功能你都试过了。",
+    "title": "探索",
+    "indicator_label_streak_other": "探索：已试过 {{done}}/{{total}} 个功能，连续 {{count}} 天",
+    "intro_video_save_failed": "无法保存你已看过或关闭此视频。请重试。",
+    "intro_video_watch": "观看",
+    "try_today": "今天试试"
+  },
+  "milestone": {
+    "streak_best": {
+      "title": "最长连续天数",
+      "tier_other": "连续 {{count}} 天"
+    },
+    "parallel_chats": {
+      "action": "同时开两个聊天",
+      "title": "第一次并行聊天",
+      "starter_prompt": "同时开两个聊天：一个做调研，一个写大纲",
+      "blurb": "把一个任务拆到几个聊天里"
+    },
+    "crew_mode": {
+      "title": "用过 Ultra Mode",
+      "starter_prompt": "把我接下来描述的任务分给几个队友并行去做。",
+      "blurb": "几个队友一起完成一个目标",
+      "action": "试试 Ultra Mode"
+    },
+    "pr_watch": {
+      "title": "第一次盯 PR",
+      "starter_prompt": "盯着我接下来贴的 PR，CI 变绿时告诉我。",
+      "blurb": "CI 变绿或有人评审时告诉你",
+      "action": "盯一个拉取请求"
+    },
+    "scheduled_task": {
+      "title": "第一个定时任务",
+      "starter_prompt": "每天早上给我一份简报",
+      "blurb": "按时自动跑，比如每天早上的简报",
+      "action": "安排一个定时任务"
+    },
+    "widgets": {
+      "title": "第一个小组件",
+      "starter_prompt": "做一个小组件，显示我这周的日历",
+      "blurb": "把数据变成一张能点的卡片",
+      "action": "做一个小组件"
+    },
+    "slack": {
+      "title": "连上了 Slack",
+      "starter_prompt": "把 Crew 连到我的 Slack",
+      "blurb": "在 Slack 里也能找我干活",
+      "action": "连接 Slack"
+    },
+    "chats_opened": {
+      "title": "打开的聊天",
+      "tier_other": "{{count}} 个聊天"
+    },
+    "mate": {
+      "title": "认识了 Mate",
+      "starter_prompt": "给我介绍一下 Mate",
+      "blurb": "一个帮你上手的队友",
+      "action": "认识你的向导 Mate"
+    }
   }
 }

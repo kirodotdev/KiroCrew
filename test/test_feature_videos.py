@@ -140,7 +140,16 @@ class TestShippedCatalog:
         assert len(ids) == len(set(ids))
 
     def test_seeded_with_the_expected_entries(self) -> None:
-        assert [e.id for e in fv.CATALOG] == ["feature-tips", "monitor-loops", "crewmates"]
+        assert [e.id for e in fv.CATALOG] == [
+            "feature-tips",
+            "monitor-loops",
+            "crewmates",
+            "kiro-crew-intro",
+        ]
+
+    def test_only_the_explore_intro_stays_out_of_the_startup_popup(self) -> None:
+        """RFC 8.2: the Explore panel's card is the intro clip's only home."""
+        assert [e.id for e in fv.CATALOG if not e.startup] == ["kiro-crew-intro"]
 
     def test_only_crewmates_carries_a_cta(self) -> None:
         """ "Try now" opens the first Mate's chat, never the main ``default`` agent."""
@@ -360,6 +369,30 @@ class TestAssetExistenceGate:
             with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))):
                 picked = fv.select_next("9.9.9")
         assert picked is not None and picked.id == "second"
+
+    def test_a_clip_kept_out_of_startup_is_never_picked_even_when_shipped(
+        self, asset_root: Path, tmp_path: Path
+    ) -> None:
+        # Shipped, valid and unseen: everything the popup checks says yes, and
+        # it is still not picked, with the kill switch on or off.
+        self._ship(asset_root, "kiro-crew-intro")
+        intro = next(e for e in fv.CATALOG if e.id == "kiro-crew-intro")
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (intro,)):
+                assert [e.id for e in fv.offerable()] == ["kiro-crew-intro"]
+                assert fv.select_next("9.9.9") is None
+                assert fv.select_next("9.9.9", default_on_only=True) is None
+
+    def test_the_explore_intro_never_reaches_the_popup_beside_other_clips(
+        self, asset_root: Path, tmp_path: Path
+    ) -> None:
+        self._ship(asset_root, "kiro-crew-intro")
+        self._ship(asset_root, "ready")
+        intro = next(e for e in fv.CATALOG if e.id == "kiro-crew-intro")
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (intro, _entry("ready"))):
+                picks = {fv.select_next("9.9.9").id for _ in range(30)}  # type: ignore[union-attr]
+        assert picks == {"ready"}
 
     def test_withholding_is_recoverable_once_the_clip_lands(
         self, asset_root: Path, tmp_path: Path
@@ -1055,6 +1088,21 @@ class TestFeedbackRoute:
         assert body == {"ok": True}
         assert recorded == status
         assert isinstance(ts, float) and ts >= before
+
+    @pytest.mark.parametrize("status", ["seen", "dismissed"])
+    def test_the_explore_intro_verdict_is_accepted_and_recorded(
+        self, tmp_path: Path, status: str
+    ) -> None:
+        """The Explore card has no ``/next`` offer behind it; catalog membership admits it."""
+
+        async def run() -> tuple[int, str]:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                resp = await fv.api_feature_videos_feedback(
+                    _feedback_request({"id": "kiro-crew-intro", "status": status})
+                )
+                return resp.status, fv.load_state().status_of("kiro-crew-intro")
+
+        assert asyncio.run(run()) == (200, status)
 
     def test_recorded_video_is_not_offered_again(self, tmp_path: Path) -> None:
         async def run() -> object:

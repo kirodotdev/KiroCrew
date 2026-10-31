@@ -17501,7 +17501,10 @@
         "theme_experience": "অভিজ্ঞতা",
         "theme_experience_sounds": "সাউন্ড",
         "theme_experience_overlays": "ওভারলে",
-        "theme_experience_persona": "পারসোনা"
+        "theme_experience_persona": "পারসোনা",
+        "milestones_hint": "উপরের বারে এক্সপ্লোর আর নতুন চ্যাটে \"আজ চেষ্টা করো\" কার্ড দেখাও।",
+        "milestones": "এক্সপ্লোর",
+        "milestones_save_failed": "এক্সপ্লোরের সেটিং সেভ করা যায়নি। আবার চেষ্টা করো।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
@@ -21010,5 +21013,93 @@
     "take_over_typing": "নিজের হাতে নাও",
     "take_over_typing_label": "{{name}}-এর কাছ থেকে টাইপ করা নিজের হাতে নাও। তাঁর খসড়া তাঁর কাছেই থাকবে।",
     "take_over_failed": "টাইপ করা নিজের হাতে নেওয়া গেল না।"
+  },
+  "milestones": {
+    "intro_video_watch": "দেখো",
+    "notice_one": "পূর্ণ হয়েছে: {{title}}",
+    "pill_count": "এক্সপ্লোর {{done}}/{{total}}",
+    "load_failed": "এক্সপ্লোর লোড করা যায়নি।",
+    "mark_as_done": "সম্পন্ন চিহ্নিত করো",
+    "indicator_label_streak_other": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে, টানা {{count}} দিন",
+    "indicator_label": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে",
+    "intro_video_close": "ভিডিও বন্ধ করো",
+    "your_progress": "তোমার অগ্রগতি",
+    "streak_short_one": "টানা {{count}} দিন",
+    "streak_days_other": "{{count}} দিন · সেরা {{best}}",
+    "try_it": "চেষ্টা করো",
+    "notice_count_one": "এক্সপ্লোরে {{count}}টি নতুন খবর",
+    "getting_started_brief": "সকালের ব্রিফ সেট করো",
+    "group_streak": "টানা দিন",
+    "try_today": "আজ চেষ্টা করো",
+    "intro_video_title": "15 সেকেন্ডে {{productName}}",
+    "getting_started": "শুরু করা",
+    "all_tried": "এখানকার সব ফিচার তুমি চেষ্টা করে ফেলেছ।",
+    "close": "এক্সপ্লোর বন্ধ করো",
+    "getting_started_result": "প্রথম শেষ হওয়া ফল",
+    "indicator_label_streak_one": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে, টানা {{count}} দিন",
+    "more_to_try": "এগুলোও দেখো",
+    "notice_count_other": "এক্সপ্লোরে {{count}}টি নতুন খবর",
+    "title": "এক্সপ্লোর",
+    "try_today_entry_one": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার",
+    "badges": "ব্যাজ",
+    "streak_days_one": "{{count}} দিন · সেরা {{best}}",
+    "try_today_none": "নিচের \"শুরু করা\" থেকে শুরু করো।",
+    "intro_video_save_failed": "তুমি ভিডিওটা দেখেছ বা বন্ধ করেছ, সেটা সেভ করা যায়নি। আবার চেষ্টা করো।",
+    "streak_short_other": "টানা {{count}} দিন",
+    "try_today_entry_other": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার"
+  },
+  "milestone": {
+    "chats_opened": {
+      "tier_other": "{{count}}টি চ্যাট",
+      "title": "খোলা চ্যাট",
+      "tier_one": "{{count}}টি চ্যাট"
+    },
+    "mate": {
+      "title": "Mate-এর সঙ্গে দেখা",
+      "starter_prompt": "আমাকে Mate-এর সঙ্গে পরিচয় করিয়ে দাও",
+      "action": "তোমার গাইড Mate-এর সঙ্গে পরিচিত হও",
+      "blurb": "একজন সঙ্গী যে শুরু করতে সাহায্য করে"
+    },
+    "streak_best": {
+      "tier_one": "টানা {{count}} দিন",
+      "tier_other": "টানা {{count}} দিন",
+      "title": "সেরা টানা দিন"
+    },
+    "parallel_chats": {
+      "starter_prompt": "একসঙ্গে দুটো চ্যাট খোলো: একটা গবেষণা করবে, আরেকটা রূপরেখা লিখবে",
+      "title": "প্রথম সমান্তরাল চ্যাট",
+      "action": "একসঙ্গে দুটো চ্যাট চালাও",
+      "blurb": "একটা কাজ কয়েকটা চ্যাটে ভাগ করো"
+    },
+    "scheduled_task": {
+      "title": "প্রথম নির্ধারিত কাজ",
+      "starter_prompt": "প্রতিদিন সকালে আমাকে একটা ব্রিফ দাও",
+      "action": "একটা কাজ শিডিউল করো",
+      "blurb": "সময়মতো চলে, যেমন সকালের সারসংক্ষেপ"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode ব্যবহার করেছ",
+      "starter_prompt": "এরপর যে কাজটা বলব সেটা কয়েকজন সঙ্গীর মধ্যে ভাগ করো, যারা একসঙ্গে কাজ করবে।",
+      "action": "Ultra Mode চেষ্টা করো",
+      "blurb": "কয়েকজন সঙ্গী মিলে একটা লক্ষ্যে কাজ করে"
+    },
+    "widgets": {
+      "title": "প্রথম উইজেট",
+      "starter_prompt": "এমন একটা উইজেট বানাও যেটা এই সপ্তাহের আমার ক্যালেন্ডার দেখায়",
+      "action": "একটা উইজেট বানাও",
+      "blurb": "তোমার ডেটাকে ক্লিক করার মতো কার্ডে বদলাও"
+    },
+    "slack": {
+      "title": "Slack যুক্ত হয়েছে",
+      "starter_prompt": "Crew-কে আমার Slack-এ যুক্ত করো",
+      "action": "Slack যুক্ত করো",
+      "blurb": "Slack থেকেও আমাকে কাজ দাও"
+    },
+    "pr_watch": {
+      "starter_prompt": "এরপর যে PR দেব তাতে নজর রাখো আর CI সবুজ হলে আমাকে জানাও।",
+      "title": "প্রথম PR নজরদারি",
+      "action": "একটা পুল রিকোয়েস্টে নজর রাখো",
+      "blurb": "CI সবুজ হলে বা রিভিউ এলে জানো"
+    }
   }
 }

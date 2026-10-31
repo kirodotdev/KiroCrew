@@ -24,6 +24,8 @@ import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { AppShell } from '../appShell'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
+import MilestonesIndicator, { MilestonesPill } from '../../components/milestones/MilestonesIndicator'
+import MilestonesSheet from '../../components/milestones/MilestonesSheet'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -153,6 +155,9 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
   } = shell
   return (
     <>
+      {/* The one Milestones panel; the top-bar indicator, the phone menu row
+          and the milestone notice all open it. */}
+      <MilestonesSheet />
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
@@ -589,6 +594,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             )
           })()}
           {!isMobile && <MetricsErrorNotice metrics={metrics} />}
+          {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
+              own pill next to the readout capsule (after the capsule's own
+              metrics notice), not a capsule segment, so the capsule's row of
+              buttons does not grow. Renders nothing until the milestones read
+              says it is on. */}
+          {!isMobile && <MilestonesPill />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
@@ -624,7 +635,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,
               beside the pop-out control — see ChatPage — so opening the panel
-              no longer narrows this full-width header.) */}
+              no longer narrows this full-width header.) On a phone, which has
+              no readout capsule, the Explore ring sits just before it; with the
+              update pill up the group would hold three controls, so it stands
+              down (the chat page's ⋯ menu carries an Explore row). */}
+          {isMobile && !updateAvailable && <MilestonesIndicator compact />}
           <NotificationsBellButton />
           </div>
         </div>

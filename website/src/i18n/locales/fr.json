@@ -17812,7 +17812,10 @@
         "theme_experience": "Expérience",
         "theme_experience_sounds": "Sons",
         "theme_experience_overlays": "Superpositions",
-        "theme_experience_persona": "Persona"
+        "theme_experience_persona": "Persona",
+        "milestones_hint": "Affiche Explorer dans la barre du haut et une carte « À essayer aujourd'hui » dans une nouvelle discussion.",
+        "milestones": "Explorer",
+        "milestones_save_failed": "Impossible d'enregistrer le réglage Explorer. Réessaie."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
@@ -21355,5 +21358,100 @@
     "take_over_typing": "Prendre la main",
     "take_over_typing_label": "Prendre la main sur la saisie de {{name}}. Son brouillon reste chez cette personne.",
     "take_over_failed": "Impossible de prendre la main sur la saisie."
+  },
+  "milestone": {
+    "crew_mode": {
+      "blurb": "Quelques coéquipiers travaillent sur un même objectif",
+      "action": "Essayer Ultra Mode",
+      "starter_prompt": "Répartis la tâche que je décris juste après entre quelques coéquipiers qui travaillent en parallèle.",
+      "title": "Ultra Mode utilisé"
+    },
+    "scheduled_task": {
+      "title": "Première tâche planifiée",
+      "blurb": "S'exécute à l'heure, comme un point du matin",
+      "action": "Planifier une tâche",
+      "starter_prompt": "Chaque matin, fais-moi un point"
+    },
+    "mate": {
+      "action": "Rencontrer le Mate, ton guide",
+      "starter_prompt": "Présente-moi le Mate",
+      "title": "Rencontre avec le Mate",
+      "blurb": "Un coéquipier qui t'aide à démarrer"
+    },
+    "parallel_chats": {
+      "blurb": "Répartis une tâche sur plusieurs discussions",
+      "action": "Lancer deux discussions à la fois",
+      "starter_prompt": "Ouvre deux discussions à la fois : l'une fait des recherches, l'autre rédige un plan",
+      "title": "Premières discussions en parallèle"
+    },
+    "slack": {
+      "action": "Connecter Slack",
+      "starter_prompt": "Connecte Crew à mon Slack",
+      "title": "Slack connecté",
+      "blurb": "Confie-moi aussi du travail depuis Slack"
+    },
+    "streak_best": {
+      "tier_many": "Série de {{count}} jours",
+      "title": "Meilleure série",
+      "tier_other": "Série de {{count}} jours",
+      "tier_one": "Série de {{count}} jour"
+    },
+    "pr_watch": {
+      "action": "Surveiller une pull request",
+      "starter_prompt": "Surveille la PR que je colle juste après et dis-moi quand la CI passe au vert.",
+      "title": "Première PR surveillée",
+      "blurb": "Sois prévenu quand la CI passe au vert ou qu’une revue arrive"
+    },
+    "widgets": {
+      "action": "Créer un widget",
+      "starter_prompt": "Crée un widget qui affiche mon agenda de cette semaine",
+      "title": "Premier widget",
+      "blurb": "Transforme tes données en une carte cliquable"
+    },
+    "chats_opened": {
+      "title": "Discussions ouvertes",
+      "tier_other": "{{count}} discussions",
+      "tier_one": "{{count}} discussion",
+      "tier_many": "{{count}} discussions"
+    }
+  },
+  "milestones": {
+    "indicator_label_streak_other": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jours",
+    "try_today_entry_one": "À essayer aujourd'hui : {{count}} nouvelle fonction",
+    "streak_days_many": "{{count}} jours · record {{best}}",
+    "getting_started": "Premiers pas",
+    "try_today_entry_many": "À essayer aujourd'hui : {{count}} nouvelles fonctions",
+    "your_progress": "Ta progression",
+    "load_failed": "Impossible de charger Explorer.",
+    "getting_started_result": "Un premier résultat terminé",
+    "streak_days_one": "{{count}} jour · record {{best}}",
+    "indicator_label_streak_one": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jour",
+    "notice_count_other": "{{count}} nouveautés dans Explorer",
+    "mark_as_done": "Marquer comme fait",
+    "notice_one": "Atteint : {{title}}",
+    "more_to_try": "À découvrir aussi",
+    "streak_short_other": "Série de {{count}} jours",
+    "intro_video_close": "Fermer la vidéo",
+    "group_streak": "Série",
+    "streak_short_one": "Série de {{count}} jour",
+    "getting_started_brief": "Configurer un point du matin",
+    "try_it": "Essayer",
+    "indicator_label_streak_many": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jours",
+    "intro_video_title": "{{productName}} en 15 secondes",
+    "streak_short_many": "Série de {{count}} jours",
+    "all_tried": "Tu as essayé toutes les fonctions ici.",
+    "close": "Fermer Explorer",
+    "intro_video_watch": "Regarder",
+    "try_today": "À essayer aujourd'hui",
+    "indicator_label": "Explorer : {{done}} fonctions essayées sur {{total}}",
+    "title": "Explorer",
+    "intro_video_save_failed": "Impossible d’enregistrer que tu as regardé ou fermé cette vidéo. Réessaie.",
+    "pill_count": "Explorer {{done}}/{{total}}",
+    "badges": "Badges",
+    "notice_count_many": "{{count}} nouveautés dans Explorer",
+    "try_today_none": "Commence par « Premiers pas » ci-dessous.",
+    "streak_days_other": "{{count}} jours · record {{best}}",
+    "notice_count_one": "{{count}} nouveauté dans Explorer",
+    "try_today_entry_other": "À essayer aujourd'hui : {{count}} nouvelles fonctions"
   }
 }
