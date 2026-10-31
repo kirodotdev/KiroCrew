@@ -126,6 +126,18 @@ type MdAnchorProps = React.AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps 
   [SESSION_REF_TRAILING]?: string
 }
 
+/** Whether a link's visible text is a URL of the issue, pull request or merge
+ *  request that its href points to, as for a bare URL or an autolink. The label
+ *  is parsed like the href, Jira hosts included. Parsing drops a trailing slash
+ *  and lowercases the host, and a label without a scheme gets `https://`. An
+ *  empty label also counts, because it holds no text to keep. */
+function labelIsSourceUrl(label: string, source: PullRequestLink, jiraHosts: readonly string[]): boolean {
+  const text = label.trim()
+  if (!text) return true
+  const candidate = /^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`
+  return parseSourceLinkUrl(candidate, [], jiraHosts)?.url === source.url
+}
+
 function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: MdAnchorProps) {
   const override = useContext(LinkOverrideCtx)
   const probeEnabled = useContext(PathProbeCtx)
@@ -309,6 +321,29 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   const keep = (el: React.ReactElement) => (trailing ? <>{el}{trailing}</> : el)
   if (!href) return keep(<span {...sp(node)}>{children}</span>)
   if (claimed) return keep(<>{claimed}</>)
+  const forgeLabel = source ? forgeChipLabel(source) : null
+  if (source && (source.provider === 'jira' || forgeLabel) && !labelIsSourceUrl(textOf(children), source, jiraHosts)) {
+    // Text the author wrote in place of the URL stays visible: the chip would
+    // replace it with a reference built from the URL. The provider's mark
+    // beside the text still identifies the source. A Jira link points at the
+    // parser's canonical url, as the Jira chip does: a Jira source skips the
+    // `safeHttpUrl` check, so its raw href may carry credentials.
+    return keep(
+      <a
+        {...sp(node)}
+        href={source.provider === 'jira' ? source.url : href}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={href}
+        className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
+      >
+        <span className="mr-1 inline-flex align-middle">
+          <SourceProviderMark provider={source.provider} size={12} />
+        </span>
+        <InsideLinkCtx.Provider value={linkKind}>{children}</InsideLinkCtx.Provider>
+      </a>,
+    )
+  }
   if (source?.provider === 'jira') {
     const jira = source
     return keep(
@@ -326,7 +361,6 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
       </span>,
     )
   }
-  const forgeLabel = source ? forgeChipLabel(source) : null
   if (source && forgeLabel) {
     return keep(
       <span className="group inline-flex max-w-full items-center gap-1 rounded-md border border-border/60 bg-accent/10 px-1.5 py-px align-baseline text-[13px] mc-md-ref-chip transition-colors hover:border-border hover:bg-accent/20 focus-within:border-border">

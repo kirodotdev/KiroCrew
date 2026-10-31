@@ -65,6 +65,86 @@ describe('MarkdownRenderer forge chips — the four URL shapes', () => {
   })
 })
 
+describe('MarkdownRenderer forge links — labelled vs. bare', () => {
+  const PR = 'https://github.com/modelcontextprotocol/transports-wg/pull/57'
+
+  it('keeps the author label of a labelled GitHub link, with the GitHub mark beside it', () => {
+    render(<MarkdownRenderer content={`Read the [Definition Tags proposal](${PR}) first.`} />)
+    const link = screen.getByRole('link')
+    expect(link).toHaveAttribute('href', PR)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+    expect(link.textContent).toBe('Definition Tags proposal')
+    expect(link.querySelector('[data-provider-mark="github"]')).toBeTruthy()
+    expect(link.closest('.mc-md-ref-chip')).toBeNull()
+    expect(screen.queryByText('modelcontextprotocol/transports-wg#57')).toBeNull()
+  })
+
+  it('keeps the author label of a labelled GitLab link, with the GitLab mark beside it', () => {
+    render(<MarkdownRenderer content="See [the widgets MR](https://gitlab.com/acme/widgets/-/merge_requests/7)." />)
+    const link = screen.getByRole('link')
+    expect(link.textContent).toBe('the widgets MR')
+    expect(link.querySelector('[data-provider-mark="gitlab"]')).toBeTruthy()
+    expect(screen.queryByText('acme/widgets!7')).toBeNull()
+  })
+
+  it('never fetches a labelled forge link inside prose, even with link previews on', () => {
+    render(<MarkdownRenderer content={`Read the [Definition Tags proposal](${PR}) first.`} linkPreviews />)
+    expect(screen.getByRole('link').textContent).toBe('Definition Tags proposal')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('chips a bare URL as owner/repo#N', () => {
+    render(<MarkdownRenderer content={`Read ${PR} first.`} />)
+    const link = screen.getByRole('link')
+    expect(link.closest('.mc-md-ref-chip')).toBeTruthy()
+    expect(link.textContent).toBe('modelcontextprotocol/transports-wg#57')
+  })
+
+  it('chips an angle-bracket autolink as owner/repo#N', () => {
+    render(<MarkdownRenderer content={`Read <${PR}> first.`} />)
+    const link = screen.getByRole('link')
+    expect(link.closest('.mc-md-ref-chip')).toBeTruthy()
+    expect(link.textContent).toBe('modelcontextprotocol/transports-wg#57')
+  })
+
+  it('chips a labelled link whose label is the URL itself, with or without its scheme', () => {
+    render(<MarkdownRenderer content={`[${PR}](${PR}) and [github.com/o/r/pull/3](https://github.com/o/r/pull/3)`} />)
+    const [full, schemeless] = screen.getAllByRole('link')
+    expect(full.textContent).toBe('modelcontextprotocol/transports-wg#57')
+    expect(schemeless.textContent).toBe('o/r#3')
+    expect(full.closest('.mc-md-ref-chip')).toBeTruthy()
+    expect(schemeless.closest('.mc-md-ref-chip')).toBeTruthy()
+  })
+
+  it('chips a URL label that differs from the href only by a trailing slash or the host case', () => {
+    render(<MarkdownRenderer content={`[${PR}/](${PR}) and [https://GitHub.com/o/r/pull/3](https://github.com/o/r/pull/3)`} />)
+    const [slash, hostCase] = screen.getAllByRole('link')
+    expect(slash.textContent).toBe('modelcontextprotocol/transports-wg#57')
+    expect(hostCase.textContent).toBe('o/r#3')
+  })
+
+  it('chips a URL label written as inline code', () => {
+    render(<MarkdownRenderer content={`[\`${PR}\`](${PR})`} />)
+    const link = screen.getByRole('link')
+    expect(link.closest('.mc-md-ref-chip')).toBeTruthy()
+    expect(link.textContent).toBe('modelcontextprotocol/transports-wg#57')
+  })
+
+  it('keeps a formatted label: inline code and emphasis inside the text', () => {
+    render(<MarkdownRenderer content={`See [the \`Definition Tags\` proposal](${PR}) and [**Definition** Tags](https://github.com/o/r/pull/3).`} />)
+    const [code, bold] = screen.getAllByRole('link')
+    expect(code.textContent).toBe('the Definition Tags proposal')
+    expect(code.querySelector('code')).toBeTruthy()
+    expect(bold.textContent).toBe('Definition Tags')
+    expect(bold.querySelector('strong')).toBeTruthy()
+    for (const link of [code, bold]) {
+      expect(link.closest('.mc-md-ref-chip')).toBeNull()
+      expect(link.querySelector('[data-provider-mark="github"]')).toBeTruthy()
+    }
+  })
+})
+
 describe('MarkdownRenderer forge chips — security and fallthrough', () => {
   it('does NOT chip a lookalike hostname', () => {
     render(<MarkdownRenderer content="https://evil-github.com.attacker.test/kirodotdev/KiroCrew/pull/1" />)
