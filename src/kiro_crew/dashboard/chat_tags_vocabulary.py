@@ -42,7 +42,11 @@ from kiro_crew.dashboard.chat_tags_store import (
 )
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.create_rate_limit import TAG_CREATE, allow_create
-from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_bounded_json
+from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
+    read_bounded_json,
+    string_field_error,
+)
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import (
@@ -182,7 +186,11 @@ async def api_chat_tag_create(request: web.Request) -> web.Response:
     # straddles the length cut into a fragment the scanners cannot
     # recognize, persisting a raw prefix. Same boundary pattern as other
     # LLM-authored sinks.
-    name = (body.get("name") or "").strip()
+    name = body.get("name") or ""
+    not_string = string_field_error("name", name)
+    if not_string is not None:
+        return not_string
+    name = name.strip()
     name, _ = redact_exfiltration_urls(name)
     name, _ = redact_credentials(name)
     name = name.strip()[:_NAME_MAX]

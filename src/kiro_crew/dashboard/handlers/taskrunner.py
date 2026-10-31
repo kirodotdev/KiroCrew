@@ -1506,7 +1506,12 @@ async def api_taskrunner_refine(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    user_input = body.get("input", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    user_input = body.get("input", "")
+    if (not_string := string_field_error("input", user_input)) is not None:
+        return not_string
+    user_input = user_input.strip()
     if not user_input:
         return web.json_response({"error": "input is required"}, status=400)
 
@@ -1563,7 +1568,12 @@ async def api_taskrunner_refine_answer(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    answer = body.get("answer", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    answer = body.get("answer", "")
+    if (not_string := string_field_error("answer", answer)) is not None:
+        return not_string
+    answer = answer.strip()
     if not answer:
         return web.json_response({"error": "answer required"}, status=400)
     future = getattr(state, "_refine_answer_future", None)

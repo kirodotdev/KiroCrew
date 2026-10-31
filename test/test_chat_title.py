@@ -919,6 +919,20 @@ class TestSlotTitleRouteRefusalCodes:
             assert body["error"] == "title required"
             assert body["code"] == "title_required"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", [5, ["t"], {"t": 1}, True, None], ids=repr)
+    async def test_rename_non_string_title_returns_400_with_code(self, title):
+        slot = _ChatSlot("s")
+        state = MagicMock(spec=DashboardState)
+        state._slots = {"s": slot}
+        async with TestClient(TestServer(self._make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s/title", json={"title": title})
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "title must be a string",
+                "code": "invalid_field_type",
+            }
+
 
 # --- Non-title replies must yield no title ----------------------------------
 # Three reply shapes the validator must reject: SKIP followed by a reason

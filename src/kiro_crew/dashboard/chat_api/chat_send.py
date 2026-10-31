@@ -76,6 +76,7 @@ if TYPE_CHECKING:
         spawn_guarded_turn,
         start_queue_persist,
         steer_into_running_turn,
+        string_field_error,
         subagents_hold_user_messages,
         warm_project_agent_names,
         warn_if_not_durable,
@@ -500,7 +501,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
-    message = body.get("message", "").strip()
+    message = body.get("message", "")
+    not_string = string_field_error("message", message)
+    if not_string is not None:
+        return not_string
+    message = message.strip()
     if _agent_origin and isinstance(message, str):
         # Not the session's own human's words, so the same redaction the queue
         # drain gives a non-user entry (`queue_drain`, `deliver_as_typed`): the

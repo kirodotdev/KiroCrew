@@ -470,3 +470,25 @@ async def test_member_lesson_check_skips_an_unnamed_store(monkeypatch) -> None:
     monkeypatch.setattr(ContextBuilder, "ensure_store", staticmethod(_ensure_store))
 
     assert await cron_handlers._prepare_member_lesson_store("") is None
+
+
+@pytest.mark.parametrize("rule", [5, ["a"], {"a": 1}, True, None], ids=repr)
+async def test_lessons_delete_refuses_a_non_string_rule(rule) -> None:
+    """A non-string rule has no ``.strip()``, so it is a coded 400 and nothing is
+    removed."""
+    app = _lessons_app()
+
+    with (
+        patch("kiro_crew.dashboard.handlers.cron._recognize_session", AsyncMock(return_value=None)),
+        patch("kiro_crew.dashboard.handlers.cron._blocks_reads_session", return_value=False),
+        patch("kiro_crew.dashboard.handlers.cron._sel"),
+    ):
+        async with TestClient(TestServer(app)) as client:
+            response = await client.delete(
+                "/api/lessons", json={"rule": rule}, headers={"X-Session-Key": "dashboard:ui"}
+            )
+            body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "rule must be a string", "code": "invalid_field_type"}
+    app["state"].lessons.remove.assert_not_called()

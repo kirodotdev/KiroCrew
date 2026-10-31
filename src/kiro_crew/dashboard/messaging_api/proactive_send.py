@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         remember_slack_options,
         slack_options_owner_key,
         slot_history_key,
+        string_field_error,
     )
 
 
@@ -300,8 +301,13 @@ async def api_delete_message(request: web.Request) -> web.Response:
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
-    channel = body.get("channel", "").strip()
-    ts = body.get("ts", "").strip()
+    channel = body.get("channel", "")
+    ts = body.get("ts", "")
+    for field, value in (("channel", channel), ("ts", ts)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    channel, ts = channel.strip(), ts.strip()
     if not channel or not ts:
         return web.json_response({"error": "channel and ts required"}, status=400)
     slack = state.slack_client
@@ -526,7 +532,11 @@ async def _read_send_message(
     not_object = body_not_object_error(body)
     if not_object is not None:
         return not_object
-    text = body.get("text", "").strip()
+    text = body.get("text", "")
+    not_string = string_field_error("text", text)
+    if not_string is not None:
+        return not_string
+    text = text.strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)
     title = body.get("title", "Agent Message")
@@ -614,8 +624,13 @@ async def _read_send_message(
             state, addressed_channel, target_id, text, caller_session=addressed_caller
         )
 
-    target_channel = body.get("channel", "").strip()
-    target_user = body.get("user", "").strip()
+    target_channel = body.get("channel", "")
+    target_user = body.get("user", "")
+    for field, value in (("channel", target_channel), ("user", target_user)):
+        not_string = string_field_error(field, value)
+        if not_string is not None:
+            return not_string
+    target_channel, target_user = target_channel.strip(), target_user.strip()
     unfurl_links = body.get("unfurl_links")
     unfurl_media = body.get("unfurl_media")
     if (unfurl_links is not None and not isinstance(unfurl_links, bool)) or (

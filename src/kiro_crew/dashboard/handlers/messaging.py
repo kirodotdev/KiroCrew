@@ -81,6 +81,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     pip_extra_install_command,
     read_bounded_json,
     spawn_parent_claim,
+    string_field_error,
 )
 from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX  # noqa: F401
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
