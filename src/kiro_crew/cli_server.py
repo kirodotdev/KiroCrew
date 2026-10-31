@@ -250,6 +250,17 @@ async def _gateway(
     test_mode: bool = False,
 ) -> None:
     """Load config and start the gateway (dashboard + configured messaging channels)."""
+    if test_mode:
+        # A test run must not send product metrics anywhere. Done first, because
+        # the first metric call anywhere downstream is what builds the recorder
+        # that reads this. The marker lives in the environment so the processes
+        # this gateway spawns inherit it; see metrics.kiro_export.mark_test_mode.
+        # circular import: metrics.kiro_export reaches config/beacon, and it is
+        # only ever needed on this one branch.
+        from kiro_crew.metrics.kiro_export import mark_test_mode
+
+        mark_test_mode()
+
     # Activate mise once at gateway start so every subprocess we
     # later spawn — MCP servers, script crons, kiro-cli — inherits the user's
     # mise-managed toolchain. Without this, Node-based MCP servers spawn against

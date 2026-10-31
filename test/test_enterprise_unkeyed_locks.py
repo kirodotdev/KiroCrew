@@ -96,6 +96,45 @@ def test_oss_otlp_endpoint_still_applies(default_telemetry):
     assert metrics_provider.otlp_egress_active(default_telemetry) is True
 
 
+@pytest.fixture
+def kiro_export_telemetry(monkeypatch: pytest.MonkeyPatch):
+    """The local Kiro switch on, with every other gate on that destination open.
+
+    The shared outbound gate refuses on a CI runner, so it is opened here: the
+    enterprise test below must fail on the edition lock alone, which the oss
+    counterpart proves by building the destination under the same stubs.
+    """
+    from kiro_crew import beacon
+    from kiro_crew.metrics import kiro_export
+
+    for name in (kiro_export.DO_NOT_TRACK_ENV, kiro_export.DISABLE_ENV, kiro_export.TEST_MODE_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        kiro_export, "outbound_permitted", lambda: beacon.Verdict(True, "ready", "ready")
+    )
+    monkeypatch.setattr(kiro_export, "build_session", lambda: None)
+    monkeypatch.setattr(metrics_provider, "_telemetry_provider", DefaultTelemetryProvider)
+    return TelemetryConfig(kiro_export=True)
+
+
+def test_kiro_export_is_ignored_before_any_provider_reads_it(enterprise, kiro_export_telemetry):
+    from kiro_crew.metrics import kiro_export
+
+    assert edition_locks.config_path_locked("telemetry.kiro_export")
+    assert metrics_provider._otlp_destinations(kiro_export_telemetry) == ()
+    assert metrics_provider.otlp_egress_active(kiro_export_telemetry) is False
+    # The per-export recheck reads the config itself, so the resolver refuses too.
+    assert kiro_export.endpoint_for(kiro_export_telemetry) == ""
+
+
+def test_oss_kiro_export_still_applies(kiro_export_telemetry):
+    from kiro_crew.metrics import kiro_export
+
+    (dest,) = metrics_provider._otlp_destinations(kiro_export_telemetry)
+    assert dest.name == kiro_export.DESTINATION_NAME
+    assert metrics_provider.otlp_egress_active(kiro_export_telemetry) is True
+
+
 def _owner_request(body: object):
     """A request stub the owner-gated update route accepts (same shape as its own tests)."""
     req = MagicMock()

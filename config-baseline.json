@@ -3699,6 +3699,8 @@
         "retention_days": 0,
         "max_total_mb": 0,
         "otlp_endpoint": "",
+        "kiro_export": false,
+        "kiro_export_region": "",
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
@@ -3783,6 +3785,34 @@
       "tags": [],
       "label": "OTLP Endpoint",
       "help": "Opt-in OpenTelemetry OTLP/HTTP metrics endpoint (e.g. http://localhost:4318/v1/metrics). EMPTY = no network egress (default). When set, aggregated metrics are ALSO pushed to this collector in addition to the local JSONL sink; requires the OTLP exporter from the otlp package extra to be installed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "telemetry.kiro_export",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Send Product Metrics to Kiro",
+      "help": "Send a reviewed allowlist of product metrics to the Kiro telemetry endpoint (https://telemetry.<region>.kiro.dev) so maintainers can see which features are used and whether a release helped. Counters, gauges and histograms with closed-enum attributes only: never prompts, model output, file contents, paths, repo names, credentials, host name, user name or any free text, and nothing is counted per machine. Requires the 'enabled' switch above; the local JSONL sink still records everything either way. Turn it off here, or with DO_NOT_TRACK=1 or KIROCREW_TELEMETRY_KIRO_EXPORT=0 in the environment. See docs/guides/telemetry-otlp-export.md for the exact list of metrics that leave the machine.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "telemetry.kiro_export_region",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Kiro Telemetry Region",
+      "help": "Which region the Kiro telemetry endpoint is reached in: 'us-east-1' (default when empty) or 'eu-central-1'. Any other value disables the Kiro destination rather than guessing a region.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

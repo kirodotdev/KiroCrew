@@ -60,7 +60,14 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from opentelemetry.sdk.metrics import Counter, Histogram, UpDownCounter
+from opentelemetry.sdk.metrics import (
+    Counter,
+    Histogram,
+    ObservableCounter,
+    ObservableGauge,
+    ObservableUpDownCounter,
+    UpDownCounter,
+)
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
 #: The OpenTelemetry standard variable an operator uses to match a backend that
@@ -81,6 +88,36 @@ def delta_preference() -> "dict[type, AggregationTemporality]":
         Counter: AggregationTemporality.DELTA,
         UpDownCounter: AggregationTemporality.DELTA,
         Histogram: AggregationTemporality.DELTA,
+    }
+
+
+def otel_delta_preset() -> "dict[type, AggregationTemporality]":
+    """The OpenTelemetry ``delta`` preset, with EVERY instrument kind pinned.
+
+    Counter, ObservableCounter and Histogram are DELTA; UpDownCounter,
+    ObservableUpDownCounter and ObservableGauge are CUMULATIVE. That is what the
+    exporter resolves when ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE``
+    is ``DELTA``, and what a receiving side built for delta-sending clients
+    expects. It differs from :func:`delta_preference` in two kinds: an up/down
+    counter stays cumulative (a running level, not an increment), and an
+    observable counter is delta. Nothing registers an observable counter today
+    (see the module docstring for why one would re-emit its lifetime total after
+    a consent rebuild), so the second difference has no series behind it yet.
+
+    Every kind is named, not only the three that differ from the SDK default,
+    because the exporter lays an explicit dict ON TOP of whichever base the
+    operator's environment variable chose. A destination built on this preset
+    (``OtlpDestination.delta_temporality``) must get it whatever that variable says: the variable is the
+    operator's lever for THEIR collector, and this destination's receiving side
+    does not change with it. A fresh dict per call, as for the map above.
+    """
+    return {
+        Counter: AggregationTemporality.DELTA,
+        UpDownCounter: AggregationTemporality.CUMULATIVE,
+        Histogram: AggregationTemporality.DELTA,
+        ObservableCounter: AggregationTemporality.DELTA,
+        ObservableUpDownCounter: AggregationTemporality.CUMULATIVE,
+        ObservableGauge: AggregationTemporality.CUMULATIVE,
     }
 
 
