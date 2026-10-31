@@ -32,7 +32,7 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .extractor import EntityExtractor
+from .extractor import EntityExtractor, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
 from .store import AUTO_ADDED_PROP, KnowledgeStore
@@ -964,7 +964,8 @@ class IngestionPipeline:
 
         # 5. Extract all chunks in batch via pool
         chunk_contents = [chunk['content'] for chunk in chunks]
-        extractions = await self.extractor.extract_batch(chunk_contents)
+        with extraction_source(source_id):
+            extractions = await self.extractor.extract_batch(chunk_contents)
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source. `import_bundle`
@@ -1123,8 +1124,9 @@ class IngestionPipeline:
             # finalize hop so a failure or cancel here cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
-            except Exception:
-                logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
+            except Exception as exc:
+                logger.warning("Source summary generation failed for source_id=%s: %s",
+                               source_id, type(exc).__name__)
         # Cross-source dedup for whole-source ingests (upload / remote / chat). Folder-file
         # ingests (old_item_ids is a list) are swept by FolderWatcher at end of scan.
         if processed == total and old_item_ids is None:
@@ -1250,7 +1252,8 @@ class IngestionPipeline:
         total = len(chunks)
 
         chunk_contents = [chunk['content'] for chunk in chunks]
-        extractions = await self.extractor.extract_batch(chunk_contents)
+        with extraction_source(source_id):
+            extractions = await self.extractor.extract_batch(chunk_contents)
 
         # What THIS call wrote, collected at the write itself rather than
         # inferred from a before/after comparison of the source -- a snapshot
@@ -1345,8 +1348,9 @@ class IngestionPipeline:
             # cannot strand the job row.
             try:
                 await self.generate_source_summary(source_id)
-            except Exception:
-                logger.debug("Source summary generation skipped for %s", source_id, exc_info=True)
+            except Exception as exc:
+                logger.warning("Source summary generation failed for source_id=%s: %s",
+                               source_id, type(exc).__name__)
         # Cross-source dedup for whole-source ingests (upload / remote / chat).
         # Group-level replaces (old_item_ids provided -- e.g. a single artifact's
         # group within the aggregate Artifacts source) defer to the folder-scan
@@ -1508,8 +1512,17 @@ class IngestionPipeline:
                     self.store.db.commit()
 
                 await asyncio.to_thread(_store_summary)
-        except Exception:
-            logger.debug("Source summary generation failed for %s", source_id, exc_info=True)
+            else:
+                # The reply is never logged: it is model output over document text.
+                logger.warning(
+                    "Source summary for source_id=%s got %s reply; the source keeps "
+                    "no topic or themes", source_id,
+                    "an empty" if not (response or "").strip() else "an unusable")
+        except Exception as exc:
+            # The type only: the message can echo the prompt, which carries the
+            # document's section summaries.
+            logger.warning("Source summary generation failed for source_id=%s: %s",
+                           source_id, type(exc).__name__)
 
 
 # This module is the facade of the ingestion owners and keeps the pipeline itself:
@@ -1522,11 +1535,13 @@ class IngestionPipeline:
 #
 #   ``ingestion_budget`` -- the explicit-import chunk budget and its refusal.
 #   ``ingestion_rebuild`` -- the corpus re-embed sweep and its single-flight job row.
+#   ``ingestion_jobs`` -- the startup sweep of source-ingest job rows a stopped gateway left.
 #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.knowledge.ingestion_budget",
     "kiro_crew.knowledge.ingestion_rebuild",
+    "kiro_crew.knowledge.ingestion_jobs",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1541,6 +1556,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.knowledge.ingestion_budget import (  # noqa: F401
         _IMPORT_CHUNK_BUDGET_WINDOW_SECS,
         ImportChunkBudgetError,
+    )
+    from kiro_crew.knowledge.ingestion_jobs import (  # noqa: F401
+        INTERRUPTED_JOB_ERROR,
+        reclaim_interrupted_ingest_jobs,
     )
     from kiro_crew.knowledge.ingestion_rebuild import (  # noqa: F401
         _REBUILD_BATCH_SIZE,
