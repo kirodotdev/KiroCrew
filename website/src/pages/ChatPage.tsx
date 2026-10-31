@@ -733,12 +733,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     openFollowupSession,
   } = useOpenFollowupSession({
-    mode, dispatch,
+    mode, dispatch, send, setActionError,
   })
   const {
     followupStartInWorktree, followupStartInNewChat,
   } = useFollowupStarts({
-    activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession,
+    activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession, setActionError,
   })
 
   // Outside events feeding the side panel, the dock terminal and the composer,

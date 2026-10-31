@@ -7145,7 +7145,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Zu dieser Sitzung hinzufügen",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "Beide Aktionen füllen das Eingabefeld vor — es wird nichts gesendet, bis Sie auf Senden drücken.",
+      "footer_start_sends_add_prefills": "Starten sendet den Prompt als erste Nachricht der neuen Sitzung. Zu dieser Sitzung hinzufügen füllt das Eingabefeld vor und sendet nichts.",
       "create_worktree_and_open_session": "Git-Worktree aus {{path}} erstellen und dort eine neue Sitzung öffnen",
       "creating_worktree": "Worktree wird erstellt…",
       "dismiss_this_suggestion": "Diesen Vorschlag schließen",
@@ -7162,7 +7162,9 @@
       "open_new_chat_in_project": "Einen neuen Chat in {{path}} ohne Worktree öffnen, da es kein Git-Repository ist",
       "open_new_chat_inside_repo": "Einen neuen Chat in {{path}} ohne Worktree öffnen, da es im Git-Repository unter {{root}} liegt, aber nicht dessen Stammverzeichnis ist",
       "open_new_chat": "Einen neuen Chat ohne Worktree öffnen, da diese Sitzung kein Projektverzeichnis hat",
-      "new_chat_footer_same_project_directory": "Beide Aktionen füllen das Eingabefeld vor — es wird nichts gesendet, bis du auf Senden drückst. Der neue Chat öffnet sich im Projektverzeichnis dieser Sitzung."
+      "footer_start_sends_add_prefills_project_directory": "In neuem Chat starten sendet den Prompt als erste Nachricht eines neuen Chats im Projektverzeichnis dieser Sitzung. Zu dieser Sitzung hinzufügen füllt das Eingabefeld vor und sendet nichts.",
+      "show_prompt": "Prompt anzeigen",
+      "hide_prompt": "Prompt ausblenden"
     },
     "inboundLinkChip": {
       "driven_from": "Gesteuert von {{label}}",
@@ -12875,9 +12877,12 @@
       "run_in_terminal_config_read_failed_error": "Deine Terminal-Einstellungen konnten nicht gelesen werden, daher wurde „das aktuelle Terminal wiederverwenden“ übersprungen und der Befehl in einem neuen Terminal geöffnet. Lade neu, um es erneut zu versuchen.",
       "followup_worktree_session_not_created": "Worktree unter {{path}} erstellt, aber die zugehörige Sitzung konnte nicht geöffnet und zugeordnet werden. Drücke die Schaltfläche erneut, um es noch einmal zu versuchen — der vorhandene Worktree wird wiederverwendet.",
       "followup_worktree_no_session_returned": "Worktree unter {{path}} erstellt, aber es wurde keine Sitzung zurückgegeben. Drücke die Schaltfläche erneut, um es noch einmal zu versuchen — der vorhandene Worktree wird wiederverwendet.",
-      "followup_worktree_session_not_opened": "Worktree unter {{path}} ist bereit, aber die zugehörige Sitzung konnte nicht geöffnet werden. Wechsle in der Seitenleiste zu ihr oder drücke die Schaltfläche erneut.",
-      "followup_worktree_session_not_focused": "Worktree unter {{path}} ist bereit, aber die zugehörige Sitzung ist nicht im Fokus. Wechsle in der Seitenleiste zu ihr oder drücke die Schaltfläche erneut.",
+      "followup_worktree_prompt_not_sent": "Worktree unter {{path}} ist bereit, aber der Prompt wurde nicht gesendet. Drücke die Schaltfläche erneut, um es noch einmal zu versuchen: Der Worktree wird wiederverwendet.",
+      "followup_worktree_session_not_opened": "Die Folgeaufgabe läuft in einer neuen Sitzung im Worktree unter {{path}}, aber diese Sitzung konnte nicht geöffnet werden. Wechsle in der Seitenleiste zu ihr.",
+      "followup_worktree_session_not_focused": "Die Folgeaufgabe läuft in einer neuen Sitzung im Worktree unter {{path}}, aber diese Sitzung ist nicht im Fokus. Wechsle in der Seitenleiste zu ihr.",
       "followup_chat_not_created": "Der neue Chat konnte nicht geöffnet werden. Drücke die Schaltfläche erneut, um es noch einmal zu versuchen.",
+      "followup_chat_prompt_not_sent": "Der Prompt wurde nicht gesendet. Drücke die Schaltfläche erneut, um es noch einmal zu versuchen.",
+      "followup_prompt_unconfirmed": "Die Folgesitzung wurde geöffnet, aber das Dashboard konnte nicht bestätigen, dass der Prompt dort angekommen ist. Öffne diese Sitzung, um zu prüfen, ob sie läuft.",
       "followup_chat_not_focused": "Der neue Chat wurde erstellt, konnte aber nicht in den Fokus geholt werden. Wechsle in der Seitenleiste zu ihm.",
       "open_older_sessions": "Ältere Sitzungen öffnen",
       "tabs_were_not_restored_one": "{{count}} Tab, der vor dem Neustart geöffnet war, wurde nicht wiederhergestellt.",

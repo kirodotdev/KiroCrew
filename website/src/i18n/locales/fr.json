@@ -7268,7 +7268,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Ajouter à cette session",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "Les deux actions pré-remplissent le champ de saisie — rien n'est envoyé avant que vous appuyiez sur Envoyer.",
+      "footer_start_sends_add_prefills": "Démarrer envoie le prompt comme premier message de la nouvelle session. Ajouter à cette session pré-remplit le champ de saisie et n’envoie rien.",
       "create_worktree_and_open_session": "Créer un worktree git depuis {{path}} et y ouvrir une nouvelle session",
       "creating_worktree": "Création du worktree…",
       "dismiss_this_suggestion": "Ignorer cette suggestion",
@@ -7286,7 +7286,9 @@
       "open_new_chat_in_project": "Ouvrir un nouveau chat dans {{path}} sans worktree, car ce n’est pas un dépôt git",
       "open_new_chat_inside_repo": "Ouvrir un nouveau chat dans {{path}} sans worktree, car il se trouve dans le dépôt git de {{root}} sans en être la racine",
       "open_new_chat": "Ouvrir un nouveau chat sans worktree, car cette session n’a aucun répertoire de projet",
-      "new_chat_footer_same_project_directory": "Les deux actions pré-remplissent le champ de saisie — rien n’est envoyé avant que tu appuies sur Envoyer. Le nouveau chat s’ouvre dans le répertoire de projet de cette session."
+      "footer_start_sends_add_prefills_project_directory": "Démarrer dans un nouveau chat envoie le prompt comme premier message d’un nouveau chat dans le répertoire de projet de cette session. Ajouter à cette session pré-remplit le champ de saisie et n’envoie rien.",
+      "show_prompt": "Afficher le prompt",
+      "hide_prompt": "Masquer le prompt"
     },
     "inboundLinkChip": {
       "driven_from": "Pilotée depuis {{label}}",
@@ -13071,9 +13073,12 @@
       "run_in_terminal_config_read_failed_error": "Tes paramètres de terminal n’ont pas pu être lus ; « réutiliser le terminal actuel » a donc été ignoré et la commande a été ouverte dans un nouveau terminal. Recharge pour réessayer.",
       "followup_worktree_session_not_created": "Worktree créé dans {{path}}, mais sa session n’a pas pu être ouverte et rattachée. Appuie à nouveau sur le bouton pour réessayer — le worktree existant sera réutilisé.",
       "followup_worktree_no_session_returned": "Worktree créé dans {{path}}, mais aucune session n’a été renvoyée. Appuie à nouveau sur le bouton pour réessayer — le worktree existant sera réutilisé.",
-      "followup_worktree_session_not_opened": "Worktree prêt dans {{path}}, mais sa session n’a pas pu être ouverte. Bascule dessus dans la barre latérale, ou appuie à nouveau sur le bouton.",
-      "followup_worktree_session_not_focused": "Worktree prêt dans {{path}}, mais sa session n’a pas le focus. Bascule dessus dans la barre latérale, ou appuie à nouveau sur le bouton.",
+      "followup_worktree_prompt_not_sent": "Worktree prêt dans {{path}}, mais le prompt n’a pas été envoyé. Appuie à nouveau sur le bouton pour réessayer : le worktree est réutilisé.",
+      "followup_worktree_session_not_opened": "Le suivi s’exécute dans une nouvelle session du worktree dans {{path}}, mais cette session n’a pas pu être ouverte. Bascule dessus dans la barre latérale.",
+      "followup_worktree_session_not_focused": "Le suivi s’exécute dans une nouvelle session du worktree dans {{path}}, mais cette session n’a pas le focus. Bascule dessus dans la barre latérale.",
       "followup_chat_not_created": "Impossible d’ouvrir le nouveau chat. Appuie à nouveau sur le bouton pour réessayer.",
+      "followup_chat_prompt_not_sent": "Le prompt n’a pas été envoyé. Appuie à nouveau sur le bouton pour réessayer.",
+      "followup_prompt_unconfirmed": "La session de suivi s’est ouverte, mais le tableau de bord n’a pas pu confirmer que le prompt lui est parvenu. Ouvre cette session pour vérifier si elle s’exécute.",
       "followup_chat_not_focused": "Le nouveau chat a été créé, mais n’a pas pu prendre le focus. Bascule dessus dans la barre latérale.",
       "open_older_sessions": "Ouvrir Sessions plus anciennes",
       "tabs_were_not_restored_many": "{{count}} onglets qui étaient ouverts avant le redémarrage n'ont pas été restaurés.",

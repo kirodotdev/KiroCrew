@@ -253,7 +253,13 @@ export function useComposerSend({
   // intercepted locally, transport error, refused). UI reactions all stay
   // inside send(); the verdict exists for callers that persist state only on
   // delivery (ArtifactPanel's submit-to-chat batch marks comments sent on it).
-  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false): Promise<boolean> => {
+  // `onUndelivered` is for an isolated caller that reports a failed send itself
+  // (the follow-up card shows it on its item), so the page-level "copy it to try
+  // again" notice would only give it a second, conflicting recovery instruction.
+  // It is told whether the server refused the send or the answer was lost
+  // (`indeterminate`: the turn may be running, so a retry could run it twice).
+  const send = useCallback(async (optionText?: string, targetSlot?: string, steerNow?: boolean | 'auto', isolated = false, onUndelivered?: (kind: 'refused' | 'indeterminate') => void): Promise<boolean> => {
+    const ownsFailureReport = !!onUndelivered
     // Defense-in-depth: ChatInput already gates Send/Optimize buttons and
     // the keyboard Enter shortcut on `connected`, but a future caller (a
     // programmatic dispatch from a hotkey, a follow-up option click, an
@@ -539,7 +545,7 @@ export function useComposerSend({
           // page-level copyable notice, which survives slot switches, instead
           // of a draft or a user row that would age pending approvals.
           const failure = i18nT('pages.chatPage.send_failed_with_error', { error: createFailReason(e) })
-          setActionError({ message: i18nT('appChatLaunch.unsent', { error: failure, message: raw }), title: i18nT('pages.chatPage.could_not_start_a_new_session'), preserveOnSwitch: true })
+          if (!ownsFailureReport) setActionError({ message: i18nT('appChatLaunch.unsent', { error: failure, message: raw }), title: i18nT('pages.chatPage.could_not_start_a_new_session'), preserveOnSwitch: true })
           return false
         }
         // Recover the payload WITHOUT clobbering anything newer. Two traps make a
@@ -777,7 +783,7 @@ export function useComposerSend({
     const failLocalTurn = (message: ChatMessage) => {
       if (isolated) {
         if (slot) dispatch(endLocalTurn(slot))
-        setActionError({ message: i18nT('appChatLaunch.unsent', { error: message.content, message: raw }), preserveOnSwitch: true })
+        if (!ownsFailureReport) setActionError({ message: i18nT('appChatLaunch.unsent', { error: message.content, message: raw }), preserveOnSwitch: true })
         return
       }
       if (slot) {
@@ -794,6 +800,10 @@ export function useComposerSend({
       // core copy the other surfaces use, instead of a bare "Connection error".
       failLocalTurn({ role: 'error', content: i18nT('pages.chatPage.send_failed_connection'), cls: '' })
       restoreComposerAfterFailedSend()
+      // The caller treats this as maybe-delivered, so the bubble keeps a visible
+      // pending-delivery line instead of reading as sent.
+      if (onUndelivered && slot) dispatch(markSendUnconfirmed({ slot, sendId }))
+      onUndelivered?.('indeterminate')
       return false
     }
     if (receipt.status === 'response-late') {
@@ -803,6 +813,14 @@ export function useComposerSend({
       // missing response -- a channel-linked slot can deliver one -- and then
       // there is nothing to warn about.
       if (slot && selectSendConfirmed(store.getState(), slot, sendId)) return true
+      // A caller that owns the failure report gets the same maybe-delivered
+      // verdict as a lost receipt, and no "resend manually" notice, which would
+      // invite running its prompt a second time.
+      if (onUndelivered) {
+        if (slot) dispatch(markSendUnconfirmed({ slot, sendId }))
+        onUndelivered('indeterminate')
+        return false
+      }
       // An unconfirmed STEER is not counted as delivered: the steer receipt
       // policy hands its text back (applySteerReceipt), so a caller that
       // persists on this verdict (a comment batch) keeps its payload.
@@ -869,6 +887,7 @@ export function useComposerSend({
       // The server explicitly accepted neither (`ok` nor `queued`), so nothing
       // was sent — recovering the composer cannot duplicate a delivered turn.
       restoreComposerAfterFailedSend()
+      onUndelivered?.('refused')
     }
     if (slot && confirmedDelivered(body)) {
       // The response remains a delivery receipt (#4131), even if the correlated

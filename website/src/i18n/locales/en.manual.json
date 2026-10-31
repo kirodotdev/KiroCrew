@@ -2553,7 +2553,9 @@
       "open_new_chat_in_project": "Open a new chat in {{path}} without a worktree, because it is not a git repository",
       "open_new_chat_inside_repo": "Open a new chat in {{path}} without a worktree, because it is inside the git repository at {{root}}, not its root",
       "open_new_chat": "Open a new chat without a worktree, because this session has no project directory",
-      "new_chat_footer_same_project_directory": "Both actions pre-fill the composer — nothing is sent until you press send. The new chat opens in this session's project directory."
+      "footer_start_sends_add_prefills_project_directory": "Start in new chat sends the prompt as the first message of a new chat in this session's project directory. Add to this session pre-fills the composer and sends nothing.",
+      "show_prompt": "Show prompt",
+      "hide_prompt": "Hide prompt"
     },
     "inboundLinkChip": {
       "driven_from": "Driven from {{label}}",
@@ -6002,9 +6004,12 @@
       "run_in_terminal_config_read_failed_error": "Your terminal settings couldn't be read, so \"reuse the current terminal\" was skipped and the command opened a new terminal instead. Reload to try again.",
       "followup_worktree_session_not_created": "Worktree created at {{path}}, but its session could not be opened and scoped. Press the button again to retry — the existing worktree will be reused.",
       "followup_worktree_no_session_returned": "Worktree created at {{path}}, but no session was returned. Press the button again to retry — the existing worktree will be reused.",
-      "followup_worktree_session_not_opened": "Worktree ready at {{path}}, but its session could not be opened. Switch to it in the sidebar, or press the button again.",
-      "followup_worktree_session_not_focused": "Worktree ready at {{path}}, but its session is not in focus. Switch to it in the sidebar, or press the button again.",
+      "followup_worktree_prompt_not_sent": "Worktree ready at {{path}}, but the prompt was not sent. Press the button again to retry: the worktree is reused.",
+      "followup_worktree_session_not_opened": "The follow-up is running in a new session in the worktree at {{path}}, but that session could not be opened. Switch to it in the sidebar.",
+      "followup_worktree_session_not_focused": "The follow-up is running in a new session in the worktree at {{path}}, but that session is not in focus. Switch to it in the sidebar.",
       "followup_chat_not_created": "The new chat could not be opened. Press the button again to retry.",
+      "followup_chat_prompt_not_sent": "The prompt was not sent. Press the button again to retry.",
+      "followup_prompt_unconfirmed": "The follow-up session opened, but the dashboard could not confirm the prompt reached it. Open that session to check whether it is running.",
       "followup_chat_not_focused": "The new chat was created, but it could not be brought into focus. Switch to it in the sidebar.",
       "open_older_sessions": "Open Older Sessions",
       "tabs_were_not_restored_one": "{{count}} tab that was open before the restart was not restored.",

@@ -116,9 +116,15 @@ with no app identity to check.
 If the new session cannot be scoped to the worktree, the frontend deletes the
 session it just created rather than leaving an unscoped one behind; the worktree
 survives and the create endpoint is idempotent for it, so pressing the button
-again reuses it. On success the new session is explicitly activated before its
-composer is pre-filled, so a session switch during creation cannot land the
-prompt in an unrelated session.
+again reuses it. On success the prompt is sent to the new session by its key,
+before any switch, so a session switch during creation cannot land it in an
+unrelated session, and no composer is read or written. The item leaves the card
+only after the send is accepted, so its Start button cannot run the prompt twice.
+
+Start therefore runs agent-authored text on one click. The control that offsets
+it is on the card: each item's **Show prompt** toggle expands the exact text
+Start will send, rendered as plain text, and the footer states that Start sends
+while "Add to this session" only pre-fills.
 
 Both endpoints emit SEL audit records.
 

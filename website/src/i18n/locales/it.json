@@ -7268,7 +7268,7 @@
     },
     "followUpCard": {
       "add_to_this_session": "Aggiungi a questa sessione",
-      "both_actions_pre_fill_the_composer_nothing_is_se": "Entrambe le azioni precompilano il campo di scrittura — nulla viene inviato finché non premi invia.",
+      "footer_start_sends_add_prefills": "Avvia invia il prompt come primo messaggio della nuova sessione. Aggiungi a questa sessione precompila il campo di scrittura e non invia nulla.",
       "create_worktree_and_open_session": "Crea un worktree git da {{path}} e apri lì una nuova sessione",
       "creating_worktree": "Creazione del worktree…",
       "dismiss_this_suggestion": "Ignora questo suggerimento",
@@ -7286,7 +7286,9 @@
       "open_new_chat_in_project": "Apri una nuova chat in {{path}} senza worktree, perché non è un repository git",
       "open_new_chat_inside_repo": "Apri una nuova chat in {{path}} senza worktree, perché si trova nel repository git in {{root}} ma non ne è la radice",
       "open_new_chat": "Apri una nuova chat senza worktree, perché questa sessione non ha una directory di progetto",
-      "new_chat_footer_same_project_directory": "Entrambe le azioni precompilano il campo di scrittura — nulla viene inviato finché non premi invia. La nuova chat si apre nella directory di progetto di questa sessione."
+      "footer_start_sends_add_prefills_project_directory": "Avvia in una nuova chat invia il prompt come primo messaggio di una nuova chat nella directory di progetto di questa sessione. Aggiungi a questa sessione precompila il campo di scrittura e non invia nulla.",
+      "show_prompt": "Mostra prompt",
+      "hide_prompt": "Nascondi prompt"
     },
     "inboundLinkChip": {
       "driven_from": "Pilotata da {{label}}",
@@ -13071,9 +13073,12 @@
       "run_in_terminal_config_read_failed_error": "Non è stato possibile leggere le impostazioni del terminale, quindi «riutilizza il terminale corrente» è stato saltato e il comando è stato aperto in un nuovo terminale. Ricarica per riprovare.",
       "followup_worktree_session_not_created": "Worktree creato in {{path}}, ma non è stato possibile aprire e associare la sua sessione. Premi di nuovo il pulsante per riprovare — il worktree esistente verrà riutilizzato.",
       "followup_worktree_no_session_returned": "Worktree creato in {{path}}, ma non è stata restituita alcuna sessione. Premi di nuovo il pulsante per riprovare — il worktree esistente verrà riutilizzato.",
-      "followup_worktree_session_not_opened": "Worktree pronto in {{path}}, ma non è stato possibile aprire la sua sessione. Passa alla sessione dalla barra laterale o premi di nuovo il pulsante.",
-      "followup_worktree_session_not_focused": "Worktree pronto in {{path}}, ma la sua sessione non è in primo piano. Passa alla sessione dalla barra laterale o premi di nuovo il pulsante.",
+      "followup_worktree_prompt_not_sent": "Worktree pronto in {{path}}, ma il prompt non è stato inviato. Premi di nuovo il pulsante per riprovare: il worktree viene riutilizzato.",
+      "followup_worktree_session_not_opened": "Il follow-up è in esecuzione in una nuova sessione nel worktree in {{path}}, ma non è stato possibile aprire quella sessione. Passa alla sessione dalla barra laterale.",
+      "followup_worktree_session_not_focused": "Il follow-up è in esecuzione in una nuova sessione nel worktree in {{path}}, ma quella sessione non è in primo piano. Passa alla sessione dalla barra laterale.",
       "followup_chat_not_created": "Impossibile aprire la nuova chat. Premi di nuovo il pulsante per riprovare.",
+      "followup_chat_prompt_not_sent": "Il prompt non è stato inviato. Premi di nuovo il pulsante per riprovare.",
+      "followup_prompt_unconfirmed": "La sessione di follow-up si è aperta, ma la dashboard non ha potuto confermare che il prompt le sia arrivato. Apri quella sessione per verificare se è in esecuzione.",
       "followup_chat_not_focused": "La nuova chat è stata creata, ma non è stato possibile portarla in primo piano. Passa alla chat dalla barra laterale.",
       "open_older_sessions": "Apri Sessioni più vecchie",
       "tabs_were_not_restored_many": "{{count}} schede che erano aperte prima del riavvio non sono state ripristinate.",
