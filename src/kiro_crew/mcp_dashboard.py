@@ -890,9 +890,14 @@ def _list_tools() -> list[dict[str, Any]]:
     """The tool surface, unconditionally.
 
     Reaching this process at all means an agent spec referenced this server, so
-    the assignment already happened; there is nothing left to gate here.
+    the assignment already happened; there is nothing left to gate here. The one
+    conditional part is the ``crew`` argument on the five session tools, which is
+    advertised only while ``work_ledger.remote_dispatch`` is on.
     """
-    return TABLE.list()
+    from kiro_crew.mcp_session_crew import with_crew_schema
+    from kiro_crew.remote_dispatch import remote_dispatch_enabled
+
+    return with_crew_schema(TABLE.list(), remote_dispatch_enabled())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:

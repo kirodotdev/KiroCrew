@@ -33,6 +33,7 @@ import ChatMessageList from '../../../app-sdk/ChatMessageList'
 import ChatFooter from '../ChatFooter'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../../../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../../../store/chatSlice'
+import { DOCK_CLEARANCE_PX } from '../composerDockMetrics'
 import { ReadOnlyCodeCtx } from '../../../components/markdown/contexts'
 import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
@@ -399,6 +400,13 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     return cover ? coverSiblings(cover) : undefined
   }, [])
   const placeholder = i18nT('pages.chat.crewWindow.placeholder', { name })
+  // Every condition the notices column draws something for; the glass chip
+  // behind them is mounted only then, so a quiet column stays empty. An error
+  // counts only with text to show: ErrorNotice draws nothing for an empty
+  // message, and the chip must not open over the transcript around nothing.
+  const hasNotice = (!!action.error && (isUnreachable(action.error) || !!errMessage(action.error)))
+    || (!!picker.error && !!errMessage(picker.error)) || !!agentMode.error || picker.effortCapsFailed
+    || agentMode.readFailed.agents || agentMode.readFailed.mode || !connected || !!rewindTs
 
   return (
     <div ref={rootRef} tabIndex={-1} className="flex flex-col h-full min-h-0 outline-none" data-testid="crew-chat-window">
@@ -429,7 +437,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </div>
       )}
       <div className="relative flex-1 min-h-0">
-      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + 16 }}>
+      <div className="absolute inset-0 overflow-y-auto pt-3 flex flex-col gap-1" aria-live="polite" style={{ paddingBottom: dockH + DOCK_CLEARANCE_PX }}>
         <div className="px-4 flex flex-col gap-3">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {loadError && <ErrorNotice title={i18nT('pages.chat.crewWindow.load_failed', { name })} message={errMessage(loadError)} />}
@@ -459,12 +467,41 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           )}
         </div>
       </div>
-      {/* Glass pins its own root to position: relative, so a plain box places
-          the dock; the transcript above pays for it with padding. */}
-      <div ref={dockRef} className="absolute left-0 right-0 bottom-0">
-      <Glass thickness="thin" radius={0} className="border-t border-border py-3 flex flex-col gap-2">
-        {/* The composer's own column, so a notice about a pick sits over the box and chip it is about. */}
-        <div className="px-4 mx-auto w-full flex flex-col gap-2" style={{ maxWidth: 'var(--mc-input-width, 900px)' }}>
+      {/* The composer dock, in the local page's shape (ComposerDockView): a bare
+          box floating over the bottom of the scroller, so the transcript passes
+          UNDER the composer's own glass at every scroll position
+          (docs/decisions/2026-10-02-chat-transcript-scrolls-under-the-composer-glass.md)
+          and the scroller pays for the covered strip with `paddingBottom: dockH +
+          DOCK_CLEARANCE_PX`, measured from this box by `dockRef`. No band, border
+          or padding of its own: the composer card is the only material here, as
+          on the local page, so the window shows the same air around the box (a
+          band with vertical padding of its own would sit the box in more empty
+          strip than the box is tall, and unevenly, since the composer pads its
+          top and bottom differently).
+          `pointer-events-none` on the root, restored on the CHILDREN of the two
+          `dock-inert` wrappers (liquid-glass.css): each child is its own 900px
+          column, so the empty width either side lets wheel and touch reach the
+          transcript underneath. No z-index on purpose, as on the local dock: the
+          box paints over the scroller because it follows it in DOM order. One
+          thing the local dock does that this one leaves out: it insets its right
+          edge by the scroller's gutter. Here the dock spans the full width, so in
+          a window wider than the column the root's `pointer-events-none` lets a
+          click beside the column reach the scrollbar beneath, while in a narrower
+          one the column itself covers the bottom of a classic scrollbar (overlay
+          scrollbars have no gutter); wheel, touch and keyboard still scroll. */}
+      <div ref={dockRef} className="absolute left-0 right-0 bottom-0 pointer-events-none" data-testid="crew-window-dock">
+        {/* The composer's own column, so a notice about a pick sits over the box
+            and chip it is about. `empty:hidden` because the column is usually
+            empty: left in flow it would still open its margin as a blank strip
+            above the box. With something to say, the notices share one glass
+            chip, as every bar in the local dock is a pane of its own: the column
+            floats over the scrolling transcript, and a bare text line there (the
+            offline readout, the rewind prompt, an inline read failure) would
+            paint straight onto the rows passing under it. */}
+        <div className="dock-inert">
+        <div className="px-4 mx-auto w-full flex flex-col gap-2 mb-2 empty:hidden" style={{ maxWidth: 'var(--mc-input-width, 900px)' }} data-testid="crew-window-notices">
+          {hasNotice && (
+          <Glass variant="chip" thickness="thick" radius={12} className="flex flex-col gap-2 px-3 py-2">
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {/* An unreachable crew did not say no: its own words, no raw error,
               and a way to the crew's own dashboard (which reconnects it). */}
@@ -506,7 +543,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
               <Btn onClick={() => { setRewindTs(null); setRewindText('') }}>{i18nT('pages.chat.crewWindow.cancel_rewind')}</Btn>
             </div>
           )}
-          {/* fuseBelow off: the stack stands as whole cards over the composer. */}
+          </Glass>
+          )}
+          {/* fuseBelow off: the stack stands as whole cards over the composer.
+              Beside the notices' chip, not inside it: each queue card is a
+              glass pane of its own. */}
           {(queuedMessages.length > 0 || systemDeliveryCount > 0) && (
             <div data-testid="crew-window-queue">
               <SubagentDeliveryProgress count={systemDeliveryCount} />
@@ -514,6 +555,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             </div>
           )}
         </div>
+        </div>
+        {/* `relative z-10 dock-inert`, the same wrapper the local dock gives its
+            input area: the composer's glass shelf fade (`.glass-shelf::before`,
+            liquid-glass.css) is drawn in this stacking context, behind the pane. */}
+        <div className="relative z-10 dock-inert">
         {/* The shared composer, under a slot key no local session can carry:
             its store reads (approvals, tool log, busy mode) then find nothing
             of the hub's own sessions. Menus, the optimizer and the approval
@@ -577,7 +623,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         </Composer>
         </SlotProvider>
         </fieldset>
-      </Glass>
+        </div>
       </div>
       {picker.portal}
       {agentMode.portal}

@@ -6,6 +6,8 @@ import argparse
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 
 def _draining(mock_log):
     """A ``consolidate_now`` that leaves the tail empty, as the real one does.
@@ -212,11 +214,14 @@ class TestConsolidateCmd:
         from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key="test_session", consolidate_all=False)
-        _consolidate_cmd(args)
+        with pytest.raises(SystemExit) as exit_info:
+            _consolidate_cmd(args)
 
+        assert exit_info.value.code == 1
         captured = capsys.readouterr()
-        assert "40 message(s) remain" in captured.out
+        assert "test_session: partially consolidated, 40 message(s) remain" in captured.err
         assert "done" not in captured.out
+        assert "Done." not in captured.out
 
     @patch("kiro_crew.cli.sel")
     @patch("kiro_crew.cli.SkillsLoader")
@@ -369,11 +374,138 @@ class TestConsolidateCmdExceptionPath:
         from kiro_crew.cli import _consolidate_cmd
 
         args = argparse.Namespace(session_key="test_session", consolidate_all=False)
-        _consolidate_cmd(args)
+        with pytest.raises(SystemExit) as exit_info:
+            _consolidate_cmd(args)
 
+        assert exit_info.value.code == 1
         captured = capsys.readouterr()
         assert "Consolidating session: test_session" in captured.out
         assert "done" not in captured.out
+        assert "Done." not in captured.out
+        # One line naming the key and the exception type; the message itself
+        # can carry transcript text, so it stays out of the terminal.
+        failure_lines = [line for line in captured.err.splitlines() if "test_session" in line]
+        assert failure_lines == ["  test_session: failed (RuntimeError)"]
+        assert "LLM down" not in captured.err
+
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
+    def test_consolidate_all_reports_each_failed_key_and_exits_1(
+        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
+        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
+        tmp_path, capsys,
+    ):
+        """One failed key in an --all run is named on stderr and fails the run.
+
+        The keys that finish keep their ``done`` line on stdout, and the loop
+        still reaches every key after the failure.
+        """
+        sessions_dir = self._make_session_file(tmp_path, "good")
+        self._make_session_file(tmp_path, "bad")
+        self._make_session_file(tmp_path, "later")
+        mock_cfg_cls.load.return_value = MagicMock()
+        mock_log = mock_log_cls.return_value
+        mock_log._dir = sessions_dir
+        remaining = {"good": 3, "bad": 3, "later": 3}
+        mock_log.unconsolidated_count.side_effect = lambda key: remaining[key]
+
+        async def _consolidate_now(key: str) -> bool:
+            if key == "bad":
+                raise RuntimeError("secret transcript text")
+            remaining[key] = 0
+            return True
+
+        mock_consolidator = mock_consolidator_cls.return_value
+        mock_consolidator.consolidate_now = AsyncMock(side_effect=_consolidate_now)
+
+        from kiro_crew.cli import _consolidate_cmd
+
+        args = argparse.Namespace(session_key=None, consolidate_all=True)
+        with pytest.raises(SystemExit) as exit_info:
+            _consolidate_cmd(args)
+
+        assert exit_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "  good: done ✓" in captured.out
+        assert "  later: done ✓" in captured.out
+        assert "  bad: failed (RuntimeError)" in captured.err
+        assert "1 session(s) did not finish consolidating." in captured.err
+        assert "secret transcript text" not in captured.err + captured.out
+
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
+    def test_consolidate_finished_and_skipped_keys_exit_0(
+        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
+        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
+        tmp_path, capsys,
+    ):
+        """A key that finishes and a key with nothing to do keep today's output."""
+        sessions_dir = self._make_session_file(tmp_path, "good")
+        mock_cfg_cls.load.return_value = MagicMock()
+        mock_log = mock_log_cls.return_value
+        mock_log._dir = sessions_dir
+        mock_log.unconsolidated_count.return_value = 3
+        mock_consolidator = mock_consolidator_cls.return_value
+        mock_consolidator.consolidate_now = AsyncMock(side_effect=_draining(mock_log))
+
+        from kiro_crew.cli import _consolidate_cmd
+
+        _consolidate_cmd(argparse.Namespace(session_key="good", consolidate_all=False))
+        _consolidate_cmd(argparse.Namespace(session_key="empty", consolidate_all=False))
+
+        captured = capsys.readouterr()
+        assert "  good: done ✓" in captured.out
+        assert "  empty: no unconsolidated messages, skipping" in captured.out
+        assert captured.out.count("Done. Check ~/.kiro/crew/skills/auto/ for new skills.") == 2
+        assert captured.err == ""
+
+    @patch("kiro_crew.cli.sel")
+    @patch("kiro_crew.cli.SkillsLoader")
+    @patch("kiro_crew.cli.SessionManager")
+    @patch("kiro_crew.cli.MemoryStore")
+    @patch("kiro_crew.cli.HistoryConsolidator")
+    @patch("kiro_crew.cli.ConversationLog")
+    @patch("kiro_crew.cli.KiroCrewConfig")
+    def test_consolidate_sensitive_session_skip_exits_0(
+        self, mock_cfg_cls, mock_log_cls, mock_consolidator_cls,
+        mock_mem_cls, mock_sess_cls, mock_skills_cls, mock_sel,
+        tmp_path, capsys,
+    ):
+        """consolidate_now's deliberate sensitive-session skip is a skip, not a failure.
+
+        It returns True and leaves the tail, so the remainder alone cannot tell
+        it from a stalled drain; a rerun never changes it, so exit 1 here would
+        fail every later run.
+        """
+        sessions_dir = self._make_session_file(tmp_path, "secretive")
+        mock_cfg_cls.load.return_value = MagicMock()
+        mock_log = mock_log_cls.return_value
+        mock_log._dir = sessions_dir
+        mock_log.unconsolidated_count.return_value = 4
+        mock_log._read_messages.return_value = [
+            {"role": "tool", "content": "fs_read ~/.ssh/config"},
+        ]
+        mock_consolidator = mock_consolidator_cls.return_value
+        mock_consolidator.consolidate_now = AsyncMock(return_value=True)
+
+        from kiro_crew.cli import _consolidate_cmd
+
+        _consolidate_cmd(argparse.Namespace(session_key="secretive", consolidate_all=False))
+
+        captured = capsys.readouterr()
+        assert "  secretive: sensitive session, skipping (4 message(s) left)" in captured.out
+        assert "Done." in captured.out
+        assert captured.err == ""
 
 
 class TestExpireIdleSelFailure:
@@ -468,8 +600,11 @@ def test_refused_consolidation_cli_does_not_claim_zero_spend(capsys):
     ):
         log.return_value.unconsolidated_count.return_value = 3
         consolidator.return_value.consolidate_now = AsyncMock(return_value=False)
-        _consolidate_cmd(argparse.Namespace(session_key="test_session", consolidate_all=False))
-    output = capsys.readouterr().out
-    assert "no completed pass recorded" in output
+        with pytest.raises(SystemExit) as exit_info:
+            _consolidate_cmd(argparse.Namespace(session_key="test_session", consolidate_all=False))
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "test_session: no completed pass recorded" in captured.err
     assert "nothing ran" not in output
     assert "done" not in output

@@ -86,6 +86,55 @@ def _ws_dir_composed(ws_dir: str) -> Path:
     return expanded if expanded.is_absolute() else config_dir() / expanded
 
 
+def _dir_identity(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of an existing *path*, or None when there is no usable one.
+
+    None when it cannot be stat'ed, and when ``st_ino`` is 0: filesystems with
+    no file IDs report 0 for every entry, so it identifies nothing.
+    """
+    try:
+        st = path.stat()
+    except (OSError, ValueError):
+        return None
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _ws_dir_in_use(candidate: Path, dirs) -> bool:
+    """True when the validated *candidate* is the folder one of the ``dir`` strings names.
+
+    Each stored ``dir`` is composed by the same rule as the candidate
+    (``_ws_dir_composed``) and resolved, so ``./workspace-a``, ``workspace-a/``
+    and an absolute spelling of the same folder compare equal. When both
+    folders exist, their ``(st_dev, st_ino)`` decides instead of the path: on a
+    case-insensitive filesystem ``WORKSPACE-A`` resolves to a different string
+    than ``workspace-a`` but is one directory, and in a case-sensitive Windows
+    directory two paths that compare equal can be two directories. The path
+    decides only when either identity is unavailable.
+
+    A stored ``dir`` that cannot be resolved (``~gone/...`` raises
+    ``RuntimeError``; a path the host refuses raises ``OSError``) is skipped
+    rather than refused: existing entries are never rejected here, and an
+    entry that cannot resolve cannot name the validated candidate either.
+    """
+    candidate_id = _dir_identity(candidate)
+    for d in dirs:
+        try:
+            stored = platform_compat.strip_extended_length_prefix(
+                _ws_dir_composed(str(d)).resolve()
+            )
+        except (RuntimeError, OSError, ValueError):
+            continue
+        stored_id = _dir_identity(stored) if candidate_id is not None else None
+        if stored_id is not None:
+            if stored_id == candidate_id:
+                return True
+        elif stored == candidate:
+            return True
+    return False
+
+
 def _ws_dir_resolves_inside_home(ws_dir: str) -> Path | None:
     """The resolved path when *ws_dir* is a STRICT descendant of the data home, else None.
 
@@ -262,9 +311,9 @@ def _handle_workspace(args: argparse.Namespace) -> None:
                 )
                 print("Error: cannot use config root as workspace directory", file=sys.stderr)
                 sys.exit(1)
-            # Check for directory collision BEFORE copying files
-            existing_dirs = {ws.dir for ws in cfg.workspaces.values()}
-            if ws_dir in existing_dirs:
+            # Check for directory collision BEFORE copying files (resolved paths,
+            # so another spelling of a folder in use is still a collision)
+            if _ws_dir_in_use(dst_path, (ws.dir for ws in cfg.workspaces.values())):
                 print(
                     f"Error: directory '{ws_dir}' is already used by another workspace",
                     file=sys.stderr,
@@ -308,9 +357,8 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             dst_path = _cli_validated_workspace_dst(
                 ws_dir, operation="workspace.create", name=args.name
             )
-        # Check for directory collision with existing workspaces
-        existing_dirs = {ws.dir for ws in cfg.workspaces.values()}
-        if ws_dir in existing_dirs:
+        # Check for directory collision with existing workspaces (resolved paths)
+        if _ws_dir_in_use(dst_path, (ws.dir for ws in cfg.workspaces.values())):
             print(
                 f"Error: directory '{ws_dir}' is already used by another workspace",
                 file=sys.stderr,
@@ -321,8 +369,8 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             workspaces = coerce_dict_section(doc, "workspaces")
             if args.name in workspaces:
                 raise _CliConflict(f"workspace '{args.name}' already exists")
-            used = {str(ws.get("dir", "")) for ws in workspaces.values() if isinstance(ws, dict)}
-            if ws_dir in used:
+            used = (ws.get("dir", "") for ws in workspaces.values() if isinstance(ws, dict))
+            if _ws_dir_in_use(dst_path, used):
                 raise _CliConflict(f"directory '{ws_dir}' is already used by another workspace")
             if staged_path is not None:
                 # Same install invariant as the dashboard handler: the
@@ -401,8 +449,8 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             update_dst = _cli_validated_workspace_dst(
                 args.dir, operation="workspace.update", name=args.name
             )
-            existing_dirs = {ws.dir for n, ws in cfg.workspaces.items() if n != args.name}
-            if args.dir in existing_dirs:
+            others = (ws.dir for n, ws in cfg.workspaces.items() if n != args.name)
+            if _ws_dir_in_use(update_dst, others):
                 print(
                     f"Error: directory '{args.dir}' is already used by another workspace",
                     file=sys.stderr,
@@ -415,12 +463,12 @@ def _handle_workspace(args: argparse.Namespace) -> None:
             if not isinstance(entry, dict):
                 raise _CliConflict(f"workspace '{args.name}' not found")
             if args.dir is not None:
-                used = {
-                    str(ws.get("dir", ""))
+                used = (
+                    ws.get("dir", "")
                     for n, ws in workspaces.items()
                     if n != args.name and isinstance(ws, dict)
-                }
-                if args.dir in used:
+                )
+                if _ws_dir_in_use(update_dst, used):
                     raise _CliConflict(
                         f"directory '{args.dir}' is already used by another workspace"
                     )

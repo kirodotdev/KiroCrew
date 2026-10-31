@@ -336,7 +336,20 @@ def _artifact(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            return p.read_text(encoding="utf-8")
+            # A missing file, a folder or non-UTF-8 bytes is the caller's input,
+            # not a crash: one line and exit 1, like the other errors here.
+            try:
+                return p.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                reason = "not UTF-8 text"
+            except OSError as exc:
+                reason = exc.strerror or str(exc)
+            print(
+                f"Error: could not read --content-file {safe_terminal_line(str(p))}: "
+                f"{safe_terminal_line(reason)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         if getattr(args, "content", None):
             return args.content
         if not sys.stdin.isatty():
@@ -345,6 +358,24 @@ def _artifact(args: argparse.Namespace) -> None:
             "Error: provide --content, --content-file, or pipe content via stdin", file=sys.stderr
         )
         sys.exit(1)
+
+    def _slug_segment(slug: str) -> str:
+        """Return *slug* as one encoded URL path segment, or exit 2.
+
+        The slug is spliced into ``/api/artifacts/<slug>``. Unencoded, a slug
+        like ``x/publish`` reaches a different route (DELETE on it unpublishes
+        ``x``) and ``?``/``#`` cut the path short; ``.`` and ``..`` are dot
+        segments a URL normalizer collapses. Real slugs are none of these, so
+        refuse them and the empty slug outright, and encode everything else.
+        """
+        if not slug or "/" in slug or slug in (".", ".."):
+            print(
+                f"Error: invalid artifact slug {slug!r}: it must be non-empty, "
+                "not '.' or '..', and contain no '/'",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return urllib.parse.quote(slug, safe="")
 
     def _parse_tags(s: str | None) -> list[str]:
         if not s:
@@ -375,11 +406,11 @@ def _artifact(args: argparse.Namespace) -> None:
         return
 
     if action == "show":
-        slug = args.slug
+        seg = _slug_segment(args.slug)
         version = getattr(args, "version", None)
-        path = f"/api/artifacts/{slug}"
+        path = f"/api/artifacts/{seg}"
         if version is not None:
-            path = f"/api/artifacts/{slug}/versions/{int(version)}"
+            path = f"/api/artifacts/{seg}/versions/{int(version)}"
         d = _request("GET", path)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
@@ -447,6 +478,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "update":
         slug = args.slug
+        seg = _slug_segment(slug)
         body = {}
         # Only read stdin when explicit content args are absent. In non-
         # interactive environments (CI, cron, piped /dev/null) sys.stdin.isatty()
@@ -469,7 +501,7 @@ def _artifact(args: argparse.Namespace) -> None:
         if not body:
             print("Error: provide content/--name/--description/--tags", file=sys.stderr)
             sys.exit(1)
-        d = _request("PATCH", f"/api/artifacts/{slug}", body)
+        d = _request("PATCH", f"/api/artifacts/{seg}", body)
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
@@ -489,7 +521,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "delete":
         slug = args.slug
-        d = _request("DELETE", f"/api/artifacts/{slug}")
+        d = _request("DELETE", f"/api/artifacts/{_slug_segment(slug)}")
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)
@@ -498,7 +530,7 @@ def _artifact(args: argparse.Namespace) -> None:
 
     if action == "versions":
         slug = args.slug
-        d = _request("GET", f"/api/artifacts/{slug}/versions")
+        d = _request("GET", f"/api/artifacts/{_slug_segment(slug)}/versions")
         if d.get("error"):
             print(f"Error: {d['error']}", file=sys.stderr)
             sys.exit(1)

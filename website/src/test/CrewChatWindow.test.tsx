@@ -201,6 +201,24 @@ describe('CrewChatWindow', () => {
     expect(mic).not.toHaveAttribute('aria-keyshortcuts')
   })
 
+  // #23928: the dock is the local page's bare box, not a band of its own. A band
+  // wrapper fails the children assertion (it is not a `dock-inert` wrapper); a
+  // notices column without `empty:hidden` fails the column assertion.
+  it('floats the composer in the local dock shape, with an empty notices column that takes no room', async () => {
+    renderWindow()
+    // Connected: until the version read lands, the column carries the offline line.
+    const box = await screen.findByRole('textbox', PEER_ROW_WAIT)
+    await waitFor(() => expect(box).not.toBeDisabled())
+    const dock = screen.getByTestId('crew-window-dock')
+    expect(dock.className).toContain('pointer-events-none')
+    expect(dock.className).not.toMatch(/border-t|py-/)
+    expect([...dock.children].map(c => c.className)).toEqual(['dock-inert', 'relative z-10 dock-inert'])
+    const notices = screen.getByTestId('crew-window-notices')
+    expect(notices.className).toContain('empty:hidden')
+    await waitFor(() => expect(notices.childElementCount).toBe(0))
+    expect(within(dock.children[1] as HTMLElement).getByRole('textbox')).toBeTruthy()
+  })
+
   it('keeps Stop reachable while an approval is pending', async () => {
     slotRow = { ...slotRow, running: true, pending_approval_info: { origin: 'native', request_id: '7', request_mid: 'm-7', tool: 'shell' } }
     detail = { running: true, messages: [{ role: 'user', content: 'hi', ts: 't1' }, permissionRow('7')] }

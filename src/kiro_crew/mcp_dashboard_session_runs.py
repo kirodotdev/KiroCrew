@@ -348,6 +348,10 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
+    if "crew" in args:
+        from kiro_crew.mcp_session_crew import run_crew_create
+
+        return run_crew_create(args, ctx)
     created = _create_session(args, ctx)
     if created.resp is None:
         return created.error
@@ -449,6 +453,10 @@ def _run_session_fork(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_stop(args: dict[str, Any], ctx: ToolContext) -> str:
+    if "crew" in args:
+        from kiro_crew.mcp_session_crew import run_crew_stop
+
+        return run_crew_stop(args, ctx)
     try:
         resp = ctx.client.post(
             "/api/session-control/stop",
@@ -641,6 +649,10 @@ def _run_session_set_color(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_close(args: dict[str, Any], ctx: ToolContext) -> str:
+    if "crew" in args:
+        from kiro_crew.mcp_session_crew import run_crew_close
+
+        return run_crew_close(args, ctx)
     try:
         resp = ctx.client.post(
             "/api/session-control/close",
@@ -738,6 +750,10 @@ def _run_session_history_list(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
+    if "crew" in args:
+        from kiro_crew.mcp_session_crew import run_crew_send
+
+        return run_crew_send(args, ctx)
     steer = bool(args.get("steer"))
     try:
         resp = ctx.client.post(
@@ -1043,6 +1059,10 @@ def _pending_approval_phrase(resp: dict[str, Any]) -> str:
 
 
 def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
+    if "crew" in args:
+        from kiro_crew.mcp_session_crew import run_crew_read
+
+        return run_crew_read(args, ctx)
     query = f"target={quote(str(args['target']))}&limit={args.get('limit', 20)}"
     if args.get("since") is not None:
         query += f"&since={int(args['since'])}"

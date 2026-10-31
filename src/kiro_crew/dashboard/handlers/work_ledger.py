@@ -88,6 +88,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         caller_admission,
         contained_channel_caller,
         reaches_a_channel,
+        session_is_bound_worker,
     )
     from kiro_crew.dashboard.handlers.work_ledger_conductor import (  # noqa: F401
         DISPATCH_FIELD,

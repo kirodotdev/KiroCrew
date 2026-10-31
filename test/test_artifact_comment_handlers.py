@@ -94,6 +94,50 @@ class TestPostComment:
         assert stored[0].author  # defaulted to the dashboard user alias
 
 
+_BAD_ANCHOR_INTS = [
+    {"start_offset": "9", "end_offset": 23},
+    {"start_offset": 9.0, "end_offset": 23},
+    {"start_offset": True, "end_offset": 23},
+    {"start_offset": -1, "end_offset": 23},
+    {"start_offset": 9, "end_offset": 2**31},
+    {"start_offset": 23, "end_offset": 9},
+    {"start_offset": 9, "end_offset": 23, "version_number": 0},
+    {"start_offset": 9, "end_offset": 23, "version_number": "2"},
+    {"start_offset": 9, "end_offset": 23, "version_number": False},
+    {"start_offset": 9, "end_offset": [23]},
+]
+
+
+class TestPostCommentAnchorInts:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ints", _BAD_ANCHOR_INTS)
+    async def test_bad_anchor_int_400_and_nothing_stored(self, store, ints):
+        anchor = {"quote": "some body text", **ints}
+        resp = await h.api_artifact_post_comment(
+            _req(body={"text": "x", "anchor": anchor}, match={"slug": "doc"})
+        )
+        assert resp.status == 400
+        assert _j(resp)["error"].startswith("anchor.")
+        assert store.list_comments("doc") == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ints",
+        [
+            {},
+            {"start_offset": None, "end_offset": None, "version_number": None},
+            {"start_offset": 0, "end_offset": 0, "version_number": 1},
+            {"start_offset": 9, "end_offset": 23, "version_number": 2**31 - 1},
+        ],
+    )
+    async def test_valid_anchor_ints_stored_as_given(self, store, ints):
+        await _post("doc", text="x", anchor={"quote": "some body text", **ints})
+        (stored,) = store.list_comments("doc")
+        assert stored.anchor_start_offset == ints.get("start_offset")
+        assert stored.anchor_end_offset == ints.get("end_offset")
+        assert stored.anchor_version == ints.get("version_number")
+
+
 class TestReplyComment:
     @pytest.mark.asyncio
     async def test_reply_persists_thread(self, store):

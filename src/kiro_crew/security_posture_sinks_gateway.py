@@ -87,6 +87,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "rather than returned.",
     ),
     (
+        "A remote crew's reply to a conductor's session tool",
+        "dashboard/handlers/remote_dispatch_routes.py",
+        "What a connected crew answers when a conductor drives a worker there with "
+        "`crew=` on session_create, session_send, session_read_message, "
+        "session_stop or session_close, on its way into the conductor's model "
+        "context. The reply must be JSON within the proxy's buffer cap and is "
+        "redacted whole with the peer-text chain, keys included, before any field "
+        "of it is read; one that cannot be redacted is refused, never returned.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "

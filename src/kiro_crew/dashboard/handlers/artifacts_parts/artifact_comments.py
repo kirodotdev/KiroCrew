@@ -24,6 +24,7 @@ from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _redact_text
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _REMOTE_PROVIDER_TIMEOUT_S,
+    _anchor_int_error,
     _audit,
     _err,
     _event_session_id,
@@ -232,6 +233,10 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
             if not isinstance(v, str) or not v:
                 return None
             return _redact_text(v)[:2000]
+
+        anchor_int_error = _anchor_int_error(anchor_data)
+        if anchor_int_error is not None:
+            return _err(anchor_int_error)
 
         anchor_quote = await asyncio.to_thread(_anchor_str, anchor_data.get("quote"))
         anchor_prefix = await asyncio.to_thread(_anchor_str, anchor_data.get("prefix"))

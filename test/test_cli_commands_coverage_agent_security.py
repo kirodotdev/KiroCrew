@@ -465,6 +465,187 @@ class TestWorkspaceCopyFrom:
         assert (tmp_path / "workspace-copy3").is_dir()
 
 
+# Other spellings of the folder the "src" workspace already uses
+# (``workspace-src``): each one names the same directory once resolved.
+_SAME_FOLDER_SPELLINGS = ["./workspace-src", "workspace-src/", "sub/../workspace-src", "ABS"]
+
+
+def _spelled(spelling: str, home: Path) -> str:
+    return str(home / "workspace-src") if spelling == "ABS" else spelling
+
+
+class TestWorkspaceDirInUseResolved:
+    """The "already used" check compares resolved folders, not raw strings."""
+
+    def _base(self) -> KiroCrewConfig:
+        return _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "src": WorkspaceConfig(dir="workspace-src"),
+            }
+        )
+
+    def _run(self, home: Path, cfg: KiroCrewConfig, cfg_path: Path, **ns: Any) -> None:
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._handle_workspace(_ns(**ns))
+        assert exc.value.code == 1
+
+    @pytest.mark.parametrize("spelling", _SAME_FOLDER_SPELLINGS)
+    @pytest.mark.parametrize("copy_from", [None, "src"])
+    def test_create_refuses_another_spelling_of_a_used_folder(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        spelling: str,
+        copy_from: str | None,
+    ) -> None:
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        (home / "sub").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        self._run(
+            home,
+            cfg,
+            cfg_path,
+            workspace_action="create",
+            name="clash",
+            dir=_spelled(spelling, home),
+            copy_from=copy_from,
+        )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert "clash" not in _read_doc(cfg_path)["workspaces"]
+
+    @pytest.mark.parametrize("spelling", _SAME_FOLDER_SPELLINGS)
+    def test_update_refuses_another_spelling_of_a_used_folder(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], spelling: str
+    ) -> None:
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        (home / "sub").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        self._run(
+            home,
+            cfg,
+            cfg_path,
+            workspace_action="update",
+            name="default",
+            dir=_spelled(spelling, home),
+        )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert _read_doc(cfg_path)["workspaces"]["default"]["dir"] == "workspace"
+
+    def test_create_refuses_a_case_variant_on_a_case_insensitive_filesystem(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """``WORKSPACE-SRC`` is ``workspace-src`` on macOS/Windows: same folder, other string.
+
+        Linux test hosts are case-sensitive, so ``Path.stat`` is made to fold case
+        for names directly under the data home -- the one thing such a filesystem
+        does differently here. ``resolve()`` keeps the spelling it was given.
+        """
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        cfg = self._base()
+        cfg_path = _seed_doc_file(home, cfg)
+        real_stat = Path.stat
+
+        def _case_folding_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if self.parent == home:
+                self = self.with_name(self.name.lower())
+            return real_stat(self, *args, **kwargs)
+
+        with patch.object(Path, "stat", _case_folding_stat):
+            self._run(
+                home,
+                cfg,
+                cfg_path,
+                workspace_action="create",
+                name="clash",
+                dir="WORKSPACE-SRC",
+                copy_from=None,
+            )
+        assert "already used by another workspace" in capsys.readouterr().err
+        assert "clash" not in _read_doc(cfg_path)["workspaces"]
+
+    def test_two_existing_folders_with_distinct_identities_are_not_a_collision(
+        self, tmp_path: Path
+    ) -> None:
+        """Equal paths, two directories (a case-sensitive Windows folder): identity decides."""
+        from kiro_crew import cli_commands_workspace as ws_mod
+
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        identities = iter([(1, 100), (1, 200)])  # candidate first, then the stored dir
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(ws_mod, "_dir_identity", side_effect=lambda _p: next(identities)),
+        ):
+            assert ws_mod._ws_dir_in_use(home / "workspace-src", ["workspace-src"]) is False
+
+    def test_in_lock_recheck_compares_resolved_folders(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A folder another process registered after the snapshot is still caught."""
+        home = tmp_path.resolve()
+        (home / "workspace-src").mkdir()
+        cfg_path = _seed_doc_file(home, self._base())
+        stale = _cfg_with(workspaces={"default": WorkspaceConfig(dir="workspace")})
+        self._run(
+            home,
+            stale,
+            cfg_path,
+            workspace_action="create",
+            name="clash",
+            dir="./workspace-src",
+            copy_from=None,
+        )
+        self._run(
+            home,
+            stale,
+            cfg_path,
+            workspace_action="update",
+            name="default",
+            dir="workspace-src/",
+        )
+        assert capsys.readouterr().err.count("already used by another workspace") == 2
+        doc = _read_doc(cfg_path)["workspaces"]
+        assert "clash" not in doc
+        assert doc["default"]["dir"] == "workspace"
+
+    def test_stored_dir_that_no_longer_resolves_does_not_block_a_create(
+        self, tmp_path: Path
+    ) -> None:
+        """Existing entries are never rejected; only the new dir is checked."""
+        home = tmp_path.resolve()
+        cfg = _cfg_with(
+            workspaces={
+                "default": WorkspaceConfig(dir="workspace"),
+                "gone": WorkspaceConfig(dir="~no_such_user_kirocrew_test/ws"),
+            }
+        )
+        cfg_path = _seed_doc_file(home, cfg)
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=home),
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            cc._handle_workspace(
+                _ns(workspace_action="create", name="fresh", dir=None, copy_from=None)
+            )
+        doc = _read_doc(cfg_path)["workspaces"]
+        assert doc["fresh"]["dir"] == "workspace-fresh"
+        assert doc["gone"]["dir"] == "~no_such_user_kirocrew_test/ws"
+
+
 # ── security subcommands ──
 
 

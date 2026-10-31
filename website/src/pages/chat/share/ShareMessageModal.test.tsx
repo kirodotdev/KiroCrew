@@ -53,6 +53,16 @@ describe('ShareMessageModal', () => {
     return view
   }
 
+  // Every action button is drawn disabled while an action runs or the site list
+  // is unread, and React commits the re-enabling render in a later task. A click
+  // on a disabled button is dropped, so press it only once the user could.
+  const waitEnabled = (testId: string) =>
+    waitFor(() => expect(screen.getByTestId(testId)).toBeEnabled())
+  const clickWhenEnabled = async (testId: string) => {
+    await waitEnabled(testId)
+    fireEvent.click(screen.getByTestId(testId))
+  }
+
   it('uses the chat wording when no copy override is given', async () => {
     // The load-bearing half for every existing call site: the defaults ARE the chat
     // strings, so omitting `copy` must change nothing about this dialog.
@@ -115,7 +125,7 @@ describe('ShareMessageModal', () => {
     const caption = screen.getByRole('textbox', { name: 'Post text' }) as HTMLTextAreaElement
     expect(caption.value).toBe('Feature videos: a clip per feature https://docs.example/x')
     expect(caption.value).not.toMatch(/just did this for me/)
-    fireEvent.click(await screen.findByTestId('share-x'))
+    await clickWhenEnabled('share-x')
     await waitFor(() => expect(tab.location.href).toBe(
       `https://x.com/intent/post?text=${encodeURIComponent('Feature videos: a clip per feature https://docs.example/x')}`,
     ))
@@ -162,12 +172,12 @@ describe('ShareMessageModal', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
     await renderModal()
     fireEvent.change(screen.getByRole('textbox', { name: 'Post text' }), { target: { value: 'wow' } })
-    fireEvent.click(await screen.findByTestId('share-x'))
+    await clickWhenEnabled('share-x')
     expect(open).toHaveBeenCalledWith('', '_blank')
     expect(tab.opener).toBeNull()
     await waitFor(() => expect(tab.location.href).toBe('https://x.com/intent/post?text=wow'))
     expect(write).toHaveBeenCalled()
-    fireEvent.click(await screen.findByTestId('share-linkedin'))
+    await clickWhenEnabled('share-linkedin')
     await waitFor(() => expect(tab.location.href).toBe('https://www.linkedin.com/feed/?shareActive=true&text=wow'))
   })
 
@@ -177,7 +187,7 @@ describe('ShareMessageModal', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     await renderModal()
     fireEvent.change(screen.getByRole('textbox', { name: 'Post text' }), { target: { value: 'wow' } })
-    fireEvent.click(await screen.findByTestId('share-x'))
+    await clickWhenEnabled('share-x')
     await waitFor(() => expect(open).toHaveBeenCalledWith('https://x.com/intent/post?text=wow', '_blank', 'noopener,noreferrer'))
   })
 
@@ -271,8 +281,9 @@ describe('ShareMessageModal', () => {
     expect(handOff.mock.calls[0][1]).toBe('image/png')
     expect(URL.createObjectURL).not.toHaveBeenCalled()
 
+    // The link click lands before the handler's `finally` re-enables the button.
     handOff.mockRejectedValueOnce(new Error('offline'))
-    fireEvent.click(screen.getByTestId('share-download'))
+    await clickWhenEnabled('share-download')
     await waitFor(() => expect(screen.getByText(/render the share card/i)).toBeInTheDocument(), handOffTimeout)
     expect(hrefs).toHaveLength(1)
   })
@@ -320,7 +331,7 @@ describe('ShareMessageModal', () => {
     Object.defineProperty(excerptBox, 'innerText', { value: 'my edited card excerpt', configurable: true })
     fireEvent.input(excerptBox)
     expect(screen.queryByTestId('share-withdrawn')).toBeNull()
-    expect(await screen.findByTestId('share-x')).not.toBeDisabled()
+    await waitEnabled('share-x')
 
     view.rerender(
       <ShareMessageModal onClose={onClose} messageText="Triaged 47 issues overnight." shareEnabled={false} />,
@@ -387,7 +398,7 @@ describe('ShareMessageModal', () => {
     const view = render(
       <ShareMessageModal onClose={() => {}} messageText="Triaged 47 issues overnight." shareEnabled />,
     )
-    fireEvent.click(await screen.findByTestId('share-x'))
+    await clickWhenEnabled('share-x')
     // html-to-image is imported on demand, so the rasterizer is reached a tick
     // after the click; wait for the export to actually be in flight.
     await waitFor(() => expect(toBlobMock).toHaveBeenCalled())

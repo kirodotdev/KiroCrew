@@ -2423,6 +2423,31 @@ title or metadata line; when it runs out of them first it answers
 `scan_truncated: true` (and `more: true`), and the scan's memory stays bounded
 however large the archive is.
 
+## Remote dispatch: `crew=` on five verbs (preview)
+
+Wave 1 of [rfc-conductor-remote-dispatch.md](../../request-for-change/rfc-conductor-remote-dispatch.md). `session_create`, `session_send`, `session_read_message`, `session_stop` and `session_close` take an optional `crew` (a connected crew's instance id or exact name). A body (or, for the read, a query) that carries the `crew` key at all, whatever its value, is handed by its own `/api/session-control/*` route to `dashboard/handlers/remote_dispatch_routes.py` and never runs the local verb. Without the key the routes are unchanged.
+
+| Verb | Peer call |
+|---|---|
+| create | `POST api/chat/slots` `{memory_mode, agent?, model?}`, then `PATCH api/chat/slots/{s}/title` when a title was given |
+| send | `POST api/chat?ws=1` `{message, slot, turn_origin: "agent", steer?}` |
+| read | `GET api/chat/slots/{s}?limit=N` (1-100, no `since`) |
+| stop | `POST api/chat/slots/{s}/stop` |
+| close | `DELETE api/chat/slots/{s}` |
+
+Each call is checked in this order, and each refusal has its own code:
+
+1. **Switch.** `work_ledger.remote_dispatch` (default `false`, read per call) off refuses `remote_dispatch_disabled` before anything else. `agent.session_control` off then refuses `session_control_disabled`, as it does for every local verb. Off, the dashboard MCP server's `tools/list` is byte-for-byte the table's own; on, it adds a `crew` property to exactly these five schemas. The validator schemas accept `crew` either way, so the gateway, not an unknown-field error, answers a call that carries it.
+2. **Owner-only caller.** The declared key is owner-minted (`is_owner_minted_session_key`, the `dashboard` namespace; `owner_only`); the shared agent-caller resolver (`handlers/guide.py` `_resolve_agent_caller`) admits it with its own codes; the slot was not opened on another caller's behalf (`_created_by` / `_lineage_minted`) and is not a crew member's thread (`owner_only`); the session is not bound to a private member store (`private_memory`); the session is not the bound worker of any work-ledger item here, read through the same binding `work_brief` resolves and refused when it cannot be read (`crew_caller_is_worker`), which keeps dispatch one level deep: a session another gateway's conductor opens here is bound to its mailbox item once the peer side binds at create (RFC wave 2), and a nested conductor is a bound worker too; and finally the running turn must be one the owner sent (`crew_owner_unverifiable`). That last arm, `owner_unverifiable_reason`, is the crew-read gate's slot check (`handlers_instances_crew_reads._slot_refusal`): the turn carries `_turn_owner_sent` and the slot was not opened on another caller's behalf. A dashboard login a messaging channel minted for someone else fails it, and so does a turn the person did not send (a loop wake, a `session_send`, a sub-agent completion). The earlier arms refuse first, so each refusal still names the rule a caller fails.
+3. **Crew.** An exact id wins over any name; a name resolves only when one crew carries it (`crew_unknown`, `crew_ambiguous`, `crew_invalid`).
+4. **Target fence.** send/read/stop/close reach only a peer slot this caller's slot created with `session_create(crew=)` on that same crew (`crew_target_not_dispatched`). The record lives in gateway memory, at most 64 slots per caller (`crew_dispatch_limit`), and a close forgets the slot. It does not survive a hub restart, after which the person still drives the slot from the crew window. Wave 4 replaces it with the work item's `worker_session_key` and `worker_instance_id`.
+5. **Version.** The crew's `major.minor` must match this hub's (`crew_version_mismatch`); a disconnected crew answers `proxy_peer_not_connected`.
+6. **Path fence and redaction.** Every peer path is built from the table above, its slot key held to one plain segment, and passes `_proxy_canonical_path` before `SshTunnelManager.proxy_request` sees it (`proxy_path_denied`). A reply cut off mid-body is refused `crew_peer_interrupted`. A peer reply must be JSON within `PROXY_REDACT_BUFFER_MAX_BYTES` and is run through `_redact_peer_payload` before any field is read. A create reply whose `key` is not one plain segment is refused `crew_reply_malformed` and nothing is recorded.
+
+Every send carries `turn_origin: "agent"` (`dashboard/agent_origin.py`), so the crew runs it as an agent's turn that holds no person-only right. Outgoing message and title text passes the exfiltration-URL then the credential redactor; an incognito or temporary caller is refused `ephemeral_caller`.
+
+A crew create takes only `title`, `agent` and `model` (`crew_field_unsupported` for anything else). `memory_mode` is always this hub's `dashboard.default_memory_mode`. An omitted `agent` sends none, so the crew applies its own default. A crew create arms no patrol: the item binding that a patrol reads arrives in wave 4.
+
 ## Configuration
 
 `agent.session_manager_chain` (bool, default **false**) lets a fenced caller reach
@@ -2576,6 +2601,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   history and `session_revive`.
 
 The facade itself holds no verb: its docstring, its logger and the mirror.
+
+The `crew=` half of five verbs sits outside the facade: `src/kiro_crew/dashboard/handlers/remote_dispatch_routes.py` (the gateway checks and peer calls), `src/kiro_crew/mcp_session_crew.py` (the tool bodies and the schema overlay) and `src/kiro_crew/remote_dispatch.py` (the switch).
 
 ## What is deliberately not here
 

@@ -17,6 +17,7 @@ import { Btn } from '../../components/ui'
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import CrewAvatar from '../../components/CrewAvatar'
+import { defaultLookFor } from '../../lib/avatarPoses'
 import { type AutomationRecord } from '../../monitoring/automation'
 import { motion } from 'framer-motion'
 import { cn } from '../../lib/utils'
@@ -202,9 +203,11 @@ export function MemberRow({
 }
 
 /** The intentionally-empty roster: one hero, one call to action. Type scale and
- *  tokens follow `EmptyState` in components/ui.tsx; the face is the real ghost at
+ *  tokens follow `EmptyState` in components/ui.tsx; the face is a real avatar at
  *  full strength rather than EmptyState's 12%-opacity icon, because here the
- *  avatar IS the subject (what a crewmate looks like), not decoration. */
+ *  avatar IS the subject (what a crewmate looks like), not decoration. It is the
+ *  icon a new crewmate gets by default (`defaultLookFor`), the same one the New
+ *  crewmate card previews before a name is typed. */
 export function CrewmateEmptyHero({ onCreate, onAdvanced, held, onImport }: {
   onCreate: () => void
   /** Opens the New crewmate card with its Advanced settings unfolded. */
@@ -223,7 +226,7 @@ export function CrewmateEmptyHero({ onCreate, onAdvanced, held, onImport }: {
   const { t } = useTranslation()
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 py-10 text-center animate-rise" data-testid="crewmate-empty-hero">
-      <div className="mb-1 opacity-90"><CrewAvatar seed="crewmate" size={72} /></div>
+      <div className="mb-1 opacity-90"><CrewAvatar seed="crewmate" avatar={defaultLookFor('')} size={72} /></div>
       <div className="text-[17px] font-semibold text-text-strong" data-testid="crewmate-empty-title">{t('pages.membersPage.empty_title')}</div>
       <p className="m-0 max-w-[400px] text-[13.5px] leading-relaxed text-muted">{t('pages.membersPage.empty_body')}</p>
       <Btn

@@ -208,9 +208,11 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         api_remote_artifacts_fork,
     )
     from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (  # noqa: F401
+        _ANCHOR_INT_MAX,
         _MAX_BODY_BYTES,
         _REMOTE_PROVIDER_TIMEOUT_S,
         _SESSION_KEY_RE,
+        _anchor_int_error,
         _artifact_source_for_request,
         _audit,
         _clean_origin_session_key,
