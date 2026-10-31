@@ -322,12 +322,42 @@ def register_secrets_parser(sub: _Commands) -> None:
     )
 
 
+def _add_pod_limit_args(parser: argparse.ArgumentParser) -> None:
+    """``--memory`` / ``--cpu`` for ``pod up`` and ``pod restart``.
+
+    Validated by ``kiro_crew.pod.limits``, which this parser does not import at
+    startup; argparse only carries the strings.
+    """
+    parser.add_argument(
+        "--memory",
+        metavar="SIZE",
+        default=None,
+        help=(
+            "Memory ceiling for this pod, e.g. 16G or 8192M (default 4G). Capped at "
+            "80%% of host RAM. Persisted per pod as MEMORY= in its env file; "
+            "applies at boot. Enforced as MemoryMax on Linux; recorded but not "
+            "enforced on macOS and Windows."
+        ),
+    )
+    parser.add_argument(
+        "--cpu",
+        metavar="QUOTA",
+        default=None,
+        help=(
+            "CPU ceiling for this pod as a percentage of one core, e.g. 800%% for "
+            "eight cores, or a bare core count such as 8 (default 200%%). Capped at "
+            "the host CPU count. Persisted per pod as CPU= in its env file; applies "
+            "at boot. Enforced as CPUQuota on Linux only."
+        ),
+    )
+
+
 def register_pod_parser(sub: _Commands) -> None:
     # pod — isolated, throwaway, full-stack test instances per worktree (kubectl-style)
     pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
-        metavar="{up,down,ls,prune,status,token,url,scenarios,api,logs,exec,provision,install}",
+        metavar="{up,down,restart,ls,prune,status,token,url,scenarios,api,logs,exec,provision,install}",
     )
     pod_up = pod_sub.add_parser("up", help="Schedule an isolated pod for a worktree")
     pod_up.add_argument("name", help="Worktree name")
@@ -412,6 +442,28 @@ def register_pod_parser(sub: _Commands) -> None:
             "below 5 are raised to 5, values above 3600 are capped at 3600."
         ),
     )
+    _add_pod_limit_args(pod_up)
+    pod_restart = pod_sub.add_parser(
+        "restart",
+        help="Restart a pod in place, keeping its home (applies new --memory/--cpu)",
+        description=(
+            "Stop the pod's gateway, keep its isolated home (sessions, config, apps, "
+            "models), and start it again from its env file. Use it to apply a new "
+            "--memory or --cpu, or to revive a pod that crashed. No token is minted; "
+            "`kirocrew pod token <name>` mints one."
+        ),
+    )
+    pod_restart.add_argument("name", help="Worktree name")
+    pod_restart.add_argument("--json", action="store_true", help="Emit the handle as JSON")
+    pod_restart.add_argument(
+        "--wait-secs",
+        dest="wait_secs",
+        type=int,
+        metavar="SECS",
+        default=None,
+        help="Health-wait budget in seconds (same default and bounds as `pod up`)",
+    )
+    _add_pod_limit_args(pod_restart)
     pod_down = pod_sub.add_parser("down", help="Evict a pod (zero residue)")
     pod_down.add_argument("name", help="Worktree name")
     pod_ls = pod_sub.add_parser("ls", help="List running pods")

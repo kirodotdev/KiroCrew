@@ -46,6 +46,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     repository,
     runtime,
     worktree_ops,
+    worktree_ops_pods,
 )
 from kiro_crew.testing.wait import async_wait_until
 
@@ -893,25 +894,36 @@ async def test_pod_down_success(monkeypatch, allow_pod):
 
 
 @pytest.mark.asyncio
-async def test_pod_restart_stops_on_failed_shutdown(monkeypatch):
+async def test_pod_restart_keeps_the_home_by_never_calling_down(monkeypatch, allow_pod):
+    """Restart runs `pod restart`, and `pod down` is the only verb that reclaims."""
+    monkeypatch.setattr(worktree_ops_pods.platform_compat, "IS_WINDOWS", False)
+    down = AsyncMock(return_value={"ok": True, "error": None})
+    monkeypatch.setattr(worktree_ops, "_pod_down", down)
     monkeypatch.setattr(
-        worktree_ops, "_pod_down", AsyncMock(return_value={"ok": False, "error": "stuck"})
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
     )
-    up = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr(worktree_ops, "_pod_up", up)
+    run = AsyncMock(return_value=(0, '{"port": 9999, "home_kept": true}', ""))
+    monkeypatch.setattr(runtime, "_run_cmd", run)
 
-    res = await worktree_ops._pod_restart("feat")
-    assert res == {"ok": False, "error": "pod shutdown failed: stuck"}
-    up.assert_not_awaited()
+    res = await worktree_ops._pod_restart("feat", memory="16G", cpu="800%")
+
+    assert res == {"ok": True, "port": 9999, "home_kept": True}
+    down.assert_not_awaited()
+    argv = run.await_args.args[0]
+    assert argv[-7:] == ["restart", "feat", "--json", "--memory", "16G", "--cpu", "800%"]
 
 
 @pytest.mark.asyncio
-async def test_pod_restart_starts_after_clean_shutdown(monkeypatch):
+async def test_pod_restart_reports_the_cli_refusal(monkeypatch, allow_pod):
+    monkeypatch.setattr(worktree_ops_pods.platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(
-        worktree_ops, "_pod_down", AsyncMock(return_value={"ok": True, "error": None})
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
     )
-    monkeypatch.setattr(worktree_ops, "_pod_up", AsyncMock(return_value={"ok": True, "port": 1}))
-    assert await worktree_ops._pod_restart("feat") == {"ok": True, "port": 1}
+    monkeypatch.setattr(
+        runtime, "_run_cmd", AsyncMock(return_value=(1, "", "pod: nothing to restart"))
+    )
+    res = await worktree_ops._pod_restart("feat")
+    assert res == {"ok": False, "error": "pod: nothing to restart"}
 
 
 @pytest.mark.asyncio

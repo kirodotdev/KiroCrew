@@ -240,7 +240,7 @@ class TestUnitExecSelfHeal:
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
         monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: steps.append("reinstall"))
         monkeypatch.setattr(
-            rt.unit_mod, "install_dropin", lambda c, n, co: steps.append("pin-checkout")
+            rt.unit_mod, "install_dropin", lambda c, n, co, lim=None: steps.append("pin-checkout")
         )
         monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": "/checkouts/demo"})
 

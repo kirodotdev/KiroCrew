@@ -149,9 +149,26 @@ DESIGN_TWEAK_UPDATE_THREAD_SCHEMA = ToolSchema(
 # unbounded string is refused at the tool boundary rather than carried further.
 _POD_WORKTREE_MAX_LEN = 200
 
+# `memory` / `cpu` are validated by `kirocrew pod up` (syntax, floor, host cap);
+# the bound here only stops an unbounded string reaching the CLI's argv.
+_POD_LIMIT_MAX_LEN = 16
+
 POD_UP_SCHEMA = ToolSchema(
     tool_name="pod_up",
-    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
+    fields=[
+        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
+        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+    ],
+)
+
+POD_RESTART_SCHEMA = ToolSchema(
+    tool_name="pod_restart",
+    fields=[
+        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
+        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
+    ],
 )
 
 POD_DOWN_SCHEMA = ToolSchema(

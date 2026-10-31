@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -472,25 +473,63 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
     )
 
 
-def _require_up_user_bus(name: str) -> None:
+def _require_up_user_bus(name: str, verb: str = "up") -> None:
     """Diagnose Linux user-bus reachability before pod-up preparation.
 
     launchd and Task Scheduler keep their established gates at the operations
     that use them. Running those capability probes here would mutate host
-    service state before pod-up reaches its platform-specific seam.
+    service state before pod-up reaches its platform-specific seam. *verb* names
+    the operation in the audit record, so a refused restart is logged as
+    ``pod.restart`` rather than ``pod.up``.
     """
     if not rt.IS_LINUX:
         return
     try:
         rt.require_backend()
     except rt.PodError as exc:
-        _audit("pod.up", "failure", f"name={name}", error=str(exc)[:120])
+        _audit(f"pod.{verb}", "failure", f"name={name}", error=str(exc)[:120])
         raise
+
+
+def _limit_updates(name: str, args: argparse.Namespace) -> dict[str, str]:
+    """``MEMORY=`` / ``CPU=`` env-file updates from ``--memory`` / ``--cpu``.
+
+    Validated and normalised here, before anything is provisioned or started, so
+    a bad value is refused with nothing changed. Platforms that cannot enforce a
+    ceiling still record it, so the pod keeps it if the checkout later moves to a
+    host that can; the note says it is not enforced here.
+    """
+    updates: dict[str, str] = {}
+    try:
+        raw_mem = getattr(args, "memory", None)
+        if raw_mem:
+            updates[pod_limits.MEMORY_KEY] = pod_limits.normalize_memory(raw_mem)
+        raw_cpu = getattr(args, "cpu", None)
+        if raw_cpu:
+            updates[pod_limits.CPU_KEY] = pod_limits.normalize_cpu(raw_cpu)
+    except pod_limits.LimitError as exc:
+        verb = getattr(args, "pod_action", None) or "up"
+        _audit(f"pod.{verb}", "denied", f"name={name}", error="invalid ceiling")
+        _die(str(exc))
+    if rt.IS_MACOS and updates:
+        print(
+            "pod: note: launchd has no cgroups, so --memory and --cpu are recorded "
+            "but not enforced on macOS.",
+            file=sys.stderr,
+        )
+    elif rt.IS_WINDOWS and updates:
+        print(
+            "pod: note: --memory and --cpu are recorded but not enforced on Windows; "
+            "the pod's Job object keeps the resource_limits ceilings.",
+            file=sys.stderr,
+        )
+    return updates
 
 
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     _require_up_user_bus(name)
+    limit_updates = _limit_updates(name, args)
     checkout = _resolve_or_die(cfg, name)
 
     scenario = ""
@@ -554,6 +593,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if no_embeddings:
             env_updates["EMBEDDINGS"] = "0"
             boot_flags.append("--no-embeddings")
+        env_updates.update(limit_updates)
+        boot_flags.extend(f"--{k.lower()} {v}" for k, v in limit_updates.items())
 
         # Read the unit's state BEFORE choosing a port, and inside the mutex: the
         # two questions are one decision. An `up` against an already-active pod is
@@ -680,10 +721,16 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 rt.write_env_file(cfg, name, env_updates)
             if boot_flags:
                 joined = " ".join(boot_flags)
+                # `pod restart` refuses on Windows, so name the remedy that works there.
+                apply_now = (
+                    f"`kirocrew pod down {name} && kirocrew pod up {name} {joined}` "
+                    "applies it now with a fresh home."
+                    if rt.IS_WINDOWS
+                    else f"`kirocrew pod restart {name}` applies it now and keeps the pod's home."
+                )
                 print(
                     f"pod: note: {joined} recorded for {name!r}, but that pod is already "
-                    f"running, so it applies on the next boot "
-                    f"(kirocrew pod down {name} && kirocrew pod up {name} {joined}).",
+                    f"running, so it applies on the next boot. {apply_now}",
                     file=sys.stderr,
                 )
         # Record boot-time settings: a pod in `yolo` auto-approves every tool, one
@@ -712,6 +759,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             resources += " crons=on"
         if embeddings_off:
             resources += " embeddings=off"
+        for key, val in limit_updates.items():
+            resources += f" {key.lower()}={val}"
         if boot_flags and was_active:
             resources += " applied=next_boot"
         _audit("pod.up", "allowed", resources)
@@ -1020,12 +1069,14 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                     "base_url": base,
                     "token": token,
                     "ttl": args.ttl,
+                    **_limits_of(cfg, name).as_json(),
                 }
             )
         )
     else:
         print(f"pod '{name}' is up (full stack: API + frontend on one port)")
         print(f"  base_url : {base}")
+        print(f"  limits   : {_limits_of(cfg, name).label()}")
         if token:
             print(f"  token    : {token}")
             print(f"  open     : {base}/?token={token}")
@@ -1120,17 +1171,28 @@ def _ls(cfg: PodConfig, args: argparse.Namespace) -> None:
         rows: list[dict[str, object]] = []
         for n in names:
             p = rt.derive_port(cfg, n)
-            rows.append({"name": n, "port": p, "health": rt.health(cfg, n, p)})
+            rows.append(
+                {
+                    "name": n,
+                    "port": p,
+                    "health": rt.health(cfg, n, p),
+                    **_limits_of(cfg, n).as_json(),
+                }
+            )
         print(json.dumps(rows))
         return
     # Any fail-closed probe underneath surfaces as PodError, which the dispatch
     # layer renders as the documented one-line `pod: <msg>` refusal.
     orphans = rt.orphan_homes(cfg)
     if names:
-        print(f"{'POD':<28} {'PORT':<7} HEALTH")
+        print(f"{'POD':<28} {'PORT':<7} {'MEMORY':<7} {'CPU':<6} HEALTH")
         for n in names:
             p = rt.derive_port(cfg, n)
-            print(f"{n:<28} {p:<7} {_health_label(rt.health(cfg, n, p))}")
+            lim = _limits_of(cfg, n)
+            print(
+                f"{n:<28} {p:<7} {lim.memory:<7} {lim.cpu:<6} "
+                f"{_health_label(rt.health(cfg, n, p))}"
+            )
     else:
         print("no pods running")
     _print_refusals(cfg)
@@ -1450,6 +1512,99 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
     return "reclaimed", "", "allowed", ""
 
 
+def _limits_of(cfg: PodConfig, name: str) -> pod_limits.PodLimits:
+    """The ceilings pod *name*'s env file records, defaults filling any gap."""
+    return pod_limits.describe(rt.read_env_file(cfg, name))
+
+
+def _restart(cfg: PodConfig, args: argparse.Namespace) -> None:
+    """Restart a pod in place: stop it, keep its home, start it from its env file.
+
+    ``--memory`` / ``--cpu`` are recorded first, so the restart is how a new
+    ceiling reaches a running pod. Needs a pod that has been ``up`` before (its
+    env file pins the checkout); ``down`` deletes that file, so a pod that was
+    torn down is brought back with ``up`` instead. No token is minted: the home,
+    and with it the pod's secret and any open dashboard session, is kept, and
+    ``pod token`` mints a fresh link when one is wanted.
+    """
+    name = rt.validate_name(args.name)
+    _require_up_user_bus(name, "restart")
+    limit_updates = _limit_updates(name, args)
+    with rt.pod_name_mutex(cfg, name):
+        env_data = rt.read_env_file(cfg, name)
+        if not env_data.get("CHECKOUT"):
+            _audit("pod.restart", "denied", f"name={name}", error="no pinned checkout")
+            _die(
+                f"pod {name!r} has no env file pinning its checkout, so there is "
+                f"nothing to restart. Start it with `kirocrew pod up {name}`."
+            )
+        if limit_updates:
+            rt.write_env_file(cfg, name, limit_updates)
+        port = rt.derive_port(cfg, name)
+        if port == cfg.live_port:
+            _audit("pod.restart", "denied", f"name={name}", error="port is the live plane")
+            _die(f"refusing: pod port is the live plane :{cfg.live_port}")
+        superseded = rt.published_credential(cfg, name, port)
+        refusal_mark = _refusal_stamp(cfg, name)
+        cp = rt.restart_pod(cfg, name)
+        if cp.returncode != 0:
+            _audit("pod.restart", "failure", f"name={name} port={port}", error="restart failed")
+            _die(f"restarting pod {name} failed: {(cp.stderr or cp.stdout or '').strip()}")
+        limits = _limits_of(cfg, name)
+        _audit("pod.restart", "allowed", f"name={name} port={port} {limits.label()}")
+        wait_secs = _health_wait_secs(args)
+        code = _wait_healthy(
+            cfg, name, port, tries=wait_secs, superseded=superseded, refusal_mark=refusal_mark
+        )
+        if code not in (200, 401, 403):
+            # This command started the unit, which is `Restart=on-failure` with a
+            # 5s gap the rate limiter never retires, so it is stopped here, inside
+            # the same mutex hold, with `halt_pod`: the home is kept, as `_up`
+            # keeps a home that held state before its own failed start.
+            reason = rt.refusal_reason(cfg, name) if code == HEALTH_BOOT_REFUSED else None
+            halt = rt.halt_pod(cfg, name)
+            stopped = (
+                "The gateway was stopped and its home was kept."
+                if halt.returncode == 0
+                else (
+                    f"Stopping it FAILED (rc={halt.returncode}), so the gateway may "
+                    f"still be running: {(halt.stderr or halt.stdout or '').strip() or 'no diagnostic'}. "
+                    f"Its home was kept."
+                )
+            )
+            _audit(
+                "pod.restart",
+                "failure",
+                f"name={name} port={port}",
+                error="health wait failed after restart",
+            )
+            _die(
+                f"{name}: restarted, but the gateway did not become healthy on :{port} "
+                f"within {wait_secs}s (health={_health_label(code)}). "
+                f"{reason + ' ' if reason else ''}"
+                f"{stopped} Read `kirocrew pod logs {name}`."
+            )
+    base = f"http://127.0.0.1:{port}"
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "name": name,
+                    "status": "up",
+                    "port": port,
+                    "base_url": base,
+                    "home_kept": True,
+                    **limits.as_json(),
+                }
+            )
+        )
+    else:
+        print(f"pod '{name}' restarted with its home kept")
+        print(f"  base_url : {base}")
+        print(f"  limits   : {limits.label()}")
+        print(f"  token    : kirocrew pod token {name}")
+
+
 def _status(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     # A bare `systemctl is-active` answers "down" on a host with no user
@@ -1459,14 +1614,24 @@ def _status(cfg: PodConfig, args: argparse.Namespace) -> None:
     port = rt.derive_port(cfg, name)
     up = rt.is_active(cfg, name)
     code = rt.health(cfg, name, port) if up else 0
+    limits = _limits_of(cfg, name)
     if args.json:
         print(
             json.dumps(
-                {"name": name, "status": "up" if up else "down", "port": port, "health": code}
+                {
+                    "name": name,
+                    "status": "up" if up else "down",
+                    "port": port,
+                    "health": code,
+                    **limits.as_json(),
+                }
             )
         )
     else:
-        print(f"{name}: {'up' if up else 'down'}  port={port}  health={_health_label(code)}")
+        print(
+            f"{name}: {'up' if up else 'down'}  port={port}  health={_health_label(code)}  "
+            f"{limits.label()}"
+        )
 
 
 def _token(cfg: PodConfig, args: argparse.Namespace) -> None:
@@ -1729,6 +1894,7 @@ def _scenarios(cfg: PodConfig, args: argparse.Namespace) -> None:
 _VERBS: dict[str, PodHandler] = {
     "up": _up,
     "down": _down,
+    "restart": _restart,
     "ls": _ls,
     "prune": _prune,
     "status": _status,
@@ -1750,7 +1916,7 @@ def dispatch(args: argparse.Namespace) -> None:
     if not action:
         print(
             "Usage: kirocrew pod "
-            "{up|down|ls|prune|status|token|url|scenarios|api|logs|exec|install|provision} …"
+            "{up|down|restart|ls|prune|status|token|url|scenarios|api|logs|exec|install|provision} …"
         )
         sys.exit(2)
     cfg = PodConfig.load()

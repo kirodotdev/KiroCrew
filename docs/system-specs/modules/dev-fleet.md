@@ -275,7 +275,7 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/prune-run` | `{names[], force_names?, discard_untracked_paths?}` | Batch-remove eligible worktrees. `force_names` is a list of names to force-remove (`400 invalid_force_names` otherwise); `discard_untracked_paths` maps a worktree name to its list of paths (`400 invalid_discard_paths` otherwise). The main checkout and the live or staged worktree are never forced |
 | `/apps/dev-fleet/api/pod/up` | `{name}` | Start isolated pod instance (re-verifies the unit is active). Boots with `--no-token`: this backend is sandboxed, so the pod would refuse its mint; the Open button gets the token from the gateway's `pod-token` route |
 | `/apps/dev-fleet/api/pod/down` | `{name}` | Stop pod instance (re-verifies the unit is gone before reporting success) |
-| `/apps/dev-fleet/api/pod/restart` | `{name}` | Stop then start pod (same `--no-token` boot as `pod/up`) |
+| `/apps/dev-fleet/api/pod/restart` | `{name}` | Restart the pod in place through `kirocrew pod restart`, keeping its isolated HOME. On Windows, where `pod restart` refuses, it stops then starts the pod and the HOME is reclaimed |
 | `/apps/dev-fleet/api/pod/token` | `{name}` | Refused with `code=wrong_process`: the mint moved to the gateway's `POST /api/apps/dev-fleet/pod-token` |
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
@@ -321,10 +321,11 @@ internal-secret caller there would expose the app's whole backend surface.
 
 | Method | Route | Input | Description |
 |--------|-------|-------|-------------|
-| POST | `/api/apps/dev-fleet/pod/up` | `{worktree}` | Boot a pod; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
+| POST | `/api/apps/dev-fleet/pod/up` | `{worktree, memory?, cpu?}` | Boot a pod, passing `memory` / `cpu` to the CLI as `--memory` / `--cpu`; answers the CLI's `--json` handle (`base_url`, `token`, `port`, `ttl`). The token is minted **in the gateway process** when pod config is available (see *Token mint runs in the gateway*); otherwise the CLI mints it. Provisioning is NOT reachable here: a cold venv + SPA build is minutes of work, and one blocking request for that dies to any timeout with no way to learn the outcome. An unbuilt worktree is refused with the CLI's own remedy; the dashboard's Provision button streams the same work under a run id |
+| POST | `/api/apps/dev-fleet/pod/restart` | `{worktree, memory?, cpu?}` | Restart the pod in place through `kirocrew pod restart`, keeping its isolated HOME, and answer the same handle as `pod/up`. `memory` / `cpu` record new ceilings first |
 | POST | `/api/apps/dev-fleet/pod/down` | `{worktree}` | Stop the pod and reclaim its isolated HOME |
-| GET | `/api/apps/dev-fleet/pod/status?worktree=` | — | `{name, status, port, health}`, as `pod status --json` reports it |
-| GET | `/api/apps/dev-fleet/pod/list` | — | `{pods: [{name, port, health}]}` for every pod active on the host, unfiltered by repo |
+| GET | `/api/apps/dev-fleet/pod/status?worktree=` | — | `{name, status, port, health, memory, cpu}`, as `pod status --json` reports it |
+| GET | `/api/apps/dev-fleet/pod/list` | — | `{pods: [{name, port, health, memory, cpu}]}` for every pod active on the host, unfiltered by repo |
 
 Contract:
 
@@ -398,19 +399,20 @@ Contract:
   boots with `--no-token` but skips the mint, and `_pod_token` refuses with
   `code=wrong_process`. The Open button mints through the gateway's owner-only
   `POST /api/apps/dev-fleet/pod-token` instead.
-- **Refusals are 409 with a literal `code`** (`pod_up_failed`, `pod_down_failed`,
-  `pod_status_failed`, `pod_list_failed`); malformed input is 400
-  (`invalid_worktree`, `invalid_body`). A refused lifecycle op is a host-state
+- **Refusals are 409 with a literal `code`** (`pod_up_failed`, `pod_restart_failed`,
+  `pod_down_failed`, `pod_status_failed`, `pod_list_failed`); malformed input is 400
+  (`invalid_worktree`, `invalid_body`, `invalid_limit`). A refused lifecycle op is a host-state
   answer, not a gateway bug. `repository._repo()` raises when no main checkout is
   configured, and the read verbs catch that rather than letting a setup problem
   surface as a 500.
 - **Every lifecycle CHANGE and every guard denial is written to the Security Event
-  Log** under `dev_fleet.agent.*` (`pod_up`, `pod_down`, `machine_guard`): the caller
+  Log** under `dev_fleet.agent.*` (`pod_up`, `pod_restart`, `pod_down`, `machine_guard`): the caller
   is unattended, so the trail is what makes the run reviewable. The read verbs are
   not audited there — they change nothing, and the framework-level tool log already
   records the call.
 
-The model-facing half is the `pod_up` / `pod_down` / `pod_status` / `pod_ls` tools on
+The model-facing half is the `pod_up` / `pod_restart` / `pod_down` / `pod_status` /
+`pod_ls` tools on
 `kirocrew-core` (`mcp_tools/apps.py`). The pod token is returned to the agent
 verbatim — redacting it would hand back an unusable handle — which is safe because it
 is a credential scoped to that pod's own gateway, minted server-side from the

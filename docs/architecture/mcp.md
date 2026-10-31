@@ -2632,8 +2632,8 @@ answers `tools/list` from):
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_down`,
-  `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
+  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_restart`,
+  `pod_down`, `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
   Listed only while the app each one reaches is enabled — see § An app's tools
   follow the app's enablement below.
 - **Browser:** `browser`
@@ -2873,10 +2873,10 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The nine `apps`-domain tools each reach one built-in app — Issue Radar
+The ten `apps`-domain tools each reach one built-in app — Issue Radar
 (`issue_radar_record_investigation`, `issue_radar_crew_read`,
-`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_down`, `pod_status`,
-`pod_ls`), Ops Mission Control (`ops_mission_control_api`) and Design Tweak
+`issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_restart`, `pod_down`,
+`pod_status`, `pod_ls`), Ops Mission Control (`ops_mission_control_api`) and Design Tweak
 (`design_tweak_update_thread`) — through gateway routes that refuse the call with
 HTTP 403 while the app is disabled, on `kiro_crew.apps.manager`'s read of the
 app's `installed.json`. The refusal body differs per app — Dev Fleet's routes and

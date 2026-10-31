@@ -95,7 +95,8 @@ _INBOX_POLL_SECS = 1.0
 # ``task_run`` starts the autonomous task runner; ``register_hook`` opens a
 # dedicated agent session an external POST drives later; ``pod_up`` boots a
 # whole preview gateway as its own host process on its own port, which keeps
-# serving after the turn that started it has ended.
+# serving after the turn that started it has ended, and ``pod_restart`` starts
+# that gateway again.
 #
 # The observe-and-tear-down verbs are deliberately ABSENT, and their absence is
 # the qualifier this invariant needs rather than an omission: ``spawn_list``,
@@ -116,6 +117,7 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "task_run",
     "register_hook",
     "pod_up",
+    "pod_restart",
 )
 
 # One tool on the same boundary cannot be held by NAME.  ``ops_mission_control_api``

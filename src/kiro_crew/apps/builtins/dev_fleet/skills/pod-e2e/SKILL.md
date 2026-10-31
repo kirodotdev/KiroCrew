@@ -40,8 +40,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5476/api/sessions   # 
 
 ## The interface — pod tools if you are an agent, the CLI if you are a human
 
-**If you are an agent session, reach for the `pod_up` / `pod_down` / `pod_status`
-/ `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
+**If you are an agent session, reach for the `pod_up` / `pod_restart` / `pod_down`
+/ `pod_status` / `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
 pod verb needs the systemd user bus. Whether your shell can reach that bus depends
 on the sandbox your session runs behind: under Kiro Crew's own sandbox it can (see
 `security.md`, "Scoped user-bus locator forward"), but behind an outer sandbox with
@@ -53,6 +53,8 @@ denies you the bus.
 
 ```
 pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, token (+ its two limits)
+           (+ optional "memory": "16G", "cpu": "800%"; defaults 4G / 200%)
+pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
@@ -107,7 +109,9 @@ own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity
 A pod can **never** collide with the live gateway and many can run at once.
 
 **Resource ceilings are Linux-only.** On Linux the unit sets cgroup
-`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. **On macOS there is
+`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. Raise them per pod with
+`pod up <wt> --memory 16G --cpu 800%` (or the `memory` / `cpu` tool fields), and
+apply a change to a running pod with `pod restart <wt>`, which keeps its HOME. **On macOS there is
 no such ceiling and none is emitted** — macOS has no cgroups, and nothing it does
 offer bounds the total memory of a *process tree* or hard-caps CPU (`RLIMIT_AS`
 covers one process's address space, not resident memory, and the gateway spawns

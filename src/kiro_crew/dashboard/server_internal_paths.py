@@ -98,7 +98,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # local_only=False deployment reclassifies strict paths as mixed.
         "/api/update/approve",
         # Dev Fleet pod lifecycle — the agent surface behind the ``pod_up`` /
-        # ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
+        # ``pod_restart`` / ``pod_down`` / ``pod_status`` / ``pod_ls`` MCP tools. An agent session
         # runs behind a sandbox with its own user namespace, so its shells cannot
         # connect the systemd user bus every pod verb needs; the gateway holds the
         # host bus and does the systemd part on the agent's behalf. Without these
@@ -113,12 +113,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed —
         # same reason ``/api/computer-use/frame`` re-asserts both.
         #
-        # FOUR EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
+        # FIVE EXACT paths, never the ``/api/apps/dev-fleet/pod`` prefix. The
         # match is ``path == p or path.startswith(p + "/")``, so a prefix entry
         # would silently admit every future route under that segment — and this
         # app's neighbourhood includes worktree PRUNE and the Make Live cutover,
         # which must never become reachable by holding the internal secret.
         "/api/apps/dev-fleet/pod/up",
+        "/api/apps/dev-fleet/pod/restart",
         "/api/apps/dev-fleet/pod/down",
         "/api/apps/dev-fleet/pod/status",
         "/api/apps/dev-fleet/pod/list",
