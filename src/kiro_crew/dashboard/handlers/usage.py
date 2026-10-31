@@ -791,8 +791,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _COST_CACHE_TS,
         _COST_CACHE_TTL,
         _COST_MIN_GROWTH_TURNS,
+        _COST_SLOT_KEY_MAX_CHARS,
+        _COST_SLOT_SPEND_CAP,
         _COST_TOP_CONVOS,
+        _per_turn,
+        _slot_spend,
         cost_breakdown,
+        rank_spend,
     )
     from kiro_crew.dashboard.handlers.usage_history import (  # noqa: F401
         _TOKEN_CACHE,

@@ -767,6 +767,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         subagent_event_slot,
         tighten_live_slot_memory_mode,
         tighten_replacement_to_restricted_original,
+        usage_transcript_keys,
     )
     from kiro_crew.dashboard.chat_utils_turn_recovery import (  # noqa: F401
         _CONTINUATION_BY_CAUSE,
