@@ -252,6 +252,30 @@ describe('the hand-back bar', () => {
     expect(writes.input).not.toHaveBeenCalled()
   })
 
+  it('an Esc or Enter the IME uses for its candidate is not a hand-back', () => {
+    const onHandBack = vi.fn()
+    render(<BrowserLiveHandbackBar offered={[]} onHandBack={onHandBack} />)
+    const note = screen.getByTestId('browser-live-handback-note')
+    fireEvent.compositionStart(note)
+    fireEvent.change(note, { target: { value: 'さいん' } })
+    fireEvent.keyDown(note, { key: 'Escape', isComposing: true, keyCode: 229 })
+    fireEvent.keyDown(note, { key: 'Enter', isComposing: true, keyCode: 229 })
+    expect(onHandBack).not.toHaveBeenCalled()
+    fireEvent.compositionEnd(note, { data: 'さいん' })
+    // Right after the composition ends the latch still holds the key for the IME.
+    fireEvent.keyDown(note, { key: 'Escape' })
+    expect(onHandBack).not.toHaveBeenCalled()
+  })
+
+  it('Enter in the note sends once the composition is over', () => {
+    const onHandBack = vi.fn()
+    render(<BrowserLiveHandbackBar offered={[]} onHandBack={onHandBack} />)
+    const note = screen.getByTestId('browser-live-handback-note')
+    fireEvent.change(note, { target: { value: 'Signed in' } })
+    fireEvent.keyDown(note, { key: 'Enter' })
+    expect(onHandBack).toHaveBeenCalledWith({ note: 'Signed in' })
+  })
+
   it('the note is capped at the gateway\'s limit', async () => {
     const onHandBack = vi.fn()
     render(<BrowserLiveHandbackBar offered={[]} onHandBack={onHandBack} />)

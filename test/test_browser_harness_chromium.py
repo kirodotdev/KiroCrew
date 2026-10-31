@@ -7,8 +7,8 @@ import os
 import stat
 import sys
 import zipfile
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import pytest
 

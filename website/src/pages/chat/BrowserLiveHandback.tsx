@@ -5,6 +5,7 @@ import { Btn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { HANDBACK_NOTE_MAX } from '../../hooks/useBrowserLive'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import type { BrowserHandbackSaid } from '../../api/client/browserLive'
 
 /**
@@ -45,6 +46,7 @@ export function BrowserLiveHandbackBar({ offered, onHandBack, className }: {
   const [choice, setChoice] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const noteId = useId()
+  const ime = useImeGuard()
   const send = () => {
     const said: BrowserHandbackSaid = {}
     if (choice) said.choice = choice
@@ -54,9 +56,14 @@ export function BrowserLiveHandbackBar({ offered, onHandBack, className }: {
   const onSubmit = (e: FormEvent) => { e.preventDefault(); send() }
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     // Keys typed here are the person's note, never the page's; Esc is the plain
-    // hand back the picture's Esc is.
+    // hand back the picture's Esc is. An Enter or Esc the IME is using to commit
+    // or cancel a candidate belongs to the composition, not to the hand-back.
     e.stopPropagation()
-    if (e.key === 'Escape') { e.preventDefault(); onHandBack(undefined) }
+    if (e.key === 'Enter') {
+      if (ime.claimEnter(e)) send()
+      return
+    }
+    if (e.key === 'Escape' && ime.claimKey(e)) { e.preventDefault(); onHandBack(undefined) }
   }
   return (
     <form
@@ -88,6 +95,7 @@ export function BrowserLiveHandbackBar({ offered, onHandBack, className }: {
           value={note}
           maxLength={HANDBACK_NOTE_MAX}
           onChange={e => setNote(e.target.value)}
+          {...ime.bindComposition<HTMLInputElement>({})}
           onKeyDown={onKeyDown}
           placeholder={i18nT('pages.chat.browserLiveHandback.note_placeholder')}
           aria-label={i18nT('pages.chat.browserLiveHandback.note_label')}
