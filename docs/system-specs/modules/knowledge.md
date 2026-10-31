@@ -136,6 +136,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
 | `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
 | `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
+| `knowledge/ingestion_jobs.py` | `reclaim_interrupted_ingest_jobs` — the startup sweep that moves source-ingest job rows a stopped gateway left `processing` to `abandoned` |
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
@@ -611,6 +612,10 @@ Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated*
 `LLMPool.start()` reads config once off the event loop and spawns all workers; `acquire()` blocks on a semaphore when all workers are busy and transparently replaces a dead worker (`is_alive()` false) on acquire. `send()` is the acquire→send→release convenience; `send_batch()` runs prompts concurrently bounded by pool size. A failed spawn during `start()` tears down all already-started workers. After `knowledge.pool_idle_ttl_secs` (default 300; `0` disables it) of full idleness — no worker checked out — the pool scales to zero, shutting every worker down; the next `acquire()` respawns lazily. A config write reaches a running pool through `reconfigure()`, which adopts the new idle TTL at once and a new pool size at the next idle boundary.
 
 **Untrusted-chunk delimiters (CWE-94).** `EntityExtractor` wraps each untrusted chunk in **per-request nonce-suffixed** delimiters (`<<<BEGIN_UNTRUSTED_CHUNK_{nonce}>>>` / `<<<END_UNTRUSTED_CHUNK_{nonce}>>>`, `nonce = uuid4().hex`), so content that embeds a legacy static delimiter cannot forge the boundary and inject instructions. Both `extract` (single) and `extract_batch` (the ingestion path) apply this, and the batch path mints a **distinct nonce per chunk**.
+
+**Extraction failures are logged, never the text.** An extraction batch whose pool call fails, or whose chunks get an empty or unparseable reply, stores those chunks with no entities and no summary and logs one WARNING naming the source id (set by `IngestionPipeline` through `extractor.extraction_source`), the exception type or the empty/unparseable counts. A failed or unusable source summary (`generate_source_summary`) logs a WARNING the same way. No warning carries document text, the model's reply, an exception message or a document name.
+
+**Interrupted ingest jobs.** An ingest writes its `ingestion_jobs` row as `processing` before any work. A gateway that stops mid-ingest leaves that row behind, so `setup_knowledge_routes` registers `_reclaim_interrupted_ingest_jobs` as the first knowledge startup hook: it moves every row with a `source_id` still `processing` and created before this process's boot timestamp to `abandoned`. Rebuild rows (`source_id IS NULL`) keep `start_rebuild_job`'s staleness sweep. Nothing is re-ingested; an interrupted folder file is picked up by the next scan through its scan marker.
 
 ## 4. FTS5 + graph + vector retrieval (`retrieval.py`, `store.py`)
 
