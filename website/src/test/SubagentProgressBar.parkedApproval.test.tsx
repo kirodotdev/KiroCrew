@@ -70,9 +70,10 @@ function chip({ parked = 0, running = 0, seed }: {
 }
 
 const text = (el: Element | null) => (el?.textContent ?? '').trim()
-const runningCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-running-count"]'))
-const awaitingCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-awaiting-count"]'))
-const unresolvedCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-unresolved-count"]'))
+// The visible digit; the sr-only words beside it are covered in SubagentProgressBar.test.tsx.
+const runningCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-running-count"] span[aria-hidden="true"]'))
+const awaitingCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-awaiting-count"] span[aria-hidden="true"]'))
+const unresolvedCount = (c: HTMLElement) => text(c.querySelector('[data-testid="subagent-unresolved-count"] span[aria-hidden="true"]'))
 
 beforeEach(() => vi.clearAllMocks())
 
