@@ -290,6 +290,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         ),
         embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),
+        consolidation_write_child_process=section.read(
+            "consolidation_write_child_process", _safe_bool
+        ),
         embed_model_url=section.get("embed_model_url"),
         embed_model_path=section.get("embed_model_path"),
         embed_model_id=section.get("embed_model_id"),

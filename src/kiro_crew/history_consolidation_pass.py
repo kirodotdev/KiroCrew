@@ -1037,8 +1037,11 @@ async def _consolidate(
         # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
         if vector_store and not member_memory:
             stage = "structured memory"
+            from kiro_crew.consolidation_write_offload import write_structured_memory
+
             await _run_in_memory_background_pool(
-                self._write_structured_memory,
+                write_structured_memory,
+                self,
                 result,
                 key,
                 vector_store,
@@ -1125,8 +1128,11 @@ async def _consolidate(
             and (raw_lessons := result.get("lessons"))
         ):
             stage = "lessons"
+            from kiro_crew.consolidation_write_offload import save_lessons
+
             await _run_in_memory_background_pool(
-                self._save_lessons,
+                save_lessons,
+                self,
                 raw_lessons,
                 vector_store,
                 lessons_store,
