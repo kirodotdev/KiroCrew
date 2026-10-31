@@ -343,8 +343,15 @@ class TestSessionSlotRecovery:
         # rejects it — this is what actually proves defence-in-depth.
         (sess_dir / ".hidden.jsonl").write_text("{}\n")
         assert _session_has_persisted_history(".hidden") is False
-        (sess_dir / "a\\b.jsonl").write_text("{}\n")
+        # ``\`` is one more character on POSIX and a separator on Windows, so seed
+        # the file each OS opens for ``a\b``, and the ``a/b`` spelling with it.
+        (sess_dir / "a").mkdir()
+        (sess_dir / "a" / "b.jsonl").write_text("{}\n")
+        if os.name != "nt":
+            (sess_dir / "a\\b.jsonl").write_text("{}\n")
+        assert (sess_dir / "a\\b.jsonl").is_file()
         assert _session_has_persisted_history("a\\b") is False
+        assert _session_has_persisted_history("a/b") is False
 
     # ── Audit events on positive-match paths (security-controls rule) ──
 
