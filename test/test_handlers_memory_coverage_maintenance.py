@@ -357,7 +357,7 @@ class TestPromote:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ('{"min_count": -2}', (-2, 0.75)),
+            ('{"min_count": 2}', (2, 0.75)),
             ('{"min_count": 99999999999999999999999}', (99999999999999999999999, 0.75)),
         ],
     )

@@ -3382,6 +3382,14 @@ projects, daily history, FTS) and `vector_memory_for_store` (semantic, episodic,
 lessons). `migrate` validates the selector and refuses named stores because legacy
 Markdown migration belongs to Global V1. `promote` selects the requested store
 and refuses V2, whose experiences are not automatically promoted or retired.
+Because a promotion tombstones every row it folds, `promote` bounds its thresholds
+before it runs (`dashboard/memory_request_bounds.py`, each change logged as a warning):
+a `min_count` below 2 runs as 2 and a `min_sim` at or below 0 runs at the 0.75
+default. Any other number, NaN included, is forwarded as sent. A non-numeric threshold
+is a 400.
+`PUT /api/memory/semantic` clamps a numeric `confidence` to `0..1` (an integer too
+large for a float included), stores `true`/`false` as 1.0/0.0, and stores 1.0 for
+NaN or a non-number, as it does for a missing one.
 `consolidate` follows the canonical execution record of its target session and verifies
 the caller's authority over that session; a store selector cannot retarget it.
 Embedding configuration and `settings` remain installation-wide controls.

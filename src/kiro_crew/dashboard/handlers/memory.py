@@ -23,6 +23,11 @@ from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers.memory_graph import _build_memory_graph
 from kiro_crew.dashboard.handlers.memory_services import _get_vector_store_async, _sel
+from kiro_crew.dashboard.memory_request_bounds import (
+    bounded_promote_min_count,
+    bounded_promote_min_sim,
+    bounded_semantic_confidence,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
@@ -704,11 +709,7 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     key = body.get("key", "")
     value = body.get("value")
-    confidence = (
-        float(body.get("confidence", 1.0))
-        if isinstance(body.get("confidence"), (int, float))
-        else 1.0
-    )
+    confidence = bounded_semantic_confidence(body.get("confidence"))
     source = body.get("source", "user_explicit")
     if not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
@@ -1427,9 +1428,11 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    # The promotion tombstones every row it folds, so a threshold that would
+    # fold rows nobody asked to fold is bounded rather than run as sent.
     try:
-        min_count = body_int(body.get("min_count", 5))
-        min_sim = float(body.get("min_sim", 0.75))
+        min_count = bounded_promote_min_count(body_int(body.get("min_count", 5)))
+        min_sim = bounded_promote_min_sim(float(body.get("min_sim", 0.75)))
     # OverflowError: float() of a JSON integer beyond float range raises it.
     except (ValueError, TypeError, OverflowError):
         return web.json_response({"error": "min_count/min_sim must be numeric"}, status=400)
