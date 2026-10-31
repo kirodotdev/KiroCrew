@@ -310,6 +310,22 @@ def format_completion_summary(run: Project) -> str:
     verified = verdicts.pop(VerificationStatus.PASSED, 0)
     others = "".join(f" · {n} {v}" for v, n in sorted(verdicts.items()))
     lines.append(f"🧪 {verified}/{len(run.tasks)} verified{others}")
+    # Loud honesty when NOTHING content-aware gated the run. The two gates that
+    # read what a step actually produced are the test command (→ a verified
+    # step) and git diff review (→ a diff-reviewed step). When a run has tasks
+    # but not one of them was either verified or diff-reviewed, every "passed"
+    # rests on the agent's own turn completing — a step can be marked passed
+    # with empty/stub output. This keys off what actually happened per step
+    # (``diff_reviewed`` / ``verification``), not the run's final ``git_enabled``,
+    # so a run whose steps WERE diff-reviewed before git went away mid-run is not
+    # wrongly warned, and the 🧪 count above does not have to carry the alarm.
+    if run.tasks and verified == 0 and not any(t.diff_reviewed for t in run.tasks):
+        lines.append(
+            "⚠️ No step was verified or diff-reviewed — every step passed on its "
+            "agent turn alone, so a step can be marked done with empty/stub "
+            "output. Point the run at a git repo, or set "
+            "`taskrunner.test_command`, to get real per-step verification."
+        )
     if run.tokens_used:
         lines.append(f"🪙 ~{run.tokens_used // 1000}K tokens")
     if run.replan_count:

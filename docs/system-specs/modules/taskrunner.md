@@ -397,6 +397,7 @@ class Task:
     error: str = ""
     result: str = ""  # updated during streaming (partial results visible)
     verification: str = ""  # VerificationStatus value; "" until a verdict exists (see Test verification)
+    diff_reviewed: bool = False  # True once self_review inspected a real git diff for this step
     resume_hint: str = ""  # "resume, do not restart" after a death that may have run the prompt
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
@@ -423,6 +424,11 @@ class Project:
     commit_hashes: list[str]  # per-step commit SHAs
     worktree_path: str     # git worktree path (empty for a non-git folder)
     repo_root: str         # original repo root (for worktree cleanup)
+    git_enabled: bool = True    # False = run in place, no git ops
+    owns_task_dir: bool = False # True = runner created work_dir itself (no user
+                                # override); such a dir may be git-init'd
+    git_in_place: bool = False  # True = git runs directly in work_dir (no
+                                # worktree) — the runner-owned git-init'd case
     auto_approve: bool = False  # per-run trust: auto-approve tool permission requests
                                 # (deny-lists + force_approval gates still apply)
     workflow_run_id: str = ""   # shared workflow-run identity
@@ -951,14 +957,16 @@ mismatch from one raised inside the sink's own body.
 ## Git Coordination
 
 A task rooted in an existing git repository runs on an isolated branch via
-`git_coord.py`; a non-git folder runs in place without initializing a repository:
+`git_coord.py`. A directory that is not a repo is handled by who owns it:
 
 - **Existing repo**: `git worktree add` creates an isolated working directory; the user's checkout stays untouched.
-- **Non-git folder**: `git_enabled` becomes false; no repository, branch, commit, revert, or git-diff review is created.
+- **Runner-owned work dir, not a repo** (`run.owns_task_dir` — the runner created the per-run `plan_<id>/` scratch itself, no user workspace override): `git_coord._git_init_runner_dir` runs `git init`, sets a repo-local placeholder identity (the sandbox scrubs any global one), makes an initial `commit --allow-empty`, and checks out the task branch **in place** (`run.git_in_place`). No worktree is created: git runs directly in `work_dir`, so per-step commits, revert-on-fail, and diff review are ON by default for this (common) case, and the deliverable stays in `plan_<id>/` where the completion summary names it — `finalize` only ever removes a worktree, so it leaves an in-place run's output untouched. Init is best-effort: a failure is non-fatal and the run continues without git coordination.
+- **User-supplied folder, not a repo**: `git_enabled` becomes false; no repository, branch, commit, revert, or git-diff review is created. We do NOT `git init` a folder the user set up themselves — that is surprising and leaves a `.git` behind. The completion summary says loudly that no step was content-reviewed (see below).
 - **Per-step commits (git runs)**: `git add -A && git commit` after each passed step.
 - **Revert on failure (git runs)**: `git reset --hard HEAD~1` when review fails, before retry.
 - **State summary**: `git log --oneline` + `git diff --stat` is injected when git coordination is active.
 - **Review diff**: the step's diff (`git_coord.get_step_diff`, capped at 8000 characters) feeds the independent review session; only a non-git run or a step whose commit failed uses the generic review prompt.
+- **Unverified-run warning**: `format_completion_summary` appends a prominent warning when a run has tasks but not one of them was either verified (a passing test command) or diff-reviewed (`Task.diff_reviewed`, set when `self_review` inspects a real git diff). The condition keys off per-step state, not the run's final `git_enabled`, so a run whose steps were diff-reviewed before git coordination went away mid-run is not wrongly warned. This is the honesty fix for the failure mode where every step "passed" but the work was never content-checked.
 - **Finalize**: an owned worktree is cleaned up when the run exits.
 - **Resume recovery**: a retry — and a restart of a run that already had a
   worktree — validates the saved worktree's path, repository,
