@@ -77,6 +77,12 @@ const toggle = () => screen.getByRole('switch', { name: 'Session Environments' }
 /** Saved profiles start collapsed; open one by its header (name, then subtitle). */
 const expand = (title: string) => fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${title}`) }))
 const expandAll = () => screen.getAllByRole('button', { expanded: false }).forEach(header => fireEvent.click(header))
+/** Text in a profile opened moments ago. The body fades in from opacity 0, and
+ * stays at 0 until the first animation frame runs, so wait for it to be drawn. */
+async function findShown(text: RegExp) {
+  const node = await screen.findByText(text)
+  await waitFor(() => expect(node).toBeVisible())
+}
 const SAVED = 'Settings saved.'
 const LOAD_ERROR = 'Could not load environment settings.'
 const check = () => screen.getByRole('button', { name: 'Check Coder connection' })
@@ -1178,7 +1184,7 @@ describe('Sprites and boxd providers', () => {
     fireEvent.click(save())
     await waitFor(() => expect(vault).toEqual([{ name: 'SPRITES_TOKEN', value: 'my-org/t1/secret-value' }]))
     await waitFor(() => expect(field).toHaveValue(''))
-    expect(await screen.findByText(/A token is saved as SPRITES_TOKEN\./)).toBeVisible()
+    await findShown(/A token is saved as SPRITES_TOKEN\./)
     // The token never rides on the profile draft or a config write.
     expect(writes).toEqual([])
     expect(document.body.innerHTML).not.toContain('secret-value')
@@ -1253,7 +1259,7 @@ describe('Sprites and boxd providers', () => {
     expand('Fly')
     fireEvent.change(screen.getByLabelText(TOKEN_LABEL), { target: { value: 'new-token' } })
     fireEvent.click(save())
-    expect(await screen.findByText(/Choose Save settings to try again/)).toBeVisible()
+    await findShown(/Choose Save settings to try again/)
     expect(screen.queryByText(/change the name under Advanced: secret name/)).toBeNull()
     expect(screen.queryByText(/Failed to fetch/)).toBeNull()
     expect(writes).toEqual([])
@@ -1287,7 +1293,7 @@ describe('Sprites and boxd providers', () => {
     mount()
     await screen.findByLabelText('Coder URL')
     expand('Fly')
-    expect(await screen.findByText(/A token is saved as SPRITES_TOKEN\./)).toBeVisible()
+    await findShown(/A token is saved as SPRITES_TOKEN\./)
     const field = screen.getByLabelText(TOKEN_LABEL)
     fireEvent.change(field, { target: { value: 'new-token' } })
     fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Renamed' } })
@@ -1654,7 +1660,7 @@ describe('Profile draft identity', () => {
     }
     // Two values for one key would silently keep only the last: refuse before
     // any write, keep both drafts, and say how to tell them apart.
-    expect(await screen.findByText(/Another profile has a different token typed for SPRITES_TOKEN/)).toBeVisible()
+    await findShown(/Another profile has a different token typed for SPRITES_TOKEN/)
     expect(vault).toEqual([])
     expect(writes).toEqual([])
     expect(screen.queryByText('Settings saved.')).toBeNull()
@@ -1701,7 +1707,7 @@ describe('Profile draft identity', () => {
     await act(async () => { await qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }) })
     await waitFor(() => expect(screen.getByLabelText(/Secret name for the token/)).toHaveValue('TOKEN_B'))
     fireEvent.click(save())
-    expect(await screen.findByText(/The secret name changed to TOKEN_B after you typed the token/)).toBeVisible()
+    await findShown(/The secret name changed to TOKEN_B after you typed the token/)
     expect(vault.get('TOKEN_B')).toBe('other-account')
     expect(vault.has('TOKEN_A')).toBe(false)
     expect(screen.getByLabelText(TOKEN_LABEL)).toHaveValue('typed-for-a')
