@@ -30,9 +30,9 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
   sidebarOnScreen?: boolean
   /** See SessionActionsMenu: the phone bar's ⋯ menu owns the pop-out rows. */
   omitPopout?: boolean
-  /** Phone single top bar: render the session TITLE inside the trigger, ahead of
+  /** Phone single top bar: render the session TITLE inside the trigger, after
    *  the chevron, so title and menu are one control (one tap target, chevron
-   *  flush after the last character). Absent, the trigger is the bare chevron
+   *  flush before the first character, as in the desktop header). Absent, the trigger is the bare chevron
    *  the desktop title row places beside its own rename control. */
   triggerLabel?: React.ReactNode
   /** Phone only: a first item that opens a sibling session in the on-screen
@@ -93,9 +93,11 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, onAutoTi
              menu's role is appended as sr-only text -- an aria-label would replace
              the title, which on the phone this trigger is the only copy of. */
           <button data-testid="session-title-menu" data-chat-header-focus className="flex min-w-0 items-center gap-1 px-1 py-1 rounded-md text-text-strong cursor-pointer bg-transparent border-none transition-colors hover:bg-bg-hover" aria-haspopup="menu">
+            {/* The chevron leads the title: the desktop header's icon-only
+                trigger also sits ahead of its title. */}
+            <ChevronDown size={16} className="shrink-0 text-muted" />
             <span className="session-header-title text-[15px] font-semibold truncate min-w-0">{triggerLabel}</span>
             <span className="sr-only">, {i18nT('pages.chatPage.session_options')}</span>
-            <ChevronDown size={16} className="shrink-0 text-muted" />
           </button>
         ) : (
           <button data-chat-header-focus className="px-0.5 py-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none transition-all" aria-label={i18nT('pages.chatPage.session_options')}>
