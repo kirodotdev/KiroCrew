@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.session_work_dir import mark_run_dir, reclaim_session_work_dir
 
@@ -192,12 +193,24 @@ async def cleanup_session(self: AcpProvider, session_id: str) -> None:
     if not session_id:
         return
     sessions_dir = kiro_sessions_dir()
-    for suffix in (".json", ".jsonl"):
-        target = sessions_dir / f"{session_id}{suffix}"
-        if not _is_safe_path(target, sessions_dir):
-            logger.error("cleanup_session: path traversal blocked for %s", target)
-            return
-        try:
-            target.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("cleanup_session: failed to delete %s", target, exc_info=True)
+
+    def _delete() -> None:
+        # Off the loop: _is_safe_path resolves (a filesystem call) and unlink
+        # is a filesystem call; on a slow mount either stalls the shared loop
+        # thread and can trip the gateway watchdog. Mirrors the hop
+        # acp_runtime_start already uses for the late-session teardown.
+        for suffix in (".json", ".jsonl"):
+            target = sessions_dir / f"{session_id}{suffix}"
+            if not _is_safe_path(target, sessions_dir):
+                logger.error("cleanup_session: path traversal blocked for %s", target)
+                return
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("cleanup_session: failed to delete %s", target, exc_info=True)
+
+    # drained_to_thread, not a bare to_thread: shutdown() awaits this in a
+    # finally, so a cancellation there could otherwise cancel the await while
+    # the worker is still queued, leaving neither file deleted. The helper
+    # keeps the await alive until the worker finishes, then re-raises.
+    await drained_to_thread(_delete)

@@ -35,6 +35,7 @@ from kiro_crew.acp.client import (
 )
 from kiro_crew.acp.types import METHOD_CANCEL, METHOD_COMMANDS_EXECUTE, JsonRpcMessage
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -289,7 +290,16 @@ async def destroy(self: AcpSessionHandle) -> None:
         await self._runtime.terminate_session(self._session_id)
     finally:
         if self.memory_mode != "persistent" or not getattr(self, "keep_transcript", False):
-            self._cleanup_transcript()
+            # Off the loop: the cleanup resolves the sessions dir and unlinks
+            # two files, and a synchronous unlink on the shared loop thread
+            # stalls every co-tenant session (and can trip the watchdog) on a
+            # slow mount. drained_to_thread, not a bare to_thread: this finally
+            # runs on the cancellation path (gateway shutdown, abandoned turn),
+            # and a bare await could be cancelled while its worker is still
+            # queued, so neither unlink would run and the transcript would leak
+            # forever -- the very bug this deletion prevents. The helper keeps
+            # the await alive until the worker finishes, then re-raises.
+            await drained_to_thread(self._cleanup_transcript)
 
 
 def _cleanup_transcript(self: AcpSessionHandle) -> None:
