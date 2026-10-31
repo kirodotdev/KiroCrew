@@ -616,6 +616,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WORKSPACE_PATH_ARGUMENTS,
         GATE_ENVELOPE_MARKER,
         STRANDS_BUILTIN_TOOL_KINDS,
+        STRANDS_SIDE_READ_ONLY_REFUSAL,
         StrandsCallIdentity,
         _anchored_in_workspace,
         _workspace_call_arguments,
@@ -623,6 +624,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         gate_envelope,
         identified_mcp_call,
         is_mcp_tool_approval,
+        is_strands_side_read,
         kas_consent_tool,
         pi_mcp_title,
         reject_option_id,
@@ -714,6 +716,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import difflib  # noqa: F401
     import hashlib  # noqa: F401
     import json  # noqa: F401
+    import os  # noqa: F401
     import posixpath  # noqa: F401
     import re  # noqa: F401
     import unicodedata  # noqa: F401
