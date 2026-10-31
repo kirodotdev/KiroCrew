@@ -798,6 +798,35 @@ describe('usePanelTabs — per-slot isolation', () => {
     expect(takePlainPanelShow('plain-slot')).toBe(false)
   })
 
+  it('a held view keeps the focus against a discovery open until the next tab choice', () => {
+    // The Ultra Mode board opens a worker with Workers held in front; the
+    // worker's history then loads and its PR link opens Changes for discovery.
+    act(() => openPanelView('worker-slot', 'workers', { hold: true }))
+    const { result } = renderHook(() => usePanelTabs('worker-slot', mock.descriptors))
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files']))
+    act(() => result.current.openView('changes', { automatic: true }))
+    expect(result.current.activeId).toBe('workers')
+    expect(result.current.tabs.map(t => t.id)).toContain('changes')
+    // A tab the person picks ends the hold: discovery focuses again.
+    act(() => result.current.setActive('files'))
+    act(() => result.current.setActive('workers'))
+    act(() => result.current.openView('issues', { automatic: true }))
+    expect(result.current.activeId).toBe('issues')
+  })
+
+  it('a held view is released when its show ends, and an unheld open does not hold', () => {
+    act(() => openPanelView('worker-slot', 'workers', { hold: true }))
+    notePanelShown('worker-slot')
+    notePanelShown('other-slot')
+    const { result } = renderHook(() => usePanelTabs('worker-slot', mock.descriptors))
+    act(() => result.current.openView('changes', { automatic: true }))
+    expect(result.current.activeId).toBe('changes')
+    act(() => openPanelView('plain-slot', 'workers'))
+    const plain = renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
+    act(() => plain.result.current.openView('changes', { automatic: true }))
+    expect(plain.result.current.activeId).toBe('changes')
+  })
+
   it('counts asked-for tabs, the one already shown included, but not store writes or automatic opens', () => {
     const { result } = renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
     // syncPinned writes a fresh strip's focus on its own: that is no choice.
