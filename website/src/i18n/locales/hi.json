@@ -14347,8 +14347,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} एम्बेड किए गए ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "एम्बेडिंग इंजन तैयार — ज्ञान आइटम को एम्बेड करना बाकी है।",
+        "generate_disabled": "नॉलेज एम्बेडिंग बंद है, इसलिए कुछ नहीं बनाया जा सकता।",
+        "generate_embedded_none": "कोई आइटम एम्बेड नहीं हुआ। एम्बेडिंग मॉडल ने इनके लिए कुछ नहीं लौटाया।",
+        "generate_failed": "एम्बेडिंग नहीं बन सकीं।",
         "generate_now": "अभी बनाएँ",
+        "generate_unavailable": "नॉलेज एम्बेडिंग मॉडल से अभी संपर्क नहीं हो पा रहा। थोड़ी देर में फिर से कोशिश करो।",
         "generating": "बनाया जा रहा है…",
+        "knowledge_embedder_off": "स्मार्ट सर्च उपलब्ध नहीं — नॉलेज एम्बेडिंग बंद है।",
+        "knowledge_embedder_unreachable": "स्मार्ट सर्च उपलब्ध नहीं — नॉलेज एम्बेडिंग मॉडल से संपर्क नहीं हो पा रहा।",
         "smart_search_active": "स्मार्ट सर्च चालू",
         "smart_search_unavailable_embedding_model_is_down": "स्मार्ट सर्च उपलब्ध नहीं — एम्बेडिंग मॉडल बैकग्राउंड में डाउनलोड हो रहा है।"
       },

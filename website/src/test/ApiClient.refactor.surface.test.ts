@@ -136,7 +136,7 @@ const API_KEY_ORDER = [
   'dropSlotToColumn', 'tagColumns', 'createTagColumn', 'updateTagColumn',
   'deleteTagColumn', 'reorderTagColumns', 'sendChat', 'sessionsHealth',
   'tasksSummary', 'spawnAdaptive', 'tasksList', 'taskDetail', 'taskCancel',
-  'knowledgeSearch', 'notifications', 'deleteNotification', 'clearNotifications',
+  'knowledgeSearch', 'knowledgeEmbeddingGenerate', 'notifications', 'deleteNotification', 'clearNotifications',
   'ackNotification', 'unackNotification', 'ackAllNotifications', 'notificationChannels',
   'updateNotificationChannelSettings', 'vapidPublicKey', 'subscribePush', 'unsubscribePush', 'sessions', 'sessionsSearch', 'sessionsNamed', 'instancesSearchSessions',
   'instancesCapabilities', 'instancesApprovalState', 'instancesVersions', 'instanceChatSlots', 'crewPeerGet', 'crewPeerPost', 'sessionDetail', 'sessionMeta', 'deleteSession',

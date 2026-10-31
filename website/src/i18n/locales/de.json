@@ -14347,8 +14347,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} eingebettet ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Embedding-Engine bereit — Wissenselemente müssen eingebettet werden.",
+        "generate_disabled": "Wissens-Embedding ist ausgeschaltet, daher kann nichts erzeugt werden.",
+        "generate_embedded_none": "Keine Einträge wurden eingebettet. Das Embedding-Modell hat für sie nichts zurückgegeben.",
+        "generate_failed": "Embeddings konnten nicht erzeugt werden.",
         "generate_now": "Jetzt generieren",
+        "generate_unavailable": "Das Embedding-Modell für Wissen ist gerade nicht erreichbar. Versuch es gleich noch einmal.",
         "generating": "Wird generiert…",
+        "knowledge_embedder_off": "Intelligente Suche nicht verfügbar — Wissens-Embedding ist ausgeschaltet.",
+        "knowledge_embedder_unreachable": "Intelligente Suche nicht verfügbar — das Embedding-Modell für Wissen ist nicht erreichbar.",
         "smart_search_active": "Intelligente Suche aktiv",
         "smart_search_unavailable_embedding_model_is_down": "Intelligente Suche nicht verfügbar — das Embedding-Modell wird im Hintergrund heruntergeladen."
       },
