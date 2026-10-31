@@ -49,10 +49,16 @@ def _make_orch(default_deliver, monkeypatch):
 class TestDefaultDeliverConfig:
     @pytest.mark.asyncio()
     async def test_empty_deliver_dashboard_default_is_dashboard_only(self, monkeypatch):
+        from kiro_crew.dashboard.state import _ChatSlot
+
         orch, state = _make_orch("dashboard", monkeypatch)
-        slot = state.get_or_create_slot.return_value
+        slot = _ChatSlot(key="chat-1")
+        state.get_or_create_slot.return_value = slot
         await orch._deliver_result("💓 Heartbeat", "task", "body", "")
-        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        assert [(m["role"], m["content"], m["cls"]) for m in slot.messages] == [
+            ("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        ]
+        assert slot.title == "💓 task"
         state.notify.assert_called_once_with(
             "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
         )

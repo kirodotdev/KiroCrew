@@ -491,7 +491,6 @@ test/test_handlers_mcp_coverage.py
 test/test_heartbeat_atomic_merge.py
 test/test_heartbeat_prompt_deliver.py
 test/test_heartbeat_retention.py
-test/test_heartbeat_sel_prune_offload.py
 test/test_history.py
 test/test_history_atomic_rewrite.py
 test/test_history_race.py
