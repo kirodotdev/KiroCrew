@@ -36,10 +36,9 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import os_release, platform_compat
 from kiro_crew.apps.builtins.pptx_maker.backend import paths
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.browser_cli import os_deps
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
@@ -82,17 +81,17 @@ def _linux_soffice_hint() -> str | None:
     caller asks from the event loop.
 
     The command names only what this host has: the apt family by lineage, the rpm
-    family by the manager :func:`os_deps.rpm_package_manager` finds (the probe the
+    family by the manager :func:`os_release.rpm_package_manager` finds (the probe the
     browser installer uses). Any other distribution, SUSE included, gets ``None``,
     as in the browser installer.
     """
-    ids = os_deps.os_release_ids()
+    ids = os_release.os_release_ids()
     if ids & _UNPACKAGED_IDS:
         return None
     if ids & _APT_IDS:
         return _LINUX_APT_HINT
     if ids & _RPM_IDS:
-        manager = os_deps.rpm_package_manager()
+        manager = os_release.rpm_package_manager()
         return _LINUX_RPM_HINT.format(manager=manager) if manager else None
     return None
 

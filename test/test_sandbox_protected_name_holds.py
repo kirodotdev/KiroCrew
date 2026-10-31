@@ -361,7 +361,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: One more root-level directory, three entries per tier:
     #:
     #: * ``engines`` -- the KAS engine bundles ``kirocrew kas install`` lays down
-    #:   (``acp/kas_bundle.py``), sealed read-only like ``playwright-cli`` so a
+    #:   (``acp/kas_bundle.py``), sealed read-only like ``browser-harness`` so a
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
@@ -379,6 +379,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
+    #: * ``browser-harness``, ``browser-harness-ipc``, ``browser-profile`` -- the
+    #:   Browser Harness prefix the gateway executes (sealed read-only), the daemon's
+    #:   IPC directory and Kiro's Chromium profile (both hidden). They sit at the
+    #:   data-home root beside writable siblings, exactly where the retired browser
+    #:   CLI's one leaf sat, so leaf-only is the only hold. Three names in, one
+    #:   out, both spellings of the data home: four more entries per tier.
     #:
     #: One more root-level directory, three entries per tier:
     #:
@@ -403,7 +409,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. It sits at the data-home root beside
     #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
     #:   is the only hold available, the same as ``member-records``.
-    EXPECTED: dict[str, int] = {"standard": 299, "cc": 306, "strict": 307}
+    EXPECTED: dict[str, int] = {"standard": 303, "cc": 310, "strict": 311}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

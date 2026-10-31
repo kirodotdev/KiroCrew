@@ -105,10 +105,14 @@ from kiro_crew.dashboard.handlers.appearances import (  # noqa: E402, F401
     api_appearances_petdex_fetch,
 )
 
-# ── Browser view same-origin relay (handlers/browser_view_relay.py) ──
-from kiro_crew.dashboard.handlers.browser_view_relay import (  # noqa: E402, F401
-    api_browser_view_relay,
-    close_relay_client,
+# ── Browser Harness: Settings -> Browser status, install job, test, disconnect
+# (handlers/browser_harness_status.py). Owner-only; the internal secret is refused. ──
+from kiro_crew.dashboard.handlers.browser_harness_status import (  # noqa: E402, F401
+    api_browser_harness_disconnect,
+    api_browser_harness_install,
+    api_browser_harness_status,
+    api_browser_harness_test,
+    stop_browser_harness_install,
 )
 
 # ── Connections OAuth relay (handlers/connections.py) ──
@@ -333,16 +337,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     _redact,
     _resolve_session_target,
     _sanitize_blocks,
-    api_browser_command,
-    api_browser_command_drain,
-    api_browser_command_result,
-    api_browser_engine_install,
-    api_browser_install_get,
-    api_browser_install_start,
-    api_browser_open,
-    api_browser_token_put,
-    api_browser_view_get,
-    api_browser_view_start,
     api_channel_folder_backfill,
     api_delete_message,
     api_discord_config_get,
@@ -389,7 +383,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_webex_config_save,
     api_wecom_config_get,
     api_wecom_config_save,
-    stop_browser_install,
 )
 
 # ── Rendered slides for the file panel (handlers/office_slides.py) ──
@@ -988,6 +981,40 @@ from kiro_crew.dashboard.handlers.aws_consent import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.aws_project_profile import (  # noqa: E402, F401
     api_aws_project_profile_get,
     api_aws_project_profile_put,
+)
+
+# Quick asks: the parked ``ask`` op's poll (internal) and the owner's answer.
+from kiro_crew.dashboard.handlers.browser_ask import (  # noqa: E402, F401
+    api_browser_ask_answer,
+    api_browser_ask_poll,
+)
+
+# The live browser card's owner-only legs: visibility, frame acks, takeover
+# (claim / release / event) and open-in-browser. Cookie-authed; the internal
+# secret is refused in the handler.
+from kiro_crew.dashboard.handlers.browser_live import (  # noqa: E402, F401
+    api_browser_input_claim,
+    api_browser_input_event,
+    api_browser_input_release,
+    api_browser_live_ack,
+    api_browser_live_close,
+    api_browser_live_open_in_browser,
+    api_browser_live_reopen,
+    api_browser_live_visibility,
+    bind_live_hub,
+)
+
+# ── Browser ops: the ``browser`` MCP tool's forwarding leg (handlers/browser_ops.py) ──
+from kiro_crew.dashboard.handlers.browser_ops import (  # noqa: E402, F401
+    api_browser_handback,
+    api_browser_op,
+)
+
+# The turn replay's owner-only read legs (list, one turn, one masked frame).
+from kiro_crew.dashboard.handlers.browser_recordings import (  # noqa: E402, F401
+    api_browser_recording_frame,
+    api_browser_recording_get,
+    api_browser_recordings_list,
 )
 
 # Computer use — the Settings config pair (browser, cookie-authed) plus the two

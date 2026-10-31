@@ -310,14 +310,25 @@ test("manager: page-driven popups are denied and reported to the host", () => {
 
 test("manager: non-web navigation attempts are vetoed", () => {
   const h = harness();
-  h.mgr.open("https://example.com/");
+  h.mgr.open("http://localhost:5173/");
   let prevented = false;
   h.view.webContents.handlers["will-navigate"]({ preventDefault: () => { prevented = true; } }, "file:///etc/passwd");
   assert.strictEqual(prevented, true);
 
   prevented = false;
-  h.view.webContents.handlers["will-navigate"]({ preventDefault: () => { prevented = true; } }, "https://ok.example/");
-  assert.strictEqual(prevented, false);
+  h.view.webContents.handlers["will-navigate"]({ preventDefault: () => { prevented = true; } }, "http://127.0.0.1:5173/about");
+  assert.strictEqual(prevented, false, "a loopback page may navigate itself");
+});
+
+test("manager: a page-driven navigation off loopback is vetoed and handed to the host", () => {
+  const h = harness();
+  h.mgr.open("http://localhost:5173/");
+  const before = h.events.length;
+  let prevented = false;
+  h.view.webContents.handlers["will-navigate"]({ preventDefault: () => { prevented = true; } }, "https://outside.example/login");
+  assert.strictEqual(prevented, true, "the Preview tab never renders an outside site");
+  assert.deepStrictEqual(h.events.at(-1), ["open-external", { url: "https://outside.example/login" }]);
+  assert.strictEqual(h.events.length, before + 1);
 });
 
 // ── untrusted registration (permission gating) ──

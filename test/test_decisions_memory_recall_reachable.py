@@ -119,7 +119,7 @@ def wired(tmp_path, monkeypatch, opened):
         decisions=SimpleNamespace(bucket=100, provider=provider, history_budget_chars=0)
     )
     monkeypatch.setattr("kiro_crew.decisions.gate._snapshot", lambda: snapshot)
-    monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Oracle)
+    monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Oracle)
     monkeypatch.setattr(
         "kiro_crew.decisions.capability.is_decisions_denied", lambda *_a, **_kw: False
     )
@@ -308,7 +308,7 @@ class TestOnlyACommittedRecallLeavesAReceipt:
                 await _asyncio.sleep(5)
                 raise AssertionError("the caller must have stopped waiting by now")
 
-        monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Slow)
+        monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Slow)
         monkeypatch.setattr(mr, "MIN_WAIT_SECS", 0.05)
         monkeypatch.setattr(mr, "MAX_WAIT_SECS", 0.05)
 
@@ -372,7 +372,7 @@ class TestOnlyACommittedRecallLeavesAReceipt:
                     for i, q in enumerate(questions)
                 }
 
-        monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _VaryingOracle)
+        monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _VaryingOracle)
 
         payload = await _recall(wired)
         assert len(calls) == 2, "the store did not retry, so this proves nothing"
@@ -840,7 +840,7 @@ class TestTheGatesStillHold:
             async def ask(self, _state, _questions):
                 raise RuntimeError("boom")
 
-        monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Broken)
+        monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Broken)
         payload = await _recall(wired)
         ids = {row["id"] for row in payload["retrieval"]["episodes"]}
         assert ids == {mem_id for mem_id, _t in EPISODES}

@@ -48,6 +48,13 @@ export interface DecisionsConsentData {
    */
   nudge_evidence?: boolean
   /**
+   * The two `browser.step` scopes, page outlines and screenshots. Both are reported
+   * true when the keystone does not mention them -- on by default once consent
+   * stands -- and false only for an explicit no.
+   */
+  browser?: boolean
+  browser_images?: boolean
+  /**
    * One row per decision point this GATEWAY ships, projected from the seam's own
    * registry (`decisions/gate.py`). The card lists these rather than an array
    * written here, so a build that ships another point lights up a row with no

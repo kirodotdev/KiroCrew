@@ -652,6 +652,9 @@ export default function PinnedPrompt({
   return (
     <div
       className="relative px-4 py-1 mx-auto w-full pointer-events-none flex items-start justify-end"
+      // The whole band (card, mask fill, fade): what a browser takeover sets aside
+      // (`browserLiveClearance.holdPinnedPromptAside`).
+      data-pinned-prompt-band=""
       style={{
         maxWidth: 'var(--mc-content-width, 900px)',
         // The band NEVER translates and its top edge is the fold line, so its box

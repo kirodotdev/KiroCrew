@@ -21,8 +21,8 @@ from unittest import mock
 
 import pytest
 
+from kiro_crew import os_release
 from kiro_crew.apps.builtins.pptx_maker.backend import pdftoppm_shim, preview_tools
-from kiro_crew.browser_cli import os_deps
 
 pdfium = pytest.importorskip(
     "pypdfium2",
@@ -269,7 +269,7 @@ class TestSofficeIsReportedNotInstalled:
         preview_tools._linux_soffice_hint.cache_clear()
         try:
             with mock.patch.object(
-                os_deps.platform, "freedesktop_os_release", return_value={"ID": "debian"}
+                os_release.platform, "freedesktop_os_release", return_value={"ID": "debian"}
             ):
                 for platform_name in ("darwin", "linux", "win32"):
                     with mock.patch.object(preview_tools.sys, "platform", platform_name):

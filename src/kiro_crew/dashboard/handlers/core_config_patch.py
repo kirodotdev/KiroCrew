@@ -377,6 +377,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             return _deny(f"must be at most {max_items} items", path_key)
         if any(len(item) > max_item_len for item in value):
             return _deny(f"each item must be at most {max_item_len} characters", path_key)
+        item_pattern = spec.get("item_pattern")
+        if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
+            return _deny(f"an item has the wrong shape for {path_key}", path_key)
     elif spec["type"] == "dict":
         # One-level record written ATOMICALLY as a single value, for settings
         # where multiple scalar fields form one verdict and a partial write is

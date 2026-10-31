@@ -66,8 +66,9 @@ function readPanel(file: string): string {
  * an unlisted file fails, so the choice is always conscious.
  */
 const UNMAPPED_PANELS: Record<string, string> = {
+  'BrowserEngineSection.tsx': "the Browser tab's Engine row under More (Harness and Chromium versions) with a Redownload action; status and one action, no setting of its own",
+  'BrowserStatusCard.tsx': "the Browser tab's main card (browser, status dot, one state-dependent Install / Retry / Allow / Connect / Disconnect action); it reports the engine and holds no setting",
   'KiroHarnessFallbackNote.tsx': 'informational note ChatPanel mounts above the fallback pickers on a Kiro harness, zero controls',
-  'BrowserInstallStatus.tsx': 'read-only install progress region BrowserPanel mounts above its sections, zero controls',
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'CustomSoundsSection.tsx': 'the Notifications tab\'s add-a-sound form (name + tones) and the list of saved sounds; it creates entries rather than holding settings, and the sounds it saves are chosen through the per-category pickers NotificationsPanel already indexes',
@@ -212,6 +213,14 @@ type BareCounts = Partial<Record<(typeof BARE_CONTROL_TAGS)[number], number>>
  * settingsManual.ts entry; "transient" means it is not a persistent setting.
  */
 const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string }> = {
+  'BrowserCredentialDomains.tsx': {
+    counts: { Input: 1 },
+    reason: "the chip editor's entry field for a new sign-in domain -- part of the browser.credentials.domains composite the extractor indexes whole (the list carries the configKey)",
+  },
+  'BrowserLocalOrigins.tsx': {
+    counts: { Input: 1 },
+    reason: "the chip editor's entry field for a new origin -- part of the dashboard.browser_local_origins composite the extractor indexes whole (the list carries the configKey)",
+  },
   'AboutPanel.tsx': {
     counts: { SegmentedControl: 2 },
     reason: 'the two channel SegmentedControls share manual: about.update-channel',
@@ -223,10 +232,6 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'ChatPanelLinkPatternsEditor.tsx': {
     counts: { Input: 2 },
     reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
-  },
-  'ConnectBrowserSection.tsx': {
-    counts: { Input: 1 },
-    reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
   },
   'DecisionsCard.tsx': {
     counts: { input: 1 },
@@ -378,6 +383,14 @@ describe('settings coverage gate — bare controls', () => {
  * skipped"; this pins each one so a new silent skip fails the build.
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
+  'BrowserLiveSection.tsx': {
+    count: 1,
+    reason:
+      "the sign-in switch is labelled with the edition provider's name, which only the " +
+      'gateway knows, and the row exists only when an edition supplies a provider (the ' +
+      'public build never renders it); it carries configKey browser.credentials.enabled, ' +
+      'so a SettingRef or key link still lands on it',
+  },
   'AppModelsSection.tsx': {
     count: 1,
     reason:

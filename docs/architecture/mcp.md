@@ -3057,11 +3057,12 @@ splits an agent `@server` reference on `/`, so a slash-containing key is
 mis-parsed as `@server/tool` and exposes none of the server's tools.
 
 **Browsing has one core MCP entry point.** The `browser` tool forwards one
-operation to the dashboard's native Browser panel. It accepts public HTTP(S)
-navigation only; localhost, private, and link-local targets stay on the
-approval-gated `playwright-cli` path. When no native panel is attached, or the
-operator disables it, the tool returns fallback guidance rather than starting a
-second browser. Full CLI snapshots and accessibility trees still stay on disk.
+operation through the gateway's Browser Harness supervisor to the agent's own
+browser, and re-checks `capabilities.browse` governance on every call: a denial
+refuses outright and never falls back to another driver. It accepts public
+HTTP(S) navigation only, plus the operator-listed
+`dashboard.browser_local_origins`; `type` refuses a password field; while the
+person has taken the live card over, every op returns `user_in_control` at once.
 See [browser](../system-specs/modules/browser.md).
 
 ### find_ui and the UI location index

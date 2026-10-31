@@ -478,41 +478,22 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
-    use_builtin_browser: bool = field(
-        default=True,
-        metadata=_meta(
-            "Use Built-in Browser",
-            "When on, the browser tool opens pages in Kiro Crew's built-in panel "
-            "(desktop app only). When off, the agent browses via playwright-cli.",
-        ),
-    )
     browser_local_origins: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Built-in Browser Local Origins",
-            "Loopback origins the browser tool may open in the built-in panel, "
+            "Local Preview Origins",
+            "Loopback origins the browser tool and the side panel's Preview tab may open, "
             "each written host:port with host localhost, 127.0.0.1 or [::1] "
-            "(e.g. localhost:5173 for a Vite dev server). Empty (the default) "
-            "keeps every loopback, private and link-local address refused. The "
-            "port is required and matched exactly, so one entry opens one dev "
+            "(e.g. localhost:5173 for a Vite dev server). The tab is for previewing "
+            "your own dev server; the agent never drives it, and an outside address "
+            "is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the "
+            "default) keeps every loopback, private and link-local address refused. "
+            "The port is required and matched exactly, so one entry opens one dev "
             "server and never the rest of the machine; the gateway's own port is "
-            "refused even when listed. Entries in any other shape are dropped. "
-            "The agent cannot set this while its sandbox is on: config.json is "
-            "read-only inside the sandbox.",
-        ),
-    )
-    browser_view_port: int = field(
-        default=0,
-        metadata=_meta(
-            "Browser Live-View Port",
-            "Pin the browser live-view server (playwright-cli show) to this "
-            "loopback port. 0 (the default) picks a fresh OS-assigned ephemeral "
-            "port on every start. Set a fixed port when the dashboard is viewed "
-            "remotely through an SSH tunnel that forwards a fixed set of ports, "
-            "so the Browser panel can always reach the view. The server binds "
-            "loopback-only either way. A value outside 1-65535 is treated as "
-            "unset. A changed pin applies the next time the view server "
-            "(re)starts; an already-running server keeps its current port.",
+            "refused even when listed. Entries in any other shape are dropped; at "
+            "most 32 are kept. Edited on Settings -> Browser -> Local preview, or by "
+            "the Preview tab's own Allow button. The agent cannot set this while its "
+            "sandbox is on: config.json is read-only inside the sandbox.",
         ),
     )
     verbosity: str = field(

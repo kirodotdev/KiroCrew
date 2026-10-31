@@ -23,17 +23,43 @@
       "configKey": "auto_update"
     },
     {
-      "id": "browser.attach-token",
-      "label": "Extension token (optional)",
+      "id": "browser.max-frame-rate",
+      "label": "Max frame rate",
       "tab": "browser",
-      "route": "/settings/browser?highlight=browser.attach-token"
+      "route": "/settings/browser?highlight=key%3Abrowser.live.max_fps",
+      "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
+      "configKey": "browser.live.max_fps"
     },
     {
-      "id": "browser.use-the-built-in-browser",
-      "label": "Use the built-in browser",
+      "id": "browser.quality",
+      "label": "Quality",
       "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Adashboard.use_builtin_browser",
-      "configKey": "dashboard.use_builtin_browser"
+      "route": "/settings/browser?highlight=key%3Abrowser.live.quality",
+      "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
+      "configKey": "browser.live.quality"
+    },
+    {
+      "id": "browser.run-with-no-window",
+      "label": "Run with no window",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=browser.run-with-no-window",
+      "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window."
+    },
+    {
+      "id": "browser.show-the-live-view-in-chat",
+      "label": "Show the live view in chat",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.live.enabled",
+      "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
+      "configKey": "browser.live.enabled"
+    },
+    {
+      "id": "browser.which-browser",
+      "label": "Which browser",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.choice",
+      "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
+      "configKey": "browser.choice"
     },
     {
       "id": "channels.agent-sessions-slack",
@@ -1029,6 +1055,13 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-per-mate",
       "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
+    },
+    {
+      "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
+      "label": "Also send screenshots of the agent's browser tab",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-screenshots-of-the-agent-s-browser-tab",
+      "description": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. Only the hosted decision model accepts screenshots; a local model gets the outline only."
     },
     {
       "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",

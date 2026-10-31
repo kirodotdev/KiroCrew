@@ -797,7 +797,7 @@ describe('arrow and targets', () => {
 
   it('never guides to credential or security-ceiling settings', () => {
     const sensitive = SETTINGS_REGISTRY.filter(isSensitiveSetting).map(e => e.id)
-    for (const id of ['security.denied-commands', 'secrets.jira-api-token', 'browser.attach-token', 'channels.slack-bot-token-slack']) {
+    for (const id of ['security.denied-commands', 'secrets.jira-api-token', 'channels.slack-bot-token-slack']) {
       expect(sensitive).toContain(id)
       expect(resolveGuideAction({ id: 'settings.show', params: { setting_id: id } })).toEqual({ ok: false, reason: 'sensitive_setting' })
     }

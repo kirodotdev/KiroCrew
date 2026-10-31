@@ -129,6 +129,7 @@ const DECORATIVE: Array<[file: string, snippet: string, why: string]> = [
   ['components/CopyBranchButton.tsx', 'group-hover/branch:opacity-70', 'copy glyph inside the always-visible branch button'],
   ['components/FileChangeChips.tsx', 'group-hover/tip:opacity-100', 'hover tooltip on a clickable chip; tapping opens the diff view, which names the file'],
   ['components/crew/CrewAvatarButton.tsx', 'group-hover/avatar:opacity-100', 'hover overlay, explicitly hidden under (hover: none)'],
+  ['pages/chat/BrowserLiveCardViews.tsx', 'pointer-events-none absolute inset-0 grid place-items-center bg-bg/40 opacity-0', '"Click to take over" hint over the frame; the header\'s Take over button is the control and a tap on the frame claims too'],
   ['pages/ArtifactDetailPageHeader.tsx', '<Pencil size={14}', 'edit glyph inside the always-visible rename button'],
   ['pages/chat/SessionTitleControl.tsx', '<Pen size=', 'edit glyph beside the always-visible title'],
   ['pages/settings/SecurityPanelPosture.tsx', '<ExternalLink size={11}', 'external-link glyph on an always-visible row'],

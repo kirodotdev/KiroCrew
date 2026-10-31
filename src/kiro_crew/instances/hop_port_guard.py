@@ -23,7 +23,7 @@ On Windows the option itself inverts: ``SO_REUSEADDR`` there lets another proces
 an ACTIVE listener, so setting it would give away the ownership this class exists to
 hold, and merely omitting it is not enough because the other process can set it on its
 own socket. ``SO_EXCLUSIVEADDRUSE`` is the opt-in that makes the bind exclusive. This is
-the same branch, for the same reason, as :mod:`kiro_crew.browser_cli.view` and the
+the same branch, for the same reason, as the
 dashboard's own listener -- an earlier revision of this module set ``SO_REUSEADDR``
 unconditionally and held nothing at all on Windows while claiming otherwise.
 
@@ -166,7 +166,7 @@ class HopPortGuard:
                     # setting it is not enough either, because the other process can
                     # set it on ITS socket. SO_EXCLUSIVEADDRUSE is the opt-in that
                     # makes our bind exclusive. Same branch, and for the same reason,
-                    # as `browser_cli.view` and the dashboard's own listener.
+                    # as the dashboard's own listener.
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                 sock.bind((self._host, port))
                 sock.listen(8)

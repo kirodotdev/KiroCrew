@@ -260,7 +260,7 @@ def build_questions(wake_when: str = "", quiet_when: str = "") -> list[Question]
 
     The criteria ride in the PROMPT rather than in the provider's own per-option
     ``criteria`` map. Both backends now render an authored ``Choice.criteria``
-    entry (``impl_jev._question_to_wire`` sends it, ``impl_llm.render_prompt``
+    entry (``impl_systemone._question_to_wire`` sends it, ``impl_llm.render_prompt``
     writes it beside the option), so either form reaches the judge; this point
     keeps the prompt-borne form it already shipped with, which costs the judge
     nothing and needs no change to the shared request builder.

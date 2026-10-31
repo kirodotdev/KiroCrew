@@ -1,0 +1,130 @@
+{
+  "_doc": "The quick-ask wire contract, shared by both halves. test/test_browser_quick_ask_contract.py proves the gateway emits `asks` exactly, accepts every `answers` body, and records `person_event` in this shape; website/src/test/QuickAskContract.test.tsx proves the card reads every ask whole, posts these bodies and reads the person event. Change both sides together.",
+  "session_key": "slot:contract",
+  "asks": {
+    "credentials": {
+      "args": { "kind": "credentials", "targets": ["username=e3", "password=e4"], "reason": "Sign in to read the inbox" },
+      "wire": {
+        "id": "c0ffee0000000001",
+        "kind": "credentials",
+        "origin": "https://accounts.example.com",
+        "reason": "Sign in to read the inbox",
+        "fields": [
+          { "role": "username", "rect": { "x": 100, "y": 120, "w": 240, "h": 36 }, "input": "text" },
+          { "role": "password", "rect": { "x": 100, "y": 170, "w": 240, "h": 36 }, "input": "password" }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "waiting"
+      }
+    },
+    "text": {
+      "args": { "kind": "text", "targets": ["text=e7"], "reason": "Your email for the receipt", "label": "email" },
+      "wire": {
+        "id": "c0ffee0000000002",
+        "kind": "text",
+        "origin": "https://shop.example.com:8443",
+        "reason": "Your email for the receipt",
+        "fields": [
+          { "role": "text", "rect": { "x": 40, "y": 300, "w": 320, "h": 40 }, "input": "email", "label": "email" }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "waiting"
+      }
+    },
+    "otp": {
+      "args": { "kind": "otp", "targets": ["otp=e9"], "reason": "The code sent to your phone", "digits": 6 },
+      "wire": {
+        "id": "c0ffee0000000003",
+        "kind": "otp",
+        "origin": "https://accounts.example.com",
+        "reason": "The code sent to your phone",
+        "fields": [
+          { "role": "otp", "rect": { "x": 100, "y": 220, "w": 200, "h": 44 }, "input": "otp" }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "waiting",
+        "digits": 6
+      }
+    },
+    "human_check": {
+      "args": { "kind": "human_check", "targets": ["widget=e11"], "reason": "The site wants a robot check" },
+      "wire": {
+        "id": "c0ffee0000000004",
+        "kind": "human_check",
+        "origin": "https://tickets.example.com",
+        "reason": "The site wants a robot check",
+        "fields": [
+          { "role": "widget", "rect": { "x": 60, "y": 400, "w": 304, "h": 78 } }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "taken_over"
+      }
+    },
+    "confirm": {
+      "args": { "kind": "confirm", "targets": ["action=e15"], "reason": "Ready to pay", "summary": "Book 2 tickets, $35 total" },
+      "wire": {
+        "id": "c0ffee0000000005",
+        "kind": "confirm",
+        "origin": "https://tickets.example.com",
+        "reason": "Ready to pay",
+        "fields": [
+          { "role": "action", "rect": { "x": 900, "y": 700, "w": 160, "h": 48 } }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "waiting",
+        "summary": "Book 2 tickets, $35 total",
+        "button": "Place order"
+      }
+    },
+    "sign_in": {
+      "args": { "kind": "credentials", "targets": [], "reason": "Sign in to read the inbox" },
+      "wire": {
+        "id": "c0ffee0000000006",
+        "kind": "credentials",
+        "origin": "https://accounts.example.com",
+        "reason": "Sign in to read the inbox",
+        "fields": [
+          { "role": "region", "rect": { "x": 100, "y": 150, "w": 500, "h": 400 } }
+        ],
+        "frame": { "w": 1280, "h": 800 },
+        "expires_at": 1893456000000,
+        "phase": "waiting",
+        "steps": { "username": "optional" }
+      }
+    }
+  },
+  "answers": [
+    { "name": "credentials_both", "kind": "credentials", "body": { "action": "fill", "values": { "username": "octocat", "password": "hunter2-secret" } } },
+    { "name": "credentials_password_only", "kind": "credentials", "body": { "action": "fill", "values": { "password": "hunter2-secret" } } },
+    { "name": "sign_in_take_over", "kind": "sign_in", "body": { "action": "take_over" } },
+    { "name": "text_fill", "kind": "text", "body": { "action": "fill", "values": { "text": "me@example.com" } } },
+    { "name": "otp_fill", "kind": "otp", "body": { "action": "fill", "values": { "otp": "123456" } } },
+    { "name": "human_check_take_over", "kind": "human_check", "body": { "action": "take_over" } },
+    { "name": "human_check_done", "kind": "human_check", "body": { "action": "done" } },
+    { "name": "confirm_confirm", "kind": "confirm", "body": { "action": "confirm" } },
+    { "name": "confirm_cancel", "kind": "confirm", "body": { "action": "cancel" } },
+    { "name": "text_decline", "kind": "text", "body": { "action": "decline" } }
+  ],
+  "person_event": {
+    "kind": "credentials",
+    "action": "fill",
+    "outcome": "filled",
+    "event": {
+      "ts": 1893455400000,
+      "op": "other",
+      "label": "credentials: fill -> filled",
+      "args": {},
+      "point": null,
+      "path": null,
+      "url": "https://accounts.example.com",
+      "status": "ok",
+      "actor": "person",
+      "ask": { "kind": "credentials", "action": "fill", "outcome": "filled", "origin": "https://accounts.example.com" }
+    }
+  }
+}

@@ -397,18 +397,19 @@ def _session_computer_use_gate(self, session_key: str, *, refresh: bool) -> bool
 def _live_browser_gate() -> bool:
     """Whether browsing is set up on this host now, as the ``browser`` tool reads it.
 
-    ``browser_cli.install.available`` is the predicate the tool's own call-time
-    check wraps: while it is False the tool refuses every op. Unlike that check
-    this fails OPEN. An unreadable state keeps the whole section, because a
-    section kept by mistake costs tokens while one dropped by mistake leaves a
-    working browser without its approval and loopback rules.
+    ``browser_harness.ops.browsing_available`` is the predicate the gateway's op
+    route answers ``not_installed`` by: while it is False the tool refuses every
+    op. Unlike that check this fails OPEN. An unreadable state keeps the whole
+    section, because a section kept by mistake costs tokens while one dropped by
+    mistake leaves a working browser without its loopback and takeover rules.
     """
     try:
         # Function-local: an owner takes no Kiro Crew import at module scope, so
-        # loading the context does not load the browser install plane.
-        from kiro_crew.browser_cli import install
+        # loading the context does not load the browser plane.
+        from kiro_crew.browser_harness import ops as browser_ops
+        from kiro_crew.config.paths import config_dir
 
-        return bool(install.available())
+        return bool(browser_ops.browsing_available(config_dir()))
     except Exception:
         logger.debug("browse gate unreadable; prompt keeps the Browser section", exc_info=True)
         return True

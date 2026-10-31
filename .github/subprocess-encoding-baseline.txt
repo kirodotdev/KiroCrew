@@ -50,7 +50,6 @@
 5 test/test_papyrus_gitops.py
 1 test/test_per_file_coverage_gate.py
 1 test/test_perf_boot_path.py
-3 test/test_playwright_cli_installer.py
 1 test/test_playwright_e2e.py
 3 test/test_pod_e2e_harness_paths.py
 1 test/test_pptx_maker_preview_tools.py

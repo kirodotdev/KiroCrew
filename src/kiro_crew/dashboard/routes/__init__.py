@@ -26,6 +26,7 @@ from aiohttp import web
 from kiro_crew.dashboard.routes import (
     agent_config,
     agents,
+    browser_live,
     chat,
     connections,
     memory,
@@ -53,6 +54,7 @@ _REGISTRARS: tuple[tuple[str, object], ...] = (
     ("taskrunner", taskrunner.register),
     ("connections", connections.register),
     ("system", system.register),
+    ("browser_live", browser_live.register),
     ("shared_crew", shared_crew.register),
 )
 

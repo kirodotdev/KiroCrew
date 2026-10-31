@@ -5094,6 +5094,260 @@
       "defaultValue": false
     },
     {
+      "path": "browser",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives and how its live view streams into the chat. Settings -> Browser edits every key; nothing here is gated by it.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "choice": "auto",
+        "live": {
+          "enabled": true,
+          "quality": "auto",
+          "max_fps": 60,
+          "mask_passwords": true
+        },
+        "credentials": {
+          "enabled": null,
+          "domains": []
+        },
+        "recording": {
+          "enabled": true,
+          "max_session_mb": 200,
+          "max_total_mb": 1024
+        }
+      }
+    },
+    {
+      "path": "browser.choice",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Browser",
+      "help": "Which browser the agent drives. `auto` picks your Chrome (with your logins, once you allow remote debugging in it), then Edge on Windows, then Kiro's own Chromium without a window on a machine with no display. `user_chrome` and `kiro_chromium` pin one of those; `headless` runs Kiro's Chromium without a window even on a desktop.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "user_chrome",
+        "kiro_chromium",
+        "headless"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Live view",
+      "help": "The live view of the agent's browser in chat.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "quality": "auto",
+        "max_fps": 60,
+        "mask_passwords": true
+      }
+    },
+    {
+      "path": "browser.live.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Show live view in chat",
+      "help": "When the agent uses the browser, the turn shows a live card of the page in the chat. Click the picture to take over. Off hides the card; the agent still browses.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.live.quality",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Quality",
+      "help": "`auto` adapts frame rate and picture quality to your link, lowering the frame rate first and the picture only when even the lowest frame rate does not fit; a still page gets one sharp frame. A fixed value pins the picture quality and leaves only the frame rate adaptive.",
+      "hasChildren": false,
+      "enumValues": [
+        "auto",
+        "high",
+        "medium",
+        "low"
+      ],
+      "defaultValue": "auto"
+    },
+    {
+      "path": "browser.live.max_fps",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max frame rate",
+      "help": "Frames per second the live view never exceeds: 15, 30 or 60. 60 is the most this machine streams. No frames are sent while the card is off screen.",
+      "hasChildren": false,
+      "enumValues": [
+        15,
+        30,
+        60
+      ],
+      "defaultValue": 60
+    },
+    {
+      "path": "browser.live.mask_passwords",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Mask password fields",
+      "help": "Cover password boxes in the live picture. Passwords are only ever typed by you, during a takeover; they never pass through the agent and, with this on, never appear in a frame.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.credentials",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in for Kiro's Chromium",
+      "help": "Whether the edition's sign-in is put into Kiro's own Chromium, and for which domains.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": null,
+        "domains": []
+      }
+    },
+    {
+      "path": "browser.credentials.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Use your organisation's sign-in",
+      "help": "Let Kiro's own Chromium start signed in to the sites below, using the sign-in your edition of Kiro Crew provides. Unset follows the edition's default; with no edition provider it does nothing. Your own Chrome is never changed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "browser.credentials.domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sign-in domains",
+      "help": "The sites that sign-in may be used for, such as `example.com` (which covers its subdomains). Only a domain both listed here and served by the edition is used. Empty follows the edition's default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "browser.credentials.domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "browser.recording",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Turn replay",
+      "help": "The per-turn replay of the agent's browsing, and how much of it is kept.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": true,
+        "max_session_mb": 200,
+        "max_total_mb": 1024
+      }
+    },
+    {
+      "path": "browser.recording.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Record browser turns for replay",
+      "help": "Keep a replay of each turn the agent browses: masked pictures of the page and the clicks, typing and scrolls, so you can play the turn back later. Password fields are covered before a picture is kept, and typed secrets are kept as a length only. Kept only on this machine, and removed with the chat.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "browser.recording.max_session_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space per chat (MB)",
+      "help": "The most replay one chat keeps. Past it the chat's oldest turns are removed first.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 200
+    },
+    {
+      "path": "browser.recording.max_total_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Replay space in total (MB)",
+      "help": "The most replay all chats keep together. Past it the oldest turns are removed first, whichever chat they belong to.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1024
+    },
+    {
       "path": "decisions",
       "kind": "core",
       "type": "object",
@@ -8139,9 +8393,7 @@
         "cautious_boot": true,
         "default_memory_mode": "persistent",
         "widget_density": "more",
-        "use_builtin_browser": true,
         "browser_local_origins": [],
-        "browser_view_port": 0,
         "verbosity": "answer_only",
         "link_previews": false,
         "tail_fork_enabled": false,
@@ -8909,20 +9161,6 @@
       "defaultValue": "more"
     },
     {
-      "path": "dashboard.use_builtin_browser",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Use Built-in Browser",
-      "help": "When on, the browser tool opens pages in Kiro Crew's built-in panel (desktop app only). When off, the agent browses via playwright-cli.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": true
-    },
-    {
       "path": "dashboard.browser_local_origins",
       "kind": "core",
       "type": "array",
@@ -8930,8 +9168,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Built-in Browser Local Origins",
-      "help": "Loopback origins the browser tool may open in the built-in panel, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
+      "label": "Local Preview Origins",
+      "help": "Loopback origins the browser tool and the side panel's Preview tab may open, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). The tab is for previewing your own dev server; the agent never drives it, and an outside address is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped; at most 32 are kept. Edited on Settings -> Browser -> Local preview, or by the Preview tab's own Allow button. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -8949,20 +9187,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
-    },
-    {
-      "path": "dashboard.browser_view_port",
-      "kind": "core",
-      "type": "integer",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "Browser Live-View Port",
-      "help": "Pin the browser live-view server (playwright-cli show) to this loopback port. 0 (the default) picks a fresh OS-assigned ephemeral port on every start. Set a fixed port when the dashboard is viewed remotely through an SSH tunnel that forwards a fixed set of ports, so the Browser panel can always reach the view. The server binds loopback-only either way. A value outside 1-65535 is treated as unset. A changed pin applies the next time the view server (re)starts; an already-running server keeps its current port.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": 0
     },
     {
       "path": "dashboard.verbosity",

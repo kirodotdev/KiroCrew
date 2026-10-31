@@ -3232,21 +3232,21 @@
     {
       "id": "chat-browser-panel",
       "feature": "browser-panel",
-      "title": "Browser panel",
-      "user_story": "As a user, I want a live in-panel browser the agent drives, with Annotate to pick page elements and send notes to chat and a human-operable view for CAPTCHA or 2FA, so that I can watch and steer web tasks.",
+      "title": "Live browser card in the chat",
+      "user_story": "As a user, I want the page the agent browses shown live inside the chat turn, with one click to take over (CAPTCHA, 2FA, a login) and Esc to hand back, so that I can watch and steer web tasks without a side panel.",
       "start_url": "/chat",
-      "entry_path": "Chat page > ask the agent to open a URL > right panel Browser tab (nativeOpen) > Annotate > take over with mouse/keyboard",
+      "entry_path": "Chat page > ask the agent to open a URL > the live browser card appears in the turn > click the frame to take over > Esc hands back",
       "preconditions": {
         "seed": "minimal",
         "members": [
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Native panel is an Electron webview; Annotate uses browser:annotate IPC. Web fallback frames `playwright-cli show` on loopback, which needs playwright-cli installed plus a Chromium download and a real model that issues browser commands; the fake ACP backend never does and the target has no network."
+        "notes": "The card is fed by the gateway's Browser Harness screencast over the owner websocket (binary frames). It needs the engine installed from Settings > Browser plus a real model that issues `browser` ops; the fake ACP backend never does and the target has no network."
       },
       "runnable": "native-only",
       "estimated_steps": 6,
-      "rationale": "The panel is owned by the Electron native Chromium view and Annotate is IPC-only. Web-only degradation is limited to asserting the tab and its 'use playwright-cli' guidance / empty state render, which browser-panel-open-tab-empty-state already covers; the agent-driven page itself is unobservable on the fake-ACP, no-network target.",
+      "rationale": "The frames come from a real browser the gateway drives; on the fake-ACP, no-network target the card never leaves its empty state, so only the Settings > Browser surface is web-renderable here.",
       "source": [
         "docs/feature-map/README.md",
         "docs/system-specs/modules/browser.md",
@@ -3257,7 +3257,7 @@
         "chat-browser-panel",
         "browser-panel-agent-browse-native-view"
       ],
-      "component": "website/src/components/WebPreviewPanel.tsx"
+      "component": "website/src/pages/chat/BrowserLiveCard.tsx"
     },
     {
       "id": "apps-discover",
@@ -6217,8 +6217,8 @@
     {
       "id": "settings-browser-panel",
       "feature": "settings",
-      "title": "View Browser panel install status and use-built-in toggle",
-      "user_story": "As a dashboard user, I want to open Settings > Browser and see whether playwright-cli is installed and toggle the built-in browser, so that the agent can browse.",
+      "title": "View Browser status: engine, connection, live view and local preview settings",
+      "user_story": "As a dashboard user, I want to open Settings > Browser and see whether the browser engine is installed and which browser is connected, and set the live view and local preview options, so that the agent can browse.",
       "start_url": "/settings/browser",
       "entry_path": "Settings > System > Browser",
       "preconditions": {
@@ -6227,11 +6227,11 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Polls GET browserInstall; 'Use the built-in browser' toggle writes dashboard.use_builtin_browser; token input never prefilled. | On the CI runner playwright-cli is absent, so the panel should render the not-installed state; clicking Install would need npm registry + Chromium CDN access and must not be asserted."
+        "notes": "Polls GET /api/browser/status (2 s while a job runs or Chrome waits for Allow, else 15 s); the main card's one button follows the state (installing, install failed, Allow in Chrome, error, Connect, Disconnect). | On the CI runner the engine is absent, so the main card shows not installed or install failed; clicking Install or Retry would need PyPI + the Chromium CDN."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Status and toggles are web-renderable with stubbed install status; the built-in browser panel itself is Electron-only but the setting is not.",
+      "rationale": "The main card and the live-view/local-preview controls are web-renderable with a stubbed status route; the install itself needs the network.",
       "source": [
         "docs/feature-map/README.md",
         "docs/system-specs/modules/browser.md",
@@ -6897,12 +6897,12 @@
       "component": "website/src/pages/settings/AboutPanel.tsx"
     },
     {
-      "id": "settings-browser-install-cli",
+      "id": "settings-browser-install-engine",
       "feature": "settings",
-      "title": "Install playwright-cli and a browser engine from Settings",
-      "user_story": "As a dashboard user, I want to click Install in Settings > Browser and pick an engine, so that browsing becomes available without a terminal.",
+      "title": "Install the browser engine from Settings",
+      "user_story": "As a dashboard user, I want to click Install in Settings > Browser, so that browsing becomes available without a terminal.",
       "start_url": "/settings/browser",
-      "entry_path": "Settings > Browser > Install > choose engine (chromium/firefox/webkit) > watch steps npm/browser/skills",
+      "entry_path": "Settings > Browser > Install > watch the job (venv, Chromium) > connect Chrome or skip",
       "preconditions": {
         "seed": "minimal",
         "members": [],

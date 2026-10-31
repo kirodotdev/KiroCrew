@@ -181,7 +181,7 @@ class TestTheGateRefusesWithoutIt:
                 asked.append(state)
                 raise AssertionError("nothing may be sent for an unscoped point")
 
-        monkeypatch.setattr("kiro_crew.decisions.impl_jev.JevOracle", _Oracle)
+        monkeypatch.setattr("kiro_crew.decisions.impl_systemone.SystemOneProvider", _Oracle)
         answers = await gate.decide("tool.risk", {"tool": "bash"}, tr.questions(), config=_config())
         assert answers is None
         assert asked == []
@@ -322,6 +322,7 @@ class TestTheRoute:
             compaction=False,
             memory_text=False,
             nudge_evidence=False,
+            **browser_scopes,
         ):
             seen.append(tool_args)
             return real(
@@ -332,6 +333,7 @@ class TestTheRoute:
                 compaction=compaction,
                 memory_text=memory_text,
                 nudge_evidence=nudge_evidence,
+                **browser_scopes,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)

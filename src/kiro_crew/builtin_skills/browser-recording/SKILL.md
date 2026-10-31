@@ -169,7 +169,7 @@ to a screenshot sequence and say explicitly that motion could not be captured.
 ## When NOT to use
 
 - Static changes — a screenshot is cheaper and clearer (`web-verify` skill).
-- Live interactive browsing for the user — that is the Browser panel /
+- Live interactive browsing for the user — that is the live view in the chat /
   `web-browse` path, not an offline recording.
 
 ## Related skills

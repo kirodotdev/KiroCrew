@@ -160,7 +160,6 @@ _PERMANENT_EXCEPTIONS = {
     # the AWS webhook allowlist to check, so a fleet dispatch would queue until it
     # was rejected. Neither fires on a pull request or declares merge_group.
     ("merge-queue-ruleset.yml", "check"),
-    ("playwright-cli-banner.yml", "check"),
     # Dispatch-only, and never fleet-routed. The allowlist reason above does not
     # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
     # route one to the fleet through the same actor predicate.
@@ -218,9 +217,6 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
     ("fix-loop-analysis.yml", "analyze"): (
-        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
-    ),
-    ("playwright-cli-banner.yml", "check"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
     ("ship-report.yml", "report"): (

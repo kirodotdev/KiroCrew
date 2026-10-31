@@ -520,8 +520,8 @@ pointer -- which `kirocrew cloud list` can rediscover from the real stacks anywa
   chezmoi and `rsync --link-dest` leave behind. The strict refusal for `cloud.json`
   lives where a launch consumes the file instead
   (`require_unaliased_cloud_config`, called from the provisioner seam), so the alias
-  costs one lane's launch rather than the box. `playwright-cli` keeps main's own
-  strict DIRECTORY rule, which this change does not touch.
+  costs one lane's launch rather than the box. The sealed directory leaves keep
+  main's own strict DIRECTORY rule, which this change does not touch.
 - **An aliased `cloud.json` is refused where a launch CONSUMES it**, in
   `DefaultRemoteProvisionerProvider.engine_for`, and only warned about on the
   universal spawn path (`sandbox._warn_aliased_strict_leaves`). Refusing on the spawn

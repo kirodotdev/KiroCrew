@@ -75,6 +75,7 @@ from kiro_crew.config.sections import (
     BACKGROUND_WORKER_AGENTS,
     DEFAULT_MODEL,
     AgentConfig,
+    BrowserConfig,
     ChannelConfig,
     ComputerUseConfig,
     CronHistoryConfig,
@@ -229,6 +230,14 @@ class KiroCrewConfig:
             "How a session's choice between the two monitoring paths is framed. "
             "Neither path is gated by this section; both are armable with it at "
             "its default.",
+        ),
+    )
+    browser: BrowserConfig = field(
+        default_factory=BrowserConfig,
+        metadata=_meta(
+            "Browser",
+            "Which browser the agent drives and how its live view streams into the "
+            "chat. Settings -> Browser edits every key; nothing here is gated by it.",
         ),
     )
     decisions: DecisionsConfig = field(
@@ -696,6 +705,7 @@ class KiroCrewConfig:
             "heartbeat": asdict(self.heartbeat),
             "monitoring": asdict(self.monitoring),
             "decisions": asdict(self.decisions),
+            "browser": asdict(self.browser),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
             "session_environments": asdict(self.session_environments),

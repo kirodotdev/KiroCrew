@@ -48,18 +48,7 @@ def _doctor_data_home() -> None:
     # launcher row prints: one install reached through a ``current`` symlink and
     # through its versioned directory must not read as two installs.
     print(f"  location:    ✅ {os.path.realpath(home)}")
-    from kiro_crew.browser_cli.install import agent_writable_root_over_data_home
-
-    if (overlap := agent_writable_root_over_data_home(Path(home))) is not None:
-        print(
-            f"  workspace:   ⚠️  {render._safe_display(str(overlap))} contains the data home, "
-            "so it is agent-writable and the managed browser launcher cannot run"
-        )
-        print(
-            "               Point the workspace root (KIROCREW_WORKSPACE or "
-            "<data-home>/workspace_dir) and any KIROCREW_PROJECT_DIR outside the "
-            "data home, then restart the gateway."
-        )
+    _doctor_browser_leftover(Path(home))
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -367,57 +356,27 @@ def _doctor_path_launcher() -> None:
     )
 
 
-def _doctor_browser_bootstrap() -> None:
-    """Report the npm and Node the browser install would pick from THIS shell's PATH.
+#: The prefix an earlier version's browser CLI installer wrote under the data
+#: home. Nothing reads it any more; doctor names it and leaves it alone.
+_LEFTOVER_BROWSER_CLI_LEAF = "playwright-cli"
 
-    The in-product browser install resolves both through ``env.find_node_tool``
-    -- version-manager directories first, then ``PATH`` -- and that is the one
-    step of browser support that still reads the environment. Doctor repeats
-    the lookup in its own process, so where no version manager supplies the
-    tool and the gateway was started with a different ``PATH`` (a service
-    manager), the gateway can resolve another binary; the install logs the
-    paths it actually ran, which is the authoritative record. Writability comes
-    from the same predicate the CLI resolver refuses on. Nothing is refused here.
 
-    A toolchain only this account can replace -- nvm, fnm, volta and mise under
-    ``$HOME``, Homebrew's user-owned prefix -- is the NORMAL case and reads as
-    information. A warning is earned only when another account could replace
-    it (a group- or world-writable component) or when the writable component is
-    not this account's own, and even that is not recorded as a doctor issue.
+def _doctor_browser_leftover(home: Path) -> None:
+    """Report a leftover browser CLI prefix from an earlier version, if any.
+
+    Informational only: the directory is never deleted or modified here, and
+    nothing is appended to the issues list. Silent when it is absent.
     """
-    from kiro_crew.browser_cli.install import bootstrap_tool_provenance
-    from kiro_crew.env import find_node_tool
-
-    for name in ("npm", "node"):
-        label = f"  browser {name}:"
-        path = find_node_tool(name)
-        if path is None:
-            print(f"{label} ⏹ not found (the browser install needs Node.js with npm)")
-            continue
-        info = bootstrap_tool_provenance(path)
-        if info["writable_at"] is None:
-            print(f"{label} ✅ {path} (writability not checked on this platform)")
-        elif not info["writable_at"]:
-            print(f"{label} ✅ {path}")
-        elif info["own_toolchain"]:
-            print(f"{label} ℹ️  {path} (your own toolchain, e.g. a version manager or Homebrew)")
-        elif info["shared_write"]:
-            print(f"{label} ⚠️  {path} can be replaced by other accounts")
-            render._print_wrapped(
-                f"{info['writable_at']} is group- or world-writable, so another account "
-                "could swap the binary before the browser install runs it. Remove "
-                "that write bit, or install Node from a version manager or Homebrew."
-            )
-        else:
-            print(f"{label} ⚠️  {path} sits in a directory this account does not own")
-            render._print_wrapped(
-                f"{info['writable_at']} is writable by this account but owned by "
-                "another, so its owner could also swap the binary. Install Node "
-                "from a version manager or Homebrew."
-            )
-    render._print_wrapped(
-        "These rows resolve from this shell's PATH; the gateway logs the npm and "
-        "Node it actually ran at install time."
+    leftover = home / _LEFTOVER_BROWSER_CLI_LEAF
+    try:
+        present = leftover.is_dir()
+    except OSError:
+        return
+    if not present:
+        return
+    print(
+        f"  browser:     ℹ  {render._safe_display(str(leftover))} is left over from an "
+        "earlier version and is no longer used; it can be deleted"
     )
 
 
