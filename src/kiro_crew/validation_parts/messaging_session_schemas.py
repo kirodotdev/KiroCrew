@@ -392,6 +392,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # ``remote_dispatch_disabled`` rather than this schema's unknown-field error.
         # No default: absence is what keeps a call local.
         FieldSpec("crew", str, required=False, max_len=MAX_CREW_REF_LEN),
+        # The new session's first turn, delivered in the same call so the caller
+        # never has to send to a key it has not read back yet. Bounded exactly as
+        # ``session_send.message`` is; the route repeats that bar before creating.
+        FieldSpec("message", str, required=False, max_len=MAX_LONG_STRING),
     ],
 )
 
