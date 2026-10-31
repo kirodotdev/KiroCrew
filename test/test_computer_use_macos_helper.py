@@ -546,7 +546,7 @@ class TestDenylistCaseFolding:
     def test_matching_is_case_insensitive_on_both_sides(self):
         for name, bundle in (
             ("KIRO CREW", "DEV.KIRO.CREW"),
-            ("kiro crew", "dev.kiro.crew"),
+            ("kiro crew", "dev.kiro.crew"),  # brand-ok
             ("Kiro Crew", "Dev.Kiro.Crew"),
         ):
             assert policy.denied_rule_for(AppRef(name=name, pid=1, bundle_id=bundle)) is not None

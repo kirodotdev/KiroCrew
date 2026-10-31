@@ -22,7 +22,7 @@ here, so the authoritative fail-CLOSED gate, all native work and all SEL auditin
 happen in the gateway. It is registered in ``server._STRICT_INTERNAL_API_PATHS``
 (loopback + secret, no cookie fall-through) because no browser ever calls it.
 
-``POST /api/computer-use/frame`` is the live-view (PiP) frame ingress. It carries
+``POST /api/computer-use/frame`` is the live-card frame ingress. It carries
 NO new capture: the capture layer relays the JPEG it already encoded for the
 model, and this handler only rebroadcasts it over the existing websocket. The
 three suppressions that make a pixel egress path acceptable (an unattributable
@@ -61,6 +61,7 @@ from kiro_crew.computer_use import enable_state
 from kiro_crew.computer_use import overlay as cursor_overlay
 from kiro_crew.computer_use.screencast import (
     COMPUTER_USE_FRAME_EVENT,
+    MAX_FRAME_SESSION_KEY_CHARS,
     build_frame_payload,
     frame_scope,
 )
@@ -1002,7 +1003,7 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
     return web.json_response({"text": text})
 
 
-# ── POST /api/computer-use/frame — the live-view (PiP) frame ingress ──
+# ── POST /api/computer-use/frame — the live-card frame ingress ──
 
 
 async def api_computer_use_frame(request: web.Request) -> web.Response:
@@ -1077,7 +1078,18 @@ async def api_computer_use_frame(request: web.Request) -> web.Response:
         _audit(request, operation=OP_FRAME, outcome="invalid_input", resources="invalid-json")
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
-    payload = build_frame_payload(body if isinstance(body, dict) else {})
+    body = body if isinstance(body, dict) else {}
+    # The capture names the SESSION its turn runs on (``dashboard:<slot>``,
+    # ``cron:<id>``, a channel key such as ``whatsapp:+1555…``); the card and
+    # ``chat_done`` address the tab's SLOT, so the frame carries the slot, by the
+    # same mapping every per-slot WS event uses. Mapped BEFORE the payload check,
+    # which then bounds the slot key (a channel key's ``@``/``+`` never reach it).
+    from kiro_crew.dashboard.chat_utils_slots import subagent_event_slot
+
+    raw_key = body.get("session_key")
+    if isinstance(raw_key, str) and 0 < len(raw_key) <= MAX_FRAME_SESSION_KEY_CHARS:
+        body = {**body, "session_key": subagent_event_slot(raw_key)}
+    payload = build_frame_payload(body)
     if payload is None:
         _audit(request, operation=OP_FRAME, outcome="invalid_input", resources="no-frame-data")
         return web.json_response({"error": "no frame data", "code": "no_frame_data"}, status=400)

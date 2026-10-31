@@ -20,6 +20,9 @@ import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/op
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
+import { computerStepLabel, computerToolName, isComputerToolMessage } from '../../hooks/useBrowserLive.computer'
+import type { ComputerStepInput } from '../../hooks/useBrowserLive'
+import type { ChatMessage } from '../../types'
 
 /**
  * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
@@ -28,12 +31,12 @@ import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './Brow
  * the picture stays at the bottom of the work, next to the live Thinking line,
  * and never has tool rows appearing below it one by one.
  */
-function browserLivePlacement(items: TurnItem[]): { anchor: ReturnType<typeof browserLiveAnchor>; after: number } | null {
+function browserLivePlacement(items: TurnItem[], isLiveRow: (msg: ChatMessage) => boolean = isBrowserToolMessage): { anchor: ReturnType<typeof browserLiveAnchor>; after: number } | null {
   let first = -1
   let last = -1
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
-    if (it.kind === 'single' && isBrowserToolMessage(it.msg)) {
+    if (it.kind === 'single' && isLiveRow(it.msg)) {
       if (first < 0) first = i
       last = i
     }
@@ -41,6 +44,17 @@ function browserLivePlacement(items: TurnItem[]): { anchor: ReturnType<typeof br
   if (first < 0) return null
   const anchorItem = items[first]
   return anchorItem.kind === 'single' ? { anchor: browserLiveAnchor(anchorItem.msg), after: last } : null
+}
+
+/** The desktop card's steps: the turn's computer tool calls, oldest first, each at its row's time. */
+function computerSteps(items: TurnItem[]): ComputerStepInput[] {
+  const out: ComputerStepInput[] = []
+  for (const it of items) {
+    if (it.kind !== 'single') continue
+    const tool = computerToolName(it.msg)
+    if (tool) out.push({ label: computerStepLabel(tool), ts: browserLiveAnchor(it.msg).ts })
+  }
+  return out
 }
 
 // A workflow_run launch renders as its own always-visible inline card
@@ -518,6 +532,12 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
   const pinnedRows = useMemo(() => findPinnedRows(items), [items])
   const browserLive = useMemo(() => (browserLiveSessionKey ? browserLivePlacement(items) : null), [items, browserLiveSessionKey])
+  // Computer use shows in the same card, over the desktop record.
+  const computerLive = useMemo(() => {
+    if (!browserLiveSessionKey) return null
+    const at = browserLivePlacement(items, isComputerToolMessage)
+    return at ? { ...at, steps: computerSteps(items) } : null
+  }, [items, browserLiveSessionKey])
   // One React key per row of `items`, by message identity (see the block
   // comment above); `rowKey(i)` indexes THIS list.
   const msgKey = useStableMessageKey()
@@ -681,6 +701,20 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
       out.push(
         <div key={`browser-live-${browserLive.anchor.key}`}>
           <BrowserLiveCard sessionKey={browserLiveSessionKey} anchorKey={browserLive.anchor.key} anchorTs={browserLive.anchor.ts} running={!turn.complete} />
+        </div>,
+      )
+    }
+    if (computerLive && browserLiveSessionKey && i === computerLive.after) {
+      out.push(
+        <div key={`computer-live-${computerLive.anchor.key}`}>
+          <BrowserLiveCard
+            source="computer"
+            sessionKey={browserLiveSessionKey}
+            anchorKey={computerLive.anchor.key}
+            anchorTs={computerLive.anchor.ts}
+            running={!turn.complete}
+            computerSteps={computerLive.steps}
+          />
         </div>,
       )
     }

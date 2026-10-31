@@ -34,7 +34,7 @@ product decisions rather than implementation gaps:
   can neither read nor write. See [The keystone primary enable](#the-keystone-primary-enable).
 
 Two optional, human-facing views ride alongside, neither of which grants the agent
-anything: the [live view (PiP)](#the-live-view-pip) mirrors screenshots the model
+anything: the [live card](#the-live-card) mirrors screenshots the model
 already read, and [Cursor Motion](#cursor-motion-a-real-desktop-overlay-cosmetic-only)
 draws a fake cursor on the real desktop so a watching human can see where a click is
 about to land. Cursor Motion is **not** the pointer and is deliberately invisible to
@@ -548,12 +548,12 @@ cookie-authed like the config pair:
 
 | Route | Auth | Caller |
 |---|---|---|
-| `GET /api/computer-use/agent-desktop/status` | cookie (browser) | Settings → Computer Use, driver card |
+| `GET /api/computer-use/agent-desktop/status` | cookie (browser), owner only | Settings → Computer Use, driver card |
 | `POST /api/computer-use/agent-desktop/install` | cookie (browser), owner only | the card's Install / Update / Reinstall button |
 | `POST /api/computer-use/agent-desktop/permissions-guide` | cookie (browser), owner only | the card's macOS grant button |
 
-A status read never spawns npm. The two POSTs refuse a non-owner with 403 and audit
-the decision either way.
+A status read never spawns npm. All three routes refuse a non-owner with 403 and audit
+the decision either way: the status names a host path and the desktop's grants.
 
 `invoke` is in `server._STRICT_INTERNAL_API_PATHS` — no cookie fall-through, and
 non-loopback is denied outright. It is the entry point to accessibility reads and
@@ -584,8 +584,8 @@ to deliver to). Like `invoke`, it re-asserts BOTH the loopback check and
 the secret was checked (an absent header falls through to cookie auth, and
 `local_only=False` reclassifies every strict path as "mixed"), so without that
 assertion a caller holding only a dashboard cookie or an app-scoped token could
-inject arbitrary frames into every owner window's live view. See
-[the live view](#the-live-view-pip) below.
+inject arbitrary frames into every owner window's live card. See
+[the live card](#the-live-card) below.
 
 **`GET /api/computer-use/config`** returns `{enabled, supported, platform, reason,
 max_tree_nodes, max_tree_depth, text_limit, attach_screenshot, screenshot_max_px,
@@ -1513,26 +1513,30 @@ a result.
 
 ---
 
-## The live view (PiP)
+## The live card
 
-`computer_use/screencast.py` + `website/src/components/ComputerUseLiveView.tsx`.
-The machine being driven is often not the machine the operator is looking at (a
-cloud Mac, a session reached over the reverse SSH tunnel, or another Space), so a
-floating picture-in-picture panel mirrors what the agent sees. It rides an
-existing capture rather than opening a new one: `emit_snapshot_frame` POSTs the
-already-encoded JPEG to the loopback `/api/computer-use/frame` ingress, which
-rebroadcasts it to OWNER websockets as a `computer_use_frame` event. The
-agent's browser follows the same shape in its own module: the live card's
-frames are binary `browser_frame` messages to OWNER websockets from the
-gateway's CDP relay ([browser module spec](browser.md)).
+`computer_use/screencast.py` + the chat's `BrowserLiveCard`
+(`website/src/hooks/useBrowserLive.computer.ts`). The machine being driven is often
+not the machine the operator is looking at (a cloud Mac, a session reached over the
+reverse SSH tunnel, or another Space), so the turn's live card in the chat shows what
+the agent sees. It rides an existing capture rather than opening a new one:
+`emit_snapshot_frame` POSTs the already-encoded JPEG to the loopback
+`/api/computer-use/frame` ingress, which rebroadcasts it to OWNER websockets as a
+`computer_use_frame` event. The card is the browser's own live card
+([browser module spec](browser.md)), drawn over a desktop record instead of the
+browser relay's.
 
 **It is a RELAY, not a capture.** `capture_snapshot_image` hands the JPEG it just
 encoded for the model to `emit_snapshot_frame`. There is no timer, no second
-`CGWindowListCreateImage`, no full-screen grab, and no way for the panel to ask
-for a frame — so opening it cannot make the agent screenshot anything, and it can
-never show a window the model did not already read. Frames are therefore sparse
-(one per `computer_get_state` with `attach_screenshot`) and are always the
-already-downscaled 1280px/q55 bytes.
+`CGWindowListCreateImage`, no full-screen grab, no stream and no ack, and no way for
+the card to ask for a frame — so showing it cannot make the agent screenshot
+anything, and it can never show a window the model did not already read. Frames are
+therefore sparse (one per `computer_get_state` with `attach_screenshot`, plus the
+snapshot `computer_launch_app` returns to the model) and are always the
+already-downscaled 1280px/q55 bytes. The ingress maps the capture's session key
+(`dashboard:<slot>`, `cron:<id>`, a channel key) to the tab's slot key
+(`subagent_event_slot`, the mapping every per-slot event uses), because the card
+and `chat_done` address the slot.
 
 **Three suppressions, all evaluated before anything leaves the process** (the
 ingress handler is NOT the boundary and is not relied on as one):
@@ -1579,13 +1583,36 @@ The POST runs on a daemon thread (the capture runs in a worker thread, and
 swallows every failure; `capture_snapshot_image` additionally wraps the call so
 its own "never raises" contract cannot be broken by a decorative mirror.
 
-**Panel.** `hidden → (first frame) open ⇄ chip`, docked bottom-LEFT so it never
-stacks with the browse mirror's bottom-right. Draggable, eight resize grips, two
-size presets, size persisted in `localStorage`, geometry always fitted back into
-the viewport. Close remembers the dismissed session so its later frames do not
-re-open the panel; a different driving session still surfaces. Read-only — no
-click-through, no input relay, no control channel. The empty state states both
-reasons a frame may be absent, so "nothing here" never reads as a fault.
+**Card.** The dashboard folds each `computer_use_frame` into the live store
+(`browserLiveStore.applyComputerFrame`), which checks every field again
+(`readComputerFrame`: base64 in whole quads, `jpeg` only, positive sizes, the same
+session-key and app charsets) and keeps the frame on the session's DESKTOP record
+(`kind: 'computer'`). That record is separate from the browser relay's `current`, so
+a turn that browses and drives the desktop gets two cards that never end each other.
+The first frame with no live desktop record starts one; a frame is never acked and
+the card never reports visibility, because nothing streams.
+
+`TurnBlock` mounts the card (`source="computer"`) after the turn's LAST computer
+tool row, anchored on its first. Its step strip is the turn's `computer_*` calls in
+order, labelled by the tool's name (`computer_click` reads "click"), the last one
+active while the turn runs; each new call goes on the record's log at its row's time,
+so Replay marks it there. When the turn ends the card folds to its done line (steps,
+duration, "Desktop", the application). Expand and Replay open the same big view as the
+browser's, always pinned to the desktop record's own id; Replay plays the frames the
+page kept (`recordingFromMemory`), since the gateway records no desktop turn, so
+desktop rings are kept on their own budget (the newest two desktop records, apart
+from the browser's two) and the big view's turn picker lists desktop records only. The
+session's `chat_done` ends its live desktop record whether or not a card shows it
+(`endComputerSession`), so the next turn's first frame starts a new record; a later
+turn whose card finds the record still bound to an earlier turn ends it too, which
+covers a `chat_done` the page missed.
+
+**No takeover.** The card has no Take over button, no click-to-take-over on the
+picture, no Open in, and the big view hides its Take over: this is the real desktop,
+and remote input from the card would bypass the refusals the computer tools apply in
+band (`tools._dispatch`). A window with a secure field sends no frame, so the card
+keeps the last frame it had, and a turn whose every capture was withheld shows no
+card at all.
 
 ---
 
@@ -2046,10 +2073,10 @@ Each was measured on Windows 11:
   current depth; the exclusion stays because it is what makes the function correct for
   any depth rather than only this one.
 
-- **The encoded frame is MIRRORED to the dashboard live view**, as on macOS —
+- **The encoded frame is MIRRORED to the chat's live card**, as on macOS —
   `screencast.emit_snapshot_frame` is platform-agnostic and owns all three
   suppressions (no published surface scope, a secure window, a withheld screenshot
-  channel), so without the call the panel is simply blank on Windows. It relays the
+  channel), so without the call the card is simply blank on Windows. It relays the
   already-downscaled bytes rather than capturing again, does not block (the POST runs
   on a daemon thread), and is wrapped anyway: a decorative mirror must not be able to
   turn a successful observation into a failed tool call.
@@ -2498,12 +2525,12 @@ computer use.
   Python failures and stalls, not a native process crash. Mitigation is prevention
   (the argtypes tripwire tests); the service supervisor may restart a managed gateway.
 
-- **The live mirror is SPARSE, not a video feed.** [The live view (PiP)](#the-live-view-pip)
-  is a relay over the screenshots the model already read, so the panel updates once
-  per `computer_get_state` with `attach_screenshot` and shows nothing at all during a
-  run of pure actions. That is deliberate — the alternative is a second capture the
-  agent did not ask for — but it means the panel is not a substitute for watching the
-  screen, and the Settings copy must not imply otherwise.
+- **The live mirror is SPARSE, not a video feed.** [The live card](#the-live-card)
+  is a relay over the screenshots the model already read, so the picture updates once
+  per `computer_get_state` with `attach_screenshot` and holds still during a run of
+  pure actions (the step strip still moves). That is deliberate — the alternative is a
+  second capture the agent did not ask for — but it means the card is not a substitute
+  for watching the screen, and the Settings copy must not imply otherwise.
 - **Coordinate clicking has no pixel→element verification.** Unlike element
   addressing — where the fingerprint check turns an index into a real assertion —
   a coordinate names a point the OS delivers to whatever is there *now*. There is
@@ -2572,7 +2599,7 @@ computer use.
 | `computer_use/macos_ffi_window.py` | The CoreGraphics window list, `executable_path`, in-process window capture and the JPEG size check |
 | `computer_use/apps_macos.py` | Window-list app enumeration + pid resolution (never `pgrep`). Bundle `Info.plist` reads honour `security.is_sensitive_path`, so a bundle planted under a protected directory resolves to "identity unknown" rather than being opened |
 | `computer_use/capture_macos.py` | In-process capture + ImageIO encode + `0o700` persistence + ring trim |
-| `computer_use/screencast.py` | Live-view (PiP) relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
+| `computer_use/screencast.py` | Live-card relay: `frame_scope`, the three suppressions, `build_frame_payload`, the loopback POST |
 | `computer_use/cursor_motion.py` | Cursor Motion PATH MODEL — pure geometry (Bezier + arc + progress spring), plus `drag_points` for a multi-point drag. No ctypes, no AppKit, no config |
 | `computer_use/overlay.py` | Gateway-side overlay SUPERVISOR: the `cursor_motion` opt-in, child lifecycle, motion commands. Never raises, never blocks the loop |
 | `computer_use/overlay_proc.py` | The AppKit overlay CHILD (`python -m …overlay_proc`). Its OWN ctypes surface — out of process on purpose; `NSWindowSharingNone` keeps it out of screenshots |
@@ -2583,8 +2610,9 @@ computer use.
 | `testing/fake_computer_use.py` | `FakeComputerUseBackend` and `FakeNativeHelper`, shipped in the wheel |
 | `dashboard/handlers/computer_use.py` | `/api/computer-use/{config,invoke,frame}` |
 | `website/src/pages/settings/ComputerUsePanel.tsx` | Settings → Computer Use |
-| `website/src/components/ComputerUseLiveView.tsx` | The floating live view (PiP) panel |
-| `website/src/hooks/useComputerUseFrame.ts` | Frame-stream subscription + session-title lookup |
+| `website/src/hooks/useBrowserLive.computer.ts` | Desktop frame check (`readComputerFrame`) and the computer tool rows' step labels |
+| `website/src/hooks/useBrowserLive.ts` | The live store's desktop record (`applyComputerFrame`, `resolveComputerTurn`, `setComputerSteps`, `endComputerTurn`) |
+| `website/src/pages/chat/BrowserLiveCard.tsx` | The live card, `source="computer"` for the desktop |
 | `src/kiro_crew/builtin_skills/computer-use/SKILL.md` | The agent-facing workflow. **Bundled**, not in the top-level `skills/` dir: `kirocrew-computer`'s MCP instructions (`mcp_instructions.COMPUTER`) and the agent prompt's closed-gate pointer (`context_assembly/sections.py::computer_use_block`) tell the model to read it by name, so per AGENTS.md it is load-bearing and must reach every pip/DMG install |
 
 Cross-references: [governance.md](governance.md) for why computer use is

@@ -682,8 +682,7 @@ Other on-screen names read "Untitled session" too: a pane's fork-of tag
 (`components/ChatPane.tsx`) and an embedded tab (`components/EmbedTabStrip.tsx`),
 whose hover titles keep the key; the scene agent list (`hooks/useAgentSync.ts`);
 the Prompts tab's "Send to…" rows after the agent name, with the key on a muted second
-line (`pages/overview/PromptsTab.tsx`);
-the computer-use view's session name (`hooks/useComputerUseFrame.ts`); and a
+line (`pages/overview/PromptsTab.tsx`); and a
 closed-session chip's name (`components/markdown/linkTargets.ts`), localized at
 render from the raw row it caches. A session missing from the slot list has an
 unknown title, so the fork-of tag and the embedded tab keep its key. Resuming a

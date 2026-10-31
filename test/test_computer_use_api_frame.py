@@ -1,4 +1,4 @@
-"""POST /api/computer-use/frame, the live-view (PiP) ingress, and the relay that feeds it.
+"""POST /api/computer-use/frame, the live-card ingress, and the relay that feeds it.
 
 The ingress takes only a loopback POST carrying the verified secret and delivers
 a frame to owner sockets only, and ``build_frame_payload`` bounds every field. The
@@ -111,6 +111,84 @@ class TestFrameIngress:
         assert payload["data"] == "QUJD" and payload["format"] == "jpeg"
         app["state"].broadcast_ws.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "session_key, slot",
+        [
+            ("dashboard:slot1", "slot1"),
+            ("cron:nightly:run7", "cron-nightly"),
+            ("whatsapp:+15551234567", "whatsapp__15551234567"),
+            ("webex:user@example.com", "webex_user_example.com"),
+            ("dashboard:" + "s" * 240, "s" * 240),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_frame_names_the_tab_slot_not_the_session(
+        self, session_key, slot, home, mock_sel
+    ):
+        """The card and ``chat_done`` address the slot, so the frame must too.
+
+        Mapped before the payload check, so a channel key's ``@``/``+`` and a
+        slot key past the old 128-character bound still arrive.
+        """
+        app = _frame_app()
+        seen: list = []
+
+        async def _deliver(event, payload):
+            seen.append(payload)
+            return 1
+
+        app["state"].deliver_ws_owners = _deliver
+        with (
+            patch("kiro_crew.dashboard.origin.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.chat_utils_slots.has_dashboard_surface", return_value=True),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/computer-use/frame", json={**_VALID_FRAME, "session_key": session_key}
+                )
+        assert seen[0]["session_key"] == slot
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_open_tab_keeps_its_bare_key(self, home, mock_sel):
+        """No tab shows it: the fallback strips the transport prefix, like every per-slot event."""
+        app = _frame_app()
+        seen: list = []
+
+        async def _deliver(event, payload):
+            seen.append(payload)
+            return 1
+
+        app["state"].deliver_ws_owners = _deliver
+        with (
+            patch("kiro_crew.dashboard.origin.is_loopback", return_value=True),
+            patch("kiro_crew.dashboard.chat_utils_slots.has_dashboard_surface", return_value=False),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/computer-use/frame",
+                    json={**_VALID_FRAME, "session_key": "dashboard:slot1"},
+                )
+        assert seen[0]["session_key"] == "slot1"
+
+    @pytest.mark.parametrize("raw", ["x" * 513, 42])
+    @pytest.mark.asyncio
+    async def test_a_session_key_past_the_bound_or_not_text_is_dropped(self, raw, home, mock_sel):
+        """The frame still goes out, with no key; the card store then ignores it."""
+        app = _frame_app()
+        seen: list = []
+
+        async def _deliver(event, payload):
+            seen.append(payload)
+            return 1
+
+        app["state"].deliver_ws_owners = _deliver
+        with patch("kiro_crew.dashboard.origin.is_loopback", return_value=True):
+            async with TestClient(TestServer(app)) as client:
+                await client.post(
+                    "/api/computer-use/frame", json={**_VALID_FRAME, "session_key": raw}
+                )
+        assert "session_key" not in seen[0]
+
     @pytest.mark.asyncio
     async def test_invalid_json_is_400(self, home, mock_sel):
         app = _frame_app()
@@ -207,7 +285,7 @@ class TestFramePayload:
             {"data": "QUJD", "format": "jpeg", "session_key": "dashboard:slot1"}
         )
         assert out is not None and out["session_key"] == "dashboard:slot1"
-        for bad in (123, "has space", "x" * 129, "<b>"):
+        for bad in (123, "has space", "x" * 257, "<b>"):
             out = build_frame_payload({"data": "QUJD", "format": "jpeg", "session_key": bad})
             assert out is not None and "session_key" not in out
 

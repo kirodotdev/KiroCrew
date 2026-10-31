@@ -53,6 +53,19 @@ export function browserLabel(kind: BrowserKind | null, headless: boolean): strin
   }
 }
 
+/** A desktop record (computer use): no takeover, no tab, the application for a host. */
+export const isDesktop = (turn: BrowserLiveTurn): boolean => turn.kind === 'computer'
+
+/** What the picture shows, in a few words: the page's host, or the desktop application. */
+export function placeOf(turn: BrowserLiveTurn): string {
+  return isDesktop(turn) ? sanitizeLlmOutput(turn.title).slice(0, 96) : hostOf(turn.url)
+}
+
+/** Which surface the frame comes from: a browser by name, or the desktop. */
+export function sourceLabel(turn: BrowserLiveTurn): string {
+  return isDesktop(turn) ? i18nT('pages.chat.browserLiveCard.desktop') : browserLabel(turn.browser, turn.headless)
+}
+
 /** The window "Open in …" focuses; a headless browser has none. */
 function openTarget(turn: BrowserLiveTurn): string | null {
   if (turn.browser === 'user_chrome') return i18nT('pages.chat.browserLiveCard.chrome')
@@ -121,10 +134,14 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
   const reduce = useReducedMotion()
   const inControl = turn.state === 'in_control'
   const loginNeeded = turn.state === 'login_needed'
+  // The desktop has no takeover: the card only shows it.
+  const desktop = isDesktop(turn)
   const target = openTarget(turn)
-  const pageTitle = title(turn)
+  const pageTitle = desktop ? '' : title(turn)
   const step = turn.step ? sanitizeLlmOutput(turn.step.label).slice(0, 120) : ''
-  const frameLabel = i18nT('pages.chat.browserLiveCard.frame_label', { host: hostOf(turn.url) })
+  const frameLabel = desktop
+    ? i18nT('pages.chat.browserLiveCard.desktop_frame_label', { app: placeOf(turn) || sourceLabel(turn) })
+    : i18nT('pages.chat.browserLiveCard.frame_label', { host: hostOf(turn.url) })
   const rootRef = useRef<HTMLDivElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null)
@@ -171,22 +188,26 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
               {i18nT('pages.chat.browserLiveCard.live')}
             </span>
             <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-bg px-2.5 py-1 text-[13px]">
-              {isHttps(turn.url)
-                ? <Lock size={13} aria-hidden="true" className="text-muted shrink-0" />
-                : <Globe size={13} aria-hidden="true" className="text-muted shrink-0" />}
-              <span className="font-medium text-text-strong truncate">{hostOf(turn.url)}</span>
+              {desktop
+                ? <Monitor size={13} aria-hidden="true" className="text-muted shrink-0" />
+                : isHttps(turn.url)
+                  ? <Lock size={13} aria-hidden="true" className="text-muted shrink-0" />
+                  : <Globe size={13} aria-hidden="true" className="text-muted shrink-0" />}
+              <span className="font-medium text-text-strong truncate">{placeOf(turn) || sourceLabel(turn)}</span>
               {pageTitle && <span className="text-muted truncate">· {pageTitle}</span>}
               <span className="flex-1" />
               <span className="hidden sm:flex items-center gap-1 text-[12px] text-muted whitespace-nowrap">
                 <Monitor size={13} aria-hidden="true" />
-                {browserLabel(turn.browser, turn.headless)}
+                {sourceLabel(turn)}
               </span>
             </div>
-            <Btn primary onClick={onClaim} data-testid="browser-live-take-over">
-              <Hand size={14} aria-hidden="true" />
-              <span className="hidden sm:inline">{i18nT('pages.chat.browserLiveCard.take_over')}</span>
-              <span className="sr-only sm:hidden">{i18nT('pages.chat.browserLiveCard.take_over')}</span>
-            </Btn>
+            {!desktop && (
+              <Btn primary onClick={onClaim} data-testid="browser-live-take-over">
+                <Hand size={14} aria-hidden="true" />
+                <span className="hidden sm:inline">{i18nT('pages.chat.browserLiveCard.take_over')}</span>
+                <span className="sr-only sm:hidden">{i18nT('pages.chat.browserLiveCard.take_over')}</span>
+              </Btn>
+            )}
             {/* Two controls per row: Take over, then everything else behind one menu. */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -246,7 +267,7 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
               visible={onScreen}
               interactive={inControl || quick.scoped}
               onHandBack={() => onRelease()}
-              onClaim={inControl || quick.scoped ? undefined : onClaim}
+              onClaim={desktop || inControl || quick.scoped ? undefined : onClaim}
               onFrameSize={setFrameSize}
               aria-label={inControl || quick.scoped ? i18nT('pages.chat.browserLiveCard.frame_label_in_control', { host: hostOf(turn.url) }) : frameLabel}
             />
@@ -256,7 +277,7 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
             {i18nT('pages.chat.browserLiveCard.waiting_for_first_frame')}
           </div>
         )}
-        {!inControl && !quick.scoped && turn.hasFrame && (
+        {!desktop && !inControl && !quick.scoped && turn.hasFrame && (
           // The hover cue. Pointer-events off: the click lands on the canvas.
           <div
             aria-hidden="true"
@@ -333,21 +354,30 @@ export function BrowserLiveDoneRow({ turn, onScreen, canvasRef, onReplay, onOpen
   onOpenLive: () => void
 }) {
   const count = turn.steps.length
+  const desktop = isDesktop(turn)
   const target = openTarget(turn)
-  const host = hostOf(turn.url)
+  const host = placeOf(turn)
   const parts = [
     i18nT('pages.chat.browserLiveCard.steps_count', { count }),
     durationLabel(turn),
-    browserLabel(turn.browser, turn.headless),
+    sourceLabel(turn),
   ]
+  const Icon = desktop ? Monitor : Globe
+  const headline = desktop
+    ? host ? i18nT('pages.chat.browserLiveCard.used_app', { app: host }) : i18nT('pages.chat.browserLiveCard.used_desktop')
+    : host ? i18nT('pages.chat.browserLiveCard.browsed_host', { host }) : i18nT('pages.chat.browserLiveCard.browsed')
   if (turn.tab === 'closed') parts.push(i18nT('pages.chat.browserLiveCard.tab_closed'))
   else if (turn.browser === 'user_chrome' || turn.browser === 'edge') parts.push(i18nT('pages.chat.browserLiveCard.tab_kept_open'))
   // The thumbnail is a shortcut to the first button: Open live when the tab is
   // still there, else Replay.
   // No frame in this page's memory (rebuilt after a reload or reconnect, or the
   // frames went to the recorder while no card showed): the recording's last one.
-  const recorded = useRecordedThumb(turn.sessionKey, turn.turnId, !turn.hasFrame && onScreen)
-  const replayable = turn.hasFrame || !!recorded
+  // A desktop record has no gateway recording to ask for.
+  const recorded = useRecordedThumb(turn.sessionKey, turn.turnId, !desktop && !turn.hasFrame && onScreen)
+  // A desktop record's only replay is the frames this page kept, which an older
+  // record no longer has (`evictRings`).
+  const pictured = desktop ? turn.ring.length > 0 : turn.hasFrame
+  const replayable = pictured || (!desktop && !!recorded)
   const thumbAction = canOpenLive ? onOpenLive : replayable ? onReplay : undefined
   const thumbLabel = canOpenLive
     ? i18nT('pages.chat.browserLiveCard.open_live')
@@ -371,7 +401,7 @@ export function BrowserLiveDoneRow({ turn, onScreen, canvasRef, onReplay, onOpen
             className="absolute inset-0 z-10 cursor-pointer rounded-md focus-ring-accent-inset"
           />
         )}
-        {turn.hasFrame ? (
+        {pictured ? (
           <BrowserLiveCardCanvas
             ref={canvasRef}
             sessionKey={turn.sessionKey}
@@ -388,13 +418,13 @@ export function BrowserLiveDoneRow({ turn, onScreen, canvasRef, onReplay, onOpen
             data-testid="browser-live-done-recorded"
           />
         ) : (
-          <div className="absolute inset-0 grid place-items-center text-muted"><Globe size={22} aria-hidden="true" /></div>
+          <div className="absolute inset-0 grid place-items-center text-muted"><Icon size={22} aria-hidden="true" /></div>
         )}
       </div>
       <div className="min-w-0 flex-1 flex flex-col justify-center gap-1 py-1">
         <div className="flex items-center gap-2 text-[14px] font-semibold text-text-strong">
-          <Globe size={15} aria-hidden="true" className="text-muted shrink-0" />
-          <span className="truncate">{host ? i18nT('pages.chat.browserLiveCard.browsed_host', { host }) : i18nT('pages.chat.browserLiveCard.browsed')}</span>
+          <Icon size={15} aria-hidden="true" className="text-muted shrink-0" />
+          <span className="truncate">{headline}</span>
         </div>
         <div className="text-[12px] text-muted truncate">{parts.join(' · ')}</div>
         {turn.state === 'error' && (
@@ -469,7 +499,7 @@ export function BrowserLiveStagedRow({ turn, replaying, surface, onBringBack }: 
       )}
       <span className="min-w-0 flex-1 flex items-center gap-1.5 text-[13px] text-muted">
         <PanelRight size={13} aria-hidden="true" className="shrink-0" />
-        <span className="truncate">{hostOf(turn.url) ? `${hostOf(turn.url)} · ${where}` : where}</span>
+        <span className="truncate">{placeOf(turn) ? `${placeOf(turn)} · ${where}` : where}</span>
       </span>
       <Btn onClick={onBringBack} className="shrink-0" data-testid="browser-live-bring-back">
         <Undo2 size={13} aria-hidden="true" />

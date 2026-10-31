@@ -844,7 +844,7 @@ def capture_snapshot_image(
         image_height=out_h,
     )
     # Mirror to the dashboard live view, as ``capture_macos`` does — without this the
-    # panel is permanently blank on Windows. The RELAY owns all three suppressions (no
+    # card is permanently blank on Windows. The RELAY owns all three suppressions (no
     # published surface scope, a secure window, a withheld screenshot channel), so
     # nothing is re-derived here, and it relays these exact already-downscaled bytes
     # rather than capturing again. It does not block: the POST runs on a daemon thread,

@@ -9,7 +9,7 @@ import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { i18nT } from '../../i18n/t'
 import { browsePolicyOff } from '../../lib/browsePolicy'
 import type { BrowserHandbackSaid } from '../../api/client/browserLive'
-import { browserLiveStore, useBrowserLiveCurrent, useBrowserLiveIsCurrent, useBrowserLiveTurn, type BrowserLiveTurn } from '../../hooks/useBrowserLive'
+import { browserLiveStore, useBrowserLiveCurrent, useBrowserLiveIsCurrent, useBrowserLiveTurn, type BrowserLiveTurn, type ComputerStepInput, type LiveSource } from '../../hooks/useBrowserLive'
 import { browserStageStore, stageTurnId, useBrowserStage } from '../../hooks/useBrowserLive.stage'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -48,6 +48,14 @@ const GROW_SETTLE_MS = 400
  * Trust: `title` and every step label are agent- or page-authored text and go
  * through `sanitizeLlmOutput` in the views; the URL shows as its host. Nothing
  * typed during takeover passes through this component at all.
+ *
+ * Computer use (`source="computer"`) is the same card over a desktop record
+ * (`useBrowserLive.computer`): frames are the screenshots the agent's own
+ * `computer_get_state` took, the steps are the turn's computer tool calls, and
+ * Expand and Replay work as for the browser. There is no takeover: it is the
+ * real desktop, and remote input would skip the refusals the computer tools
+ * apply in band. The browse policy does not apply, and nothing is reported to the
+ * browser relay (visibility, acks).
  */
 
 /** The `browser` tool row: the trusted name when the gateway stamped one, else the pill text.
@@ -87,7 +95,13 @@ export interface BrowserLiveCardProps {
    *  with no takeover, live, replay or expand control. The gateway refuses those
    *  routes on its own; this only stops offering them. */
   policyOff?: boolean
+  /** Which record the card shows: the browser relay's (default) or the desktop's. */
+  source?: LiveSource
+  /** For `source="computer"`: the turn's computer tool calls, oldest first. */
+  computerSteps?: readonly ComputerStepInput[]
 }
+
+const NO_STEPS: readonly ComputerStepInput[] = []
 
 type View = 'allow' | 'live' | 'done'
 
@@ -100,9 +114,10 @@ function viewFor(turn: BrowserLiveTurn): View {
   }
 }
 
-function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, policyOff = false }: BrowserLiveCardProps) {
+function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, policyOff = false, source = 'browser', computerSteps = NO_STEPS }: BrowserLiveCardProps) {
   useLanguageGeneration()
-  const turn = useBrowserLiveTurn(sessionKey, anchorKey, running, anchorTs)
+  const turn = useBrowserLiveTurn(sessionKey, anchorKey, running, anchorTs, source)
+  const desktop = source === 'computer'
   const reduce = useReducedMotion()
   const instanceId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -118,26 +133,40 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   // keep a later turn's screencast running while that turn's card is scrolled off.
   const turnId = turn?.turnId ?? ''
   const isCurrent = useBrowserLiveIsCurrent(sessionKey, turnId)
+  // A desktop card tells no relay: its frames come one per capture, not as a stream.
   useEffect(() => {
     const el = rootRef.current
     if (!el || !turnId) return
+    const report = (v: boolean) => { if (!desktop) browserLiveStore.setVisible(sessionKey, instanceId, v, turnId) }
     if (typeof IntersectionObserver !== 'function') {
       setOnScreen(true)
-      browserLiveStore.setVisible(sessionKey, instanceId, true, turnId)
-      return () => browserLiveStore.setVisible(sessionKey, instanceId, false, turnId)
+      report(true)
+      return () => report(false)
     }
     const io = new IntersectionObserver((entries) => {
       const v = entries.some(e => e.isIntersecting)
       setOnScreen(v)
-      browserLiveStore.setVisible(sessionKey, instanceId, v, turnId)
+      report(v)
     }, { threshold: 0.05 })
     io.observe(el)
     return () => {
       io.disconnect()
-      browserLiveStore.setVisible(sessionKey, instanceId, false, turnId)
+      report(false)
     }
     // `policyOff` swaps the root for the policy line and back: observe the new root.
-  }, [sessionKey, instanceId, turnId, policyOff])
+  }, [sessionKey, instanceId, turnId, policyOff, desktop])
+
+  // The desktop record follows the transcript: its steps are the turn's computer
+  // tool calls, and it folds to its done line when the turn ends.
+  useEffect(() => {
+    if (!desktop) return
+    if (!turnId) {
+      if (running) browserLiveStore.releaseComputerFor(sessionKey, anchorKey)
+      return
+    }
+    browserLiveStore.setComputerSteps(sessionKey, turnId, computerSteps, running)
+    if (!running) browserLiveStore.endComputerTurn(sessionKey, turnId)
+  }, [desktop, sessionKey, anchorKey, turnId, computerSteps, running])
 
   const inControl = turn?.state === 'in_control'
   // Focus the frame the moment control arrives, so keys go to the page at once,
@@ -168,10 +197,12 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   // A running turn's Expand follows "now" (null), so the big view moves on to the
   // next turn with the agent; a reopened, finished turn pins its own id.
   const turnOver = turn?.turnOver ?? false
+  // A desktop record is never the session's "now" (that is the browser relay's), so
+  // its big view always pins its own id.
   const expand = useCallback(() => {
     if (!turnId) return
-    browserStageStore.open(sessionKey, { turnId: turnOver ? turnId : null, mode: 'live', preferSheet: isMobile })
-  }, [sessionKey, turnId, turnOver, isMobile])
+    browserStageStore.open(sessionKey, { turnId: turnOver || desktop ? turnId : null, mode: 'live', preferSheet: isMobile })
+  }, [sessionKey, turnId, turnOver, desktop, isMobile])
   const replay = useCallback(() => {
     if (!turnId) return
     browserStageStore.open(sessionKey, { turnId, mode: 'replay', preferSheet: isMobile })
@@ -179,7 +210,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   const bringBack = useCallback(() => browserStageStore.close(sessionKey), [sessionKey])
 
   if (!turn) return null
-  if (policyOff) {
+  if (policyOff && !desktop) {
     return (
       <div className="px-4 mx-auto w-full py-1" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
         <div
@@ -194,7 +225,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
   }
   const view = viewFor(turn)
   const staged = !!stage && stageTurnId(stage, current?.turnId ?? null) === turn.turnId
-  const grown = inControl && !staged
+  const grown = inControl && !staged && !desktop
   const transition = reduce ? { duration: 0 } : { type: 'spring' as const, stiffness: 420, damping: 38 }
 
   return (
@@ -205,6 +236,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
         layoutId={`browser-live-${sessionKey}-${turn.turnId}`}
         transition={transition}
         data-testid="browser-live-card"
+        data-source={source}
         data-state={turn.state}
         data-grown={grown ? 'true' : undefined}
         className={`relative overflow-hidden rounded-xl border bg-card text-text ${
@@ -242,7 +274,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
             canvasRef={canvasRef}
             onReplay={replay}
             onOpenInBrowser={openInBrowser}
-            canOpenLive={turn.state === 'done' && turn.tab === 'open' && isCurrent}
+            canOpenLive={!desktop && turn.state === 'done' && turn.tab === 'open' && isCurrent}
             onOpenLive={openLive}
           />
         )}

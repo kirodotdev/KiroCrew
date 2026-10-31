@@ -14,6 +14,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { browserLiveStore } from '../hooks/useBrowserLive'
 import { api } from '../api/client'
 import { store as globalStore } from '../store'
 import chatReducer, { PANE_HYDRATE_LIMIT, setActiveSlot, clearMessages, sseChatMessage, sseAutomation } from '../store/chatSlice'
@@ -543,16 +544,26 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('re-broadcasts cron history and the computer-use mirror frame', () => {
+  it("ends the slot's desktop record when its turn is done", () => {
+    const { ws } = mount()
+    const end = vi.spyOn(browserLiveStore, 'endComputerSession').mockImplementation(() => {})
+    try {
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: BACKGROUND, ts: '1790000000' } }) })
+      expect(end).toHaveBeenCalledWith(BACKGROUND)
+    } finally {
+      end.mockRestore()
+    }
+  })
+
+  it('re-broadcasts cron history and folds the computer-use frame into the live-card store', () => {
     const { ws } = mount()
     const seen: string[] = []
     const push = (name: string) => () => { seen.push(name) }
     const onCron = push('cron')
     const onBrowser = push('browser')
-    const onComputer = push('computer')
     window.addEventListener('cron_history', onCron)
     window.addEventListener('kirocrew-browser-frame', onBrowser)
-    window.addEventListener('kirocrew-computer-use-frame', onComputer)
+    const fold = vi.spyOn(browserLiveStore, 'applyComputerFrame').mockImplementation(() => {})
     try {
       act(() => {
         ws.simulateMessage({ type: 'cron_history', data: { job: 'j1' } })
@@ -562,14 +573,14 @@ describe('useWebSocket frame router', () => {
         ws.simulateMessage({ type: 'browser_frame', data: { image: 'x' } })
         ws.simulateMessage({ type: 'computer_use_frame', data: { image: 'y' } })
       })
-      expect(seen).toEqual(['cron', 'computer'])
+      expect(seen).toEqual(['cron'])
+      expect(fold).toHaveBeenCalledWith({ image: 'y' })
     } finally {
+      fold.mockRestore()
       window.removeEventListener('cron_history', onCron)
       window.removeEventListener('kirocrew-browser-frame', onBrowser)
-      window.removeEventListener('kirocrew-computer-use-frame', onComputer)
     }
   })
-
   it('patches the sidebar chip and the cached batch from a source_status delta', () => {
     const { ws } = mount()
     const url = 'https://github.com/o/r/pull/1'

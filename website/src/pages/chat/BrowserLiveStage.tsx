@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { ChevronDown, ExternalLink, Globe, Hand, History, Lock, Maximize, Minimize, Play } from 'lucide-react'
+import { ChevronDown, ExternalLink, Globe, Hand, History, Lock, Maximize, Minimize, Monitor, Play } from 'lucide-react'
 
 import { Btn } from '../../components/ui'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
@@ -16,7 +16,7 @@ import type { FrameSize } from '../../hooks/useBrowserLive.input'
 import { activeEvent, currentStep, frameAt, frameForAction, prevOffset, useRecording, useRecordingList, type RecordingSummary } from '../../hooks/useBrowserLive.replay'
 import { browserStageStore, type BrowserStage } from '../../hooks/useBrowserLive.stage'
 import BrowserLiveCardCanvas, { type BrowserLiveCanvasHandle } from './BrowserLiveCardCanvas'
-import { browserLabel, hostOf } from './BrowserLiveCardViews'
+import { hostOf, isDesktop, placeOf, sourceLabel } from './BrowserLiveCardViews'
 import { PictureBox, ReplayCanvas, ReplayOverlay } from './BrowserLiveReplayStage'
 import { BrowserLiveHandbackBar } from './BrowserLiveHandback'
 import { BrowserLiveLoopLine } from './BrowserLiveLoop'
@@ -70,10 +70,14 @@ function useFullscreen(ref: React.RefObject<HTMLElement>) {
 interface TurnChoice { turnId: string; startedTs: number; host: string }
 
 /** The turn picker's rows: the gateway's list when it has one, merged with this page's turns. */
-export function turnChoices(server: RecordingSummary[] | null | undefined, local: readonly BrowserLiveTurn[]): TurnChoice[] {
+export function turnChoices(server: RecordingSummary[] | null | undefined, local: readonly BrowserLiveTurn[], desktop = false): TurnChoice[] {
+  // A desktop big view picks among desktop records only, and a browser one never
+  // lists them; the gateway's recordings are all browser turns.
   const by = new Map<string, TurnChoice>()
-  for (const t of local) by.set(t.turnId, { turnId: t.turnId, startedTs: t.startedAt, host: hostOf(t.url) })
-  for (const r of server ?? []) {
+  for (const t of local) {
+    if (isDesktop(t) === desktop) by.set(t.turnId, { turnId: t.turnId, startedTs: t.startedAt, host: placeOf(t) })
+  }
+  for (const r of desktop ? [] : server ?? []) {
     const prev = by.get(r.turnId)
     by.set(r.turnId, { turnId: r.turnId, startedTs: r.startedTs, host: prev?.host || hostOf(r.startUrl) })
   }
@@ -100,21 +104,24 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
   const canLive = running || reopenedLive
   const mode = stage.mode === 'live' && canLive ? 'live' : 'replay'
   const inControl = turn?.state === 'in_control'
+  // A desktop record (computer use): shown only, no takeover, no gateway recording.
+  const desktop = !!turn && isDesktop(turn)
   const fs = useFullscreen(rootRef)
 
-  // On screen for this turn, so the screencast keeps feeding it.
+  // On screen for this turn, so the screencast keeps feeding it. A desktop record
+  // has no screencast to feed.
   useEffect(() => {
-    if (!turnId) return
+    if (!turnId || desktop) return
     browserLiveStore.setVisible(sessionKey, instanceId, active, turnId)
     return () => browserLiveStore.setVisible(sessionKey, instanceId, false, turnId)
-  }, [sessionKey, instanceId, active, turnId])
+  }, [sessionKey, instanceId, active, turnId, desktop])
 
   useEffect(() => { if (inControl && mode === 'live') canvasRef.current?.focus() }, [inControl, mode])
 
   const sessionTurns = useBrowserLiveSessionTurns(sessionKey)
   const list = useRecordingList(sessionKey, active)
-  const choices = useMemo(() => turnChoices(list.data, sessionTurns), [list.data, sessionTurns])
-  const { recording, loading, error: recordingError } = useRecording(sessionKey, turnId, turn, active)
+  const choices = useMemo(() => turnChoices(list.data, sessionTurns, desktop), [list.data, sessionTurns, desktop])
+  const { recording, loading, error: recordingError } = useRecording(sessionKey, turnId, turn, active && !desktop)
   const queryErrors = (
     <>
       {recordingError && <ErrorNotice variant="inline" message={recordingError.message} askAgent testId="browser-live-stage-recording-error" />}
@@ -177,8 +184,8 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
   }
 
   const url = turn?.url || [...(recording?.events ?? [])].reverse().find(e => e.url)?.url || ''
-  const host = hostOf(url)
-  const title = turn ? sanitizeLlmOutput(turn.title).slice(0, 120) : ''
+  const host = desktop && turn ? placeOf(turn) || sourceLabel(turn) : hostOf(url)
+  const title = turn && !desktop ? sanitizeLlmOutput(turn.title).slice(0, 120) : ''
   const space = recording && recording.width > 0 ? { w: recording.width, h: recording.height } : (frameSize ?? { w: 16, h: 10 })
   const liveRatio = frameSize && frameSize.w > 0 ? frameSize.w / frameSize.h : 16 / 10
   const replayRatio = space.w > 0 && space.h > 0 ? space.w / space.h : 16 / 10
@@ -242,19 +249,21 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
           </span>
         )}
         <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-[13px]">
-          {url.startsWith('https:') ? <Lock size={13} aria-hidden="true" className="text-muted shrink-0" /> : <Globe size={13} aria-hidden="true" className="text-muted shrink-0" />}
+          {desktop
+            ? <Monitor size={13} aria-hidden="true" className="text-muted shrink-0" />
+            : url.startsWith('https:') ? <Lock size={13} aria-hidden="true" className="text-muted shrink-0" /> : <Globe size={13} aria-hidden="true" className="text-muted shrink-0" />}
           {/* The host is what the person reads first, so it keeps its width; the
               title and the browser's name give way in a narrow panel. */}
           <span className="font-medium text-text-strong whitespace-nowrap shrink-0 max-w-[60%] overflow-hidden text-ellipsis">{host}</span>
           {title && <span className="text-muted truncate min-w-0">· {title}</span>}
-          {turn && <span className="hidden md:inline text-[12px] text-muted truncate min-w-0 ml-auto">{browserLabel(turn.browser, turn.headless)}</span>}
+          {turn && <span className="hidden md:inline text-[12px] text-muted truncate min-w-0 ml-auto">{sourceLabel(turn)}</span>}
         </div>
         {mode === 'live' && (inControl ? (
           <Btn primary onClick={() => release()} className="whitespace-nowrap shrink-0" data-testid="browser-live-stage-hand-back">
             {i18nT('pages.chat.browserLiveCard.hand_back')}
             <kbd className="ml-0.5 rounded border border-accent-fg/40 px-1 py-px font-sans text-[10px] leading-4">Esc</kbd>
           </Btn>
-        ) : (
+        ) : !desktop && (
           <Btn primary onClick={claim} className="shrink-0" data-testid="browser-live-stage-take-over">
             <Hand size={14} aria-hidden="true" />
             <span className="hidden sm:inline">{i18nT('pages.chat.browserLiveCard.take_over')}</span>
@@ -304,7 +313,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
                       visible={active}
                       interactive={inControl || quick.scoped}
                       onHandBack={() => release()}
-                      onClaim={inControl || quick.scoped ? undefined : claim}
+                      onClaim={desktop || inControl || quick.scoped ? undefined : claim}
                       onFrameSize={setFrameSize}
                       aria-label={inControl || quick.scoped
                         ? i18nT('pages.chat.browserLiveCard.frame_label_in_control', { host })

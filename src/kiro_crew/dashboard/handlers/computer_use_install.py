@@ -1,19 +1,19 @@
 """agent-desktop install API -- Settings > Computer Use, driver setup.
 
-``GET  /api/computer-use/agent-desktop/status``             open read
+``GET  /api/computer-use/agent-desktop/status``             dashboard owner only
 ``POST /api/computer-use/agent-desktop/install``            dashboard owner only
 ``POST /api/computer-use/agent-desktop/permissions-guide``  dashboard owner only
 
-Modeled on the browser installer (``messaging_api/browser_routes.py``): the
-install runs in the background and the page polls the status, the gateway owns
+The install runs in the background and the page polls the status, the gateway owns
 ONE job record so a refreshed page or a second tab sees the same install, and
 a gateway shutdown kills the npm child through the job's
 :class:`~kiro_crew.computer_use.install_runner.InstallScope`. The record is in-memory:
 a restart starts with no job, so a stale ``running`` cannot survive one.
 
-Install and guide are owner-only for the browser installer's reason: installing
-a desktop-automation binary adds an executable host capability, and the guide
-drives System Settings. Both decisions are SEL-audited whichever way they go.
+All three are owner-only: installing a desktop-automation binary adds an
+executable host capability, the guide drives System Settings, and the status
+names a host path and the desktop's grants. Every decision is SEL-audited
+whichever way it goes.
 A status read never spawns npm; it runs only the local ``permissions`` probe.
 """
 
@@ -26,8 +26,8 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.computer_use.install_runner import InstallScope, run_in_scope
 from kiro_crew.computer_use import agent_desktop_install
+from kiro_crew.computer_use.install_runner import InstallScope, run_in_scope
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,9 @@ class _Job:
         return "\n".join(self.log)[-agent_desktop_install.LOG_TAIL_CAP :]
 
     def append(self, text: str) -> None:
-        self.log.append(text)
-        # Bound memory: the tail is all anyone reads.
+        # Bound memory: the tail is all anyone reads, and one npm failure can arrive
+        # as a single multi-megabyte entry, so each entry is cut before it is kept.
+        self.log.append(text[-4 * agent_desktop_install.LOG_TAIL_CAP :])
         while (
             len(self.log) > 1
             and sum(len(x) for x in self.log) > 4 * agent_desktop_install.LOG_TAIL_CAP
@@ -135,7 +136,14 @@ async def _status_payload() -> dict[str, Any]:
 
 
 async def api_agent_desktop_status(request: web.Request) -> web.Response:
-    """GET status: readiness plus the job. Never spawns npm."""
+    """GET status: readiness plus the job. Never spawns npm.
+
+    Owner-only, like the browser harness's status: it names a host path and the
+    desktop's accessibility and screen-recording grants.
+    """
+    denied = _deny_non_owner(request, "computer_use_agent_desktop_status")
+    if denied is not None:
+        return denied
     return web.json_response(await _status_payload())
 
 

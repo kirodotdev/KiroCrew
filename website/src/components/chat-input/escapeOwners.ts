@@ -36,11 +36,6 @@
  * discard the dictation) and the card stays; marking the banner would make
  * one pending card silently disable both bindings.
  *
- * `[data-escape-passthrough]` opts a surface OUT even though it carries
- * `role="dialog"`: ComputerUseLiveView is a strictly read-only panel open
- * ALONGSIDE a focused composer that never steals focus or claims Escape, so
- * the probe must not treat it as an owner (issue #22315, HOLD item 4).
- *
  * SessionControlHost deliberately stays in the `[role="dialog"]` set: it is a
  * non-modal dialog that does NOT steal focus and lets Escape reach the
  * document unstopped (its onKeyDown is `if (e.key !== 'Escape')
@@ -55,5 +50,5 @@
  *  CSS selector as an untranslated string. */
 export function anotherEscapeOwnerIsOpen(): boolean {
   return typeof document !== 'undefined'
-    && document.querySelector('[role="dialog"]:not([data-escape-passthrough]), [data-escape-owner]') != null
+    && document.querySelector('[role="dialog"], [data-escape-owner]') != null
 }

@@ -24,7 +24,7 @@ would over-report by the downscale factor (verified: a 1676x1320 window encodes 
 resolution it is not going to get.
 
 The encoded frame has exactly one other consumer: :mod:`screencast` relays these
-same bytes to the dashboard's floating live view. It is a relay, not a second
+same bytes to the chat's live card. It is a relay, not a second
 capture — no extra ``CGWindowListCreateImage`` call, no timer, no full-screen
 grab — and it re-checks ``has_secure`` plus the permitted screenshot channel
 before anything leaves the process.

@@ -132,28 +132,6 @@ describe('useComposerStopKey (issue #22315)', () => {
     }
   })
 
-  it('still stops the turn when the open dialog opts out with data-escape-passthrough (the floating live-desktop view)', () => {
-    // ComputerUseLiveView is a draggable, strictly read-only role="dialog"
-    // that coexists ALONGSIDE a focused composer rather than in front of it:
-    // it never steals focus and never claims Escape for itself, so the old
-    // unscoped probe silently killed Escape-to-stop the whole time it was up
-    // (issue #22315, HOLD item 4). It is the ONLY surface that carries this
-    // attribute — every other role="dialog" keeps deferring here (see above).
-    const dialog = document.createElement('div')
-    dialog.setAttribute('role', 'dialog')
-    dialog.setAttribute('data-escape-passthrough', '')
-    document.body.appendChild(dialog)
-    try {
-      const onStop = vi.fn()
-      const { claimed, e } = run(base({ onStop }))
-      expect(claimed).toBe(true)
-      expect(onStop).toHaveBeenCalledTimes(1)
-      expect(e.preventDefault).toHaveBeenCalledTimes(1)
-    } finally {
-      document.body.removeChild(dialog)
-    }
-  })
-
   it('yields to a non-dialog surface that marks itself data-escape-owner', () => {
     // The embedded file preview (MarkdownPanel) and the message-search bar own
     // Escape from their own document-level handlers, but carry NO role="dialog"

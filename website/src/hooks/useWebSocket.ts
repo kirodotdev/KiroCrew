@@ -64,7 +64,7 @@ import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashb
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
-import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
+import { emitAppReload, emitChannelEvent, emitCronHistory } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
@@ -994,6 +994,8 @@ export function useWebSocket() {
             buffers.flushChunks()
             if (data.slot) buffers.dropSlotChunks(data.slot)
             voice.speakTurnTail(data.slot)
+            // The turn's desktop record ends with it (useBrowserLive.computer).
+            if (data.slot) browserLiveStore.endComputerSession(data.slot)
             dispatch(sseChatMessage({ ...data, role: '_done' }))
             turnCompletion.afterDone(data)
             voice.refreshAutoSpeakIfSilent(data.slot)
@@ -1044,7 +1046,9 @@ export function useWebSocket() {
             handleSourceStatus(dispatch, queryClient, data)
             break
           case 'computer_use_frame':
-            emitComputerUseFrame(data)
+            // The desktop's live card (owner sockets only): the screenshot the
+            // agent's own computer_get_state took. The store checks every field.
+            browserLiveStore.applyComputerFrame(data)
             break
           case 'browser_live':
             // The live-browser card's state (owner sockets only). The store

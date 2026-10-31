@@ -1479,9 +1479,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["pull-request-source","https://example.test/pr/1"]',
     'query invalidateQueries ["pull-request-checks","https://example.test/pr/1"]',
   ],
-  "computer_use_frame": [
-    'event kirocrew-computer-use-frame {"jpeg":"AAAA","w":10,"h":10}',
-  ],
+  // Folded into the live-card store (browserLiveStore.applyComputerFrame), not re-broadcast.
+  "computer_use_frame": [],
   "tool_call with a null payload": [
     'event kirocrew-tool-call',
   ],

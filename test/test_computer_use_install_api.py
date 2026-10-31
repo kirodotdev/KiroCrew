@@ -52,7 +52,8 @@ def _payload(resp: Any) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_status_has_exactly_the_contract_keys():
+async def test_status_has_exactly_the_contract_keys(monkeypatch):
+    _owner(monkeypatch, True)
     body = _payload(await api.api_agent_desktop_status(_request("/s")))
     assert set(body) == {
         "installed",
@@ -70,13 +71,18 @@ async def test_status_has_exactly_the_contract_keys():
 
 @pytest.mark.parametrize(
     "handler",
-    [api.api_agent_desktop_install, api.api_agent_desktop_permissions_guide],
+    [
+        api.api_agent_desktop_status,
+        api.api_agent_desktop_install,
+        api.api_agent_desktop_permissions_guide,
+    ],
 )
 @pytest.mark.asyncio
-async def test_mutations_refuse_a_non_owner_and_audit_it(monkeypatch, _isolate, handler):
+async def test_every_route_refuses_a_non_owner_and_audits_it(monkeypatch, _isolate, handler):
     _owner(monkeypatch, False)
     monkeypatch.setattr(adi, "install", lambda *a: pytest.fail("installed for a non-owner"))
     monkeypatch.setattr(adi, "open_permissions_guide", lambda: pytest.fail("guide for a non-owner"))
+    monkeypatch.setattr(adi, "readiness", lambda: pytest.fail("status for a non-owner"))
     resp = await handler(_request("/m"))
     assert resp.status == 403
     assert _isolate.log_api_access.call_args.kwargs["outcome"] == "denied"
@@ -211,3 +217,11 @@ def test_routes_register_with_a_cleanup_hook():
     assert ("POST", "/api/computer-use/agent-desktop/install") in paths
     assert ("POST", "/api/computer-use/agent-desktop/permissions-guide") in paths
     assert len(app.on_cleanup) == before + 1
+
+
+def test_one_huge_log_entry_is_cut_to_the_bound():
+    job = api._Job()
+    cap = 4 * adi.LOG_TAIL_CAP
+    job.append("x" * (cap * 50) + "TAIL")
+    assert len(job.log) == 1 and len(job.log[0]) == cap
+    assert job.log_tail().endswith("TAIL")

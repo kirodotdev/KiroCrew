@@ -2,7 +2,7 @@
  *
  *  Some frame families have their consumer outside Redux and React Query: a
  *  page or panel listens on `window` instead (ArtifactDetailPage, AppHost,
- *  ChannelPage, useComputerUseFrame). `kirocrew-tool-call` and `cron_history`
+ *  ChannelPage). `kirocrew-tool-call` and `cron_history`
  *  have no listener in this tree but stay part of what the socket emits. Every
  *  name and detail shape is a listener contract, so all of them live here. */
 
@@ -33,13 +33,4 @@ export function emitChannelEvent(type: string, data: unknown): void {
 /** A cron run was recorded. */
 export function emitCronHistory(detail: unknown): void {
   window.dispatchEvent(new CustomEvent('cron_history', { detail }))
-}
-
-/** Computer-use PiP frame: the downscaled JPEG the agent's own
- *  computer_get_state call already captured, relayed by the gateway (owner
- *  sockets only; suppressed for secure windows and under a
- *  screenshot-denying ceiling). Window-event routing, so ComputerUseLiveView
- *  needs no Redux slice. */
-export function emitComputerUseFrame(detail: unknown): void {
-  window.dispatchEvent(new CustomEvent('kirocrew-computer-use-frame', { detail }))
 }

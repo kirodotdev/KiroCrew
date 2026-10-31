@@ -590,6 +590,20 @@ forwarded; nothing on the input path is logged. Replay plays the frames the
 stream already sent, kept in memory for the life of the page, original spacing
 capped at 500 ms per gap. Strings live at `pages.chat.browserLiveCard.*`.
 
+**The desktop record.** The same card shows computer use (`source="computer"`):
+`TurnBlock` mounts a second card after the turn's last `computer_*` row, over the
+session's desktop record (`kind: 'computer'`), which the live store keeps apart from
+the browser relay's `current` so neither ends the other. Its frames are the
+screenshots the computer tools already took for the model (the `computer_use_frame`
+event, checked again by `readComputerFrame`), one per capture: no stream, no ack, no
+visibility report, no gateway recording. Its steps are the turn's computer tool calls.
+The seam in the views is `isDesktop(turn)`: the header and done line name the
+application instead of a host, and every takeover control is absent (Take over,
+click-to-take-over, Open in, Open live, and the big view's Take over), because remote
+input on the real desktop would bypass the computer tools' in-band refusals. Expand
+and Replay work as for a browser turn, pinned to the record's id. The capture and
+its suppressions are in [computer-use](computer-use.md#the-live-card).
+
 **The loop line.** While a loop op (`reflex`) runs, the event carries `loop`:
 `{moves, rate, steps, max_steps, seconds, max_seconds, stop}` (every key present,
 a counter the op did not send is `null`, `stop` is `null` while it runs and then
@@ -1252,8 +1266,8 @@ masked because a leftover file still holds the owner's sessions.
   screenshotting a front-end change as evidence.
 - [web-preview](../../../src/kiro_crew/builtin_skills/web-preview/SKILL.md) for
   the Preview tab.
-- [computer-use](computer-use.md) for the screencast pattern the live view
-  follows (`computer_use_frame` to owner websockets).
+- [computer-use](computer-use.md) for the desktop frames the live card also
+  shows (`computer_use_frame` to owner websockets).
 - [config](config.md) for how a retired key is dropped on save.
 - [mcp](../../architecture/mcp.md) for MCP registration, transport, and trust
   boundaries.

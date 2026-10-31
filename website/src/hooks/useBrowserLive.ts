@@ -35,6 +35,7 @@ import { i18nT } from '../i18n/t'
 import { BROWSER_HANDBACK_CHAT_EVENT, type BrowserHandbackSaid } from '../api/client/browserLive'
 import type { BrowserInputEvent } from './useBrowserLive.input'
 import { FrameRing, decodeBrowserFrame, type DecodedBrowserFrame } from './useBrowserLive.frame'
+import { readComputerFrame } from './useBrowserLive.computer'
 import { readQuickAsk, type QuickAsk, type QuickAskAction, type QuickAskAnswer, type QuickAskValues } from '../pages/chat/quickAsk/types'
 
 export type BrowserLiveState = 'waiting_allow' | 'live' | 'in_control' | 'done' | 'login_needed' | 'error'
@@ -103,6 +104,12 @@ export interface BrowserLiveEvent {
 
 export type BrowserLiveTab = '' | 'open' | 'closed'
 
+/** Where a card's picture comes from: the agent's browser, or the desktop computer use drives. */
+export type LiveSource = 'browser' | 'computer'
+
+/** One computer tool call of a turn, for the desktop card's step strip. */
+export interface ComputerStepInput { label: string; ts: number | null }
+
 /** One turn's browsing, as the card sees it. Replaced (not mutated) on every event. */
 export interface BrowserLiveTurn {
   sessionKey: string
@@ -142,6 +149,12 @@ export interface BrowserLiveTurn {
   handbackOptions: string[]
   /** The quick ask waiting for the person (see `pages/chat/quickAsk`), else null. */
   ask: QuickAsk | null
+  /**
+   * `computer` for a desktop record (`useBrowserLive.computer`): its frames are the
+   * agent's own `computer_get_state` screenshots, its title is the application,
+   * and it has no takeover, no tab and no gateway recording. Absent: the browser.
+   */
+  kind?: 'computer'
 }
 
 interface SessionRecord {
@@ -163,6 +176,12 @@ interface SessionRecord {
   reportedVisible: boolean | null
   /** Frames of the current turn received while no card instance shows that turn. */
   unseenFrames: number
+  /**
+   * The newest desktop record (`kind: 'computer'`). Separate from `current`, which
+   * is the browser relay's: a turn may browse and drive the desktop, and the two
+   * cards must not end each other.
+   */
+  computer: BrowserLiveTurn | null
 }
 
 type Listener = () => void
@@ -314,6 +333,9 @@ class BrowserLiveStore {
   private heartbeat: ReturnType<typeof setInterval> | null = null
   /** Per session, each mounted canvas's "release what you hold" (see `onHandBack`). */
   private handBackDrains = new Map<string, Set<() => Promise<unknown> | null>>()
+  /** Desktop records and frames this page has numbered (ids and frame seqs). */
+  private computerTurns = 0
+  private computerFrames = 0
   /** Injected for tests; production uses the facade's methods. */
   private writes = {
     ack: (k: string, seq: number, stream: string) => api.browserLiveAck(k, seq, stream) as Promise<unknown>,
@@ -330,7 +352,7 @@ class BrowserLiveStore {
   private session(key: string): SessionRecord {
     let s = this.sessions.get(key)
     if (!s) {
-      s = { current: null, turns: new Map(), ackedStream: '', ackedSeq: -1, visibleInstances: new Map(), reportedVisible: null, unseenFrames: 0 }
+      s = { current: null, turns: new Map(), ackedStream: '', ackedSeq: -1, visibleInstances: new Map(), reportedVisible: null, unseenFrames: 0, computer: null }
       this.sessions.set(key, s)
     }
     return s
@@ -338,9 +360,14 @@ class BrowserLiveStore {
 
   /** Empty the rings of every turn but the newest `REPLAY_RINGS_KEPT`. */
   private evictRings(s: SessionRecord): void {
-    const ids = [...s.turns.keys()]
-    for (const id of ids.slice(0, Math.max(0, ids.length - REPLAY_RINGS_KEPT))) {
-      s.turns.get(id)?.ring.clear()
+    // Browser and desktop records keep their rings on separate budgets: a desktop
+    // record has no gateway recording, so its ring is its only replay, and a turn
+    // that both browses and drives the desktop must not cost one the other's.
+    for (const desktop of [false, true]) {
+      const ids = [...s.turns.values()].filter(t => (t.kind === 'computer') === desktop).map(t => t.turnId)
+      for (const id of ids.slice(0, Math.max(0, ids.length - REPLAY_RINGS_KEPT))) {
+        s.turns.get(id)?.ring.clear()
+      }
     }
   }
 
@@ -497,6 +524,145 @@ class BrowserLiveStore {
       set?.delete(cb)
       if (set && set.size === 0) this.frameListeners.delete(k)
     }
+  }
+
+  // ---- computer use -------------------------------------------------------
+
+  /** A new desktop record for the session, live; the one before it is over. */
+  private newComputerTurn(s: SessionRecord, sessionKey: string, now: number): BrowserLiveTurn {
+    this.endComputer(s, now)
+    this.computerTurns += 1
+    const rec: BrowserLiveTurn = {
+      sessionKey, turnId: `computer:${this.computerTurns}`, state: 'live', url: '', title: '',
+      browser: null, headless: false, step: null, steps: [], rung: 0, fps: 0, detail: '',
+      startedAt: now, endedAt: null, hasFrame: false, ring: new FrameRing(), controlError: '',
+      turnOver: false, tab: '', log: [], loop: null, handbackOptions: [], ask: null, kind: 'computer',
+    }
+    s.turns.set(rec.turnId, rec)
+    s.computer = rec
+    this.evictRings(s)
+    return rec
+  }
+
+  /** End the session's desktop record if it is still live. Answers whether it was. */
+  private endComputer(s: SessionRecord, now: number): boolean {
+    const rec = s.computer
+    if (!rec || isEnded(rec.state)) return false
+    const done: BrowserLiveTurn = {
+      ...rec, state: 'done', endedAt: now, turnOver: true, step: null,
+      steps: rec.steps.map(st => (st.status === 'done' ? st : { ...st, status: 'done' as const })),
+    }
+    s.turns.set(done.turnId, done)
+    s.computer = done
+    return true
+  }
+
+  /**
+   * One `computer_use_frame` event: a screenshot a computer tool already took for
+   * the model (`computer_get_state`, `computer_launch_app`). It goes to the session's live desktop record (a
+   * new one when there is none) and to the canvases painting it. Nothing is
+   * acked and nothing is written back: the gateway sends one frame per capture.
+   */
+  applyComputerFrame(raw: unknown, now: number = Date.now()): void {
+    const read = readComputerFrame(raw, this.computerFrames + 1, now)
+    if (!read) return
+    this.computerFrames += 1
+    const key = read.frame.header.session_key
+    const s = this.session(key)
+    let rec = s.computer && !isEnded(s.computer.state) ? s.computer : this.newComputerTurn(s, key, now)
+    rec.ring.push(read.frame)
+    if (!rec.hasFrame || (read.app && read.app !== rec.title)) {
+      rec = { ...rec, hasFrame: true, title: read.app || rec.title }
+      s.turns.set(rec.turnId, rec)
+      s.computer = rec
+      this.notify()
+    }
+    const ls = this.frameListeners.get(joinKey(key, rec.turnId))
+    if (ls) for (const l of ls) l(read.frame)
+  }
+
+  /**
+   * The desktop record a turn card shows. Same binding rule as `resolveTurn`,
+   * on the session's desktop record. Read-only apart from the binding, like
+   * `resolveTurn`: ending a record bound to another turn is `releaseComputerFor`.
+   */
+  resolveComputerTurn(sessionKey: string, anchorKey: string, running: boolean, anchorTs: number | null): BrowserLiveTurn | null {
+    const s = this.sessions.get(sessionKey)
+    if (!s) return null
+    const ak = joinKey(sessionKey, anchorKey)
+    const bound = this.anchors.get(ak)
+    if (bound) return s.turns.get(bound) ?? null
+    const cur = s.computer
+    if (!cur || this.isBound(sessionKey, cur.turnId)) return null
+    if (running) {
+      if (isEnded(cur.state)) return null
+    } else if (anchorTs !== null) {
+      const end = cur.endedAt ?? Date.now()
+      if (anchorTs < cur.startedAt - BIND_SLACK_MS || anchorTs > end + BIND_SLACK_MS) return null
+    }
+    this.anchors.set(ak, cur.turnId)
+    return cur
+  }
+
+  /**
+   * The session's turn ended (the `chat_done` event): its live desktop record is
+   * over, whether or not a card shows it. Without this, a turn whose card was off
+   * screen when it ended would keep its record live, and the next turn's first
+   * frame would land in it.
+   */
+  endComputerSession(sessionKey: string, now: number = Date.now()): void {
+    const s = this.sessions.get(sessionKey)
+    if (s && this.endComputer(s, now)) this.notify()
+  }
+
+  /**
+   * A running turn's card that shows no record: when the session's live desktop
+   * record is bound to ANOTHER turn (that turn ended while the page missed its
+   * `chat_done`), end it, so this turn's next frame starts its own record.
+   */
+  releaseComputerFor(sessionKey: string, anchorKey: string, now: number = Date.now()): void {
+    const s = this.sessions.get(sessionKey)
+    const cur = s?.computer
+    if (!s || !cur || isEnded(cur.state)) return
+    const mine = this.anchors.get(joinKey(sessionKey, anchorKey))
+    if (mine !== cur.turnId && this.isBound(sessionKey, cur.turnId) && this.endComputer(s, now)) this.notify()
+  }
+
+  /** The turn this desktop card belongs to is over: fold the record to its done line. */
+  endComputerTurn(sessionKey: string, turnId: string, now: number = Date.now()): void {
+    const s = this.sessions.get(sessionKey)
+    if (!s || s.computer?.turnId !== turnId) return
+    if (this.endComputer(s, now)) this.notify()
+  }
+
+  /**
+   * The desktop card's step strip: the turn's computer tool calls, oldest first.
+   * The last one is active while the turn runs. A label not seen before goes on
+   * the record's log at its row's time, which is where the replay marks it.
+   */
+  setComputerSteps(sessionKey: string, turnId: string, input: readonly ComputerStepInput[], running: boolean, now: number = Date.now()): void {
+    const s = this.sessions.get(sessionKey)
+    const rec = s?.turns.get(turnId)
+    if (!s || !rec || rec.kind !== 'computer') return
+    const live = running && !isEnded(rec.state)
+    const steps: BrowserLiveStep[] = input.map((st, i) => ({
+      label: st.label,
+      status: live && i === input.length - 1 ? 'active' as const : 'done' as const,
+    }))
+    const same = steps.length === rec.steps.length && steps.every((st, i) => st.label === rec.steps[i].label && st.status === rec.steps[i].status)
+    if (same) return
+    let log = rec.log
+    // `rec.steps` holds every call applied so far (the strip is not capped), so its
+    // length is where the new calls start; the log itself is capped.
+    if (input.length > rec.steps.length) {
+      log = [...log, ...input.slice(rec.steps.length).map(st => ({ ts: st.ts ?? now, op: 'other' as const, label: st.label, url: '' }))]
+      if (log.length > LIVE_LOG_MAX) log = log.slice(log.length - LIVE_LOG_MAX)
+    }
+    const last = steps.length - 1
+    const next: BrowserLiveTurn = { ...rec, steps, log, step: live && last >= 0 ? { index: last, label: steps[last].label } : null }
+    s.turns.set(turnId, next)
+    if (s.computer?.turnId === turnId) s.computer = next
+    this.notify()
   }
 
   // ---- reads --------------------------------------------------------------
@@ -798,6 +964,8 @@ class BrowserLiveStore {
     this.anchors.clear()
     this.frameListeners.clear()
     this.handBackDrains.clear()
+    this.computerTurns = 0
+    this.computerFrames = 0
     this.notify()
   }
 }
@@ -807,10 +975,15 @@ export const browserLiveStore = new BrowserLiveStore()
 // ---- hooks ------------------------------------------------------------------
 
 /** The record the card for a turn shows, or `null` for a turn with none. */
-export function useBrowserLiveTurn(sessionKey: string | null, anchorKey: string | null, running: boolean, anchorTs: number | null): BrowserLiveTurn | null {
+export function useBrowserLiveTurn(sessionKey: string | null, anchorKey: string | null, running: boolean, anchorTs: number | null, source: LiveSource = 'browser'): BrowserLiveTurn | null {
   return useSyncExternalStore(
     browserLiveStore.subscribe,
-    () => (sessionKey && anchorKey ? browserLiveStore.resolveTurn(sessionKey, anchorKey, running, anchorTs) : null),
+    () => {
+      if (!sessionKey || !anchorKey) return null
+      return source === 'computer'
+        ? browserLiveStore.resolveComputerTurn(sessionKey, anchorKey, running, anchorTs)
+        : browserLiveStore.resolveTurn(sessionKey, anchorKey, running, anchorTs)
+    },
     () => null,
   )
 }

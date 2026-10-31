@@ -22,7 +22,7 @@
  *
  * `scripts/i18n-codemod.mjs --merge` is whole-corpus by design (no path scope), so a run
  * also rewrites files this app does not own. The answer is not to defer — it is to revert
- * the files outside this app after the run. Three were dragged in here (ComputerUseLiveView,
+ * the files outside this app after the run. Three were dragged in here (a since-removed desktop view,
  * ChatSidebar, TelemetryPanel) and reverted; their three leaked catalog keys had to be
  * removed by hand too, because `deadKeys.test.ts` counts keys nothing references.
  *

@@ -5103,7 +5103,7 @@
           "nova-sky"
         ],
         "feature_flags": [],
-        "notes": "Invoke path needs Electron and OS accessibility permissions. | Off by default; ComputerUsePanel.tsx; live view component mounted in App.tsx. | Permission probe shells out to 'kirocrew computer doctor'; on Linux reports unsupported/unknown. | Linux backend is a typed UnsupportedBackend; the spec says when `supported` is false the panel renders the reason and no toggle."
+        "notes": "Invoke path needs Electron and OS accessibility permissions. | Off by default; ComputerUsePanel.tsx; live view is the chat's live card (BrowserLiveCard). | Permission probe shells out to 'kirocrew computer doctor'; on Linux reports unsupported/unknown. | Linux backend is a typed UnsupportedBackend; the spec says when `supported` is false the panel renders the reason and no toggle."
       },
       "runnable": "nightly",
       "estimated_steps": 2,
@@ -5111,8 +5111,7 @@
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/settings/ComputerUsePanel.tsx",
-        "website/src/components/ComputerUseLiveView.tsx",
-        "website/src/App.tsx",
+        "website/src/pages/chat/BrowserLiveCard.tsx",
         "website/src/components/commandPalette/settingsRegistry.gen.ts",
         "docs/system-specs/modules/computer-use.md"
       ],
@@ -5128,10 +5127,10 @@
     {
       "id": "computer-use-live-view-pip",
       "feature": "computer-use",
-      "title": "Live view PiP mirrors screenshots the agent already read",
-      "user_story": "As a user driving a remote Mac, I want a floating picture-in-picture panel to show what the agent sees, so that I can follow its desktop actions.",
+      "title": "The live card mirrors desktop screenshots the agent already read",
+      "user_story": "As a user driving a remote Mac, I want the chat's live card to show what the agent sees, so that I can follow its desktop actions.",
       "start_url": "/chat",
-      "entry_path": "Chat page > Computer Use live view panel",
+      "entry_path": "Chat page > the turn's live card",
       "preconditions": {
         "seed": "minimal",
         "members": [

@@ -1,10 +1,10 @@
-"""Computer-use live view (PiP) — relay the frame the agent already captured.
+"""Computer-use live card — relay the frame the agent already captured.
 
 The desktop the agent drives may not be the desktop the operator is sitting at
 (a cloud Mac, a headless-ish session over a reverse SSH tunnel, or simply another
 Space). The dashboard is the only window onto it, so this module mirrors the
-JPEG that :mod:`capture_macos` **already encoded** for the model into a floating
-``ComputerUseLiveView`` panel. It adds no capture of its own: no second
+JPEG that :mod:`capture_macos` **already encoded** for the model into the chat's
+live card (``BrowserLiveCard`` over a desktop record). It adds no capture of its own: no second
 ``CGWindowListCreateImage`` call, no timer, no full-screen grab. One frame per
 tool-call capture, and only when that capture already happened.
 
@@ -64,7 +64,7 @@ from kiro_crew.loopback_http import loopback_urlopen
 
 logger = logging.getLogger(__name__)
 
-# WS event name the dashboard ``ComputerUseLiveView`` panel listens for.
+# WS event name the dashboard's live-card store (``useBrowserLive``) folds in.
 COMPUTER_USE_FRAME_EVENT = "computer_use_frame"
 
 # Loopback ingress that rebroadcasts one frame. Registered in
@@ -109,12 +109,18 @@ _B64_RE = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{
 # so one frame cannot become a multi-megabyte websocket write.
 MAX_FRAME_B64_CHARS = 4_000_000
 
-# Opaque session id, used client-side only as a lookup key (the panel renders the
-# resolved session TITLE from its own slot store, never this value). Bounded
-# anyway so the payload cannot carry arbitrary text. Mirrors the browse ingress.
-_SESSION_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+# The tab's slot key (the ingress maps the capture's session key to it first),
+# used client-side only as the live store's key for the card, never rendered.
+# Bounded so the payload cannot carry arbitrary text; 256 covers a slot key's
+# 249-character ceiling.
+_SESSION_KEY_RE = re.compile(r"[A-Za-z0-9_.:-]{1,256}")
 
-# The mirrored application's display name, for the panel header. Bundle ids and
+# Longest raw session key the ingress maps to a slot key before the check above.
+# A slot key is at most 249 characters (a transcript filename stem); a session key
+# is the slot key plus a short transport prefix, or a channel key.
+MAX_FRAME_SESSION_KEY_CHARS = 512
+
+# The mirrored application's display name, for the card header. Bundle ids and
 # app names contain dots, spaces, ampersands and hyphens; anything outside this
 # charset (or over length) is dropped rather than sanitized, so the field can
 # never smuggle free text onto the wire.
@@ -171,7 +177,7 @@ def build_frame_payload(body: dict[str, Any]) -> "dict[str, Any] | None":
     ``{"data": "<base64 jpeg>", "format": "jpeg", "width": …, "height": …,
     "session_key": …, "app": …}``.
 
-    Returns the payload the panel renders, or ``None`` when the body carries no
+    Returns the payload the card renders, or ``None`` when the body carries no
     usable frame (the caller answers 400). Every field is bounded at this
     boundary: ``data`` to the base64 charset and a size cap, ``format`` to the
     single allowed encoding, the dimensions to the encoder's own pixel ceiling,
@@ -193,7 +199,7 @@ def build_frame_payload(body: dict[str, Any]) -> "dict[str, Any] | None":
     for key in ("width", "height"):
         value = body.get(key)
         # ``isinstance(True, int)`` is True in Python, so a JSON ``true`` would
-        # otherwise broadcast width=1 and make the panel's aspect math render a
+        # otherwise broadcast width=1 and make the card's aspect math render a
         # one-pixel frame. Bounded above by the encoder's own ceiling.
         if isinstance(value, bool) or not isinstance(value, int):
             continue
@@ -245,7 +251,7 @@ def emit_snapshot_frame(snap: Snapshot) -> bool:
             "width": snap.image_width,
             "height": snap.image_height,
             "session_key": scope.session_key,
-            # The resolved application's display name, for the panel header. NOT
+            # The resolved application's display name, for the card header. NOT
             # the window title: titles are their own observation channel and can
             # carry document names and paths.
             "app": snap.app.name,
@@ -347,6 +353,7 @@ __all__ = [
     "FRAME_POST_TIMEOUT_SECS",
     "FrameScope",
     "MAX_FRAME_B64_CHARS",
+    "MAX_FRAME_SESSION_KEY_CHARS",
     "active_scope",
     "build_frame_payload",
     "emit_snapshot_frame",

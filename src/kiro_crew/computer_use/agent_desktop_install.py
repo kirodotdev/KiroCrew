@@ -33,13 +33,13 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.computer_use import agent_desktop_locate
 from kiro_crew.computer_use.install_runner import (
     INTERRUPTED_RC,
     TIMEOUT_RC,
     _run,
     redact_install_output,
 )
-from kiro_crew.computer_use import agent_desktop_locate
 from kiro_crew.computer_use.types import PLATFORM_LINUX, PLATFORM_MACOS, PLATFORM_WINDOWS
 from kiro_crew.env import find_node_tool
 

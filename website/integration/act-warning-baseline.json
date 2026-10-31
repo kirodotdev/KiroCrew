@@ -235,7 +235,6 @@
   "src/test/CollapsibleToolGroup.purposePreview.test.tsx",
   "src/test/CollapsibleToolGroupCov80.test.tsx",
   "src/test/ComposerSendDuringUpload.test.tsx",
-  "src/test/ComputerUseLiveView.test.tsx",
   "src/test/ConnectionsPage.coverage.test.tsx",
   "src/test/CrewChatWindow.test.tsx",
   "src/test/CrewCompanionEditReminder.test.tsx",

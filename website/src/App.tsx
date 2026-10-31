@@ -57,7 +57,6 @@ const LayoutEditorHarnessPage = lazy(() => import('./pages/LayoutEditorHarnessPa
 
 import UpdateModal from './components/UpdateModal'
 
-import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
 import { toggleBottomTerminal } from './hooks/useBottomTerminal'
 import { RunInTerminalShellNotice, useRunInTerminalShellBridge } from './shell/runInTerminalShellBridge'
@@ -877,11 +876,6 @@ export default function App() {
         </div>{/* /flex-row or flex-col wrapper */}
         {terminalEnabled && terminalPoppedOut && <TerminalDetachedBar />}
 
-        {/* Self-managed floating panels: lifecycle-driven (hidden → small → chip),
-            not motion.* children, so they live outside AnimatePresence. The browse
-            mirror docks bottom-right and the computer-use PiP bottom-left, so both
-            can be open at once. */}
-        <ComputerUseLiveView />
       </div>
     </div>{/* /Local dashboard grid */}
       {/* Opened from the local Crew, so they hide with it (components/overlayRoot).
