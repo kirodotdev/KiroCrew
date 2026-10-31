@@ -838,6 +838,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",
         "knowledge/ingestion.py",
+        # The ingestion facade's failed-extraction owner: it redacts a re-extracted
+        # chunk's summary, title and entity text before storing them, the same
+        # store-side redaction as the facade above, so it is not an egress path.
+        "knowledge/ingestion_extraction_failures.py",
         "workflows/library.py",
         "mcp_core.py",
         # The same server's owner modules, same class: they redact an HTTP error

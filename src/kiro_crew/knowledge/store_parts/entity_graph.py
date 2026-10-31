@@ -376,6 +376,29 @@ def add_entity_relation(
     return rid
 
 
+def clear_item_entity_links(self: KnowledgeStore, item_id: str) -> None:
+    """Drop *item_id*'s mentions and the relations it sourced, in one transaction.
+
+    A chunk still marked as failed got no entities from its failed call, so any link
+    it holds was written by a re-extraction that did not finish (a shutdown, or a
+    store or embed error after the entities landed). Clearing them first makes the
+    next attempt write each relation once: relations, unlike mentions, have no
+    uniqueness to absorb a repeat. The graph is reloaded only when an edge went away.
+    """
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        self.db.execute("DELETE FROM mentions WHERE item_id = ?", (item_id,))
+        dropped = self.db.execute(
+            "DELETE FROM entity_relations WHERE source_item_id = ?", (item_id,)
+        ).rowcount
+        self.db.execute("COMMIT")
+    except Exception:
+        self.db.execute("ROLLBACK")
+        raise
+    if dropped:
+        self._load_graph()
+
+
 def add_mention(self: KnowledgeStore, item_id, entity_id, context=None):
     now = datetime.now().isoformat()
     self.db.execute(
