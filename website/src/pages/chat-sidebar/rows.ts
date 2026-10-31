@@ -184,6 +184,8 @@ export interface RowShell {
   /** A phone-width viewport or any touch screen: the single ⋯ menu instead of the
    *  hover-revealed action cluster. */
   isMobile: boolean
+  /** Show only each session title, hiding card metadata and activity details. */
+  compactSessionCards: boolean
   colorMode: string
   defaultAgent: string
   installedAgents: AgentInfo[]

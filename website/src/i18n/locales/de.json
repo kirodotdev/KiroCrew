@@ -17115,6 +17115,8 @@
         "your_role": "Ihre Rolle",
         "session_card_source_links": "PR- und Issue-Chips auf Sitzungskarten",
         "session_card_source_links_desc": "Zeigt auf der Seitenleistenkarte jeder Sitzung einen Chip für jeden Pull Request, jeden Merge Request und jedes Issue, das in dieser Sitzung erwähnt wird. Ausgeschaltet entfallen auch die regelmäßigen Anbieteraufrufe, die diese Chips aktuell halten.",
+        "compact_session_cards": "Sitzungskarten nur mit Titel",
+        "compact_session_cards_desc": "Zeigt in der Seitenleiste nur den Titel jeder Sitzung. Dadurch werden die Aktivitätsvorschau und verknüpfte Quell-Chips ausgeblendet.",
         "failed_to_load_tips_preference": "Die Einstellung für Tipps konnte nicht geladen werden.",
         "feature_videos": "Feature-Videos",
         "feature_videos_cached": "Auf diesem Gerät gespeichert: {{cached}} von {{total}} · Release {{release}}",

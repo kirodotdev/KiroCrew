@@ -17407,6 +17407,8 @@
         "your_role": "Votre rôle",
         "session_card_source_links": "Puces PR et issues sur les cartes de session",
         "session_card_source_links_desc": "Affiche sur la carte de chaque session, dans la barre latérale, une puce pour chaque pull request, merge request ou issue mentionnée dans cette session. Désactivé, cela arrête aussi les appels périodiques au fournisseur qui tiennent ces puces à jour.",
+        "compact_session_cards": "Cartes de session avec titre uniquement",
+        "compact_session_cards_desc": "Affiche uniquement le titre de chaque session dans la barre latérale. Masque l’aperçu de l’activité et les puces de sources liées.",
         "failed_to_load_tips_preference": "Impossible de charger la préférence des astuces.",
         "feature_videos": "Vidéos de fonctionnalités",
         "feature_videos_cached": "Enregistrés sur cet appareil : {{cached}} sur {{total}} · version {{release}}",

@@ -132,6 +132,12 @@ const LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['running', 'subagents'
  *  member's waiting approval never takes the line from one of them. */
 const OWED_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['pending_approval', 'subagent_awaiting', 'needs_input', 'loop_waiting'])
 
+/** Branches that also mean "working right now" but that a full card names on
+ *  its own secondary line (a loop, a workflow run, a monitor wake). A title-only
+ *  card has no secondary line, so in that mode these light the live dot too;
+ *  otherwise an executing loop or workflow would read as an idle title. */
+const COMPACT_LIVE_ROW_STATE_KEYS: ReadonlySet<string> = new Set(['goal_loop', 'workflow', 'structured_monitor_action'])
+
 /** A slot's running-status line. Every phase resolves through toolStatusLabel:
  *  the fixed phases (`thinking`/`streaming`) carry no copy in the store and map
  *  to catalog keys at render time, a server-supplied status (also
@@ -387,7 +393,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       : i18nT('pages.chatSidebar.release_locally_hint_generic'))
     : conductor && conductor.childCount > 0 ? i18nT('pages.chatSidebar.close_keeps_children_hint') : undefined
   const {
-    connected, mode, isMobile, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
+    connected, mode, isMobile, compactSessionCards, colorMode, defaultAgent, installedAgents, memoryRows, tagById, paletteColors, boost, boostFor,
     recentTintCount, dragInFlight, activeDraggedKey, activeDraggedPinnedIndex, activeDraggedDrawnIndex, manualSort,
     guideOnRowControl, showUnreadDot, manualReorderOff,
   } = view.shell
@@ -1126,13 +1132,22 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // The same branch, as a word and a tooltip for an Ultra Mode row.
     const crewOwnState = crewRoot ? crewRowOwnState(rowStateEntry?.key, rowStateTitle(rowStateEntry?.key), goalLoopStalled) : null
     // The title-line live dot reads the WINNING branch of the resolver above, so
-    // it can never disagree with the secondary line: it lights exactly when that
-    // line says the session is working (a turn, started sub-agents, or reconnect
-    // live work). A branch that outranks those wins the line and leaves the title
-    // bare: an owed approval or answer, a loop, a monitor wake, a workflow run or
-    // an interrupted turn each carry their own stronger cue. A queued-only row
-    // has no dot either, because its own branch says nothing has started.
-    const showLiveDot = !!rowStateEntry && LIVE_ROW_STATE_KEYS.has(rowStateEntry.key)
+    // it can never disagree with the secondary line: on a full card it lights
+    // exactly when that line says the session is working (a turn, started
+    // sub-agents, or reconnect live work). A branch that outranks those wins the
+    // line and leaves the title bare: an owed approval or answer, a loop, a
+    // monitor wake, a workflow run or an interrupted turn each carry their own
+    // stronger cue there. A queued-only row has no dot either, because its own
+    // branch says nothing has started. A title-only card has no secondary line to
+    // carry the loop, workflow or monitor-wake cue, so in that mode those
+    // branches light the dot as well (see `showLiveDot` below). A stalled goal
+    // loop (`goalLoopStalled`) is the exception: nothing is executing, so it
+    // gets the static danger marker in `compactAttention` instead of the dot.
+    const ownLiveDot = !!rowStateEntry && (
+      LIVE_ROW_STATE_KEYS.has(rowStateEntry.key)
+      || (compactSessionCards && COMPACT_LIVE_ROW_STATE_KEYS.has(rowStateEntry.key)
+        && !(rowStateEntry.key === 'goal_loop' && goalLoopStalled))
+    )
 
     // `unread` sits LAST, so it lights only when nothing else claims the slot.
     // That is stricter than the dot it replaces, which coexisted with the
@@ -1170,6 +1185,52 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         {s.last_message ? <span className="truncate min-w-0">{s.last_message}</span> : null}
       </div>
     ) : null
+    // Title-only cards drop the secondary line and the metadata line, so an owed
+    // decision, a blocked monitor or an unread result would otherwise leave a
+    // bare title that reads as idle. Those states get ONE marker on the title
+    // line instead (never a new stacked line), with the glyph, ink and label
+    // their secondary-line branch or metadata chip already uses. Order: the
+    // row's own states first, in resolver order, because they describe this
+    // session; then a collapsed conductor's hidden-subtree ask, which uses the
+    // needs-you chip's glyph and accent ink and shows beside the row's own live
+    // dot when the conductor is also running, as the full card shows both its
+    // live work and the needs-you chip; then unread last, because an owed
+    // answer anywhere in the subtree matters more than a result waiting to be read.
+    // Live work keeps the live dot; a stalled goal loop swaps the dot for its
+    // static danger glyph; every other branch leaves the title bare.
+    const compactAttention: { key: string; label: string; glyph: ReactNode } | null = !compactSessionCards
+      ? null
+      : rowStateEntry?.key === 'pending_approval'
+        ? { key: 'pending_approval', label: i18nT('pages.chatSidebar.needs_approval'), glyph: <ShieldCheck size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden /> }
+        : rowStateEntry?.key === 'subagent_awaiting'
+          ? { key: 'subagent_awaiting', label: subagentApprovalLabel, glyph: <Bot size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden /> }
+          : rowStateEntry?.key === 'needs_input'
+            ? { key: 'needs_input', label: needsInputLabel, glyph: <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--info)' }} aria-hidden /> }
+            : rowStateEntry?.key === 'loop_waiting'
+              ? {
+                  key: 'loop_waiting',
+                  label: i18nT('pages.chatSidebar.loop_waiting_on_you'),
+                  glyph: goalLoop
+                    ? <Goal size={ROW_ICON_PX} className="shrink-0" style={{ color: 'var(--warn)' }} aria-hidden />
+                    : <MonitorRadar actionRunning={false} className="text-warn" />,
+                }
+              : rowStateEntry?.key === 'goal_loop' && goalLoopStalled
+                ? { key: 'goal_loop_stalled', label: i18nT('pages.chatSidebar.goal_loop_interrupted_title'), glyph: <Goal size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden /> }
+              : rowStateEntry?.key === 'interrupted'
+                ? { key: 'interrupted', label: i18nT('pages.chat.recoveryCard.turn_interrupted'), glyph: <TriangleAlert size={ROW_ICON_PX} className="shrink-0 text-danger" aria-hidden /> }
+                : rowStateEntry?.key === 'structured_monitor_passive' && (monitorStatus === 'blocked' || monitorStatus === 'budget_stopped')
+                  ? { key: 'structured_monitor_passive', label: monitorLabel, glyph: <MonitorRadar actionRunning={false} className="text-warn" /> }
+                  : (conductor?.aggregate?.needsYou ?? 0) > 0
+                    ? { key: 'subtree_needs_you', label: i18nT('pages.chatSidebar.needs_your_answer'), glyph: <MessageCircleQuestionMark size={ROW_ICON_PX} className="shrink-0 text-accent" aria-hidden /> }
+                    : unreadDot
+                      ? { key: 'unread', label: i18nT('pages.chatSidebar.agent_finished_your_turn'), glyph: <span className="w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--ok)' }} /> }
+                      : null
+    // A collapsed conductor whose hidden sessions are still running shows the
+    // live dot on a title-only card, standing in for the running chip the hidden
+    // metadata line would carry. It lights only when the row has no marker of
+    // its own, so the title still carries one cue.
+    const showLiveDot = ownLiveDot
+      || (compactSessionCards && !compactAttention && (conductor?.aggregate?.running ?? 0) > 0)
     // Custom hex (color_hex) wins over the palette index. It is deliberately
     // theme-independent: palette swatches re-derive from the theme accent,
     // a custom color is frozen. Muted-text legibility still goes through the
@@ -1598,7 +1659,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               which already carries the name, is drawn on the first line. Not while
               renaming: the rename box lives in that title line. */}
           <div className={`flex-1 min-w-0 overflow-hidden ${renamingHere ? '' : '[&:has([data-member-head])>[data-session-title]]:hidden'}`}>
-            <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
+            {!compactSessionCards && (
+              <div className={`session-agent-label ${ROW_META_CLS} font-semibold truncate flex items-center gap-1 ${agentColor}`}>
               {/* Plain keyed span, deliberately unanimated: 200+ per-row
                 *  AnimatePresence trees each paid child-diffing bookkeeping on
                 *  every sidebar commit for a crossfade that fires only on the
@@ -1818,7 +1880,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {isPinned && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}
-            </div>
+              </div>
+            )}
             {/* NEVER wraps. `truncate` rather than a two-line clamp, so every row
                 is the same height. A clamped title also moved the whole
                 secondary line down by a full line box on some rows, which is what
@@ -1847,6 +1910,20 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                   {showLiveDot && (
                     <span className="session-live-dot animate-pulse" role="img" aria-label={i18nT('pages.chatSidebar.running_marker')} title={i18nT('pages.chatSidebar.running_marker')} data-testid="session-live-dot" />
                   )}
+                  {compactAttention && (
+                    <span className="inline-flex items-center align-middle mr-1.5" role="img" aria-label={compactAttention.label} title={compactAttention.label} data-testid="session-compact-attention" data-state={compactAttention.key}>
+                      {compactAttention.glyph}
+                    </span>
+                  )}
+                  {/* Title-only cards hide the metadata line that carries the mute
+                      marker. A muted session suppresses chimes, toasts and unread
+                      markers, so it keeps the marker on the title line; otherwise
+                      it would read as an ordinary quiet session. */}
+                  {compactSessionCards && s.muted && (
+                    <span className="inline-flex items-center align-middle mr-1.5" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}>
+                      <VolumeX size={ROW_ICON_PX} className="shrink-0 text-muted" aria-hidden />
+                    </span>
+                  )}
                   {/* A menu-started Regenerate title closes its menu at once, so
                       the row itself says the model call is running. */}
                   {titleGenerating && (
@@ -1856,6 +1933,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 </>
               )}
             </div>
+            {!compactSessionCards && (
+              <>
             {/* Secondary line: one ordered resolver decides both the words and the
                 marker leading them (#3830), so the two can no longer disagree.
                 The tail is `last_message`, which is also where the `unread` dot
@@ -1878,6 +1957,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 onOpenSource={onOpenSource}
                 onActivateSlot={() => { dispatch(switchSlot({ key: s.key, announceOnMissing: true, gesture: true })); onSelectSlot?.(s.key) }}
               />
+            )}
+              </>
             )}
             {/* No tag chips here: every tag renders in the meta line above as
              *  tinted `· name` text. A chip row would print each tag twice. */}

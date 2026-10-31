@@ -86,14 +86,18 @@ function renderSidebar(opts: {
   onOpenSource?: (slot: string, link: { url: string; kind: 'change' | 'issue' }) => boolean
   connected?: boolean
   rows?: ChatSlot[]
+  unread?: string[]
+  /** Extra chat-slice state, e.g. `workflowRuns` or `automations`. */
+  chat?: Record<string, unknown>
 } = {}) {
   const rows = opts.rows ?? slots
+  const unread = opts.unread ?? []
   const store = createTestStore({
     dashboard: {
       status: { platform: 'darwin' },
       connected: opts.connected ?? true,
       slots: rows,
-      approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
+      approvalMode: 'normal', channelTrusted: false, refreshTrigger: 0, unreadSlots: unread, updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
       slotsLoaded: true,
@@ -106,6 +110,7 @@ function renderSidebar(opts: {
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
       subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools', slotActivity: {}, slotHistory: [],
       slotMessages: {}, slotLoading: false,
+      ...opts.chat,
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -116,7 +121,7 @@ function renderSidebar(opts: {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={rows} activeSlot={'s1'} unreadSlots={[]}
+              slots={rows} activeSlot={'s1'} unreadSlots={unread}
               history={[]} historyHasMore={false} defaultAgent={'default'} installedAgents={[]}
               onOpenSource={opts.onOpenSource}
             />
@@ -159,6 +164,151 @@ describe('ChatSidebar – PR chip', () => {
     localStorage.clear()
     sessionStorage.clear()
     vi.clearAllMocks()
+  })
+
+  it('shows only the title when title-only session cards are enabled', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const compactRows = [{ ...slots[1], last_message: 'Latest review update' }] as ChatSlot[]
+
+    renderSidebar({ onOpenSource: took(), rows: compactRows })
+
+    expect(screen.getByText('PR session')).toBeTruthy()
+    expect(screen.queryByText('Latest review update')).toBeNull()
+    expect(screen.queryByText('#634')).toBeNull()
+    expect(screen.queryByTestId('session-row-time')).toBeNull()
+    expect(screen.queryByTestId('session-compact-attention')).toBeNull()
+  })
+
+  it('keeps an owed approval visible on a title-only card', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const compactRows = [{ ...slots[1], pending_approval: true, last_message: 'Latest review update' }] as ChatSlot[]
+
+    renderSidebar({ onOpenSource: took(), rows: compactRows })
+
+    const marker = screen.getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('pending_approval')
+    expect(marker.getAttribute('role')).toBe('img')
+    expect(marker.getAttribute('aria-label')).toBe('Needs approval')
+    expect(marker.closest('[data-session-title]')).toBeTruthy()
+    expect(screen.queryByText('Needs approval')).toBeNull()
+    expect(screen.queryByText('Latest review update')).toBeNull()
+    expect(screen.queryByText('#634')).toBeNull()
+  })
+
+  it('keeps an unread result visible on a title-only card', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const compactRows = [{ ...slots[1], last_message: 'Latest review update' }] as ChatSlot[]
+
+    renderSidebar({ onOpenSource: took(), rows: compactRows, unread: ['s2'] })
+
+    const marker = screen.getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('unread')
+    expect(marker.getAttribute('aria-label')).toBe('Agent finished — your turn')
+    expect(marker.closest('[data-session-title]')).toBeTruthy()
+    expect(screen.queryByText('Latest review update')).toBeNull()
+    expect(screen.queryByText('#634')).toBeNull()
+  })
+
+  it('keeps the mute marker on a title-only card', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const compactRows = [{ ...slots[1], muted: true }] as ChatSlot[]
+
+    renderSidebar({ onOpenSource: took(), rows: compactRows })
+
+    const marker = screen.getByTestId('session-row-muted')
+    expect(marker.getAttribute('role')).toBe('img')
+    expect(marker.getAttribute('aria-label')).toBe('Muted: no chime, toast or badge')
+    expect(marker.closest('[data-session-title]')).toBeTruthy()
+  })
+
+  it('adds no title marker to full cards', () => {
+    const fullRows = [{ ...slots[1], pending_approval: true }] as ChatSlot[]
+
+    renderSidebar({ onOpenSource: took(), rows: fullRows, unread: ['s2'] })
+
+    expect(screen.queryByTestId('session-compact-attention')).toBeNull()
+    expect(screen.getByText('Needs approval')).toBeTruthy()
+  })
+
+  // A collapsed conductor whose only hidden child owes an approval.
+  const conductorRows = [
+    { key: 'k-conductor', title: 'Conductor', messages: 1, running: false, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z' },
+    { key: 'k-worker', title: 'Worker', messages: 1, running: false, pending_approval: true, mode: '', created: '', last_ts: '2026-01-01T00:00:00Z', parent: { slot: 'k-conductor', key: 'k-conductor' } },
+  ] as unknown as ChatSlot[]
+  const workflowChat = { workflowRuns: { 'r-1': { run_id: 'r-1', name: 'build', status: 'running', sessionKey: 's2', phase: '' } } }
+  const goalLoopChat = {
+    automations: {
+      s2: {
+        kind: 'legacy_goal_loop', id: 'loop-s2', slotKey: 's2', message: '', idleSecs: 60,
+        maxCycles: 10, cycleCount: 3, active: true, lastFireAt: 0, stoppedReason: '',
+      },
+    },
+  }
+
+  it.each([
+    ['a running workflow', workflowChat],
+    ['an active goal loop', goalLoopChat],
+  ])('lights the live dot for %s on a title-only card', (_label, chat) => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    renderSidebar({ onOpenSource: took(), rows: [slots[1]], chat })
+
+    const dot = screen.getByTestId('session-live-dot')
+    expect(dot.closest('[data-session-title]')).toBeTruthy()
+    expect(screen.queryByTestId('session-compact-attention')).toBeNull()
+  })
+
+  it.each([
+    ['a running workflow', workflowChat],
+    ['an active goal loop', goalLoopChat],
+  ])('keeps the title bare for %s on a full card', (_label, chat) => {
+    renderSidebar({ onOpenSource: took(), rows: [slots[1]], chat })
+
+    expect(screen.queryByTestId('session-live-dot')).toBeNull()
+  })
+
+  it('marks a stalled goal loop with a static interrupted marker instead of the live dot on a title-only card', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const stalledRows = [{ ...slots[1], interrupted: true }] as ChatSlot[]
+    renderSidebar({ onOpenSource: took(), rows: stalledRows, chat: goalLoopChat })
+
+    expect(screen.queryByTestId('session-live-dot')).toBeNull()
+    const marker = screen.getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('goal_loop_stalled')
+    expect(marker.getAttribute('aria-label')).toBe('Goal loop armed — last turn was interrupted; resume the chat or wait for the next cycle')
+    expect(marker.closest('[data-session-title]')).toBeTruthy()
+  })
+
+  it('marks a collapsed conductor whose hidden child needs you on a title-only card', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    renderSidebar({ onOpenSource: took(), rows: conductorRows })
+
+    expect(screen.queryByText('Worker')).toBeNull()
+    const marker = screen.getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('subtree_needs_you')
+    expect(marker.getAttribute('aria-label')).toBe('Needs your answer')
+    expect(marker.closest('[data-slot-key]')?.getAttribute('data-slot-key')).toBe('k-conductor')
+  })
+
+  it('shows both the live dot and the subtree ask on a running collapsed conductor', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    const chat = { workflowRuns: { 'r-1': { run_id: 'r-1', name: 'build', status: 'running', sessionKey: 'k-conductor', phase: '' } } }
+    renderSidebar({ onOpenSource: took(), rows: conductorRows, chat })
+
+    const row = (id: string) => screen.getByTestId(id).closest('[data-slot-key]')?.getAttribute('data-slot-key')
+    expect(row('session-live-dot')).toBe('k-conductor')
+    const marker = screen.getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('subtree_needs_you')
+    expect(row('session-compact-attention')).toBe('k-conductor')
+  })
+
+  it('leaves the collapsed conductor title bare on a full card', () => {
+    localStorage.setItem('mc-sidebar-lane', 'conductor')
+    renderSidebar({ onOpenSource: took(), rows: conductorRows })
+
+    expect(screen.queryByTestId('session-compact-attention')).toBeNull()
+    expect(screen.getByTestId('conductor-needs-you-k-conductor').textContent).toBe('1')
   })
 
   it('is still an anchor carrying the provider url', () => {
