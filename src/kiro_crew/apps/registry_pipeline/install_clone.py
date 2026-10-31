@@ -436,12 +436,19 @@ async def _clone_build_app_locked(
     # `AppManifest.from_json_file(...).to_dict()`), so a second, differently
     # normalized reading of these bytes is exactly the disagreement to avoid.
     cloned_app_manifest = AppManifest.from_dict(cloned_manifest)
-    denied = await asyncio.to_thread(
-        app_admission_denied,
-        app_name,
-        manifest=cloned_app_manifest,
-        action="install_from_registry",
-    )
+    # A lifecycle timeout `int()` cannot read is refused here too, before the build
+    # or `onInstall`: the cloned manifest can differ from the prefetch.
+    setup_errors = cloned_app_manifest.setup.validate()
+    denied: str | None
+    if setup_errors:
+        denied = f"invalid app.json: {'; '.join(setup_errors)}"
+    else:
+        denied = await asyncio.to_thread(
+            app_admission_denied,
+            app_name,
+            manifest=cloned_app_manifest,
+            action="install_from_registry",
+        )
     if denied:
         log_lines.append(_refusal_line(verb, f"blocked by admission policy: {denied}"))
         try:

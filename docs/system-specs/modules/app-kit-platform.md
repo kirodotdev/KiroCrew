@@ -1828,6 +1828,37 @@ decision as both `KEEP_DATA` and `PURGE_DATA` in its environment.
 update correctness depends on it is broken, and the fix is an idempotent
 `onInstall` (a registry update re-runs it), not a new call site added quietly.
 
+`setup.onEnableTimeout` and `setup.onDisableTimeout` run from 1 to
+`LIFECYCLE_SCRIPT_TIMEOUT_MAX` seconds (300, the budget `onInstall` gets). Both
+scripts run under the app lifecycle lock, so the cap is what bounds how long one
+manifest can hold an enable or disable request and every same-app operation queued
+behind it.
+
+**Compatibility rule: every value the old bare `int()` accepted still installs,
+and parses to the same `int`.** `SetupConfig.from_dict` keeps `int(raw)` unclamped
+(an int, a numeric string such as `"60"`, a float truncated, `int(True)` = 1),
+because `setup` is part of `AppManifest.signing_payload`: clamping there would
+change the signed bytes of a manifest published with, say, `600`, and its
+signature would stop verifying. Only a value `int()` raised on (a non-numeric
+string, `null`, a list or object, NaN or infinity), which already made the install
+fail, is recorded by `SetupConfig.from_dict` and refused with an error naming the
+field: by `AppManifest.validate` on install and update, by the registry
+install's pre-clone and cloned-manifest admission (`install_from_registry`,
+`_clone_build_app`) so nothing is cloned, built or run by `onInstall` for it, and by
+`register_external_app` before any write, since self-registration parses without
+validating. The run sites read the record form `get_app` builds from
+`SetupConfig.to_dict()`, which is the same canonical `int` the signature covers,
+so the budget a script runs with is always one the publisher signed: `true` runs
+as `int(True)`, 1 second.
+
+The bound is applied where the script runs. The enable route and
+`teardown_app_runtime` pass the value through `lifecycle_timeout_seconds`
+(`clamp_lifecycle_timeout`): below 1 runs at the 30s default and above 300 runs at
+300. A raw bool handed straight to the clamp runs at the default, but no record
+carries one: the record holds `int(raw)`. Each clamp logs a warning naming the app, the field, the value as written
+and the seconds used. It fires once per script run, not per listing, so it needs
+no memory of what it already said.
+
 Writers: `apps/routes_uninstall.py::handle_uninstall_app`, `_run_lifecycle_script`,
 `apps/routes_uninstall.py::_deregister_crons_with_retry`; `apps/manager_uninstall.py::uninstall_app`.
 

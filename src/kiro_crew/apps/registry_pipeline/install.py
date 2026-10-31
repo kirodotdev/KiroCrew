@@ -528,6 +528,12 @@ async def install_from_registry(
     # but BEFORE the repo is cloned and setup.onInstall runs, so a banned /
     # non-allowlisted / unsigned app is never cloned nor its install script run.
     admission_manifest = AppManifest.from_dict(manifest) if manifest else None
+    # A lifecycle timeout `int()` cannot read is recorded by the parse, not raised,
+    # and refused here so nothing is cloned and no `onInstall` runs for a manifest
+    # install validation always refuses.
+    setup_errors = admission_manifest.setup.validate() if admission_manifest else []
+    if setup_errors:
+        return {"ok": False, "name": name, "error": f"invalid app.json: {'; '.join(setup_errors)}"}
     # The version is not asked here: this manifest can be a stale local checkout.
     # The clone-time admission (``_clone_build_app_locked``) asks it on the
     # fetched manifest, before the build or ``onInstall`` runs.

@@ -168,8 +168,8 @@ and update paths are not masked and check out LFS content as usual.
 |------|--------------|---------|
 | `onInstall` | After a **registry** install has cloned and built the source, before the files are copied into the data home | 300s |
 | `onUninstall` | Before app files are removed, and only after cron cleanup has succeeded | 120s |
-| `onEnable` | After resources are registered, the backend is started, and dependencies are resolved | 30s, or `onEnableTimeout` |
-| `onDisable` | First step of disable, before hooks, backend stop, and deregistration | 30s, or `onDisableTimeout` |
+| `onEnable` | After resources are registered, the backend is started, and dependencies are resolved | 30s, or `onEnableTimeout` (1-300) |
+| `onDisable` | First step of disable, before hooks, backend stop, and deregistration | 30s, or `onDisableTimeout` (1-300) |
 
 Execution model:
 

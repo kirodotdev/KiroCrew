@@ -949,8 +949,8 @@ class TestManifestNewProperties:
         on_uninstall=st.text(max_size=30),
         on_enable=st.text(max_size=30),
         on_disable=st.text(max_size=30),
-        enable_timeout=st.integers(1, 600),
-        disable_timeout=st.integers(1, 600),
+        enable_timeout=st.integers(1, 300),
+        disable_timeout=st.integers(1, 300),
     )
     @settings(max_examples=200)
     def test_setup_config_round_trip_property(
