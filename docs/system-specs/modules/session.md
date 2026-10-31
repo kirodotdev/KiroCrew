@@ -4675,7 +4675,13 @@ the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
 so the scan runs when the initialize handshake proves the agent came up and
 then at the end of every `_finish_create_session()` and `load_session()`,
 because each session start — fresh or resumed — forks another agent process
-and re-initializes MCP servers the earlier scan could not have seen.
+and re-initializes MCP servers the earlier scan could not have seen. The same
+guarded pass also runs at the END of every prompt turn, through
+`process_identity.record_live_children_after_turn()` in both providers' stream
+`finally`, so a child a turn forks is recorded while the leader is verified
+alive and is on the handle a later teardown takes even when the leader exits on
+its own before teardown (see [acp-client](acp-client.md) § Pre-teardown tree
+refresh).
 
 Nothing announces a descendant's exit: they are the gateway's
 GRANDchildren, so there is no `SIGCHLD` to catch and no wait to reap (the

@@ -273,20 +273,70 @@ async def refresh_live_process_tree(sessions: Any, session_key: str) -> None:
     session = live.get(session_key) if isinstance(live, Mapping) else None
     provider = getattr(session, "provider", None)
     client = getattr(provider, "_client", None)
-    refresh = getattr(client, "refresh_process_tree", None)
+    await _bounded_tree_refresh(
+        getattr(client, "refresh_process_tree", None),
+        label=f"Process tree refresh for {session_key}",
+    )
+
+
+async def _bounded_tree_refresh(refresh: Any, *, label: str) -> None:
+    """Run one ``refresh_process_tree`` coroutine, bounded and best-effort.
+
+    The single bounded, swallowing call to a client's or runtime's guarded
+    tree walk. *refresh* is the bound ``refresh_process_tree`` method (or
+    ``None`` / a non-coroutine, which is a quiet no-op, so a provider whose
+    client has none is skipped). The walk is bounded by
+    :data:`TREE_REFRESH_TIMEOUT`; a timeout or any error is logged under
+    *label* and swallowed, because the two callers -- a teardown taking its
+    kill handle and a turn ending -- must never hang or fail on the walk, and
+    the cost of a skipped walk is a leak the sweep still reports. A
+    cancellation propagates: the teardown caller releases its lease and records
+    the undecided kill in its own ``except CancelledError`` handler, and the
+    turn-end caller runs this as the last statement of its ``finally`` after
+    its resource release, so there is nothing left to protect from the cancel.
+    """
     if not inspect.iscoroutinefunction(refresh):
         return
-    timeout = TREE_REFRESH_TIMEOUT
     try:
-        await asyncio.wait_for(refresh(), timeout=timeout)
+        await asyncio.wait_for(refresh(), timeout=TREE_REFRESH_TIMEOUT)
     except asyncio.TimeoutError:
         logger.warning(
-            "Process tree refresh for %s timed out after %.1fs; using the earlier record",
-            session_key,
-            timeout,
+            "%s timed out after %.1fs; using the earlier record", label, TREE_REFRESH_TIMEOUT
         )
     except Exception:
-        logger.warning("Process tree refresh for %s failed", session_key, exc_info=True)
+        logger.warning("%s failed", label, exc_info=True)
+
+
+async def record_live_children_after_turn(source: Any) -> None:
+    """Record the children a finished prompt turn started, while its leader is alive.
+
+    The teardown refresh (:func:`refresh_live_process_tree`) needs the leader
+    alive and verified to walk its tree: a leader that exits on its own before
+    teardown -- a crash, or an exit after a turn forked a long-lived child --
+    leaves nothing to walk, so the children stay unrecorded and the group they
+    keep alive is reported ``kill failed`` and never reaped. Recording at the
+    END of each prompt turn, where the leader is still live, closes that
+    window: the same guarded walk that teardown runs, taken while it can.
+
+    *source* is the turn's own client or provider -- the object the provider's
+    ``stream`` holds, so no session lookup is needed and a torn-down session is
+    never walked. Its ``refresh_process_tree`` does the work (``AcpClient``'s
+    add-only pass, ``AcpSessionProvider``'s runtime snapshot); both walk only a
+    leader that reads back as this run's and record nothing otherwise, so a
+    call on a dead or recycled leader is a quiet no-op rather than a mis-record.
+
+    Shares :func:`_bounded_tree_refresh` with the teardown refresh, so there is
+    one bounded, swallowing call to ``refresh_process_tree``: a turn never
+    fails or hangs on this walk. A cancellation propagates (as it does on the
+    teardown path); a caller running this from a ``finally`` beside a resource
+    release must run that release FIRST, both because this is bounded at
+    :data:`TREE_REFRESH_TIMEOUT` seconds and because a cancel here would
+    otherwise skip a release sequenced after it.
+    """
+    await _bounded_tree_refresh(
+        getattr(source, "refresh_process_tree", None),
+        label="Recording a turn's late children",
+    )
 
 
 def _tree_survived(handle: ProcessHandle) -> bool:
