@@ -2473,6 +2473,21 @@ broken, restarting sessions into the old spec. Rebuilding first keeps the
 user-visible contract — enable, sessions restart, the tools are there — exactly as
 it was before the gate existed.
 
+App agents are rewritten in the same step. An app agent's materialized config
+(`<app>--<agent>.json`) copies `kirocrew-computer` only while the gate is open
+(`apps.bridges_agents._materialize_managed_refs`), so after the host rebuild the
+handler calls `apps.bridges.refresh_enabled_app_agents`, which re-materializes every
+enabled app's agents through `refresh_app_agents`. It runs under the same lock, for
+the same reason. A failure is logged and leaves those app agents on their previous
+server set until the next gateway start; it does not fail the save.
+
+An app disable can land during that rewrite, from the dashboard or from the CLI in
+another process, and shares no lock with it. So each app's enablement is re-read
+right before and right after its rewrite: an app already disabled is skipped, and
+one disabled during the rewrite has its agents removed again
+(`_deregister_agents`), so the disable cannot be undone by the refresh. An
+unreadable state skips the rewrite and never deletes.
+
 The lock matters because the rebuild READS the keystone and WRITES the spec. Outside
 it, two overlapping PUTs interleave: an enable's slower rebuild can land its spec
 *after* a later disable's, leaving a spec that mounts — and therefore spawns — the
