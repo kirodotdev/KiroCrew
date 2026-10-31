@@ -1767,3 +1767,54 @@ describe('PullRequestPanel with a review that has several revisions', () => {
     expect(onReconcile).toHaveBeenCalledWith(REV_2)
   })
 })
+
+// Both rails follow the shared Tablist keyboard model: one Tab stop per rail
+// (the selected tab), and the arrow keys, Home and End move between tabs.
+describe('PullRequestPanel tab keyboard', () => {
+  const tabStops = (tabs: HTMLElement[]) => tabs.filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the section rail to one Tab stop and moves with the arrows', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    const rail = screen.getByRole('tablist', { name: 'Pull request sections' })
+    const tabs = within(rail).getAllByRole('tab')
+    expect(tabs.length).toBeGreaterThan(2)
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(tabs[1]).toHaveFocus()
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(tabStops(within(rail).getAllByRole('tab'))).toEqual([tabs[1]])
+
+    fireEvent.keyDown(tabs[1], { key: 'Home' })
+    expect(tabs[0]).toHaveFocus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(tabs[tabs.length - 1]).toHaveFocus()
+  })
+
+  it('keeps the source strip to one Tab stop and selects with the arrows', async () => {
+    const onSelect = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onAddToChat={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const tabs = within(strip).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'End' })
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(tabs[1]).toHaveFocus()
+  })
+})

@@ -51,6 +51,7 @@ import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import CommentThreads from './CommentThreads'
 import { Btn } from './ui'
+import { useRovingTabs } from './Tablist'
 
 
 import { i18nT } from '../i18n/t'
@@ -1192,6 +1193,9 @@ export default function PullRequestPanel({
   // back to the first tab is derived rather than an effect, so the very first
   // render is already correct instead of flashing an empty section.
   const activeTab: SourceTab = tabs.some(item => item.id === tab) ? tab : 'changes'
+  // Both rails are one tab stop with arrow keys, like the shared Tablist.
+  const sourceRoving = useRovingTabs(cappedSources.map(item => ({ key: item.url })), selected?.url, onSelect)
+  const sectionRoving = useRovingTabs(tabs.map(item => ({ key: item.id })), activeTab, setTab)
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -1201,7 +1205,7 @@ export default function PullRequestPanel({
           exactly one tab that does nothing. */}
       {cappedSources.length > 1 && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-        {cappedSources.map(item => {
+        {cappedSources.map((item, i) => {
           const itemMeta = sourceProviderMeta(item.provider)
           const qualifier = tabQualifier(item)
           return (
@@ -1209,6 +1213,7 @@ export default function PullRequestPanel({
             key={item.url}
             type="button"
             role="tab"
+            {...sourceRoving(i)}
             aria-selected={item.url === selected?.url}
             onClick={() => onSelect(item.url)}
             className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
@@ -1365,11 +1370,12 @@ export default function PullRequestPanel({
           )}
 
           <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-            {tabs.map(item => (
+            {tabs.map((item, i) => (
               <Btn
                 key={item.id}
                 type="button"
                 role="tab"
+                {...sectionRoving(i)}
                 id={`pr-tab-${item.id}`}
                 aria-selected={activeTab === item.id}
                 aria-controls="pr-tabpanel"

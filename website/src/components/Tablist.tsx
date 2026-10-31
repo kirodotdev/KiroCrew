@@ -26,7 +26,7 @@
  *   - **A shared indicator.** One `layoutId` element slides between segments, so
  *     the movement reads as a position change rather than two colour flips.
  */
-import { useRef, type ReactNode } from 'react'
+import { useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { forwardUiLocation, UI_LOCATION_ATTR } from '../uiLocations/uiLocation'
@@ -86,10 +86,14 @@ interface Props<T extends string = string> {
   segments?: readonly TablistSegment<T>[]
 }
 
+/** What the keyboard model needs to know about a tab: nothing but whether it
+ *  can be selected. */
+type RovingTab = { disabled?: boolean }
+
 /** Next enabled index in `dir`, wrapping. Disabled tabs are skipped rather than
  *  focused-and-refused, which would strand the caret on a dead control. */
-export function nextEnabledIndex<T extends string>(
-  tabs: Array<TablistTab<T>>,
+export function nextEnabledIndex(
+  tabs: ReadonlyArray<RovingTab>,
   from: number,
   dir: 1 | -1,
 ): number {
@@ -102,8 +106,8 @@ export function nextEnabledIndex<T extends string>(
 }
 
 /** First or last enabled index, for Home / End. */
-export function edgeEnabledIndex<T extends string>(
-  tabs: Array<TablistTab<T>>,
+export function edgeEnabledIndex(
+  tabs: ReadonlyArray<RovingTab>,
   edge: 'first' | 'last',
 ): number {
   const order = edge === 'first' ? tabs.map((_, i) => i) : tabs.map((_, i) => tabs.length - 1 - i)
@@ -111,6 +115,52 @@ export function edgeEnabledIndex<T extends string>(
     if (!tabs[i]?.disabled) return i
   }
   return 0
+}
+
+/**
+ * The keyboard half of a tablist, for a rail that draws its own tabs: a
+ * roving tabindex (the rail is ONE tab stop) plus the arrow keys, Home and End.
+ * `Tablist` runs on it, and so does any hand-drawn rail whose look differs from
+ * the pill, so there is one keyboard model rather than one per rail.
+ *
+ * Selection follows focus, as in `Tablist`.
+ *
+ * Spread `tabProps(i)` on the i-th tab.
+ */
+export function useRovingTabs<K>(
+  tabs: ReadonlyArray<RovingTab & { key: K }>,
+  value: K | undefined,
+  onChange: (key: K) => void,
+) {
+  const refs = useRef<Array<HTMLElement | null>>([])
+
+  const move = (to: number) => {
+    const tab = tabs[to]
+    if (!tab || tab.disabled) return
+    onChange(tab.key)
+    // Follow the selection with focus so the arrow keys keep working from the
+    // tab the user just landed on.
+    refs.current[to]?.focus()
+  }
+
+  const tabProps = (i: number) => ({
+    ref: (el: HTMLElement | null) => { refs.current[i] = el },
+    // Roving tabindex: only the active tab is in the tab order, so the rail
+    // costs one Tab press instead of one per tab.
+    tabIndex: tabs[i]?.key === value ? 0 : -1,
+    onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
+      const to = e.key === 'ArrowRight' ? nextEnabledIndex(tabs, i, 1)
+        : e.key === 'ArrowLeft' ? nextEnabledIndex(tabs, i, -1)
+        : e.key === 'Home' ? edgeEnabledIndex(tabs, 'first')
+        : e.key === 'End' ? edgeEnabledIndex(tabs, 'last')
+        : null
+      if (to === null) return
+      e.preventDefault()
+      move(to)
+    },
+  })
+
+  return tabProps
 }
 
 export default function Tablist<T extends string = string>({
@@ -123,58 +173,33 @@ export default function Tablist<T extends string = string>({
   segments,
 }: Props<T>) {
   const reduceMotion = useReducedMotion()
-  const refs = useRef<Array<HTMLButtonElement | null>>([])
+  const roving = useRovingTabs(tabs, value, onChange)
   const bindPress = usePressActivation()
   // The tab's find_ui marker (if it is one), merged with the roving-focus ref.
-  const markerOf = (key: T, i: number) =>
-    forwardUiLocation<HTMLButtonElement>(segments?.find(seg => seg.key === key)?.[UI_LOCATION_ATTR], el => { refs.current[i] = el })
-
-  const move = (to: number) => {
-    const tab = tabs[to]
-    if (!tab || tab.disabled) return
-    onChange(tab.key)
-    // Follow the selection with focus so the arrow keys keep working from the
-    // tab the user just landed on.
-    refs.current[to]?.focus()
-  }
+  const markerOf = (key: T, ref: (el: HTMLElement | null) => void) =>
+    forwardUiLocation<HTMLButtonElement>(segments?.find(seg => seg.key === key)?.[UI_LOCATION_ATTR], ref)
 
   return (
     <div className={TABS_TRACK_CLASS} role="tablist" aria-label={ariaLabel}>
       {tabs.map((tab, i) => {
         const isActive = tab.key === value
         const isDisabled = tab.disabled === true
+        const { ref, ...keys } = roving(i)
         return (
           <button
             key={tab.key}
-            {...markerOf(tab.key, i)}
+            {...markerOf(tab.key, ref)}
             type="button"
             role="tab"
             aria-selected={isActive}
             aria-disabled={isDisabled || undefined}
-            // Roving tabindex: only the active tab is in the tab order, so the
-            // rail costs one Tab press instead of one per plane.
-            tabIndex={isActive ? 0 : -1}
+            {...keys}
             title={tab.tooltip || tab.label}
             // Select on the mouse press, like the Radix tabs in ui/tabs;
             // keyboard and touch select on click.
             {...bindPress(() => {
               if (!isDisabled) onChange(tab.key)
             })}
-            onKeyDown={e => {
-              if (e.key === 'ArrowRight') {
-                e.preventDefault()
-                move(nextEnabledIndex(tabs, i, 1))
-              } else if (e.key === 'ArrowLeft') {
-                e.preventDefault()
-                move(nextEnabledIndex(tabs, i, -1))
-              } else if (e.key === 'Home') {
-                e.preventDefault()
-                move(edgeEnabledIndex(tabs, 'first'))
-              } else if (e.key === 'End') {
-                e.preventDefault()
-                move(edgeEnabledIndex(tabs, 'last'))
-              }
-            }}
             className={[
               TABS_SEGMENT_CLASS,
               isDisabled ? TABS_SEGMENT_DISABLED_CLASS : '',
