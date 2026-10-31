@@ -92,6 +92,10 @@ class KasToken:
     client_id: str | None = None
     client_secret: str | None = None
     token_endpoint: str | None = None  # external_idp refresh
+    # External IdP only: the granted scope and the audience its refresh grant repeats
+    # (an IdP may narrow a refresh that omits them).
+    scopes: str | None = None
+    audience: str | None = None
     extra: dict = field(default_factory=dict)
 
     def is_expired(self, *, margin_secs: int = REFRESH_MARGIN_SECS) -> bool:

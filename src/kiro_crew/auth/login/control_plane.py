@@ -102,14 +102,20 @@ def cps_headers(target: str, access_token: str, *, token_type: str = "") -> dict
 
 
 async def list_available_profiles(
-    access_token: str, *, region: str, session: aiohttp.ClientSession
+    access_token: str,
+    *,
+    region: str,
+    session: aiohttp.ClientSession,
+    token_type: str = "",
 ) -> list[KiroProfile]:
     """Return the caller's Kiro profiles, first page only.
 
     Raises ControlPlaneError on any non-200 or malformed body: an IdC login without
     a resolvable profile ARN is unusable, so failures must be loud, not stored.
+    *token_type* is passed to :func:`cps_headers` (``EXTERNAL_IDP`` for an
+    External IdP token).
     """
-    headers = cps_headers(_TARGET, access_token)
+    headers = cps_headers(_TARGET, access_token, token_type=token_type)
     url = control_plane_url(region)
     async with session.post(url, json={"maxResults": _MAX_RESULTS}, headers=headers) as resp:
         if resp.status != 200:

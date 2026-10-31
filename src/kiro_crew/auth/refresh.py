@@ -27,6 +27,7 @@ from kiro_crew.auth.login.endpoints import (
     oidc_url,
     social_service_url,
 )
+from kiro_crew.auth.login.external_idp import granted_scope
 from kiro_crew.auth.store import KasToken, TokenStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import acquire_lock, release_lock
@@ -275,6 +276,10 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
     }
     if token.client_id:
         form["client_id"] = token.client_id
+    if token.scopes:
+        form["scope"] = token.scopes
+    if token.audience:
+        form["audience"] = token.audience
     async with session.post(endpoint, data=form, headers={"User-Agent": USER_AGENT}) as resp:
         if resp.status != 200:
             body = await resp.text()
@@ -291,6 +296,8 @@ async def _refresh_external_idp(token: KasToken, *, session: aiohttp.ClientSessi
         auth_method="external_idp",
         client_id=token.client_id,
         token_endpoint=token.token_endpoint,
+        scopes=granted_scope(data, token.scopes or ""),
+        audience=token.audience,
         extra=dict(token.extra),
     )
 
