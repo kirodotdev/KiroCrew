@@ -307,6 +307,43 @@ def test_the_path_is_built_off_the_event_loop(monkeypatch, tmp_path) -> None:
     assert captured["PATH"] == mcp_runtime_path(os.pathsep.join(["/usr/bin", "/bin"]))
 
 
+def test_the_krb5_ccache_is_resolved_off_the_event_loop(monkeypatch, tmp_path) -> None:
+    """``resolve_krb5_ccname`` stats ccache files and may read the krb5 config,
+    so ``_spawn_once`` must run it in a worker thread, and its in-place edit of
+    the env must still reach the child."""
+    loop_thread: dict[str, int] = {}
+    resolve_thread: dict[str, int] = {}
+
+    def _spy(env: dict[str, str]) -> None:
+        resolve_thread["ident"] = threading.get_ident()
+        env["KRB5CCNAME"] = "FILE:/tmp/krb5cc_spy"
+
+    monkeypatch.setattr(manager_mod, "resolve_krb5_ccname", _spy)
+
+    captured: dict[str, str] = {}
+
+    async def _fake_spawn(*_argv, env=None, **_kwargs):
+        captured.update(env or {})
+        raise _SpawnCaptured
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+
+    mgr = GatewayManager(GatewaySpec(socket_path=tmp_path / "gateway.sock"))
+    monkeypatch.setattr(mgr, "_gatewayd_log_path", lambda: tmp_path / "gatewayd.stdout")
+    monkeypatch.setattr(mgr, "_credential_watch_paths", lambda: [])
+
+    async def _drive() -> None:
+        loop_thread["ident"] = threading.get_ident()
+        with pytest.raises(_SpawnCaptured):
+            await mgr._spawn_once()
+
+    asyncio.run(_drive())
+
+    assert resolve_thread.get("ident") is not None, "resolve_krb5_ccname was never called"
+    assert resolve_thread["ident"] != loop_thread["ident"]
+    assert captured["KRB5CCNAME"] == "FILE:/tmp/krb5cc_spy"
+
+
 @pytest.mark.asyncio
 async def test_declared_path_keeps_launcher_dirs_after_declared_entries(
     monkeypatch, tmp_path

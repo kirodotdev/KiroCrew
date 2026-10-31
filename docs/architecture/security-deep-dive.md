@@ -224,6 +224,17 @@ sandbox hides `~/.ssh`. When a spawn starts without the socket for lack of this
 consent, the gateway log carries one warning per harness that names the file and
 this remedy, and `kirocrew doctor` lists those harnesses under Sandbox.
 
+A Kerberos `KEYRING:persistent:` or `KEYRING:user:` ticket cache does not
+cross into the sandbox: the Linux launcher enters a new user namespace, and the
+kernel keeps those keyrings per user namespace, so the child resolves an empty
+keyring of the same name. `env.resolve_krb5_ccname` points children at a
+uid-owned `/tmp/krb5cc_<uid>` (or `/tmp/krb5cc_<user>`) FILE cache when one
+exists; when none does and the cache a child would use is one of those keyring
+kinds, it logs one warning per process and `kirocrew doctor` prints an advisory
+Credentials row naming the remedy. The check opens only regular files (and
+lists the directories `includedir` names), and no ticket is copied or moved
+across the boundary.
+
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 
 `is_sensitive_path()` is the shared read+write block, and
