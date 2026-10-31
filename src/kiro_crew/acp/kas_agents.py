@@ -141,6 +141,10 @@ MANAGED_MCP_SERVER_NAMES = frozenset(KIROCREW_BIN_MCP_SERVERS)
 #: static ``Authorization`` value, so neither crosses the wire intact.
 _CREDENTIAL_BEARING_FIELDS = ("env", "headers")
 
+#: Per server: the withheld ``env`` key names, the fields anything went from, and
+#: whether it is a stdio server (one with a ``command``, the kind the gateway routes).
+WithheldOut = dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]]
+
 #: The ONLY env key that survives for one of Crew's own managed servers. It pins
 #: the data home, so dropping it would have the shims read a different one than
 #: the gateway — that is the whole reason managed ``env`` is not simply withheld.
@@ -625,8 +629,13 @@ def _project_mcp_servers(
     agent_id: str,
     stub_server_names: frozenset[str],
     session_key: str = "",
+    withheld_out: WithheldOut | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
+
+    *withheld_out*, when given, maps each declared server Crew did not author that
+    lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
+    only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`.
 
     Five subtractions, each load-bearing:
 
@@ -806,7 +815,14 @@ def _project_mcp_servers(
                 name,
                 "/".join(discarded),
             )
-        withheld = _withhold_credential_fields(projected, managed=managed, relayed=relayed)
+        dropped_env: list[str] = []
+        withheld = _withhold_credential_fields(
+            projected, managed=managed, relayed=relayed, dropped_env=dropped_env
+        )
+        if withheld_out is not None and withheld and not managed:
+            fields = tuple(field.split(" ", 1)[0] for field in withheld)
+            stdio = bool(projected.get("command"))
+            withheld_out[name] = (tuple(sorted(dropped_env)), fields, stdio)
         if managed:
             # Native MCP children do not inherit the gateway's environment.
             # Take the live listener from the gateway, never from an editable
@@ -909,8 +925,11 @@ def _withhold_credential_fields(
     *,
     managed: bool,
     relayed: frozenset[str] = frozenset(),
+    dropped_env: list[str] | None = None,
 ) -> list[str]:
     """Strip credential-bearing fields from one projected server entry in place.
+
+    *dropped_env*, when given, is extended with the ``env`` key names withheld.
 
     Returns the FIELD NAMES something was withheld from, for the caller's log —
     never a value. For a server Crew did not author the ``env`` entry also names
@@ -959,6 +978,8 @@ def _withhold_credential_fields(
             kept[k] = v
         else:
             dropped.append(k)
+    if dropped_env is not None:
+        dropped_env.extend(dropped)
     if len(kept) != len(env):
         # A third-party server's withheld keys are named so the operator can see
         # which setting went missing; a name that is not itself a plain word the
@@ -1013,10 +1034,12 @@ def to_client_custom_agent(
     session_key: str = "",
     pre_tool_hook_matchers: tuple[str, ...] = (),
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
+    withheld_out: WithheldOut | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
+    *withheld_out* is handed to :func:`_project_mcp_servers`.
 
     *stub_server_names* are the servers that will arrive as the session-level
     ``mcpServers`` param and must not also be declared here — see
@@ -1272,7 +1295,9 @@ def to_client_custom_agent(
         if entries:
             out["resources"] = entries
 
-    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names, session_key)
+    mcp_servers = _project_mcp_servers(
+        spec, agent_id, stub_server_names, session_key, withheld_out=withheld_out
+    )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
 
@@ -1609,8 +1634,11 @@ def build_kas_custom_agents(
     crew_panel: bool = False,
     session_key: str = "",
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
+    withheld_out: WithheldOut | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
+
+    *withheld_out* is handed to :func:`_project_mcp_servers`.
 
     One entry: KAS registers the injected agent, it then surfaces as a mode, and
     the ordinary ``session/set_mode`` activation can select it. Without this the
@@ -1647,6 +1675,7 @@ def build_kas_custom_agents(
             session_key=session_key,
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
             skill_scope_rules=skill_scope_rules,
+            withheld_out=withheld_out,
         )
     ]
 

@@ -54,6 +54,7 @@ from kiro_crew.acp.kas_transport import (
     build_kas_argv,
     build_kas_bundle_argv,
 )
+from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
 from kiro_crew.acp.session_mcp import project_agent_spec
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -670,7 +671,7 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras(vault_identity=vault_identity)
 
-        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any]]:
+        def _build() -> tuple[list[dict[str, Any]], Any, dict[str, Any], str]:
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -780,6 +781,7 @@ class KasHarness(MembershipHarness):
             # registered and reads nothing -- so the check that proves the consumed spec
             # did not change has to compare against this snapshot rather than against a
             # fresh read of the file.
+            withheld: kas_agents_mod.WithheldOut = {}
             custom_agents = kas_agents_mod.build_kas_custom_agents(
                 prompt_dir,
                 agent,
@@ -789,20 +791,23 @@ class KasHarness(MembershipHarness):
                 crew_panel=crew_panel,
                 session_key=session_key,
                 skill_scope_rules=_skill_scope_rules(agent, spec, prompt_dir, work_dir),
+                withheld_out=withheld,
             )
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
             # launch it stamps the session token onto comes from the ``kirocrew``
             # launcher lookup, which probes the filesystem and PATH.
             managed = kas_agents_mod.resolve_managed_entries(custom_agents, agent)
-            return custom_agents, snapshot, managed
+            notice = withheld_credentials_notice(withheld)
+            return custom_agents, snapshot, managed, notice
 
         try:
-            built, built_from, managed_entries = await asyncio.to_thread(_build)
+            built, built_from, managed_entries, withheld_notice = await asyncio.to_thread(_build)
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,
                 vault_identity=vault_identity,
                 managed_entries=managed_entries,
+                withheld_credentials_notice=withheld_notice,
             )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc

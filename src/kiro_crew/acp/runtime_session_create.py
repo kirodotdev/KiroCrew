@@ -329,6 +329,9 @@ async def create_session(
     # The vault identity the request goes out under, for the KAS catalog recorder;
     # read by the harness with the payload, ``""`` on every host but KAS.
     request_identity = kas_extras.vault_identity
+    # The MCP servers the payload withholds part of the config from, for the new
+    # chat's notice row; "" on every host but KAS.
+    withheld_notice = kas_extras.withheld_credentials_notice
     # Crew's managed servers travel in the session-level array, the one
     # declaration site the captured 2.18.0 release honours over a same-named
     # global/workspace entry and 2.20.0 reports as the client's own (see
@@ -459,6 +462,7 @@ async def create_session(
             member_dispatch_mounted=member_mounted,
             request_sent_at=request_sent_at,
             request_identity=request_identity,
+            withheld_notice=withheld_notice,
         )
         if collector is None:
             permit.release()
@@ -494,6 +498,7 @@ async def create_session(
         member_dispatch_mounted=member_mounted,
         request_sent_at=request_sent_at,
         request_identity=request_identity,
+        withheld_notice=withheld_notice,
     )
 
 
@@ -523,6 +528,7 @@ def _collect_late_start(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    withheld_notice: str = "",
 ) -> StartCollector | None:
     """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -610,6 +616,7 @@ def _collect_late_start(
                 member_dispatch_mounted=member_dispatch_mounted,
                 request_sent_at=request_sent_at,
                 request_identity=request_identity,
+                withheld_notice=withheld_notice,
             )
             # A declining (or raising) adopter answers False and the
             # collector performs the one teardown.
@@ -674,6 +681,7 @@ async def _finish_create_session(
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
     request_identity: str = "",
+    withheld_notice: str = "",
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -720,6 +728,9 @@ async def _finish_create_session(
     # What the registered agent batch grants, recorded by the harness that
     # registered one; a host that took its agent at spawn time records nothing.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
+    # The servers the payload sent without part of their env or headers, for the
+    # session-start notice; "" on a host that sends no payload.
+    handle.kas_withheld_credentials_notice = withheld_notice
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 

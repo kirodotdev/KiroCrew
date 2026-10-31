@@ -27,6 +27,7 @@ share the harness in ``acp_runtime_helpers.py``.
 """
 
 import asyncio
+import dataclasses
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -478,6 +479,45 @@ async def test_session_cwd_is_bound_through_real_create_and_load(
         wrapper = AcpProvider.__new__(AcpProvider)
         wrapper._client = inner
         assert wrapper.cwd == str(tmp_path)
+    finally:
+        if start is not None:
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_create_session_records_the_withheld_credentials_notice(
+    kas_readiness_wire, monkeypatch
+):
+    """The real ``create_session`` copies the payload's withheld-credentials notice
+    onto the handle the provider reads for the new chat's notice row."""
+    wire = kas_readiness_wire
+    extras = wire.runtime._kas_custom_agents.return_value
+    notice = "notice naming gitlab-mcp"
+    wire.runtime._kas_custom_agents.return_value = dataclasses.replace(
+        extras, withheld_credentials_notice=notice
+    )
+    captured: list[AcpSessionHandle] = []
+    constructed = AcpSessionHandle.__init__
+
+    def capture_init(self, *args, **kwargs):
+        constructed(self, *args, **kwargs)
+        captured.append(self)
+
+    monkeypatch.setattr(AcpSessionHandle, "__init__", capture_init)
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(False, pre_ready=True)
+        for _ in range(200):
+            if captured and captured[-1].kas_withheld_credentials_notice:
+                break
+            await asyncio.sleep(0)
+        assert captured, "the real create path never constructed a handle"
+        assert captured[-1].kas_withheld_credentials_notice == notice
     finally:
         if start is not None:
             if not start.done():
