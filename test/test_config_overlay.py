@@ -353,6 +353,40 @@ class TestCliConfigSetLocal:
         data = json.loads(local_file.read_text(encoding="utf-8"))
         assert data["agent"]["streaming"] is False
 
+    def test_local_set_whole_object_replaces_section(self, tmp_path: Path) -> None:
+        """Setting a whole section object replaces it, dropping omitted keys.
+
+        This replace is the sharp edge that drops sibling keys, and it is also
+        the only CLI path that removes a key the overlay pins. The dotted-leaf form that keeps siblings
+        is covered by ``test_local_set_emitted_elsewhere_key_keeps_overlay_siblings``.
+        """
+        import argparse
+
+        from kiro_crew.cli_config import _config_cmd
+
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text("{}", encoding="utf-8")
+        local_file = config_dir / "config.local.json"
+        local_file.write_text(json.dumps({"slack": {"allowed_users": ["U1"]}}), encoding="utf-8")
+
+        args = argparse.Namespace(
+            config_action="set",
+            key="slack",
+            value='{"open_channels": ["C1"]}',
+            file=None,
+            local=True,
+        )
+        with (
+            patch("kiro_crew.config.loader.config_dir", return_value=config_dir),
+            patch("kiro_crew.cli_config.config_local_path", return_value=local_file),
+            patch("kiro_crew.cli_config.sel"),
+        ):
+            _config_cmd(args)
+
+        data = json.loads(local_file.read_text(encoding="utf-8"))
+        assert data["slack"] == {"open_channels": ["C1"]}
+
     @pytest.mark.parametrize(
         "key",
         [
