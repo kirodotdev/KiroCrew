@@ -3809,7 +3809,9 @@
         "invalid_fix_before_rerun": "Invalid — fix before rerun:",
         "no_source_captured_for_this_run": "No source captured for this run.",
         "started_run": "Started run",
-        "view_source": "View source"
+        "view_source": "View source",
+        "lines_one": "{{count}} line",
+        "lines_other": "{{count}} lines"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Author, run, and watch dynamic workflows",
@@ -3823,14 +3825,19 @@
         "validate": "Validate",
         "workflow_script_python": "Workflow script (Python)",
         "workflow_source": "workflow source",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "view_author": "Author",
+        "view_runs": "Runs"
       },
       "workflowsRuns": {
         "budget": "budget",
         "could_not_load_runs": "Could not load runs:",
-        "events": "events",
         "no_background_runs_yet_runs_started_in_the_backg": "No background runs yet. Runs started in the background appear here.",
-        "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result."
+        "select_a_run_to_see_its_phases_agents_and_result": "Select a run to see its phases, agents, and result.",
+        "agents_one": "{{count}} agent",
+        "agents_other": "{{count}} agents",
+        "events_one": "{{count}} event",
+        "events_other": "{{count}} events"
       }
     },
     "awsControl": {

@@ -375,9 +375,9 @@ export default function WorkflowsRuns({ embedded = false }: { embedded?: boolean
                   <span className="ml-auto flex items-center gap-2 shrink-0">
                     <span className="text-[10px] text-muted tabular-nums">
                       {row.agentCount > 0
-                        ? `${row.agentCount} ${i18nT('pages.channelPage.agents')} · `
+                        ? `${i18nT('apps.workflows.workflowsRuns.agents', { count: row.agentCount })} · `
                         : ''}
-                      {row.eventCount} {i18nT('apps.workflows.workflowsRuns.events')}
+                      {i18nT('apps.workflows.workflowsRuns.events', { count: row.eventCount })}
                     </span>
                     <Badge variant={row.badge.variant}>{row.badge.label}</Badge>
                   </span>

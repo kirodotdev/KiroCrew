@@ -5136,7 +5136,8 @@
         "rerunning": "再実行中…",
         "started_run": "実行開始",
         "view_source": "ソースを表示",
-        "workflow_source_for": "{{runId}} のワークフローソース"
+        "workflow_source_for": "{{runId}} のワークフローソース",
+        "lines_other": "{{count}} 行"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "動的ワークフローを作成、実行、監視",
@@ -5151,20 +5152,23 @@
         "validate": "検証",
         "workflow_script_python": "ワークフロースクリプト（Python）",
         "workflow_source": "ワークフローソース",
-        "workflows": "Workflows"
+        "workflows": "Workflows",
+        "view_author": "作成",
+        "view_runs": "実行一覧"
       },
       "workflowsRuns": {
         "budget": "予算",
         "cancel": "キャンセル",
         "cancelling": "キャンセル中…",
         "could_not_load_runs": "実行を読み込めませんでした：",
-        "events": "イベント",
         "no_background_runs_yet_runs_started_in_the_backg": "バックグラウンド実行はまだありません。バックグラウンドで開始された実行はここに表示されます。",
         "run_detail": "実行詳細",
         "select_a_run_to_see_its_phases_agents_and_result": "実行を選択してそのフェーズ、エージェント、結果を確認してください。",
         "unknown": "不明",
         "view_graph": "グラフ",
-        "view_tree": "ツリー"
+        "view_tree": "ツリー",
+        "agents_other": "{{count}} 個のエージェント",
+        "events_other": "{{count}} 件のイベント"
       }
     },
     "awsControl": {

@@ -5321,7 +5321,11 @@
         "rerunning": "Перезапуск...",
         "started_run": "Запуск начат",
         "view_source": "Показать исходный код",
-        "workflow_source_for": "исходный код рабочего процесса для {{runId}}"
+        "workflow_source_for": "исходный код рабочего процесса для {{runId}}",
+        "lines_one": "{{count}} строка",
+        "lines_few": "{{count}} строки",
+        "lines_many": "{{count}} строк",
+        "lines_other": "{{count}} строки"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "Создавайте, запускайте и отслеживайте динамические рабочие процессы",
@@ -5336,20 +5340,29 @@
         "validate": "Проверить",
         "workflow_script_python": "Скрипт рабочего процесса (Python)",
         "workflow_source": "исходный код рабочего процесса",
-        "workflows": "Рабочие процессы"
+        "workflows": "Рабочие процессы",
+        "view_author": "Создание",
+        "view_runs": "Запуски"
       },
       "workflowsRuns": {
         "budget": "бюджет",
         "cancel": "Отменить",
         "cancelling": "Отмена...",
         "could_not_load_runs": "Не удалось загрузить запуски:",
-        "events": "события",
         "no_background_runs_yet_runs_started_in_the_backg": "Фоновых запусков пока нет. Запуски, начатые в фоне, появятся здесь.",
         "run_detail": "Подробности запуска",
         "select_a_run_to_see_its_phases_agents_and_result": "Выберите запуск, чтобы увидеть его этапы, агентов и результат.",
         "unknown": "Неизвестно",
         "view_graph": "Граф",
-        "view_tree": "Дерево"
+        "view_tree": "Дерево",
+        "agents_one": "{{count}} агент",
+        "agents_few": "{{count}} агента",
+        "agents_many": "{{count}} агентов",
+        "agents_other": "{{count}} агента",
+        "events_one": "{{count}} событие",
+        "events_few": "{{count}} события",
+        "events_many": "{{count}} событий",
+        "events_other": "{{count}} события"
       }
     },
     "commandBar": {

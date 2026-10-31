@@ -5139,7 +5139,9 @@
         "rerunning": "फिर चलाया जा रहा है…",
         "started_run": "रन शुरू हुआ",
         "view_source": "स्रोत देखें",
-        "workflow_source_for": "{{runId}} का वर्कफ़्लो सोर्स"
+        "workflow_source_for": "{{runId}} का वर्कफ़्लो सोर्स",
+        "lines_one": "{{count}} पंक्ति",
+        "lines_other": "{{count}} पंक्तियाँ"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "डायनामिक वर्कफ़्लो लिखें, चलाएँ और देखें",
@@ -5154,20 +5156,25 @@
         "validate": "मान्य करें",
         "workflow_script_python": "वर्कफ़्लो स्क्रिप्ट (Python)",
         "workflow_source": "वर्कफ़्लो स्रोत",
-        "workflows": "वर्कफ़्लो"
+        "workflows": "वर्कफ़्लो",
+        "view_author": "लिखो",
+        "view_runs": "रन"
       },
       "workflowsRuns": {
         "budget": "बजट",
         "cancel": "रद्द करें",
         "cancelling": "रद्द किया जा रहा है…",
         "could_not_load_runs": "रन लोड नहीं हो सके:",
-        "events": "इवेंट",
         "no_background_runs_yet_runs_started_in_the_backg": "अभी कोई बैकग्राउंड रन नहीं। बैकग्राउंड में शुरू किए गए रन यहाँ दिखते हैं।",
         "run_detail": "रन विवरण",
         "select_a_run_to_see_its_phases_agents_and_result": "इसके चरण, एजेंट और परिणाम देखने के लिए कोई रन चुनें।",
         "unknown": "अज्ञात",
         "view_graph": "ग्राफ़",
-        "view_tree": "वृक्ष"
+        "view_tree": "वृक्ष",
+        "agents_one": "{{count}} एजेंट",
+        "agents_other": "{{count}} एजेंट",
+        "events_one": "{{count}} इवेंट",
+        "events_other": "{{count}} इवेंट"
       }
     },
     "commandBar": {

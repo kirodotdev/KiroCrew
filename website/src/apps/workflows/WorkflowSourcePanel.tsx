@@ -119,7 +119,7 @@ const WorkflowSourcePanel = memo(function WorkflowSourcePanel({
         <FileCode size={12} className="text-muted shrink-0" />
         <span className="text-left">{i18nT('apps.workflows.workflowSourcePanel.view_source')}</span>
         <span className="ml-auto text-[10px] text-muted">
-          {source == null ? i18nT('apps.workflows.workflowSourcePanel.loading') : `${source.split('\n').length} lines`}
+          {source == null ? i18nT('apps.workflows.workflowSourcePanel.loading') : i18nT('apps.workflows.workflowSourcePanel.lines', { count: source.split('\n').length })}
         </span>
       </button>
       {open && (

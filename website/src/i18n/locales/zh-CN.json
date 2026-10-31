@@ -5048,7 +5048,8 @@
         "rerunning": "正在重新运行…",
         "started_run": "已启动运行",
         "view_source": "查看源码",
-        "workflow_source_for": "{{runId}} 的工作流源码"
+        "workflow_source_for": "{{runId}} 的工作流源码",
+        "lines_other": "{{count}} 行"
       },
       "workflowsPage": {
         "author_run_and_watch_dynamic_workflows": "编写、运行并观察动态工作流",
@@ -5063,20 +5064,23 @@
         "validate": "校验",
         "workflow_script_python": "工作流脚本 (Python)",
         "workflow_source": "工作流源码",
-        "workflows": "工作流"
+        "workflows": "工作流",
+        "view_author": "编写",
+        "view_runs": "运行记录"
       },
       "workflowsRuns": {
         "budget": "预算",
         "cancel": "取消",
         "cancelling": "正在取消…",
         "could_not_load_runs": "无法加载运行记录：",
-        "events": "事件",
         "no_background_runs_yet_runs_started_in_the_backg": "暂无后台运行。在后台启动的运行会显示在这里。",
         "run_detail": "运行详情",
         "select_a_run_to_see_its_phases_agents_and_result": "选择一次运行以查看其阶段、代理和结果。",
         "unknown": "未知",
         "view_graph": "图",
-        "view_tree": "树"
+        "view_tree": "树",
+        "agents_other": "{{count}} 个代理",
+        "events_other": "{{count}} 个事件"
       }
     },
     "commandBar": {
