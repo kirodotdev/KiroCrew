@@ -338,7 +338,6 @@ def test_glab_run_maps_undecodable_output_to_a_cli_error(monkeypatch):
     assert "\xff" not in str(caught.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_override_is_validated_and_cached(monkeypatch):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -354,7 +353,6 @@ def test_glab_bin_override_is_validated_and_cached(monkeypatch):
     assert gl._glab_bin() == "/opt/glab"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_override_failure_is_a_setup_error(monkeypatch):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -370,7 +368,6 @@ def test_glab_bin_override_failure_is_a_setup_error(monkeypatch):
     assert "KIROCREW_ISSUE_RADAR_GLAB" in str(excinfo.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_skips_untrusted_candidates_and_reports_the_last_check(monkeypatch, tmp_path):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -394,7 +391,6 @@ def test_glab_bin_skips_untrusted_candidates_and_reports_the_last_check(monkeypa
     assert "glab auth login" in str(excinfo.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_accepts_the_first_trusted_candidate(monkeypatch, tmp_path):
     from kiro_crew.dashboard.handlers import source_providers
 
