@@ -740,6 +740,42 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `text_redaction.py` — the redaction entry points that compose `redaction.py` with
   `exfil.py`: `redact`, `redact_with_findings`, `redact_and_truncate`, and the
   `StreamRedactor` with the holdback bounds it reads.
+- `redaction_rules/` — a data-driven credential rule table that no seam calls yet;
+  `redaction.py` and `text_redaction.py` stay the redactors every surface uses. It is
+  a subpackage reached by its own path, not a facade submodule. `rules.yaml` is the
+  only place a rule is defined: each row has a tier (`secret`, `bearer_link`,
+  `identifier`) and one detector (`checksum_prefix`, `vendor_prefix`, `structural`,
+  `labelled`, `key_id_pair`, `url_param`, most certain first). `rules.py` loads it with
+  `importlib.resources`, refuses an unknown field, tier, detector or validator, a
+  missing pattern, label list or corpus path, a misplaced `pair_with`, a duplicate id
+  and any unbounded regex repeat. No detector fires on a value's shape alone: there is
+  no entropy or length-only rule, `key_id_pair` needs an AWS key ID within its window,
+  and `labelled` / `url_param` decide by the field or parameter name. Tiers follow
+  the recorded decision in
+  `docs/decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md`: keys,
+  passwords, private keys, session tokens, JWTs, bearer values and session cookies
+  are `secret`; webhook URLs and credential URL parameters (`?token=`, presigned
+  signatures) are `bearer_link`; key IDs, account SIDs and public OAuth values are
+  `identifier`. `labelled` reads
+  `key <sep> value` in env, INI, YAML, JSON, CLI-flag, HTTP-header and cookie shapes,
+  XML elements (`<password>…</password>`) and name/value pairs (`"name": "password",
+  "value": …`), strips an auth scheme, ignores values under 4 characters and keys
+  inside a URL (for this skip a URL ends at `;`, so connection-string pairs after it
+  are read; `url_param` still reads query parameters over the whole URL), and
+  resumes after every separator so nested pairs (`-H "X-Api-Key: …"`) match. An
+  unquoted value in a line-oriented assignment (env, INI, YAML, a header) runs to the
+  end of its line, a CLI flag's to the next blank, and a nested pair's to its
+  container's delimiter. It judges a key's name before reading its value, so text full
+  of unrelated pairs stays linear. `redact.hits` resolves overlaps by tier, then
+  detector certainty, then length, then position, then rule id; it drops a hit inside
+  or cutting across an existing `[REDACTED…]` placeholder but keeps one that encloses a
+  whole placeholder only for a `structural` hit, and a pattern hit inside a name-keyed
+  hit splits it: a key ID or account SID stays readable, a vendor key keeps its own
+  record, and the rest of the value is still replaced.
+  `redact.redact_with_findings` replaces `secret` and `bearer_link` values with the
+  credential tag, keeps identifiers, returns one value-free record per placeholder
+  (rule id, tier, detector, length), and raises `RedactionFailed` on any internal
+  error. Pinned by `test_redaction_rules.py`.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
 - `memory_audit.py` — audits of stored content: `scan_history` and `audit_bash_command`,
