@@ -9792,6 +9792,7 @@
       "open_in_side_panel": "Abrir en el panel lateral",
       "path_copied": "Ruta copiada",
       "reveal_blocked": "Esta ruta está protegida y no se puede abrir.",
+      "reveal_copied_instead": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}, así que se copió en su lugar.",
       "reveal_failed": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}.",
       "show_folder_in_side_panel": "Mostrar la carpeta en el panel lateral"
     },

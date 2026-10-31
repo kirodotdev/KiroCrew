@@ -9,7 +9,14 @@ import type { TranslucentPanelsStored } from '../../utils/liquidGlass'
 
 export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const branding = {
-    branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
+    branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{
+      bot_name: string
+      avatar: string
+      direct_local?: boolean
+      /** Whether the gateway host can open a file manager right now: the launcher
+       *  `/api/reveal` starts, and on Linux a desktop session for it. */
+      desktop_launcher?: boolean
+    }>,
   }
 
   const themeList = {

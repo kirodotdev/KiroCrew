@@ -807,6 +807,41 @@ def trusted_system_path() -> str | None:
     return os.pathsep.join(_TRUSTED_SYSTEM_BIN_DIRS)
 
 
+def desktop_launcher_available() -> bool:
+    """Whether this host can open a file manager right now.
+
+    :func:`reveal_in_file_manager` and :func:`open_with_default_app` answer
+    ``False`` without spawning anything when this does, so ``/api/reveal`` can
+    only answer a clipboard copy there. That is the ordinary state of a headless
+    Linux host, which is also where a browser reaching the gateway through an
+    ``ssh -L`` tunnel lands while still counting as direct-local. The dashboard asks
+    this first so it does not offer a "Show in file manager" that can only copy.
+
+    The launcher must be present, and off macOS and Windows it must also have a
+    desktop session to open into: ``xdg-open`` hands the folder to whatever the
+    running session registered, which shows nothing unless the environment the
+    spawn inherits (:func:`_reveal_env` keeps it) names a display server. Both are
+    facts about this gateway process; no request decides either.
+
+    The launchers ask this same function, so the dashboard's answer and what a
+    click does cannot drift. It reports readiness, not a launch: a launcher that
+    is installed but refuses to run still answers ``True`` here, and its click
+    still degrades. On Windows it names the reveal's launcher; the open verb is
+    refused there whatever this says, and the dashboard already hides it on that
+    platform.
+    """
+
+    if sys.platform == "darwin":
+        return os.path.isfile("/usr/bin/open")
+    if IS_WINDOWS:
+        return os.path.isfile(r"C:\Windows\explorer.exe")
+    # The display servers a launcher reaches a desktop session through, X11 and
+    # Wayland; an empty value names neither.
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    return os.path.isfile("/usr/bin/xdg-open")
+
+
 def reveal_in_file_manager(target: str) -> bool:
     """Show *target* in the host's file manager. ``True`` if a launcher started.
 
@@ -836,14 +871,17 @@ def reveal_in_file_manager(target: str) -> bool:
 
     A launcher that is absent (or present and refusing to run — AppLocker, a
     revoked exec bit, an exhausted process table) returns ``False`` so the caller
-    can degrade rather than fail the request.
+    can degrade rather than fail the request. So does a host with nothing to open
+    into (no launcher, or on Linux no desktop session): that is
+    :func:`desktop_launcher_available`, the same answer the dashboard reads to
+    decide whether to offer the action at all.
     """
 
     env = _reveal_env()
+    if not desktop_launcher_available():
+        return False
     try:
         if sys.platform == "darwin":
-            if not os.path.isfile("/usr/bin/open"):
-                return False
             subprocess.Popen(["/usr/bin/open", "-R", target], env=env)
             return True
         # Everything else opens the CONTAINING FOLDER, never the target itself —
@@ -858,12 +896,8 @@ def reveal_in_file_manager(target: str) -> bool:
             # A literal, so the command position stays constant. The conventional
             # location is not universal, so an image that keeps Windows elsewhere
             # reads as "no file manager here" rather than spawning something else.
-            if not os.path.isfile(r"C:\Windows\explorer.exe"):
-                return False
             subprocess.Popen([r"C:\Windows\explorer.exe", folder], env=env)
             return True
-        if not os.path.isfile("/usr/bin/xdg-open"):
-            return False
         subprocess.Popen(["/usr/bin/xdg-open", folder], env=env)
         return True
     except OSError:
@@ -894,14 +928,14 @@ def open_with_default_app(target: str, *, wait_for_exit: float | None = None) ->
     if IS_WINDOWS:
         return False
     env = _reveal_env()
+    # Off Windows the default-application launcher IS the file manager's (`open`
+    # on macOS, `xdg-open` elsewhere), and it needs the same desktop session.
+    if not desktop_launcher_available():
+        return False
     try:
         if sys.platform == "darwin":
-            if not os.path.isfile("/usr/bin/open"):
-                return False
             proc = subprocess.Popen(["/usr/bin/open", target], env=env)
         else:
-            if not os.path.isfile("/usr/bin/xdg-open"):
-                return False
             proc = subprocess.Popen(["/usr/bin/xdg-open", target], env=env)
     except OSError:
         logger.warning(

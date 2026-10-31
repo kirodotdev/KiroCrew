@@ -9506,6 +9506,7 @@
       "open_in_side_panel": "サイドパネルで開く",
       "path_copied": "パスをコピーしました",
       "reveal_blocked": "このパスは保護されているため開けません。",
+      "reveal_copied_instead": "{{productName}} を実行しているマシンでこのパスを開けなかったため、代わりにパスをコピーしました。",
       "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。",
       "show_folder_in_side_panel": "フォルダーをサイドパネルに表示"
     },

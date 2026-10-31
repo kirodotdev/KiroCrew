@@ -45,7 +45,9 @@ is defined in an owner module beside it. Import and patch every one as
     and the remote-volume, executable-file and read-only checks;
   - `platform_compat_trust`: system binaries resolved only from fixed directories, the
     environment allowlist, the Windows Known Folders and short names, whether another
-    account can write a path, and launching the file manager or a default app;
+    account can write a path, and launching the file manager or a default app (and
+    whether the host can open one right now: its launcher, and on Linux a desktop
+    session);
   - `platform_compat_liveness`: whether a pid is alive, a zombie or a thread-group
     leader, its process group and its thread count, answered without a signal that
     acts on it;

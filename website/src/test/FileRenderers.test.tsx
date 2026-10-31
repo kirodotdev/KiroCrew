@@ -8,7 +8,7 @@ import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from 
 // `useCanOpenFile` reads both of these, and it is the gate deciding whether the
 // Open button exists at all. Drive them explicitly: on the test host they would
 // otherwise resolve from a live /api/branding call.
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, desktopLauncher: true }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 
 // Every test in this file starts on a local session with a non-Windows
@@ -16,11 +16,16 @@ const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | '
 // session or a Windows gateway sets that in its own body.
 beforeEach(() => {
   brandingEnv.directLocal = true
+  brandingEnv.desktopLauncher = true
   platformEnv.value = 'other'
 })
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({
+    botName: 'Test', avatar: '',
+    directLocal: brandingEnv.directLocal,
+    desktopLauncher: brandingEnv.desktopLauncher,
+  }),
 }))
 
 vi.mock('../hooks/useGatewayPlatform', () => ({
@@ -43,6 +48,7 @@ vi.mock('../utils/clipboard', () => ({
 import { api } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { ApiError } from '../api/apiError'
+import { i18nT } from '../i18n/t'
 
 describe('detectFileType', () => {
   it('returns jsonl for .jsonl files', () => {
@@ -557,15 +563,30 @@ describe('OfficeViewer', () => {
       await waitFor(() => expect(copy).toHaveBeenCalledWith('/srv/agent/report.doc'))
     })
 
-    it('acknowledges the degrade inline so the button is not a dead click', async () => {
-      // Same host as above: the open silently became a clipboard copy. Without
-      // the swap the primary control looks like it did nothing at all.
+    it('says the path was copied instead, rather than relabelling Open', async () => {
+      // Same host as above: the open became a clipboard copy. The card says so
+      // in its notice; the button keeps naming the action it offers, since a
+      // button reading "Path copied" looks like the copy is what it does.
       stubPreview({}, false, 415)
       revealPath.mockResolvedValue({ ok: true, copy: '/srv/agent/report.doc' })
       renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
       fireEvent.click(await screen.findByRole('button', { name: /open with default app/i }))
-      // The shared useCopyAck swap, the same wording the file-path menu shows.
-      await screen.findByRole('button', { name: /path copied/i })
+      const notice = await screen.findByTestId('office-card-open-error')
+      expect(notice).toHaveTextContent(i18nT('components.filePathMenu.reveal_copied_instead'))
+      expect(screen.getByRole('button', { name: /open with default app/i })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: /path copied/i })).not.toBeInTheDocument()
+    })
+
+    it('hides Open on a direct-local session whose gateway host has no desktop launcher', async () => {
+      // The headless host a browser behind an `ssh -L` tunnel reaches: it reads
+      // as direct-local, but `/api/reveal` can only answer a clipboard copy
+      // there, so Download is the action, as on a remote session.
+      brandingEnv.desktopLauncher = false
+      stubPreview({}, false, 415)
+      renderWithQuery(<OfficeViewer filePath="/srv/agent/report.doc" />)
+      const download = await screen.findByRole('link', { name: /report\.doc/i })
+      expect(download.className).toContain('bg-accent')
+      expect(screen.queryByRole('button', { name: /open with default app/i })).not.toBeInTheDocument()
     })
 
     it('leads the hint with Open when Open is the action', async () => {
