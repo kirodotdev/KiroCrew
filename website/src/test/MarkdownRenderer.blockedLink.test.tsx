@@ -5,7 +5,8 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { api } from '../api/client'
-import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
+import { i18nT } from '../i18n/t'
+import { expectCardListsHostRecords, expectCardListsHostRecordsAllowed } from './blockedLinkCardAsserts'
 
 const copied: string[] = []
 let copyResult = true
@@ -315,20 +316,28 @@ describe('Blocked link chip', () => {
       expect(new Set(chips.map(c => c.className)).size).toBe(1)
     })
 
-    it('shows the outcome of Allow under the entry it was pressed from', async () => {
+    it('shows one Allow for the host and one outcome, never a sibling button (#18675)', async () => {
       vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
       const revoke = vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true } as never)
       const { getAllByTestId, getByTestId } = render(
         <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs="2026-10-07T06:00:00Z" />,
       )
       fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
-      const entries = () => within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')
-      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow'))
-      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow-confirmed'))
-      await waitFor(() => expect(within(entries()[1]).getByTestId('blocked-link-feedback').textContent).toContain(host))
-      expect(entries().map(e => within(e).queryByTestId('blocked-link-feedback') !== null)).toEqual([false, true, false, false])
-      expect(marks(getByTestId('blocked-link-card'))).toEqual([])
-      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-undo'))
+      const card = getByTestId('blocked-link-card')
+      // Four entries, but Allow belongs to the host, so the card shows it once —
+      // not one live button per entry.
+      expect(within(card).getAllByTestId('blocked-link-entry')).toHaveLength(4)
+      expect(within(card).getAllByTestId('blocked-link-allow')).toHaveLength(1)
+      fireEvent.click(within(card).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(card).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(card).getByTestId('blocked-link-feedback').textContent).toContain(host))
+      // One outcome line for the whole host, and no Allow button left to press.
+      expect(within(card).getAllByTestId('blocked-link-feedback')).toHaveLength(1)
+      expect(within(card).queryAllByTestId('blocked-link-allow')).toEqual([])
+      // The title now speaks of the host as allowed, not blocked.
+      expect(card.textContent).toContain(i18nT('components.redaction.link_title_host_allowed'))
+      expect(card.textContent).not.toContain(i18nT('components.redaction.link_title_host'))
+      fireEvent.click(within(card).getByTestId('blocked-link-undo'))
       await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', host))
     })
 
@@ -339,23 +348,20 @@ describe('Blocked link chip', () => {
         <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs={ts} />,
       )
       fireEvent.click(getAllByTestId('blocked-link-inspect')[2])
-      const entry = within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')[2]
-      expect(within(entry).getByTestId('blocked-link-entry-target').textContent).toBe(`${host}/r3`)
-      fireEvent.click(within(entry).getByTestId('blocked-link-allow'))
-      fireEvent.click(within(entry).getByTestId('blocked-link-allow-confirmed'))
+      const card = getByTestId('blocked-link-card')
+      expect(within(card).getAllByTestId('blocked-link-entry')[2] && within(card).getAllByTestId('blocked-link-entry-target')[2].textContent).toBe(`${host}/r3`)
+      fireEvent.click(within(card).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(card).getByTestId('blocked-link-allow-confirmed'))
       await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
       const restored = records.map((r, i) => `Link ${i + 1}: [page](${r.url})`).join('\n\n')
       rerender(<MarkdownRenderer content={restored} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
       const cards = getAllByTestId('blocked-link-card')
       expect(cards).toHaveLength(1)
       expect(blockBefore(cards[0])).toMatch(/^Link 3: /)
-      // The reload removed the placeholders; the card lists the same records,
-      // and the pressed entry keeps its outcome with Undo.
-      expectCardListsHostRecords(cards[0], records, host)
-      const withOutcome = getAllByTestId('blocked-link-feedback')
-      expect(withOutcome).toHaveLength(1)
-      const pressed = withOutcome[0].closest('[data-testid="blocked-link-entry"]') as HTMLElement
-      expect(within(pressed).getByTestId('blocked-link-entry-target').textContent).toBe(`${host}/r3`)
+      // The reload removed the placeholders; the card lists the same records
+      // and keeps one host-level outcome with Undo (not one per entry).
+      expectCardListsHostRecordsAllowed(cards[0], records, host)
+      expect(getAllByTestId('blocked-link-feedback')).toHaveLength(1)
       fireEvent.keyDown(document, { key: 'Escape' })
       await waitFor(() => expect(container.querySelector('[data-testid="blocked-link-card"]')).toBeNull())
     })
@@ -369,7 +375,7 @@ describe('Blocked link chip', () => {
       fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
       await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
       rerender(<MarkdownRenderer content={`Only: [page](${records[0].url})`} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
-      expectCardListsHostRecords(getByTestId('blocked-link-card'), [records[0]], host)
+      expectCardListsHostRecordsAllowed(getByTestId('blocked-link-card'), [records[0]], host)
     })
 
     it('reopens the held card under its own block, which Allow leaves in place', async () => {
@@ -380,9 +386,9 @@ describe('Blocked link chip', () => {
       )
       fireEvent.click(getAllByTestId('blocked-link-inspect')[3])
       const opened = getByTestId('blocked-link-card').id
-      const entry = within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')[0]
-      fireEvent.click(within(entry).getByTestId('blocked-link-allow'))
-      fireEvent.click(within(entry).getByTestId('blocked-link-allow-confirmed'))
+      const card = getByTestId('blocked-link-card')
+      fireEvent.click(within(card).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(card).getByTestId('blocked-link-allow-confirmed'))
       await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
       const restored = records.map((r, i) => `Link ${i + 1}: [page](${r.url})`).join('\n\n')
       rerender(<MarkdownRenderer content={restored} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
@@ -390,6 +396,138 @@ describe('Blocked link chip', () => {
       expect(cards).toHaveLength(1)
       expect(cards[0].id).toBe(opened)
       expect(blockBefore(cards[0])).toMatch(/^Link 4: /)
+    })
+
+    it('keeps the Allowed outcome across a close and reopen on a reply with no message time (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      // No messageTs: a streamed or interrupted reply. Allow writes the outcome
+      // under a per-reply fallback key, so it is not lost on close.
+      const { getByTestId, queryByTestId } = render(
+        <MarkdownRenderer content={`Only: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" />,
+      )
+      fireEvent.click(getByTestId('blocked-link-inspect'))
+      fireEvent.click(getByTestId('blocked-link-allow'))
+      fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
+      // Close the card.
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(queryByTestId('blocked-link-card')).toBeNull())
+      // Reopen: the host is still shown as allowed, with its Undo, not reset to
+      // a fresh Allow button.
+      fireEvent.click(getByTestId('blocked-link-inspect'))
+      const card = getByTestId('blocked-link-card')
+      expect(within(card).getByTestId('blocked-link-undo')).toBeTruthy()
+      expect(within(card).queryByTestId('blocked-link-allow')).toBeNull()
+      expect(card.textContent).toContain(i18nT('components.redaction.link_title_host_allowed'))
+    })
+
+    it('keeps Allowed · Undo through the chat page reload on a reply with no message time (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const revoke = vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true, removed: true })
+      // Stand in for the chat page's event bridge: on a hosts-changed event it
+      // reloads the slot, and the re-served row shows the host's link as a
+      // plain link with no blocked records left for it.
+      const view = render(<MarkdownRenderer content={`Only: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" />)
+      const reloads: unknown[] = []
+      const reload = (e: Event) => {
+        reloads.push((e as CustomEvent).detail)
+        view.rerender(<MarkdownRenderer content={`Only: [page](${records[0].url})`} blockedLinks={[]} slotKey="s1" />)
+      }
+      window.addEventListener('mc:redaction-hosts-changed', reload)
+      try {
+        fireEvent.click(view.getByTestId('blocked-link-inspect'))
+        fireEvent.click(view.getByTestId('blocked-link-allow'))
+        fireEvent.click(view.getByTestId('blocked-link-allow-confirmed'))
+        await waitFor(() => expect(view.getByTestId('blocked-link-undo')).toBeTruthy())
+        // No reload is asked for, so the card and its outcome stay on screen.
+        expect(reloads).toEqual([])
+        const card = view.getByTestId('blocked-link-card')
+        expect(card.textContent).toContain(i18nT('components.redaction.link_title_host_allowed'))
+        // Undo still works and still asks for no reload.
+        fireEvent.click(within(card).getByTestId('blocked-link-undo'))
+        await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', host))
+        expect(reloads).toEqual([])
+      } finally {
+        window.removeEventListener('mc:redaction-hosts-changed', reload)
+      }
+    })
+
+    it('still asks the chat page to reload a timestamped reply, which the hold carries through (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const ts = '2026-10-07T06:10:00Z'
+      const view = render(<MarkdownRenderer content={`Only: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" messageTs={ts} />)
+      const reloads: unknown[] = []
+      const reload = (e: Event) => {
+        reloads.push((e as CustomEvent).detail)
+        view.rerender(<MarkdownRenderer content={`Only: [page](${records[0].url})`} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
+      }
+      window.addEventListener('mc:redaction-hosts-changed', reload)
+      try {
+        fireEvent.click(view.getByTestId('blocked-link-inspect'))
+        fireEvent.click(view.getByTestId('blocked-link-allow'))
+        fireEvent.click(view.getByTestId('blocked-link-allow-confirmed'))
+        await waitFor(() => expect(reloads).toEqual([{ slot: 's1', messageTs: ts }]))
+        expect(view.getByTestId('blocked-link-undo')).toBeTruthy()
+        expectCardListsHostRecordsAllowed(view.getByTestId('blocked-link-card'), [records[0]], host)
+        // Undo after the reload: the reloaded row carries no records for the
+        // host, so only the hold keeps the card up. It must stay, saying
+        // "Undone", and no longer call the host allowed.
+        window.removeEventListener('mc:redaction-hosts-changed', reload)
+        vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true, removed: true })
+        fireEvent.click(view.getByTestId('blocked-link-undo'))
+        await waitFor(() => expect(view.getByTestId('blocked-link-feedback').textContent).toContain(i18nT('components.redaction.link_undone')))
+        const card = view.getByTestId('blocked-link-card')
+        expect(card.textContent).toContain(i18nT('components.redaction.link_title_host'))
+        expect(card.textContent).not.toContain(i18nT('components.redaction.link_title_host_allowed'))
+      } finally {
+        window.removeEventListener('mc:redaction-hosts-changed', reload)
+      }
+    })
+
+    it('does not let one untimestamped reply reach another reply in the same slot (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      // Two untimestamped replies in one slot, both linking the same host in
+      // their first block. A per-slot fallback key would let A's hold open and
+      // then clear B's card; a per-reply key keeps them separate.
+      const a = render(<MarkdownRenderer content={`A: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" />)
+      const b = render(<MarkdownRenderer content={`B: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" />)
+      // Allow from A only.
+      fireEvent.click(within(a.container).getByTestId('blocked-link-inspect'))
+      fireEvent.click(within(a.container).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(a.container).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(a.container).getByTestId('blocked-link-undo')).toBeTruthy())
+      // B never opened its card on its own, and still offers a fresh Allow.
+      expect(within(b.container).queryByTestId('blocked-link-card')).toBeNull()
+      fireEvent.click(within(b.container).getByTestId('blocked-link-inspect'))
+      const bCard = within(b.container).getByTestId('blocked-link-card')
+      expect(within(bCard).getByTestId('blocked-link-allow')).toBeTruthy()
+      expect(within(bCard).queryByTestId('blocked-link-undo')).toBeNull()
+      // A unmounting must not wipe B's state: B keeps its fresh Allow.
+      a.unmount()
+      expect(within(within(b.container).getByTestId('blocked-link-card')).getByTestId('blocked-link-allow')).toBeTruthy()
+    })
+
+    it('shows a fresh Allow after Undo, reopen (no stale "undone") on an untimestamped reply (#18675)', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true, removed: true })
+      const { getByTestId, queryByTestId } = render(
+        <MarkdownRenderer content={`Only: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" />,
+      )
+      fireEvent.click(getByTestId('blocked-link-inspect'))
+      fireEvent.click(getByTestId('blocked-link-allow'))
+      fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
+      fireEvent.click(getByTestId('blocked-link-undo'))
+      await waitFor(() => expect(getByTestId('blocked-link-allow')).toBeTruthy())
+      // Close and reopen: the hold was cleared on Undo, so the card does not
+      // come back showing a stale "Undone" line beside a fresh Allow button.
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(queryByTestId('blocked-link-card')).toBeNull())
+      fireEvent.click(getByTestId('blocked-link-inspect'))
+      const card = getByTestId('blocked-link-card')
+      expect(within(card).getByTestId('blocked-link-allow')).toBeTruthy()
+      expect(within(card).queryByTestId('blocked-link-feedback')).toBeNull()
+      expect(card.textContent).toContain(i18nT('components.redaction.link_title_host'))
     })
 
     it('labels the chip with the host alone when one kept address is recorded twice', () => {

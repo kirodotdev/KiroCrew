@@ -10022,6 +10022,7 @@
       "link_rule_threshold": "règle : {{rule}} · seuil 200",
       "link_tag": "Lien bloqué",
       "link_title_host": "Liens bloqués vers cet hôte dans cette réponse",
+      "link_title_host_allowed": "Cet hôte est autorisé dans cet espace de travail",
       "link_undo_failed": "Annulation impossible. Révoque-le dans Paramètres → Sécurité → Masquage.",
       "link_undone": "Annulé — l’hôte n’est plus autorisé.",
       "link_withheld_credential": "L’adresse complète n’a pas été conservée : une partie ressemble à un secret, et l’ouvrir enverrait ce secret.",
