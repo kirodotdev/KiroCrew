@@ -4358,10 +4358,13 @@ the states the worn pack declares a cue for and plays that state's bytes from
 `loadSoundSettings()` toggle and volume the presets use; a state the pack does
 not declare is SILENT and deliberately does not fall back to a preset, because
 the pack's author chose which moments make a sound. A preset on a pack record
-would be a second, competing answer to the same question. Both are
-authored on the builder's **Reactions** tab, which is offered on the ghost tier
-alone — a tab that renders only a note saying the tier cannot use it is a promise
-the tier cannot keep. A ghost's motion vocabulary is CLOSED and mirrors the
+would be a second, competing answer to the same question. No builder flow
+authors either any more (#18616): the builder offers only the Icon, Picture and
+Library tiers, so the Ghost face tier and its **Reactions** tab are gone in both
+the create and the edit flow. A crew that already wears a ghost keeps its stored
+record, `motions` and `sounds` included, and keeps playing them; its builder opens
+on Icon, previewing the stored ghost with no pose picked, and Apply with no pick
+returns that record unchanged. A ghost's motion vocabulary is CLOSED and mirrors the
 backend's own (`done`: `none`/`bounce`/`nod`/`sparkle`; `error`:
 `none`/`shake`/`cross-eyes`/`droop`), and a state the record says nothing about
 plays the default — `bounce` on done, `shake` on error — so the layer is on for

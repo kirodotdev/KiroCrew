@@ -21,7 +21,7 @@ import { toolMeta } from './toolMeta'
 import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
-import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
+import { retiredCueFrom } from '../../lib/crewAvatarState'
 import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, memberMemoryState } from './crewFields'
 import ErrorNotice from '../ErrorNotice'
 import { useDialogConfirm } from './useDialogConfirm'
@@ -1060,10 +1060,6 @@ export default function CrewEditorNextDialog({
           name={editing}
           value={editAvatar}
           retiredCue={retiredCueFrom(editingAgent?.avatar)}
-          savedReactions={{
-            motions: motionsFrom(editingAgent?.avatar) !== null,
-            sounds: soundsFrom(editingAgent?.avatar) !== null,
-          }}
           onCancel={closeAvatarBuilder}
           onSave={applyAvatar}
         />

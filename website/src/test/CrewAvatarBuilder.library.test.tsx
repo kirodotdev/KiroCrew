@@ -7,7 +7,7 @@
  * does with a picture, and the reset link puts the crew back to its own face.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockApi = vi.hoisted(() => ({
@@ -146,35 +146,31 @@ describe('avatar builder — Library tier', () => {
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
   })
 
-  it('offers the Reactions tab only on a ghost crew, with Ghost face no longer reachable from another tier', async () => {
+  it('offers no Ghost face or Reactions tab on any crew, ghost included (#18616)', async () => {
     // A non-ghost crew: neither the Ghost face tab nor its Reactions tab exists.
     const { unmount } = mount({ kind: 'image', v: 3 })
     expect(screen.queryByRole('radio', { name: 'Ghost face' })).toBeNull()
     expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
     unmount()
 
-    // A crew that already wears a ghost opens on the face tier, so both the
-    // Ghost face and Reactions tabs are offered for the pre-existing edit.
+    // A crew that already wears a ghost ALSO sees no Ghost face or Reactions
+    // tab: the picker is removed in both flows (#18616). Its stored ghost is
+    // kept and keeps rendering; it simply opens on the Icon tier.
     mount({ kind: 'ghost', traits: {} })
-    expect(screen.getByRole('radio', { name: 'Ghost face' })).toBeInTheDocument()
-    gotoTier('Reactions')
-    expect(
-      screen.getByText(
-        'Pick a motion and a sound for when a turn finishes or fails, and the sound it makes when work starts.',
-      ),
-    ).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
   })
 
-  it('explains on both served tiers why the Reactions tab is not theirs', async () => {
+  it('explains on both served tiers that they are static/silent', async () => {
     // The tab is simply absent there, and an absence with no word said reads as
     // something missing rather than as something decided — a first-run reader
     // could not tell which. The line goes where they are looking.
     // "a pack from the Library", not "a pack": a cold reader could not place the
-    // bare word ("I don't know what a pack is… that's a guess").
-    // "…so there is no Reactions tab here": a cold reader understood the concept
-    // and still asked why the tab was gone, so the line names the tab.
+    // bare word ("I don't know what a pack is… that's a guess"). The ghost-face
+    // picker is gone (#18616), so the note no longer names a Reactions tab.
     const NOTE =
-      'Reactions belong to the ghost face, so there is no Reactions tab here. A picture stays still and silent; a pack from the Library plays its own art and sound.'
+      'A picture stays still and silent; a pack from the Library plays its own art and sound.'
     const { unmount } = mount({ kind: 'pack', id: 'aurora' })
     await screen.findByTestId('avatar-library-pane')
     expect(screen.getByTestId('avatar-reactions-absent-pack')).toHaveTextContent(NOTE)
@@ -204,35 +200,20 @@ describe('avatar builder — Library tier', () => {
     expect(saved(onSave)).toMatchObject({ kind: 'icon' })
   })
 
-  it('switching tiers keeps each tier\u2019s draft, so a pack pick survives a look at Ghost face', async () => {
-    // Mount from an existing ghost so the Ghost face tier is reachable (a new
-    // ghost is no longer authorable); the pack draft must still survive a trip
-    // back to it.
-    const { onSave } = mount({ kind: 'ghost', traits: {} })
+  it('switching tiers keeps each tier\u2019s draft, so a pack pick survives a look at another tier', async () => {
+    // The pack draft must survive a trip to another tier and back. The ghost
+    // face tier is no longer reachable (#18616), so the detour is through the
+    // Picture tier, which exercises the same held-draft path.
+    const { onSave } = mount({ kind: 'image', v: 9 })
     gotoTier('Library')
     fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
 
-    gotoTier('Ghost face')
-    await waitFor(() => expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument())
+    gotoTier('Picture')
+    await screen.findByTestId('avatar-upload-pane')
     gotoTier('Library')
     await screen.findByTestId('avatar-library-pane')
 
     apply()
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
-  })
-
-  it('a ghost pick wins once the ghost tier is the selected one', async () => {
-    // The tier decides what Apply commits; a pack id held from an earlier click
-    // must not leak into a face the user then chose. Mount from an existing
-    // ghost so the face tier is reachable.
-    const { onSave } = mount({ kind: 'ghost', traits: {} })
-    gotoTier('Library')
-    fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
-    gotoTier('Ghost face')
-    fireEvent.click(await screen.findByTestId('avatar-opt-wink'))
-    apply()
-
-    const result = saved(onSave)
-    expect(result?.kind).toBe('ghost')
   })
 })
