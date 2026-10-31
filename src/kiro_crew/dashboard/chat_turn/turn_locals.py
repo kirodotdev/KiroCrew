@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from asyncio import Task
     from asyncio.locks import Lock
+    from collections import deque
     from collections.abc import Awaitable, Callable
     from typing import Any
 
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
     from kiro_crew.dashboard.responsive_chat import ResponsiveTurn
     from kiro_crew.execution_context import ExecutionContext
+    from kiro_crew.messaging.notice_seam import NoticeAnswerPrefix
     from kiro_crew.repeat_loop import RepeatLoopTracker
     from kiro_crew.security import StreamRedactor
     from kiro_crew.start_priority import StartPriority
@@ -176,6 +178,9 @@ class _ChatTurn:
     _person_steered_turn: "bool"
     _produced_visible_output: "bool"
     _provider_has_history: "bool"
+    _provider_notices: "deque[Any]"
+    _provider_notice_drops: "int"
+    _provider_answer_prefix: "NoticeAnswerPrefix | None"
     _recovering_compaction: "bool"
     _recovering_infra: "bool"
     _recovering_promise: "bool"

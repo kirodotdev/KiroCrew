@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import NOTICE_STATE_MAX
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.state import SUBAGENT_SYNTHESIS_PROMPT, row_mid
 from kiro_crew.llm_helpers import _NO_PRIOR_STATS
@@ -459,6 +461,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # The runs _wsred holds across a tool call or approval prompt, one per cut
     # crossed before its next output (see _cut_segment / _settle_held).
     turn._held_runs = []
+    # Provider notices wait until the open assistant segment is finalized.
+    turn._provider_notices = deque(maxlen=NOTICE_STATE_MAX)
+    turn._provider_notice_drops = 0
+    turn._provider_answer_prefix = None
     # Set once ``assistant_text`` is a saved reply row: the end-of-turn flush
     # wrote it, or _persist_partial_reply did (it appends the text once per turn).
     turn._reply_flushed = False

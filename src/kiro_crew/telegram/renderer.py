@@ -49,6 +49,7 @@ import os
 import re
 import sys as _sys
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import _facade_mirror
@@ -572,6 +573,9 @@ class TelegramRenderer(Renderer):
         #: reader is already looking at. Bounded by one message, not by the turn:
         #: only the message a new one sits under can rejoin anything with it.
         self._sent_tail = ""
+        #: A notice below the live bubble precedes the next fresh message.
+        self._note_below_stream: str | None = None
+        self._notice_sink = partial(_send_provider_notice, self)
         # True between posting an approval prompt and the turn resuming. A turn
         # waiting on a button is blocked on the user, not stalled.
         self._awaiting_approval = False
@@ -972,18 +976,16 @@ class TelegramRenderer(Renderer):
         Runs on a worker thread: both the redaction and the grade scan.
         """
         safe = _display_safe(text)
-        repaired = repaired_after_a_sent_tail(self._sent_tail, safe, _default_redactor)
+        predecessor = self._sent_tail
+        if self._stream_mid is None and self._note_below_stream is not None:
+            predecessor = self._note_below_stream
+        repaired = repaired_after_a_sent_tail(predecessor, safe, _default_redactor)
         return repaired if repaired is not None else safe
 
     def _record_sent(self, text: str) -> None:
-        """Remember *text* as the message the next seam is graded against.
-
-        Called only after a send or edit reports success, and with the text that
-        actually went out -- which is not always the text ``_seam_safe`` returned: a
-        degraded segment is re-split after that point, so the last chunk shown is
-        what the reader is looking at and what the next segment sits under.
-        """
+        """After delivery succeeds, remember the actual final chunk for the next seam."""
         self._sent_tail = text
+        self._note_below_stream = None
 
     async def _seal_current(
         self,
@@ -1080,17 +1082,18 @@ class TelegramRenderer(Renderer):
                 # twice where main buzzed once. When nothing streamed there was no
                 # earlier ping, so the rich send is the only notification and must fire.
                 if _has_table(text):
+                    rich_text = await asyncio.to_thread(_fresh_seam_safe, self, text)
                     mid = await self._client.send_rich_message(
                         self._chat_id,
-                        text,
+                        rich_text,
                         reply_markup=keyboard,
                         message_thread_id=self._thread_id,
                         disable_notification=self._stream_mid is not None,
                         reply_to_message_id=self._consume_reply_to(),
                     )
                     if mid is not None:
-                        self._tally_redactions(text)
-                        self._record_sent(text)
+                        self._tally_redactions(rich_text)
+                        self._record_sent(rich_text)
                         if self._stream_mid is not None:
                             # The rich message now carries this segment; drop the
                             # superseded plaintext bubble so the user sees one message.
@@ -1130,7 +1133,7 @@ class TelegramRenderer(Renderer):
                         )
                     if ok:
                         self._tally_redactions(text)
-                        self._record_sent(text)
+                        _record_in_place(self, text)
                         return
                     # Both edits failed — the live message is gone (e.g. the user
                     # deleted it mid-turn), or it is still there and could not be
@@ -1139,6 +1142,12 @@ class TelegramRenderer(Renderer):
                     # (and its keyboard) is never silently lost; once that send
                     # lands, the frame it replaces is deleted.
                     stale_mid, self._stream_mid = self._stream_mid, None
+                fresh_text = await asyncio.to_thread(_fresh_seam_safe, self, text)
+                if fresh_text != text:
+                    text = fresh_text
+                    html_text = _seal_table_fallback(text)
+                    if len(html_text) > self._rendered_limit():
+                        html_text = _md_to_telegram_html(text)
                 mid = await self._client.send_message(
                     self._chat_id,
                     html_text,
@@ -1368,13 +1377,19 @@ class TelegramRenderer(Renderer):
                 self._chat_id, mid, html_text, parse_mode="HTML", retry_plain=False
             )
             if ok:
-                self._record_sent(chunk)
+                _record_in_place(self, chunk)
                 return True, None
             if await self._client.edit_message(self._chat_id, mid, _strip_md(chunk)):
-                self._record_sent(chunk)
+                _record_in_place(self, chunk)
                 return True, None
             # The frame may still exist; the chunk goes out below it.
             stale_mid = mid
+        fresh_chunk = await asyncio.to_thread(_fresh_seam_safe, self, chunk)
+        if fresh_chunk != chunk:
+            chunk = fresh_chunk
+            html_text = _seal_table_fallback(chunk)
+            if len(html_text) > self._rendered_limit():
+                html_text = _md_to_telegram_html(chunk)
         mid2 = await self._client.send_message(
             self._chat_id,
             html_text,
@@ -1572,4 +1587,33 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.telegram.renderer_uploads import (  # noqa: F401
         _MAX_REJECTION_LINES,
         _UPLOAD_LIMITS,
+    )
+
+
+async def _send_provider_notice(renderer: TelegramRenderer, text: str) -> None:
+    safe = await asyncio.to_thread(_fresh_seam_safe, renderer, text)
+    mid = await renderer._client.send_message(
+        renderer._chat_id, safe, message_thread_id=renderer._thread_id
+    )
+    if mid is None:
+        return
+    if renderer._stream_mid is not None:
+        # Edits stay above the notice; fresh messages land below it.
+        renderer._note_below_stream = safe
+    else:
+        renderer._record_sent(safe)
+
+
+def _fresh_seam_safe(renderer: TelegramRenderer, text: str) -> str:
+    safe = _display_safe(text)
+    predecessor = renderer._note_below_stream
+    if predecessor is None:
+        predecessor = renderer._sent_tail
+    repaired = repaired_after_a_sent_tail(predecessor, safe, _default_redactor)
+    return repaired if repaired is not None else safe
+
+
+def _record_in_place(renderer: TelegramRenderer, text: str) -> None:
+    renderer._record_sent(
+        renderer._note_below_stream if renderer._note_below_stream is not None else text
     )

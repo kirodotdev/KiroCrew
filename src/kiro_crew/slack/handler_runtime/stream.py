@@ -34,6 +34,7 @@ if TYPE_CHECKING:
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
         LLMEvent,
+        NoticeAnswerPrefix,
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
@@ -174,6 +175,27 @@ async def _safe_final_update(
     *,
     raise_on_primary_failure: bool = False,
 ) -> None:
+    """Finalize an answer without a provider-notice predecessor."""
+    await _safe_final_update_with_notice(
+        slack,
+        channel,
+        ts,
+        text,
+        thread_ts,
+        raise_on_primary_failure=raise_on_primary_failure,
+    )
+
+
+async def _safe_final_update_with_notice(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    text: str,
+    thread_ts: str | None = None,
+    *,
+    raise_on_primary_failure: bool = False,
+    notice_tail: str = "",
+) -> None:
     """Final message update — splits into multiple messages if too long.
 
     ``raise_on_primary_failure`` controls the FIRST (answer-carrying) part only.
@@ -197,8 +219,14 @@ async def _safe_final_update(
             raise
     # Overflow parts posted as follow-up messages in the same thread
     for part in parts[1:]:
+        from kiro_crew.messaging.renderer import repaired_after_a_sent_tail
+
+        repaired = repaired_after_a_sent_tail(notice_tail, part, redact)
+        if repaired is not None:
+            part = repaired
         try:
-            await slack.post_message(channel, part, thread_ts)
+            if await slack.post_message(channel, part, thread_ts):
+                notice_tail = ""
         except Exception:
             logger.debug("Failed to post continuation message", exc_info=True)
 
@@ -345,6 +373,8 @@ class _AnswerStream:
         self.tool_timer_task: asyncio.Task | None = None  # periodic elapsed-time updater
         self.status_dirty = False  # True when status needs reset to base on next text chunk
         self.tool_gap = False
+        self.notice_tail = ""
+        self.answer_notice_prefix: NoticeAnswerPrefix | None = None
 
     async def rotate(self) -> str | None:
         """Stop the dead stream and start a fresh one. Returns new ts or None.
@@ -677,6 +707,7 @@ class _AnswerStream:
         except Exception:
             logger.warning("Slack start_stream failed — demoting to chat.update", exc_info=True)
             self.stream_ts = None
+            self.answer_notice_prefix = None
         self.use_slack_stream = self.stream_ts is not None
         if not self.use_slack_stream:
             # ``SlackClient.start_stream`` swallows its own errors and returns
@@ -702,6 +733,7 @@ class _AnswerStream:
             except Exception:
                 logger.warning("Failed to post chat.update placeholder", exc_info=True)
                 self.stream_ts = None
+                self.answer_notice_prefix = None
 
     async def flush(self) -> None:
         """Send the buffered text, minus inline ``<thinking>`` tags, and empty the buffer."""
@@ -714,6 +746,17 @@ class _AnswerStream:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
         self.take_carried()
+        fresh = self.stream_ts is None
+        from kiro_crew.messaging.notice_seam import NoticeAnswerPrefix
+
+        if self.answer_notice_prefix is None:
+            self.answer_notice_prefix = NoticeAnswerPrefix(
+                self.notice_tail if fresh else "", redact
+            )
+        safe = self.answer_notice_prefix.feed(event.text)
+        if safe != event.text:
+            self.had_redaction = True
+        event.text = safe
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
             first = event.text[:1]
             if first and first not in ("\n", " "):
@@ -752,6 +795,8 @@ class _AnswerStream:
             self.stream_buffer += event.text
 
         await self.ensure_started()
+        if fresh and self.stream_ts is not None:
+            self.notice_tail = ""
 
         now = time.monotonic()
         if now - self.last_edit >= _EDIT_INTERVAL:
@@ -903,6 +948,7 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            self.answer_notice_prefix = None
             self.given_back = ""
             # A carried run stays in the redactor, so the text after the wait is
             # joined to it. The final copy is built from ``accumulated``, so it
@@ -1035,13 +1081,14 @@ class _AnswerStream:
         if _demoted:
             # The answer's last text is on no message yet, so this update is what
             # delivers it: a failed send raises and the turn books a failure.
-            await _safe_final_update(
+            await _safe_final_update_with_notice(
                 self.slack,
                 self.channel,
                 self.stream_ts,
                 (_convert_tables(clean_text) if clean_text else "") or _NO_RESPONSE,
                 self.reply_ts,
                 raise_on_primary_failure=True,
+                notice_tail=self.notice_tail,
             )
             self.delivered = True
             return
@@ -1049,10 +1096,11 @@ class _AnswerStream:
         # it corrects the visible copy, it does not deliver the answer.
         if self.had_redaction or redacted:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
-            await _safe_final_update(
+            await _safe_final_update_with_notice(
                 self.slack,
                 self.channel,
                 self.stream_ts,
                 fallback_text or _NO_RESPONSE,
                 self.reply_ts,
+                notice_tail=self.notice_tail,
             )

@@ -11,7 +11,7 @@ Instance fields written: ``_config_options``, ``_input_wait_emitted``,
 ``_native_child_tool_call_ids``, ``_prompt_or_tool_seen``, ``_stale_eligible``,
 ``_status_rejected``, ``_tool_dispatched``, ``_tool_output_seen``, ``last_infra_error``.
 
-Instance fields read: ``_parked_total``, ``_runtime``, ``_session_id``,
+Instance fields read: ``_session_notices``, ``_parked_total``, ``_runtime``, ``_session_id``,
 ``_tool_call_cache_overflow``, ``_tool_call_diff_path``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
@@ -252,6 +252,10 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     update = params.get("update") or {}
     if not isinstance(update, dict):
         return []
+
+    if update.get("sessionUpdate") == "notice":
+        notice = self._session_notices.accept(msg, self._session_id)
+        return [notice] if notice is not None else []
 
     # A frame the runtime routed here for a backend-internal subagent
     # carries the CHILD's sessionId. Its tool_call/refinement updates are

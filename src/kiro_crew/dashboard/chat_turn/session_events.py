@@ -28,7 +28,11 @@ if TYPE_CHECKING:
         restore_agent_selection,
         sel,
     )
-    from kiro_crew.dashboard.chat_turn.segment_flush import _cleared_segment_text, _flush_segment
+    from kiro_crew.dashboard.chat_turn.segment_flush import (
+        _cleared_segment_text,
+        _flush_provider_notices,
+        _flush_segment,
+    )
     from kiro_crew.dashboard.chat_turn.turn_admission import (
         _current_binding,
         _require_current_binding,
@@ -98,6 +102,7 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
         turn.assistant_text = ""
+        _flush_provider_notices(turn)
         _deferred_cut_text = ""
         turn._deferred_cut_text = _deferred_cut_text
         _turn_flushed_visible_text = True

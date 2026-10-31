@@ -20,6 +20,7 @@ the import this module replaces.
 
 from __future__ import annotations
 
+from kiro_crew.acp._dispatch import NOTICE_STATE_MAX
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.liveness import InFlightToolTracker
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
@@ -45,6 +46,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.providers.base import EVENT_TOOL_CALL, EVENT_TOOL_RESULT
 
 __all__ = [
+    "NOTICE_STATE_MAX",
     "is_runtime_death",
     "is_user_worded_failure",
     "EVENT_STRUCTURED_STATUS",

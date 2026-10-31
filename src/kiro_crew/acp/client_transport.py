@@ -13,7 +13,7 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+Instance fields read: ``_session_id``, ``_session_notices``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
 ``_turn_done``, ``memory_mode``.
@@ -876,6 +876,9 @@ async def _wait_for_response(
             return msg.result or {}
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:
+            if self._session_id and method not in {"session/new", "session/load"}:
+                if self._session_notices.accept(msg, self._session_id, stage=True) is not None:
+                    continue
             self._mcp_notifications.append(msg)
             logger.debug("Buffered notification: %s (req=%d)", msg.method, req_id)
             continue
@@ -974,6 +977,10 @@ async def _drain_notifications(
         self._pending_oauth_requests.append({"serverName": server_name, "oauthUrl": oauth_url})
         logger.info("ACP: MCP OAuth request for %s", server_name)
 
+    def _capture_notice(msg: JsonRpcMessage) -> None:
+        # Staged, not yielded: no stream is open yet, so the next one drains it.
+        self._session_notices.accept(msg, self._session_id or "", stage=True)
+
     def _capture_config_update(msg: JsonRpcMessage) -> None:
         if not msg.is_method(METHOD_SESSION_UPDATE):
             return
@@ -1002,6 +1009,7 @@ async def _drain_notifications(
         _capture_oauth(msg)
         _capture_config_update(msg)
         _capture_agent_switched(msg)
+        _capture_notice(msg)
         # Frames below the floor were buffered by an EARLIER session attempt
         # (a session/load that failed before the fallback session/new). The
         # OAuth and config captures above still want them — the user must
@@ -1057,6 +1065,7 @@ async def _drain_notifications(
             _capture_oauth(read_msg)
             _capture_config_update(read_msg)
             _capture_agent_switched(read_msg)
+            _capture_notice(read_msg)
             self._mcp_report.record_frame(read_msg, owned=True)
             if "mcp" in (read_msg.method or ""):
                 name = ""

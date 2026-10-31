@@ -130,8 +130,9 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/interactions_settings.py": (2, "allowlist approved and denied DMs"),
     "slack/renderer.py": (
-        7,
-        "the channel renderer: placeholders, answer parts, fallback and notices",
+        8,
+        "the channel renderer: placeholders, answer parts, fallback and notices; "
+        "provider notices arrive rendered and repair the preceding-message seam",
     ),
     "slack/transport.py": (1, "the Slack transport adapter: forwards content the caller rendered"),
     "slack/transport_dispatch.py": (4, "hook reply, stats, ping and transport error text"),

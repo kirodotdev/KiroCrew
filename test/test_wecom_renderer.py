@@ -1020,3 +1020,33 @@ class TestACredentialCannotStraddleTheRotationSeam:
         assert any(
             "省略" in d and "推理" in d for d in delivered
         ), "the reasoning-overflow notice was not announced"
+
+
+@pytest.mark.asyncio
+async def test_notice_seam_repairs_refused_stream_fallback():
+    client = FakeClient(stream_ok=False)
+    renderer = WeComRenderer(client, "rq1", "https://resp.url", WECOM_CAPABILITIES, chat_id="CHAT")
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bearer")
+    await renderer.on_text_chunk("opaque-notice-fallback-token and following prose survives.")
+    await renderer.on_done()
+    assert "opaque-notice-fallback-token" not in str(client.pushed + client.replies)
+    assert "following prose survives" in str(client.pushed + client.replies)
+
+
+@pytest.mark.asyncio
+async def test_late_notice_repair_preserves_four_byte_overflow():
+    from kiro_crew.messaging.renderer import repaired_after_a_sent_tail
+
+    client = FakeClient(stream_ok=False)
+    renderer = WeComRenderer(client, "rq1", "https://resp.url", WECOM_CAPABILITIES, chat_id="CHAT")
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bear")
+    start = len(client.pushed)
+    answer = "er a " + "😀" * ((WECOM_MAX_REPLY_BYTES - 5) // 4)
+    expected = repaired_after_a_sent_tail("Authorization: Bear", answer, _default_redactor)
+    await renderer.on_text_chunk(answer)
+    await renderer.on_done()
+    chunks = [text for _, text in client.pushed[start:]]
+    assert all(len(text.encode("utf-8")) <= WECOM_MAX_REPLY_BYTES for text in chunks)
+    assert "".join(chunks) == expected

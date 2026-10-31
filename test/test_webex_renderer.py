@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.webex.client import WEBEX_MAX_TEXT
 from kiro_crew.webex.renderer import _STATUS_EDIT_BUDGET, WebexRenderer
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
@@ -183,19 +184,23 @@ class TestFinalAnswer:
         assert "REDACTED" in delivered
 
     @pytest.mark.asyncio
-    async def test_a_status_frame_is_scanned_too(self) -> None:
+    async def test_a_status_frame_is_scanned_too(self, monkeypatch) -> None:
         """The frame carries the FORMING answer's tail.
 
         So a delimiter-split credential reaches the room here first — minutes
         before ``on_done`` would have caught it.
         """
+        import kiro_crew.webex.renderer as renderer_module
+
+        clock = ManualClock(monotonic_start=0)
+        clock.install(monkeypatch, renderer_module)
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
         await r.on_text_chunk("token AKIA**IOSF**ODNN7EXAMPLE")
         # The throttle window opened at on_turn_start; a status frame is a paced
         # edit, so reopening it is what lets one render inside the test.
-        r._last_status = 0.0
+        clock.advance(r._throttle)
         await r.on_tool_call("t2", "fs_write")
 
         frames = [body for (_mid, _room, body) in c.edits]
@@ -428,44 +433,60 @@ class TestFinalAnswer:
 
 class TestToolStatus:
     @pytest.mark.asyncio
-    async def test_tool_call_edits_placeholder(self) -> None:
+    async def test_tool_call_edits_placeholder(self, monkeypatch) -> None:
+        import kiro_crew.webex.renderer as renderer_module
+
+        clock = ManualClock(monotonic_start=0)
+        clock.install(monkeypatch, renderer_module)
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        r._last_status = 0.0  # bypass throttle for the test
+        clock.advance(r._throttle)
         await r.on_tool_call("t1", "fs_read", tool_kind="read")
         assert any("🔧 Running: fs_read" in m for (_, _, m) in c.edits)
 
     @pytest.mark.asyncio
-    async def test_tool_edits_respect_budget(self) -> None:
+    async def test_tool_edits_respect_budget(self, monkeypatch) -> None:
+        import kiro_crew.webex.renderer as renderer_module
+
+        clock = ManualClock(monotonic_start=0)
+        clock.install(monkeypatch, renderer_module)
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
         for i in range(_STATUS_EDIT_BUDGET + 5):
-            r._last_status = 0.0  # bypass throttle
+            clock.advance(r._throttle)
             await r.on_tool_call(f"t{i}", f"tool_{i}")
         status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
         assert len(status_edits) == _STATUS_EDIT_BUDGET
 
     @pytest.mark.asyncio
-    async def test_tool_edit_failure_burns_budget(self) -> None:
+    async def test_tool_edit_failure_burns_budget(self, monkeypatch) -> None:
+        import kiro_crew.webex.renderer as renderer_module
+
+        clock = ManualClock(monotonic_start=0)
+        clock.install(monkeypatch, renderer_module)
         c = FakeClient(edit_ok=False)
         r = _renderer(c)
         await r.on_turn_start()
-        r._last_status = 0.0
+        clock.advance(r._throttle)
         await r.on_tool_call("t1", "tool_a")
-        r._last_status = 0.0
+        clock.advance(r._throttle)
         await r.on_tool_call("t2", "tool_b")  # budget burned -> no second edit
         status_edits = [m for (_, _, m) in c.edits if m.startswith("🔧")]
         assert len(status_edits) == 1
 
     @pytest.mark.asyncio
-    async def test_final_answer_survives_exhausted_tool_budget(self) -> None:
+    async def test_final_answer_survives_exhausted_tool_budget(self, monkeypatch) -> None:
+        import kiro_crew.webex.renderer as renderer_module
+
+        clock = ManualClock(monotonic_start=0)
+        clock.install(monkeypatch, renderer_module)
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
         for i in range(_STATUS_EDIT_BUDGET):
-            r._last_status = 0.0
+            clock.advance(r._throttle)
             await r.on_tool_call(f"t{i}", f"tool_{i}")
         await r.on_text_chunk("final answer")
         await r.on_done()
@@ -699,3 +720,34 @@ class TestApprovalCardToolLabel:
         text, prompt = await self._card_and_prompt("mcp__server__fs_write")
         assert text == '"mcp__server__fs_write"'
         assert "`mcp__server__fs_write`" in prompt
+
+
+@pytest.mark.asyncio
+async def test_notice_seam_repairs_failed_placeholder_edit_fallback():
+    client = FakeClient(edit_ok=False)
+    renderer = _renderer(client)
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bearer")
+    await renderer.on_text_chunk("opaque-notice-fallback-token and following prose survives.")
+    await renderer.on_done()
+    assert "opaque-notice-fallback-token" not in str(client.sent)
+    assert "following prose survives" in str(client.sent)
+
+
+@pytest.mark.asyncio
+async def test_late_notice_repair_preserves_overflow_after_failed_edit():
+    from kiro_crew.messaging.renderer import repaired_after_a_sent_tail
+    from kiro_crew.webex.renderer import _redact_all
+
+    client = FakeClient(edit_ok=False)
+    renderer = _renderer(client)
+    await renderer.on_turn_start()
+    await renderer.on_notice("Authorization: Bear")
+    start = len(client.sent)
+    answer = "er a " + "x" * (WEBEX_MAX_TEXT - 5)
+    expected = repaired_after_a_sent_tail("Authorization: Bear", answer, _redact_all)
+    await renderer.on_text_chunk(answer)
+    await renderer.on_done()
+    chunks = [text for _, text in client.sent[start:]]
+    assert all(len(text.encode("utf-8")) <= WEBEX_MAX_TEXT for text in chunks)
+    assert "".join(chunks) == expected

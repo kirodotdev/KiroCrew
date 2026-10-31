@@ -39,6 +39,7 @@ kept choices for the card as well as the body — rather than
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -52,7 +53,7 @@ from kiro_crew.constants import (
     relocate_glued_tail_marker,
     strip_control_comments,
 )
-from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.display_safety import joins_to_a_credential, redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
@@ -69,11 +70,26 @@ TOOL_CALL = "tool_call"
 TOOL_RESULT = "tool_result"  # a tool call reached a terminal outcome (see tool_status)
 PROMPT_CHOICE = "prompt_choice"
 COMPACTION = "compaction"
+NOTICE = "notice"
 DONE = "done"
+
+#: Channel prefix per provider notice severity -- the same vocabulary the gateway's
+#: own channel notices use. An unrecognised severity renders as info.
+NOTICE_SEVERITY_PREFIX = {"info": "ℹ️", "warning": "⚠️", "error": "⛔"}
 STEER_CONSUMED = "steer_consumed"  # kiro-cli folded a mid-turn steer at a boundary
 
 OUTPUT_KINDS = frozenset(
-    {TEXT_CHUNK, THINKING, TOOL_CALL, TOOL_RESULT, PROMPT_CHOICE, COMPACTION, DONE, STEER_CONSUMED}
+    {
+        TEXT_CHUNK,
+        THINKING,
+        TOOL_CALL,
+        TOOL_RESULT,
+        PROMPT_CHOICE,
+        COMPACTION,
+        NOTICE,
+        DONE,
+        STEER_CONSUMED,
+    }
 )
 
 
@@ -132,6 +148,7 @@ class OutputEvent:
     # tool_call: the whole (redacted) command when ``title`` is its raw
     # fallback cut to one line, ``""`` when ``title`` is a derived action.
     raw_title: str = ""
+    notice_severity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,6 +168,7 @@ class OutputEvent:
             "continues_segment": self.continues_segment,
             "text_held": self.text_held,
             "raw_title": self.raw_title,
+            "notice_severity": self.notice_severity,
         }
 
 
@@ -585,8 +603,25 @@ def repaired_after_a_sent_tail(
     from kiro_crew.messaging.split import offset_clear_of_a_sent_tail
 
     offset = offset_clear_of_a_sent_tail(sent_tail, remainder, redactor)
+    joined = sent_tail.rstrip() + remainder.lstrip()
     if not offset:
-        return None
+        # Separate messages can be read with a space between them: a Bearer
+        # scheme at the end of one then acquires its token from the next.
+        if (
+            not sent_tail
+            or not remainder
+            or not joins_to_a_credential(sent_tail.rstrip() + " ", remainder.lstrip(), redactor)
+        ):
+            return None
+        joined = sent_tail.rstrip() + " " + remainder.lstrip()
+        offset = 1
+    safe, _ = redact_for_display(joined, redactor)
+    suffix = 0
+    for original, replacement in zip(reversed(remainder), reversed(safe)):
+        if original != replacement:
+            break
+        suffix += 1
+    offset = max(offset, len(remainder) - suffix)
     return CREDENTIAL_REDACTION_TAGS[0] + remainder[offset:]
 
 
@@ -1076,6 +1111,15 @@ class Renderer(ABC):
         """
         return None
 
+    async def on_notice(self, text: str) -> None:
+        sink = getattr(self, "_notice_sink", None)
+        if sink is not None:
+            await sink(text)
+            return
+        logging.getLogger(__name__).warning(
+            "Renderer has no notice sink: %s", getattr(self, "channel_type", "unknown")
+        )
+
     async def dispatch(self, event: OutputEvent) -> None:
         """Route ``event`` to the matching ``on_*`` handler."""
         if event.kind == TEXT_CHUNK:
@@ -1104,6 +1148,29 @@ class Renderer(ABC):
             )
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
+        elif event.kind == NOTICE:
+            try:
+                prefix = NOTICE_SEVERITY_PREFIX.get(
+                    event.notice_severity, NOTICE_SEVERITY_PREFIX["info"]
+                )
+                # Provider text is untrusted: redact against the display form,
+                # then defang broadcast mentions (`<!channel>`, `@everyone`) for
+                # this target, BEFORE chunking so no chunk carries a live one.
+                text = self.redact_for_target(f"{prefix} {event.text}")
+                text = _choice_display_safe(text, self.capabilities)
+                chunks = (
+                    chunk_for_transport(text, self.capabilities, redactor=self.redact_for_target)
+                    if self.capabilities is not None
+                    else [text]
+                )
+                for chunk in chunks:
+                    await self.on_notice(chunk)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Provider notice delivery failed on %s; continuing the answer",
+                    getattr(self, "channel_type", "unknown"),
+                    exc_info=True,
+                )
         elif event.kind == DONE:
             self.empty_turn_notice = event.notice or ""
             await self.on_done(event.stop_reason)
@@ -1142,9 +1209,8 @@ class SilentRenderer(Renderer):
     def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:
         # Typed loosely and defaulted, unlike the base: this is a SUBSTITUTE built
         # from whatever renderer the channel supplied, and it must not fail to
-        # substitute because that object lacks `capabilities`. Nothing here reads
-        # the value -- every handler is a no-op -- so it is only carried so the
-        # object still satisfies the base contract for anyone who inspects it.
+        # substitute because that object lacks `capabilities`. An absent value
+        # leaves dispatch chunking unbounded; every handler is still a no-op.
         super().__init__(capabilities)
         self.channel_type = channel_type
 
@@ -1179,6 +1245,9 @@ class SilentRenderer(Renderer):
         tool_purpose: str = "",
         tool_input: str = "",
     ) -> None:
+        return None
+
+    async def on_notice(self, text: str) -> None:
         return None
 
     async def on_compaction(self, context_usage_pct: float) -> None:

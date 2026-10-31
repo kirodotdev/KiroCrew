@@ -45,8 +45,8 @@ from typing import Any, Awaitable, Callable, Sequence
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT, strip_control_comments
 from kiro_crew.dashboard.turn_dispatch import tool_approval_timeout_secs
 from kiro_crew.messaging.approval import adoptable_reservation
-from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.empty_turn_copy import UNFINISHED_TURN_NOTICE
+from kiro_crew.messaging.notice_seam import NoticeAnswerPrefix
 from kiro_crew.messaging.outbound_files import (
     OutboundFile,
     Rejection,
@@ -59,10 +59,11 @@ from kiro_crew.messaging.renderer import (
     new_approval_nonce,
     nonce_eq,
     redaction_notice,
+    repaired_after_a_sent_tail,
 )
 from kiro_crew.messaging.split import repaired_for_delivery, split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_exfiltration_urls
 from kiro_crew.slack.approval_tokens import (  # noqa: F401 -- re-exported
     _APPROVAL_TOKEN_SEP,
     _approval_registry_key,
@@ -93,6 +94,8 @@ from kiro_crew.slack.handler import (
     build_timing_footer,
 )
 from kiro_crew.slack.outbound import PostedOptions
+from kiro_crew.slack.renderer_safety import _display_safe as _display_safe
+from kiro_crew.slack.renderer_safety import _redact_all as _redact_all
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _NARRATION_MAX_CHARS,
@@ -117,28 +120,6 @@ TOOL_TRUST_ACTION_PREFIX = "mc_tool_trust_"
 
 #: Thread-status text shown while the turn is in flight (mirrors handler).
 _STATUS_WORKING = "is working on your request"
-
-
-def _redact_all(text: str) -> str:
-    """Both outbound redactors as one callable, in the canonical order."""
-    text, _ = redact_exfiltration_urls(text)
-    return redact_credentials(text)[0]
-
-
-def _display_safe(text: str) -> str:
-    """Redact against what Slack RENDERS, not only the bytes sent.
-
-    The twin of the Discord renderer's ``_redact_transformed``, and applied at
-    EVERY model-authored egress in this file rather than at whichever one a
-    reviewer last looked at. Neither ``AKIA**<rest>**`` nor
-    ``[AKIA](https://x)<rest>`` matches a credential pattern as written, and Slack
-    renders the markup away and shows the reader an intact key -- so a literal-only
-    scan is not a floor, it is a scan of one of the two forms that leave here.
-
-    Idempotent, so applying it twice on a path (a released tail, then its append)
-    costs nothing and keeps the guarantee at the sink instead of at the caller.
-    """
-    return redact_for_display(text, _redact_all)[0]
 
 
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
@@ -671,6 +652,8 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
         # ``processing``. Only ever set while agent sessions are live.
         self._suspended = False
         self._resume_tasks: set[asyncio.Task[None]] = set()
+        self._notice_tail = ""
+        self._answer_notice_prefix: NoticeAnswerPrefix | None = None
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and, only where
@@ -721,6 +704,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
                 except Exception:
                     logger.warning("Failed to post chat.update placeholder", exc_info=True)
                     self._stream_ts = None
+                    self._answer_notice_prefix = None
         return self._stream_ts
 
     async def _start_stream_if_threaded(self, *, initial_text: str | None = None) -> str | None:
@@ -1017,6 +1001,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
             await self.slack.update_message(self.channel, self._stream_ts, first or _NO_RESPONSE)
             self._delivered += chunks[0]
         for part in chunks[1:]:
+            part = self._fresh_notice_safe(part)
             try:
                 await self.slack.post_message(self.channel, part, self.thread_ts)
             except Exception:
@@ -1025,6 +1010,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
             # Recorded like every other confirmed send: the ledger IS the subject
             # the redaction notice counts, so a continuation left out of it makes an
             # over-limit answer announce fewer placeholders than it shipped.
+            self._notice_tail = ""
             self._delivered += part
 
     async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
@@ -1326,13 +1312,21 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
         # the answer (no-op when show_thinking is off or nothing accumulated).
         await self._maybe_post_thinking()
         await self._resume_from_suspended()
+        fresh = self._stream_ts is None
+        if self._answer_notice_prefix is None:
+            self._answer_notice_prefix = NoticeAnswerPrefix(
+                self._notice_tail if fresh else "", _redact_all
+            )
+        text = self._answer_notice_prefix.feed(text)
         if text.strip() != UNFINISHED_TURN_NOTICE:
             # The driver's cut-off notice is not part of the turn it records.
             self._turn_raw += text
         if not self.thread_ts:
             # A flat reply has no thread status, so its placeholder message is
             # what shows the turn is running.
-            await self._ensure_stream()
+            ts = await self._ensure_stream()
+            if fresh and ts is not None:
+                self._notice_tail = ""
         if self._status_on_tool and text.strip():
             # The thread status still names the last tool; the model is writing
             # again. Best-effort: MUST NOT raise. Decoration only.
@@ -1596,6 +1590,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
                     exc_info=True,
                 )
             self._stream_ts = None
+            self._answer_notice_prefix = None
 
     async def on_prompt_choice(
         self,
@@ -1649,6 +1644,15 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
             raise
 
         await self._suspend_for_approval(request_id, self.decider)
+
+    def _fresh_notice_safe(self, text: str) -> str:
+        repaired = repaired_after_a_sent_tail(getattr(self, "_notice_tail", ""), text, _redact_all)
+        return repaired if repaired is not None else text
+
+    async def on_notice(self, text: str) -> None:
+        safe = self._fresh_notice_safe(text)
+        if await self.slack.post_message(self.channel, safe, self.thread_ts):
+            self._notice_tail = safe
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Best-effort: MUST NOT raise. Decoration only.
@@ -1828,7 +1832,9 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
             # knows what was already shown. The flag below is the sole ``_finalized``
             # write, so a raise here leaves it False by construction.
             for part in await self._split_for_slack(clean_text):
+                part = self._fresh_notice_safe(part)
                 await self.slack.post_message(self.channel, part, self.thread_ts)
+                self._notice_tail = ""
                 self._delivered += part
         # The answer is delivered at this point (or there was none to deliver: a
         # tool-only turn with empty ``clean_text`` and no placeholder legitimately

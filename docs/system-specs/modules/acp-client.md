@@ -2888,6 +2888,54 @@ kiro can return a `-32603` error that is an *advisory* that it substituted a dif
 
 ## Session Update Handling
 
+### Ordinary provider notices
+
+Only the Claude and Codex handshakes advertise
+`clientCapabilities.session.notices: {}` through the single
+`client_capabilities_for()` / `CLIENT_CAPABILITIES_BY_BACKEND` table and the
+Codex harness, independently of AIR;
+kiro-cli, KAS and every other backend send the shared set unchanged. A `session/update` with `sessionUpdate: "notice"` becomes `EVENT_NOTICE`,
+carrying plain-text `title`, optional description in `text`, and `notice_severity`.
+Severity is an open string: info, warning and error retain their meaning; unknown
+values remain advisory. Malformed and unknown updates are ignored. No notice is
+assistant output, a terminal failure, or an instruction to change runtime policy.
+
+Notice fields over `_REQUEST_ID_REDACT_INPUT_CAP` are replaced by the shared
+length-only marker before normalization or redaction scans.
+
+The shared parser normalizes the original title and description and redacts their
+join before display bounds of 256 title characters, 4096 description characters
+and 64 severity characters. The joined scan is bounded by twice the per-field
+input cap plus its separator. A credential crossing the field boundary leaves
+its replacement and remaining detail in the description, even when its title
+anchor lies beyond the title display cap. Ordinary multiline fields retain their
+shape. CLI and dashboard consumers redact the assembled fields again.
+Each client/handle owns a session-scoped notice state with at most 128 pending
+startup/between-turn notices. Repeated warnings are delivered again, including
+on later turns. A full pending queue drops its oldest notice and logs the count
+at the next drain; it does not synthesize another notice. Pending
+notices drain once into the next stream. Startup notices are buffered by the
+response waiter and staged by the init drain after the session ID is established.
+Owned notices during live configuration RPCs are staged immediately and excluded
+from the replay buffer, so the init drain cannot stage them twice.
+A session change or direct-client reset clears the window. Ownerless,
+foreign-session and child-session notices never become the parent's notices.
+
+Installed adapter verification: Claude ACP 0.84.0 and Codex ACP 2.0.0 both negotiate
+notices through the independent session capability. Their notice schemas require
+a string severity and nonempty title, with an optional string description. Claude's
+installed notice helper and SDK schema accept info, warning, error and future
+severity strings, and retain the legacy assistant-text fallback without negotiation.
+Both adapters completed real initialize/session-new probes with notices enabled
+and accepted their current model through `session/set_config_option`;
+Codex also completed a real prompt. A live Claude ACP 0.84.0 turn (authenticated
+Max subscription) with a `UserPromptSubmit` hook emitted
+`{"sessionUpdate": "notice", "severity": "info", "title": "UserPromptSubmit says: …"}`,
+which `parse_notice` read with its severity and title intact.
+Focused fixtures exercise both Crew transports, provider conversion, repeated notices,
+startup retention, session isolation and unchanged ordinary assistant text.
+CLI output maps unknown severities to `info`, as dashboard and channel rendering do.
+
 `_extract_text_chunk()` handles two update types for text streaming:
 
 - `agent_message_chunk` — standard text/content. Detects `type: "thinking"` or `"reasoning"` content blocks for extended thinking (kiro-cli style).

@@ -57,6 +57,7 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
+    repaired_after_a_sent_tail,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
@@ -209,6 +210,8 @@ class TeamsRenderer(Renderer):
         self._last_progress = 0.0
         self._started = False
         self._finalized = False
+        self._sent_tail = ""
+        self._notice_below_progress = False
         # Holds the typing-refresh task so it is not garbage collected mid-flight.
         # Cancelled when the turn finalizes.
         self._typing_task: asyncio.Task[None] | None = None
@@ -374,6 +377,19 @@ class TeamsRenderer(Renderer):
         # click that resolves nothing.
         self._pending_prompts[rid] = (activity_id, title)
 
+    async def _seam_safe(self, text: str) -> str:
+        safe = await asyncio.to_thread(_display_safe, text)
+        repaired = await asyncio.to_thread(
+            repaired_after_a_sent_tail, self._sent_tail, safe, _display_safe
+        )
+        return repaired if repaired is not None else safe
+
+    async def on_notice(self, text: str) -> None:
+        text = await self._seam_safe(text)
+        await self._client.send_message(self._conversation_id, text, self._service_url)
+        self._sent_tail = text
+        self._notice_below_progress = bool(self._progress_id)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("Teams: compaction status %.0f%%", context_usage_pct)
 
@@ -391,6 +407,8 @@ class TeamsRenderer(Renderer):
         # Overflow past max_buttons is appended to the body as a numbered list by
         # the shared cap, so the user still learns those choices exist.
         content, kept = apply_options_cap(content, choices, self.capabilities)
+        if not self._notice_below_progress:
+            content = await self._seam_safe(content)
         # Re-bound: the splitter declines to cut when no budget is clean and
         # answers with the text whole, and this transport truncates a larger
         # payload after every scan has run, so the tail would go unseen.
@@ -413,9 +431,14 @@ class TeamsRenderer(Renderer):
                 if await self._client.update_message(
                     self._conversation_id, self._progress_id, chunk, self._service_url
                 ):
+                    if not self._notice_below_progress:
+                        self._sent_tail = chunk
                     continue
+            chunk = await self._seam_safe(chunk)
+            chunks[index] = chunk
             try:
                 await self._client.send_message(self._conversation_id, chunk, self._service_url)
+                self._sent_tail = chunk
             except TeamsSendError:
                 # Stop at the first failed chunk -- skipping ahead would splice a gap
                 # into the middle of the answer, and a conversation that cannot take

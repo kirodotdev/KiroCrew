@@ -39,7 +39,7 @@ if TYPE_CHECKING:
         _mirror_to_dashboard,
         _post_review_draft,
         _reply_by_voice,
-        _safe_final_update,
+        _safe_final_update_with_notice,
         _SlackTurn,
         auto_title,
         build_timing_footer,
@@ -423,20 +423,29 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 # nothing streamed — so a primary-send failure raises and books a
                 # failure; a send that returns is confirmed delivery.
                 final_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
-                await _safe_final_update(
+                await _safe_final_update_with_notice(
                     slack,
                     channel,
                     answer.stream_ts,
                     final_text or _NO_RESPONSE,
                     reply_ts,
                     raise_on_primary_failure=True,
+                    notice_tail=answer.notice_tail,
                 )
                 _answer_reached = True
             else:
                 # No stream and no placeholder — post the answer directly.
                 # Answer-carrying: a raise means the reader got nothing; a return
                 # is confirmed delivery.
-                await slack.post_message(channel, clean_text or _NO_RESPONSE, reply_ts)
+                from kiro_crew.messaging.renderer import (
+                    _default_redactor,
+                    repaired_after_a_sent_tail,
+                )
+
+                repaired = repaired_after_a_sent_tail(
+                    answer.notice_tail, clean_text, _default_redactor
+                )
+                await slack.post_message(channel, repaired or clean_text or _NO_RESPONSE, reply_ts)
                 _answer_reached = True
         except Exception:
             # An answer-carrying send failed: the reader received no answer.

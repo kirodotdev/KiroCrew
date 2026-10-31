@@ -327,6 +327,28 @@ describe("a mate's chat", () => {
     expect(where.className).not.toMatch(/underline/)
   })
 
+  it("an adapter provider notice stays in the transcript but never draws in a mate's chat", async () => {
+    // docs/decisions/2026-10-09-crewmate-chat-draws-messages-only.md: the chat
+    // draws the person's rows and the mate's speech only. The same
+    // history in an ordinary pane still draws the notices.
+    const history = [
+      { role: 'user', content: 'Status?', cls: '', ts: '2026-09-22T06:00:00Z' },
+      { role: 'notice', content: 'Model fallback to sonnet', cls: 'msg msg-info', ts: '2026-09-22T06:00:01Z', meta: { kind: 'provider_notice', severity: 'warning' } },
+      { role: 'notice', content: 'Adapter session failed', cls: 'msg msg-info', ts: '2026-09-22T06:00:02Z', meta: { kind: 'provider_notice', severity: 'error' } },
+      { role: 'assistant', content: 'All green.', cls: '', ts: '2026-09-22T06:00:03Z' },
+    ]
+    const detail = { messages: history, running: false, has_more: false, total: history.length }
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue(detail)
+    const view = renderPane()
+    await view.findByText('All green.')
+    expect(view.queryByText(/Model fallback to sonnet/)).toBeNull()
+    expect(view.queryByText(/Adapter session failed/)).toBeNull()
+    view.unmount()
+    const ordinary = renderPane({ crewmate: false })
+    await ordinary.findByText(/Model fallback to sonnet/)
+    expect(ordinary.getByText(/Adapter session failed/)).toBeInTheDocument()
+  })
+
   it('the composer addresses the mate by name, not the product', async () => {
     const view = renderPane()
     await waitFor(() => expect(view.getByPlaceholderText(/Message Radar/)).toBeInTheDocument())

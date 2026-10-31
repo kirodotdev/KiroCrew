@@ -36,6 +36,7 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     format_overflow,
     redaction_notice,
+    repaired_after_a_sent_tail,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import (
@@ -154,6 +155,7 @@ class WeComRenderer(Renderer):
         # The conversation to PUSH to when an answer outgrows one bubble. A stream
         # frame's acceptance cannot be confirmed (see _deliver_overflow), so the
         # tail rides aibot_send_msg instead.
+        self._sent_tail = ""
         self._chat_id = chat_id
         # (stream_id, head) of a sealing frame put on the wire but not yet known
         # accepted. Re-checked at close(), see _recover_unconfirmed_seal.
@@ -288,6 +290,25 @@ class WeComRenderer(Renderer):
         # (deny-by-default), so this is never reached -- kept as a safe no-op to
         # satisfy the Renderer contract.
         logger.debug("WeCom: prompt_choice ignored (no interactive buttons)")
+
+    def _fresh_safe(self, text: str) -> str:
+        repaired = repaired_after_a_sent_tail(self._sent_tail, text, _default_redactor)
+        return repaired if repaired is not None else text
+
+    async def _send_fresh(self, text: str) -> bool:
+        text = self._fresh_safe(text)
+        for chunk in split_markdown_bytes(text, WECOM_MAX_REPLY_BYTES):
+            if not await self._client.send_proactive(self._chat_id, chunk):
+                return False
+            self._sent_tail = chunk
+        return True
+
+    async def on_notice(self, text: str) -> None:
+        # The response URL is single-use and belongs to the answer's fallback.
+        if not self._chat_id:
+            raise RuntimeError("WeCom has no independent provider notice destination")
+        if not await self._send_fresh(text):
+            raise RuntimeError("WeCom refused provider notice delivery")
 
     async def on_compaction(self, context_usage_pct: float) -> None:
         # A mid-turn out-of-band frame would pollute the single answer bubble;
@@ -434,7 +455,7 @@ class WeComRenderer(Renderer):
             # looked identical to a delivered one.
             delivered = False
             if self._chat_id:
-                delivered = await self._client.send_proactive(self._chat_id, head)
+                delivered = await self._send_fresh(head)
             if not delivered:
                 # No warm conversation to push into (or the push was refused): the
                 # single-use response_url is the last channel left. Its verdict is
@@ -442,7 +463,12 @@ class WeComRenderer(Renderer):
                 # knowledge rather than the "a URL exists, so it must have worked"
                 # assumption it replaced, which let a headless tail follow a failed
                 # POST.
+                repaired = split_markdown_bytes(self._fresh_safe(head), WECOM_MAX_REPLY_BYTES)
+                head = repaired[0]
+                overflow = repaired[1:] + overflow
                 delivered = await self._client.send_reply(self._response_url, head)
+                if delivered:
+                    self._sent_tail = head
             if overflow and not delivered:
                 # A tail without its head is a fragment the reader cannot tell is
                 # incomplete. Withheld and reported, matching how _deliver_overflow
@@ -490,7 +516,7 @@ class WeComRenderer(Renderer):
             return
         for i, chunk in enumerate(chunks):
             await asyncio.sleep(_STREAM_THROTTLE_S)
-            if not await self._client.send_proactive(self._chat_id, chunk):
+            if not await self._send_fresh(chunk):
                 logger.warning(
                     "WeCom: answer chunk %d/%d was refused by the platform; "
                     "%d further chunk(s) not attempted",
@@ -528,7 +554,7 @@ class WeComRenderer(Renderer):
         # see is what the proactive age rotation exists to keep small.
         if self._client.stream_is_dead(self._stream_id) and self._chat_id:
             logger.info("WeCom: the sealing frame was refused; re-delivering it as a push")
-            return await self._client.send_proactive(self._chat_id, chunk)
+            return await self._send_fresh(chunk)
         # No verdict yet. Remember the frame so ``close()`` can ask again once the
         # turn's remaining work has given the ACK time to arrive.
         self._unconfirmed_seal = (self._stream_id, chunk)
@@ -638,7 +664,7 @@ class WeComRenderer(Renderer):
             "WeCom: the sealing frame was refused (verdict arrived after the turn); "
             "re-delivering the answer as a confirmed push"
         )
-        return await self._client.send_proactive(self._chat_id, chunk)
+        return await self._send_fresh(chunk)
 
     async def _release_pending_overflow(self, *, head_ok: bool = True) -> None:
         """Deliver the tail chunks held back by :meth:`on_done`.

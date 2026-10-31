@@ -23,7 +23,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``_tool_tracker``, ``_turn_done``, ``_turn_steering_denied``, ``_working_logged_ts``,
 ``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
 
-Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
+Instance fields read: ``_session_notices``, ``_abandoned_steering``, ``_awaited_responses``,
 ``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_steering_cancel_tasks``.
 """
@@ -457,6 +457,8 @@ async def _run_turn(
         except asyncio.QueueEmpty:
             break
         if stale is not None:
+            if self._session_notices.accept(stale, self._session_id, stage=True) is not None:
+                continue
             # A between-turns MCP status snapshot still tells this session
             # which servers need a sign-in: a server that connected while
             # no turn was reading leaves the set here, so the turn-start

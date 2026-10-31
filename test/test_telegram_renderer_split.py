@@ -11,6 +11,7 @@ import asyncio
 import html
 import re
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
@@ -434,6 +435,164 @@ class TestRotationSeamCredentialSafety:
         frames = [text for text, _kb in cli.sent]
         assert frames, "nothing was delivered at all"
         self._assert_no_key_on_screen(frames)
+
+    @pytest.mark.parametrize(("head", "tail"), CREDENTIAL_STRADDLE_SHAPES)
+    def test_a_provider_notice_is_a_graded_predecessor(
+        self, monkeypatch: pytest.MonkeyPatch, head: str, tail: str
+    ) -> None:
+        """A notice is a bubble of its own: a key begun at its end and completed by
+        the reply below it must not read whole down the screen."""
+        r, cli = self._renderer(monkeypatch)
+
+        async def _go() -> None:
+            await r.on_notice("Provider warning: " + head)
+            r._buf = [tail + " and the answer continues here."]
+            await r._seal_current(extract_uploads=False)
+
+        asyncio.run(_go())
+        frames = [text for text, _kb in cli.sent]
+        assert len(frames) == 2, f"expected the notice and the reply: {frames}"
+        self._assert_no_key_on_screen(frames)
+
+    @pytest.mark.parametrize("wrapper", ["**", "`"])
+    def test_notice_bearer_join_removes_the_complete_formatted_token(self, monkeypatch, wrapper):
+        r, cli = self._renderer(monkeypatch)
+        token = "opaque-notice-join-token"
+
+        async def scenario():
+            await r.on_notice("Authorization: Bearer")
+            r._buf = [f"{wrapper}{token}{wrapper} and following prose survives."]
+            await r._seal_current(extract_uploads=False)
+
+        asyncio.run(scenario())
+        delivered = "".join(text for text, _ in cli.sent)
+        assert token not in delivered
+        assert "following prose survives" in delivered
+        assert "[REDACTED: credential]" in delivered
+
+    def test_a_notice_under_the_open_bubble_stays_the_predecessor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sealing the live bubble in place leaves the notice below it, so the next
+        message is graded against the notice, not the bubble."""
+        r, _cli = self._renderer(monkeypatch)
+        r._stream_mid = 7
+
+        asyncio.run(r.on_notice("Provider warning: AKIA"))
+        asyncio.run(r._seal_text("the bubble above", None))
+        assert r._sent_tail == "Provider warning: AKIA"
+        r._record_sent("a new message below")
+        assert r._sent_tail == "a new message below"
+
+    def test_a_notice_under_the_open_bubble_leaves_the_sent_tail_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The bubble's own live edits are graded against the message ABOVE it.
+
+        A notice sent while the bubble is open lands BELOW the bubble, so recording
+        it as ``_sent_tail`` would grade the bubble's next edit -- and its final
+        seal -- against the notice instead: the bubble's leading span, the repair
+        that keeps a key split across the message above, would stop applying.
+        """
+        r, _cli = self._renderer(monkeypatch)
+        r._sent_tail = "the sealed message above"
+        r._stream_mid = 7
+
+        asyncio.run(r.on_notice("Provider warning: AKIA"))
+
+        assert r._sent_tail == "the sealed message above"
+        assert r._note_below_stream == "Provider warning: AKIA"
+
+    @pytest.mark.parametrize("seal", ["text", "chunk", "rich"])
+    @pytest.mark.parametrize("plain_fallback", [False, True])
+    def test_fresh_seal_after_notice_grades_its_actual_predecessor(
+        self, monkeypatch, seal, plain_fallback
+    ):
+        r, cli = self._renderer(monkeypatch)
+        r._stream_mid = 7
+        edit = AsyncMock(return_value=False)
+        monkeypatch.setattr(cli, "edit_message", edit)
+        cli.rich_fails = plain_fallback
+        send = cli.send_message
+
+        async def deliver(chat_id, text, **kwargs):
+            if plain_fallback and kwargs.get("parse_mode") == "HTML":
+                return None
+            return await send(chat_id, text, **kwargs)
+
+        monkeypatch.setattr(cli, "send_message", deliver)
+
+        async def go():
+            await r.on_notice("Authorization: Bear")
+            text = "er opaque-notice-token and useful detail."
+            if seal == "rich":
+                text += "\n\n| a | b |\n| --- | --- |\n| 1 | 2 |"
+            if seal == "chunk":
+                landed, stale = await r._seal_chunk_html(text)
+                assert landed and stale == 7
+            else:
+                await r._seal_text(text, None)
+
+        asyncio.run(go())
+        if seal != "rich" or plain_fallback:
+            assert edit.await_count == 2
+        frames = [text for text, _ in cli.sent]
+        if seal == "rich" and not plain_fallback:
+            frames.append(cli.rich_sent[-1][0])
+        assert len(frames) == 2
+        self._assert_no_key_on_screen(frames)
+        assert "opaque-notice-token" not in "".join(frames)
+        assert "REDACTED" in frames[-1]
+        assert "useful detail" in frames[-1]
+        assert r._note_below_stream is None
+
+    @pytest.mark.parametrize("seal", ["text", "chunk"])
+    def test_failed_fresh_seal_retains_notice_for_retry(self, monkeypatch, seal):
+        r, cli = self._renderer(monkeypatch)
+        r._stream_mid = 7
+        monkeypatch.setattr(cli, "edit_message", AsyncMock(return_value=False))
+
+        async def go():
+            await r.on_notice("Authorization: Bear")
+            send = cli.send_message
+            monkeypatch.setattr(cli, "send_message", AsyncMock(return_value=None))
+            text = "er opaque-notice-token and useful detail."
+            if seal == "chunk":
+                assert await r._seal_chunk_html(text) == (False, None)
+            else:
+                await r._seal_text(text, None)
+            assert r._note_below_stream == "Authorization: Bear"
+            monkeypatch.setattr(cli, "send_message", send)
+            if seal == "chunk":
+                assert await r._seal_chunk_html(text) == (True, None)
+            else:
+                await r._seal_text(text, None)
+
+        asyncio.run(go())
+        self._assert_no_key_on_screen([text for text, _ in cli.sent])
+        assert "opaque-notice-token" not in "".join(text for text, _ in cli.sent)
+        assert "REDACTED" in cli.sent[-1][0]
+        assert r._note_below_stream is None
+
+    @pytest.mark.parametrize("seal", ["text", "chunk"])
+    def test_in_place_seal_keeps_the_predecessor_above_the_reply(self, monkeypatch, seal):
+        r, cli = self._renderer(monkeypatch)
+        r._sent_tail = "Authorization: Bear"
+        r._stream_mid = 7
+
+        async def go():
+            await r.on_notice("An ordinary notice")
+            text = "er opaque-notice-token and useful detail."
+            if seal == "chunk":
+                assert await r._seal_chunk_html(text) == (True, None)
+            else:
+                await r._seal_text(text, None)
+
+        asyncio.run(go())
+        self._assert_no_key_on_screen(["Authorization: Bear", cli.edits[-1][1]])
+        assert "opaque-notice-token" not in cli.edits[-1][1]
+        assert "REDACTED" in cli.edits[-1][1]
+        assert r._sent_tail == "An ordinary notice"
 
     def test_an_innocent_body_still_rotates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Control: the grading refuses boundaries, it does not stop rotating."""

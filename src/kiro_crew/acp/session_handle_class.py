@@ -28,7 +28,7 @@ from kiro_crew.acp import session_handle_steering as _sh_steering
 from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
-from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS
+from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, SessionNoticeState
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.liveness import (
     InFlightToolTracker,
@@ -244,6 +244,7 @@ class AcpSessionHandle:
         bound_cwd: str = "",
     ) -> None:
         self._session_id = session_id
+        self._session_notices = SessionNoticeState()
         # The Kiro Crew session that OWNS this ACP session, threaded from the
         # runtime's create/load paths the way ``crew_agent`` is, and rebound on a
         # warm-pool claim. The hooks execute path keys its listed-id record and

@@ -105,6 +105,7 @@ logger = logging.getLogger(__name__)
 # ── ACP Event Kinds ──
 
 EVENT_TEXT_CHUNK = "text_chunk"
+EVENT_NOTICE = "notice"
 EVENT_THINKING_CHUNK = "thinking_chunk"
 EVENT_TOOL_CALL = "tool_call"
 EVENT_TOOL_CALL_UPDATE = "tool_call_update"
@@ -393,6 +394,16 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # filter string (``clientApp/kirocrew``, ``acp-client/kirocrew``) finds Crew on both.
 KIRO_CLI_CLIENT_APPLICATION_ENV = "KIRO_CLI_CLIENT_APPLICATION"
 KIRO_CLI_CLIENT_APPLICATION = "kirocrew"
+# `session.notices` moves an adapter's provider notices out of the transcript into
+# `notice` session updates, so it goes only to the backends whose adapters emit
+# them: codex-acp 2.0.0 and claude-agent-acp 0.84.0 (a live Claude hook message
+# arrived as `{"sessionUpdate": "notice", "severity": "info", "title": ...}`).
+# kiro-cli, KAS and every other backend keep the shared set byte-identical -- the
+# rule above again: add a key for a backend in the change that handles it.
+ACP_CLIENT_CAPABILITIES_SESSION_NOTICES: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "session": {"notices": {}},
+}
 
 # ── ACP Backend Identifiers ──
 # DEFINED in :mod:`kiro_crew.acp_backends` and re-exported from the import block
@@ -943,6 +954,7 @@ class AcpEvent:
     text: str = ""
     tool_call_id: str = ""
     title: str = ""
+    notice_severity: str = ""
     #: The backend's OWN ``title`` for a tool_call / tool_call_update frame,
     #: untouched. ``title`` above is the DISPLAY label ``select_tool_title``
     #: picks, which prefers a shell call's model-authored ``rawInput.description``

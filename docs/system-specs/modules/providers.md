@@ -1075,6 +1075,9 @@ raw result frame and true when Kiro Crew fabricates a compatibility terminal
 because the result frame never arrived; consumers that account completed work
 must require the raw form.
 
+Provider notice conversion preserves `notice_severity`. Adapter-authored notices
+carry no catalog metadata.
+
 ## AcpProvider (`providers/acp.py`)
 
 The ACP provider carries its owning session key through the `session_key`

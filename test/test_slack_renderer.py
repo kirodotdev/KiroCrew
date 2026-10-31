@@ -1798,3 +1798,70 @@ class TestPerCallToolOutcomeCards:
         assert error_cards and error_cards[0]["details"] == "\nfailed"
         # b still closes complete.
         assert cards[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["", "**", "`"])
+@pytest.mark.parametrize("thread_ts", ["t1", None])
+async def test_notice_bearer_join_never_delivers_the_answer_token(wrapper, thread_ts):
+    from kiro_crew.messaging.renderer import NOTICE, OutputEvent
+
+    rec = _RecSlack()
+    renderer = SlackRenderer(rec, "C1", thread_ts, reactions_enabled=False)
+    token = "opaque-notice-join-token"
+    await renderer.dispatch(OutputEvent(kind=NOTICE, text="Authorization: Bearer"))
+    await renderer.on_text_chunk(f"{wrapper}{token}{wrapper} and following prose survives.")
+    await renderer.on_done("end_turn")
+    delivered = str(rec.calls)
+    assert token not in delivered
+    assert "following prose survives" in delivered
+    assert "[REDACTED: credential]" in delivered
+
+
+@pytest.mark.asyncio
+async def test_notice_below_an_open_answer_does_not_rewrite_that_answer():
+    from kiro_crew.messaging.renderer import NOTICE, OutputEvent
+
+    rec = _RecSlack()
+    renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+    await renderer.on_text_chunk("The answer starts here. ")
+    await renderer.dispatch(OutputEvent(kind=NOTICE, text="Authorization: Bearer"))
+    await renderer.on_text_chunk("ordinary-answer-word and following prose survives.")
+    await renderer.on_done("end_turn")
+    assert renderer._accumulated == (
+        "The answer starts here. ordinary-answer-word and following prose survives."
+    )
+    assert "[REDACTED: credential]" not in str(rec.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "raise"])
+async def test_undelivered_notice_is_not_an_answer_predecessor(failure):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.messaging.renderer import NOTICE, OutputEvent
+
+    rec = _RecSlack()
+    renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+    rec.post_message = AsyncMock(return_value=None, side_effect=RuntimeError() if failure else None)
+    await renderer.dispatch(OutputEvent(kind=NOTICE, text="Authorization: Bearer"))
+    await renderer.on_text_chunk("ordinary-answer-word and following prose survives.")
+    assert renderer._accumulated == "ordinary-answer-word and following prose survives."
+
+
+@pytest.mark.asyncio
+async def test_fresh_continuation_below_notice_is_graded_but_open_answer_is_unchanged():
+    from unittest.mock import AsyncMock
+
+    rec = _RecSlack()
+    renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+    await renderer.on_text_chunk("The answer above.")
+    assert await renderer._ensure_stream() is not None
+    await renderer.on_notice("Authorization: Bearer")
+    renderer._split_for_slack = AsyncMock(
+        return_value=["The answer above.", "opaque-notice-join-token and following prose survives."]
+    )
+    await renderer._render_fallback("unused")
+    assert "opaque-notice-join-token" not in str(rec.calls)
+    assert rec.calls[-2][1]["text"] == "The answer above."
+    assert "following prose survives" in rec.calls[-1][1]["text"]

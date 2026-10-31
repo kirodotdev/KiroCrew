@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.messaging.notice_seam import NoticeAnswerPrefix
 
 from kiro_crew import name_grant, runtime_death
 from kiro_crew._facade_compose import compose as _facade_compose
@@ -158,6 +159,7 @@ from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
@@ -356,6 +358,7 @@ from kiro_crew.slack.handler_runtime.stream import (  # noqa: F401
     _filter_options_brackets,
     _resolve_comment_hold,
     _safe_final_update,
+    _safe_final_update_with_notice,
     _safe_update,
     _ts_before,
 )
