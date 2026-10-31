@@ -123,7 +123,8 @@ def taskq_cancel_queued(
     parent-end teardown passes False: a row in that
     window may be carrying a decision a person made (a spawn approval is the visible
     case), which a teardown has no standing to revoke on their behalf. Refusing
-    leaves the row to the incarnation that owns it.
+    leaves the row to the incarnation that owns it, which reads the teardown mark
+    and cancels the row instead of starting it (``claim_and_start``).
 
     Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
     ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
