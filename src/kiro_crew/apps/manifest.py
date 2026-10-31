@@ -180,6 +180,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "dev",
         "disable",
         "enable",
+        "link-preview",
         "manifest",
         "migrate-cleanup",
         "open",

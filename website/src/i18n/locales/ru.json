@@ -7829,7 +7829,8 @@
     "linkPreview": {
       "copied": "Скопировано",
       "copy_url": "Копировать URL",
-      "copy_url_of": "Копировать URL для {{name}}"
+      "copy_url_of": "Копировать URL для {{name}}",
+      "load_failed": "Не удалось загрузить предпросмотр."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Не удалось подключиться к {{label}}: {{reason}}",

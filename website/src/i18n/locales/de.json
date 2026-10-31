@@ -7577,7 +7577,8 @@
     "linkPreview": {
       "copied": "Kopiert",
       "copy_url": "URL kopieren",
-      "copy_url_of": "URL von {{name}} kopieren"
+      "copy_url_of": "URL von {{name}} kopieren",
+      "load_failed": "Diese Vorschau konnte nicht geladen werden."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Verbindung mit {{label}} konnte nicht hergestellt werden: {{reason}}",

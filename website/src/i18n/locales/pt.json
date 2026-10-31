@@ -7703,7 +7703,8 @@
     "linkPreview": {
       "copied": "Copiado",
       "copy_url": "Copiar URL",
-      "copy_url_of": "Copiar URL de {{name}}"
+      "copy_url_of": "Copiar URL de {{name}}",
+      "load_failed": "Não foi possível carregar esta pré-visualização."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Não foi possível conectar a {{label}}: {{reason}}",

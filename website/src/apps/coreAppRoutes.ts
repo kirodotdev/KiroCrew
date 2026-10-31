@@ -25,6 +25,7 @@ export const CORE_APP_ROUTE_SEGMENTS = new Set([
   'dev',
   'disable',
   'enable',
+  'link-preview',
   'manifest',
   'migrate-cleanup',
   'open',

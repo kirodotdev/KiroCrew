@@ -258,6 +258,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
     # Reverse proxy: dashboard app UI → app backend (same-origin, avoids CORS)
     app.router.add_route("*", "/apps/{name}/api/{path:.*}", handle_app_api_proxy)
+    # Link-preview frames: the sandboxed card document, its mint and its fetch.
+    from kiro_crew.apps.link_preview_frame import register_link_preview_routes
+
+    register_link_preview_routes(app)
 
 
 # This module keeps only the route table. It is the facade of the app management route

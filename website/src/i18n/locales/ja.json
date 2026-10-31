@@ -7451,7 +7451,8 @@
     "linkPreview": {
       "copied": "コピー済み",
       "copy_url": "URL をコピー",
-      "copy_url_of": "{{name}} の URL をコピー"
+      "copy_url_of": "{{name}} の URL をコピー",
+      "load_failed": "このプレビューを読み込めませんでした。"
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}} に接続できませんでした：{{reason}}",

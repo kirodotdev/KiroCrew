@@ -945,3 +945,156 @@ class TestContributesPanelTabs:
         tabs = [_panel_tab(id=f"t{i}") for i in range(_MAX_PANEL_TABS_PER_APP + 1)]
         m = AppManifest.from_dict(_valid_manifest(contributes={"panelTabs": tabs}))
         assert any("exceeds the limit of" in e for e in m.validate())
+
+
+def _link_preview(**over) -> dict:
+    return {
+        "id": "cards",
+        "entry": "dist/link-preview.mjs",
+        "hosts": ["tickets.example.com", ".example.dev"],
+        **over,
+    }
+
+
+class TestContributesLinkPreviews:
+    def test_parsed_round_tripped_and_valid(self):
+        m = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [_link_preview()]}))
+        (p,) = m.contributes.linkPreviews
+        assert p.hosts == ["tickets.example.com", ".example.dev"]
+        assert m.contributes.to_dict()["linkPreviews"] == [_link_preview()]
+        assert m.contributes.validate() == []
+
+    def test_entry_is_covered_by_the_signing_payload(self):
+        """The entry is an ESM module the dashboard imports and runs in its origin."""
+        m = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [_link_preview()]}))
+        assert b"link-preview.mjs" in m.signing_payload()
+        repointed = _valid_manifest(contributes={"linkPreviews": [_link_preview(entry="evil.mjs")]})
+        assert AppManifest.from_dict(repointed).signing_payload() != m.signing_payload()
+        widened = _valid_manifest(
+            contributes={"linkPreviews": [_link_preview(hosts=[".example.com"])]}
+        )
+        assert AppManifest.from_dict(widened).signing_payload() != m.signing_payload()
+
+    @pytest.mark.parametrize(
+        ("override", "fragment"),
+        [
+            ({"id": "Bad!"}, "storage-safe slug"),
+            ({"entry": ""}, "missing entry"),
+            ({"hosts": []}, "at least one hostname"),
+            ({"hosts": "a.example.com"}, "array of hostnames"),
+            ({"hosts": [".com"]}, "not a hostname"),
+            ({"hosts": ["nodot"]}, "not a hostname"),
+            ({"hosts": ["a.example.com", "a.example.com"]}, "repeats"),
+            ({"hosts": [f"h{i}.example.com" for i in range(65)]}, "exceeds the limit"),
+        ],
+    )
+    def test_refuses_malformed_entries(self, override, fragment):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"linkPreviews": [_link_preview(**override)]})
+        )
+        assert any(fragment in e for e in m.contributes.validate()), m.contributes.validate()
+
+    def test_one_provider_per_app_and_shape_errors(self):
+        two = AppManifest.from_dict(
+            _valid_manifest(
+                contributes={"linkPreviews": [_link_preview(), _link_preview(id="other")]}
+            )
+        )
+        assert any("exceeds the limit of 1" in e for e in two.contributes.validate())
+        not_list = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": {}}))
+        assert any("must be an array" in e for e in not_list.contributes.validate())
+        not_obj = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [3]}))
+        assert any("must be an object" in e for e in not_obj.contributes.validate())
+
+    def test_entry_traversal_is_refused(self, tmp_path):
+        data = _valid_manifest(
+            contributes={"linkPreviews": [_link_preview(entry="../../evil.mjs")]}
+        )
+        errors = AppManifest.from_dict(data).validate(tmp_path)
+        assert any("linkPreviews entry" in e for e in errors), errors
+
+
+_TICKET_PATTERN = {"id": "ticket", "pattern": r"(?<![\w-])(TK-\d{4,})(?![\w-])", "flags": "g"}
+
+
+class TestLinkPreviewTextPatterns:
+    def test_round_tripped_valid_and_signed(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(
+                contributes={"linkPreviews": [_link_preview(textPatterns=[_TICKET_PATTERN])]}
+            )
+        )
+        (p,) = m.contributes.linkPreviews
+        assert p.textPatterns == [_TICKET_PATTERN]
+        assert m.contributes.to_dict()["linkPreviews"][0]["textPatterns"] == [_TICKET_PATTERN]
+        assert m.contributes.validate() == []
+        # A pattern decides which transcript text the app's module is shown.
+        plain = AppManifest.from_dict(
+            _valid_manifest(contributes={"linkPreviews": [_link_preview()]})
+        )
+        assert m.signing_payload() != plain.signing_payload()
+        widened = dict(_TICKET_PATTERN, pattern=r"(\w+)")
+        other = AppManifest.from_dict(
+            _valid_manifest(contributes={"linkPreviews": [_link_preview(textPatterns=[widened])]})
+        )
+        assert other.signing_payload() != m.signing_payload()
+
+    def test_an_absent_list_serializes_as_before(self):
+        m = AppManifest.from_dict(_valid_manifest(contributes={"linkPreviews": [_link_preview()]}))
+        assert "textPatterns" not in m.contributes.to_dict()["linkPreviews"][0]
+
+    @pytest.mark.parametrize(
+        ("patterns", "fragment"),
+        [
+            ("TK-1", "must be an array of"),
+            ([{"flags": "g"}], "must be an array of"),
+            # The card gets the matched text; a URL template is not part of the contract.
+            (
+                [dict(_TICKET_PATTERN, url="https://tickets.example.com/t/{1}")],
+                "must be an array of",
+            ),
+            ([{"pattern": 1}], "must be an array of"),
+            ([dict(_TICKET_PATTERN, extra="x")], "must be an array of"),
+            ([dict(_TICKET_PATTERN, flags=1)], "must be an array of"),
+            ([dict(_TICKET_PATTERN, defaultOff="yes")], "must be an array of"),
+            ([dict(_TICKET_PATTERN, flags="gy")], "subset of 'giu'"),
+            ([dict(_TICKET_PATTERN, flags="gg")], "subset of 'giu'"),
+            ([dict(_TICKET_PATTERN, id="Bad Id")], "storage-safe slug"),
+            ([_TICKET_PATTERN] * 17, "exceeds the limit of 16"),
+            ([dict(_TICKET_PATTERN, pattern="")], "pattern is empty"),
+            ([dict(_TICKET_PATTERN, pattern="a" * 201)], "exceeds 200 characters"),
+        ],
+    )
+    def test_refuses_malformed_patterns(self, patterns, fragment):
+        m = AppManifest.from_dict(
+            _valid_manifest(contributes={"linkPreviews": [_link_preview(textPatterns=patterns)]})
+        )
+        errors = m.contributes.validate()
+        assert any(fragment in e for e in errors), errors
+
+
+def test_a_text_pattern_keeps_its_own_flags_and_switch():
+    """Flags, the switch id and defaultOff are kept and signed."""
+    entry = {"id": "team", "pattern": r"(?<![\w.-])(team\.[a-z0-9]+)", "flags": "gi"}
+    off = {
+        "id": "acronym",
+        "pattern": r"(?<![\w])([A-Z]{2,8})(?![\w])",
+        "flags": "g",
+        "defaultOff": True,
+    }
+    m = AppManifest.from_dict(
+        _valid_manifest(contributes={"linkPreviews": [_link_preview(textPatterns=[entry, off])]})
+    )
+    assert m.contributes.validate() == []
+    assert m.contributes.to_dict()["linkPreviews"][0]["textPatterns"] == [
+        dict(sorted(entry.items())),
+        dict(sorted(off.items())),
+    ]
+    plain = AppManifest.from_dict(
+        _valid_manifest(
+            contributes={
+                "linkPreviews": [_link_preview(textPatterns=[dict(entry, flags="g"), off])]
+            }
+        )
+    )
+    assert plain.signing_payload() != m.signing_payload()

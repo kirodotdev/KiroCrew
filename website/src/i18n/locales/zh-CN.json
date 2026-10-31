@@ -7451,7 +7451,8 @@
     "linkPreview": {
       "copied": "已复制",
       "copy_url": "复制网址",
-      "copy_url_of": "复制 {{name}} 的网址"
+      "copy_url_of": "复制 {{name}} 的网址",
+      "load_failed": "无法加载此预览。"
     },
     "linkedSurfacesSection": {
       "connect_failed": "无法连接到 {{label}}：{{reason}}",

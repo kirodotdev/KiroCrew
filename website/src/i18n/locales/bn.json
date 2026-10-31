@@ -7577,7 +7577,8 @@
     "linkPreview": {
       "copied": "কপি করা হয়েছে",
       "copy_url": "URL কপি করুন",
-      "copy_url_of": "{{name}} এর URL কপি করুন"
+      "copy_url_of": "{{name}} এর URL কপি করুন",
+      "load_failed": "এই প্রিভিউ লোড করা যায়নি।"
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}}-এ সংযোগ করা যায়নি: {{reason}}",

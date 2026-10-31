@@ -1081,7 +1081,7 @@ Writer: `apps/bridges_sources.py::_app_resource_root`.
 
 Every manifest resource path (`agents`/`skills`/`sops`, `ui.entry`,
 `ui.pages[].entryPoint`, `backend.entryPoint`, `contributes.panelTabs[].entry`,
-session-control `entryPoint`) is joined onto the app root, so
+`contributes.linkPreviews[].entry`, session-control `entryPoint`) is joined onto the app root, so
 `manifest._app_path_refusal` refuses any path that could relocate that join.
 It applies three checks, and the two lexical ones run **first and unconditionally**
 — before, and independent of, whether `app_root` is known:
@@ -4027,6 +4027,66 @@ the response CSP. §13 covers their token scoping;
 Writers: `website/src/components/AppHost.tsx`, `apps/manifest_sections.py` (the
 manifest `entry` field), `apps/routes_static.py` (static UI serving),
 `dashboard/server.py` (the CSP allowances the CDN import map needs).
+
+## 18a. A link-preview card runs in an opaque-origin frame, never in the dashboard
+
+`contributes.linkPreviews[].entry` is the one app UI surface that is NOT imported
+into the dashboard (§18). A hover card is drawn over a chat that holds the user's
+conversation and composer draft, so the module runs in an iframe the dashboard
+creates (`website/src/linkPreview/linkPreviewFrames.ts`), `sandbox="allow-scripts"`
+with no `allow-same-origin`. The frame document is served from the gateway's own
+port at `GET /link-preview-frame/{name}/{frame_id}/{token}`
+(`apps/link_preview_frame.py`) with `Content-Security-Policy: sandbox
+allow-scripts`, so it is an opaque origin even when opened top-level. No second
+listener is added: an opaque origin is cross-origin to the dashboard wherever it
+is served from, as the MCP-app frames already are.
+
+The boundary:
+
+- **Where it listens.** Only links and spans inside a chat message's root
+  (`data-link-preview-scope`, set by `MarkdownRenderer` with `textPreviews`); a link
+  elsewhere (Connections, an OAuth approval, Settings) never reaches an app.
+- **What the frame gets.** Only `postMessage` traffic: the hovered URL or text, the
+  anchor rect, the theme, the modifier keys, and plain key presses while a card
+  shows (`linkPreviewProtocol.ts`). Never the chat DOM, a cookie (its requests are
+  cross-site, and `SameSite=Lax` cookies are not sent), storage, or the dashboard
+  token. The dashboard reads only typed messages from that frame's own window
+  (`readFrameMessage`), and each one can only show, hide, size, move or clip that
+  one iframe.
+- **Its fetch.** `/link-preview-fetch/{name}/{path}` answers only a request whose
+  `X-KiroCrew-Capability` verifies. The capability is minted per frame by
+  `POST /api/apps/{name}/link-preview`, which only a person's dashboard session
+  may call (an app token, an internal caller or a link token is refused), and is
+  bound to the app, the client address and the frame id, for 15 minutes; the
+  dashboard renews it at half that. The route reaches the routes the app
+  registered (`RouteRegistry.dispatch`, never the router, so a core route under
+  `/api/apps/{name}/` cannot match) or its process backend (`handle_app_api_proxy`
+  with the app's own identity). The auth middleware never reads the header, the
+  proxy strips it, and the CSRF Origin check exempts this prefix alone, because
+  its handler reads no cookie.
+- **CORS.** A preflight is answered for the `null` origin; a real response carries
+  `Access-Control-Allow-Origin: null` only once the capability verified, never
+  with credentials. A refusal is therefore an opaque network error to the frame,
+  which renews and retries once. App UI files (`/apps/{name}/ui/`, already
+  unauthenticated) answer `null` too, so the frame can import the module.
+- **Layout.** The dashboard owns placement. A card-mode frame is placed next to
+  its link and sized from `resize`, clamped to the viewport; `pin`, `drag` and
+  `dock` move it. An overlay-mode frame (`regions`) covers the viewport and is
+  clipped with `clip-path`, which also clips hit-testing, so the page outside the
+  provider's windows stays clickable.
+- **Mount.** Behind a reverse proxy at a sub-path the gateway never sees the mount,
+  so the frame derives it from its own URL and prefixes the module and fetch paths.
+- **Text patterns** stay in core (`textPatterns.ts`): matched in a Web Worker with a
+  250 ms budget per batch (counted from the batch's first pattern, so a cold worker
+  start is not a pattern's time), a pattern that overruns or matches the empty
+  string turned off for the session, and a 2,000-character cap per text node. The
+  dashboard thread only compiles a pattern, which runs nothing. No static regex
+  check is made: shape analysis cannot be complete, so the runtime budget is the
+  guarantee.
+
+Writers: `apps/link_preview_frame.py`, `apps/routes_static.py` (the UI file CORS
+answer), `apps/routes_proxy.py` (strips the capability), `dashboard/token_auth_paths.py`
+(bypass, SPA exclusion, CSRF exemption), `website/src/linkPreview/*`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 

@@ -7451,7 +7451,8 @@
     "linkPreview": {
       "copied": "복사됨",
       "copy_url": "URL 복사",
-      "copy_url_of": "{{name}}의 URL 복사"
+      "copy_url_of": "{{name}}의 URL 복사",
+      "load_failed": "이 미리보기를 불러올 수 없습니다."
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}}에 연결할 수 없습니다: {{reason}}",

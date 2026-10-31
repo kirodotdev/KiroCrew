@@ -705,6 +705,148 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 
 ## Backend
 
+### `contributes.linkPreviews` — Hover Cards for Links
+
+A link preview shows the app's own card when the user hovers a link in the
+dashboard. The host owns detection (which links, the 300 ms hover delay, leave,
+Escape, scroll and blur); the app owns the card, which runs in a sandboxed frame.
+No app code runs until a link on one of the provider's `hosts` is hovered.
+
+```json
+{
+  "contributes": {
+    "linkPreviews": [
+      {
+        "id": "cards",
+        "entry": "dist/link-preview.mjs",
+        "hosts": ["tickets.example.com", ".example.dev"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `hosts` | string[] | 1-64 hostnames; a leading dot means the domain and every subdomain. Only `https:` links match |
+| `textPatterns` | object[] | Optional. Plain text in chat messages that also opens a card; see below |
+
+At most **one** provider per app; a link goes to the first enabled app whose
+`hosts` claim it.
+
+**Where the module runs.** Never in the dashboard's document. On the first hover
+the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
+with no `allow-same-origin`, and loads a frame document the gateway serves at
+`/link-preview-frame/<app>/…` with its own `Content-Security-Policy: sandbox
+allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
+its cookies, its storage or its token. The frame imports `entry` and calls
+`activate(ctx)` once. The dashboard sends it only the hovered URL or text, the
+anchor's rect, the theme and the modifier keys, over `postMessage`, and it
+positions and sizes the frame itself.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+  /** Which `textPatterns` ids this app's settings turn off now. */
+  setTextPatternsOff(ids: string[]): void
+  // Card mode: the frame is one card, placed next to the link.
+  open(): void
+  close(): void
+  resize(size: { width: number; height: number }): void
+  pin(pinned: boolean): void          // a pinned card stays on leave and chat scroll
+  dragBy(dx: number, dy: number): void
+  dock(edge: 'left' | 'right' | null): void
+  // Overlay mode: the frame covers the viewport and is clipped to these rects.
+  setRegions(rects: { left: number; top: number; width: number; height: number }[]): void
+}): {
+  // A link: `url`. A `textPatterns` match: `text`. `rect` is where it is on screen.
+  show(link: {
+    url?: string; text?: string; theme: 'dark' | 'light'
+    rect: { left: number; top: number; width: number; height: number }
+    modifiers?: { alt: boolean; shift: boolean; ctrl: boolean; meta: boolean }
+  }): void
+  leave(): void              // the pointer left the link; the card may hold itself open
+  hide(reason: string): void // 'scroll' | 'escape' | 'blur' | 'other-provider' | 'disabled'
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void           // the app was disabled
+}
+```
+
+Two ways to draw:
+
+- **Card mode** (the default). The module renders its card into the frame's
+  `document.body`, reports the size with `ctx.resize`, and shows it with
+  `ctx.open`. The dashboard places the frame below the link (above when there is
+  no room) and keeps it on screen. `ctx.pin(true)` keeps the card when the
+  pointer leaves or the chat scrolls; the next hover then gets a fresh frame, and
+  at most 8 cards stay pinned. `ctx.dragBy` moves it (use `screenX`/`screenY`
+  deltas: the frame moves under the pointer) and `ctx.dock` sticks it to an edge.
+  A scroll inside the card stays in the frame and never closes it.
+- **Overlay mode**, for a provider that keeps windows of its own (pinned cards, a
+  dock, a settings dialog). Its first `ctx.setRegions` makes the frame cover the
+  viewport, clipped to the rects it reports; outside them the page stays
+  clickable. The frame's viewport is then the dashboard's, so `rect` is exactly
+  where the link is. Card-mode calls are ignored, and `hide` is only a notice:
+  the module decides what closes.
+
+Links in a card open through the dashboard's link bridge, only right after a click
+in the card. A plain key pressed in the dashboard while a card shows is passed to
+the frame as a `keydown`, so a card's own shortcuts work; never while the
+dashboard is taking text, and never with Ctrl, Alt or Meta.
+
+**`ctx.fetch`** reaches the app's own backend routes and nothing else: the routes
+it registers through `backend.routes`, or its process backend through the same
+signed proxy as `/apps/<app>/api/`. Core routes under `/api/apps/<app>/` are not
+reachable. The request carries a capability the dashboard mints for that one
+frame (`X-KiroCrew-Capability`), short-lived and renewed while the frame lives;
+no cookie is sent and no other route accepts it.
+
+If the frame does not report `ready` within 10 seconds, or the module fails to
+import, or `activate` throws, the host logs the error, shows a short "couldn't
+load this preview" notice under the hovered element, and tries again on a hover
+at least 30 seconds later. When the app is disabled the host sends `hide('disabled')`
+and `dispose`, then removes the frame.
+
+**Plain text (`textPatterns`).** Each entry names text that is not a link but should
+open the app's card:
+
+```json
+"textPatterns": [
+  { "id": "ticket", "pattern": "(?<![\\w-])(TK-\\d{4,})(?![\\w-])", "flags": "g" },
+  { "id": "team", "pattern": "(?<![\\w.-])(team\\.[a-z0-9]+)", "flags": "gi", "defaultOff": true }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `pattern` | JavaScript regex source, at most 200 characters; at most 16 entries |
+| `flags` | Optional. A subset of `giu`; `g` is implied |
+| `id` | Optional slug the module names in `ctx.setTextPatternsOff` |
+| `defaultOff` | Optional. Not drawn until the module reports it on |
+
+- In chat messages only, the host wraps each match in
+  `<span class="link-preview-text" data-link-preview-text>`. It is never a link,
+  and never drawn inside code, inline code, math, raw HTML or an existing link. A
+  token an edition's autolink rule already linked stays that link.
+- Hovering the span calls `show({ text, rect })` on the app whose pattern matches
+  the span's whole text. The span carries no owner: the host re-derives it from the
+  text, so a span written in raw message HTML reaches nothing a pattern would not.
+- `ctx.setTextPatternsOff(ids)` reports which ids the app's own settings turn off.
+  The host remembers it across reloads, so the first paint after a reload already
+  follows the app's settings although the module only loads on the first hover.
+- A pattern must compile with its flags and must not match the empty string. It is
+  never run on the dashboard's thread: matching happens in a Web Worker, one batch
+  per render, with a hard budget of 250 ms per batch. A pattern that overruns is
+  stopped (the worker is terminated), turned off for the rest of the session, and
+  logged once; the rest of the batch is matched again without it. A text node
+  longer than 2,000 characters is not scanned. Text renders plain until the worker
+  answers, then gains its spans. `textPatterns` is signed.
+
 ### `backend` — App Backend Process
 
 ```json
