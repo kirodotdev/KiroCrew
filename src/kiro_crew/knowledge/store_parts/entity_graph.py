@@ -3,8 +3,9 @@
 ``SimpleDiGraph`` is the small directed graph the store keeps in memory, with its own
 lock so a worker thread can walk it while the loop thread changes it. The methods
 load it on first read, rebuild it from the tables and publish it with one reference
-swap, write entities, relations and mentions, drop entities nothing references, and
-walk a node's neighbourhood. The neighbourhood walk the search uses reads the relation
+swap, write entities, relations and mentions, add aliases to an entity, look an
+entity up by name or alias, drop entities nothing references, and walk a node's
+neighbourhood. The neighbourhood walk the search uses reads the relation
 table through its indexes, so a search never materialises the graph; only the
 dashboard's graph views do.
 
@@ -19,6 +20,7 @@ Reads: ``_graph_lock``.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -27,6 +29,49 @@ from uuid import uuid4
 
 if TYPE_CHECKING:
     from kiro_crew.knowledge.store import KnowledgeStore
+
+logger = logging.getLogger("kiro_crew.knowledge.store")
+
+#: The most aliases one entity keeps (``add_entity_aliases`` enforces it) and the
+#: longest alias kept (ingestion's ``_coerce_aliases`` truncates to it).
+MAX_ENTITY_ALIASES = 10
+MAX_ENTITY_ALIAS_LEN = 200
+
+#: The index over ``entity_aliases.alias_key``. It is created only after the table
+#: has been filled from every entity row, so its presence is what tells
+#: ``find_entity`` the table is complete -- see ``_ensure_entity_alias_index``.
+ENTITY_ALIAS_INDEX = "idx_entity_aliases_key"
+
+
+def _utf8(text: str) -> bool:
+    """Whether SQLite can bind *text*. A lone surrogate (``"\\ud800"`` in JSON) cannot."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def index_entity_aliases(db, entity_id: str, aliases: list, *, replace: bool = True) -> None:
+    """Write ``entity_aliases`` rows for one entity: one per distinct casefolded string alias.
+
+    Every writer of ``entities.aliases`` calls this in the same transaction as
+    its write -- ``add_entity``, ``add_entity_aliases``, ``import_bundle`` and the
+    one-time fill -- because the key is ``str.casefold()``, which SQL cannot
+    compute, so no trigger can keep it. (Deleting an entity needs no caller: the
+    ``entity_aliases_del`` trigger drops its rows.) ``replace`` first drops the
+    entity's existing rows. Non-string elements, and strings SQLite cannot
+    bind (a lone surrogate a JSON escape can carry), index nothing, so they never
+    fail the write they ride on.
+    """
+    if replace:
+        db.execute("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
+    keys = dict.fromkeys(a.casefold() for a in aliases if isinstance(a, str) and _utf8(a))
+    if keys:
+        db.executemany(
+            "INSERT INTO entity_aliases (alias_key, entity_id) VALUES (?, ?)",
+            [(key, entity_id) for key in keys],
+        )
 
 
 class _NodeView:
@@ -297,11 +342,21 @@ def reload_graph(self: KnowledgeStore) -> None:
 def add_entity(self: KnowledgeStore, name, entity_type, description=None, aliases=None) -> str:
     eid = str(uuid4())
     now = datetime.now().isoformat()
-    self.db.execute(
-        "INSERT INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (eid, name, entity_type, description, json.dumps(aliases or []), now, now),
-    )
+    # The entity row and its alias rows land together or not at all: an entity
+    # committed without them would be unreachable by alias once the index is
+    # in use. A savepoint, so this nests inside a caller's open transaction too.
+    self.db.execute("SAVEPOINT add_entity")
+    try:
+        self.db.execute(
+            "INSERT INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (eid, name, entity_type, description, json.dumps(aliases or []), now, now),
+        )
+        index_entity_aliases(self.db, eid, aliases or [], replace=False)
+    except BaseException:
+        self.db.execute("ROLLBACK TO add_entity")
+        self.db.execute("RELEASE add_entity")
+        raise
     # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
     # critical section. ``_load_graph`` -- which every delete / merge /
     # import path runs after its own COMMIT -- takes this same lock for its whole
@@ -312,9 +367,114 @@ def add_entity(self: KnowledgeStore, name, entity_type, description=None, aliase
     # published graph when SQLite has already dropped it. Whichever of the two paths
     # acquires last leaves the in-memory graph agreeing with the committed rows.
     with self._graph_lock:
+        self.db.execute("RELEASE add_entity")
         self.db.commit()
         self._graph.add_node(eid, name=name, entity_type=entity_type)
     return eid
+
+
+def _stored_aliases(entity_id: str, text: object) -> list[str]:
+    """The persisted ``entities.aliases`` of one row, as a list of strings.
+
+    Every in-tree writer stores a JSON array of strings (``add_entity`` dumps a
+    list, ``import_bundle`` validates with ``_validated_aliases``), so any other
+    shape is an invariant violation and raises rather than being repaired here.
+    """
+    if text in (None, ""):
+        return []
+    try:
+        parsed = json.loads(text)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        parsed = None
+    if not isinstance(parsed, list) or not all(isinstance(a, str) for a in parsed):
+        raise ValueError(
+            f"add_entity_aliases: entity {entity_id!r} has aliases that are not a "
+            f"JSON array of strings (invariant violation): {text!r}"
+        )
+    return parsed
+
+
+def add_entity_aliases(self: KnowledgeStore, entity_id: str, new_aliases: list[str]) -> None:
+    """Add alias spellings to an existing entity, in one write transaction.
+
+    Callers (ingestion's ``_store_entities``) pass a list already stripped,
+    redacted, truncated to ``MAX_ENTITY_ALIAS_LEN`` and de-duplicated by
+    ``_coerce_aliases``. This method enforces only what needs the stored row:
+
+    * an alias equal to the entity's canonical name (casefold) is dropped;
+    * an alias already stored, or already accepted in this call (casefold), is
+      dropped;
+    * the stored total never exceeds ``MAX_ENTITY_ALIASES``. Aliases past the
+      cap are discarded and counted, and when any were discarded ONE warning is
+      logged for the call -- including for an entity that was already full, so
+      a saturated entity is never silent.
+
+    The row is written only when an alias was accepted; the first spelling
+    seen is the one kept. ``entity_aliases`` follows the write through the
+    ``entities`` UPDATE trigger, and the in-memory graph holds no aliases, so
+    no graph reload is owed. A missing entity or a stored value that is not an
+    array of strings raises (the caller just resolved this id), and any error
+    rolls the transaction back.
+    """
+    self.db.execute("BEGIN IMMEDIATE")
+    try:
+        row = self.db.execute(
+            "SELECT name, aliases FROM entities WHERE id = ?", (entity_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"add_entity_aliases: entity {entity_id!r} not found "
+                "(concurrency or invariant violation)"
+            )
+        canonical = row["name"]
+        persisted = _stored_aliases(entity_id, row["aliases"])
+        seen = {a.casefold() for a in persisted}
+        seen.add(canonical.casefold())
+        room = max(0, MAX_ENTITY_ALIASES - len(persisted))
+        accepted: list[str] = []
+        overflow = 0
+        for alias in new_aliases:
+            cf = alias.casefold()
+            if cf in seen:
+                continue
+            if len(accepted) >= room:
+                overflow += 1
+                continue
+            accepted.append(alias)
+            seen.add(cf)
+        if overflow:
+            logger.warning(
+                "add_entity_aliases: %d alias(es) discarded for entity %r "
+                "(MAX_ENTITY_ALIASES=%d reached)",
+                overflow,
+                canonical,
+                MAX_ENTITY_ALIASES,
+            )
+        if accepted:
+            self.db.execute(
+                "UPDATE entities SET aliases = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(persisted + accepted), datetime.now().isoformat(), entity_id),
+            )
+            index_entity_aliases(self.db, entity_id, persisted + accepted)
+        self.db.execute("COMMIT")
+    except BaseException:
+        self.db.execute("ROLLBACK")
+        raise
+
+
+def entity_alias_index_ready(self: KnowledgeStore) -> bool:
+    """Whether ``entity_aliases`` holds every stored alias, so lookups may use it.
+
+    A metadata read: true once ``_ensure_entity_alias_index`` has filled the
+    table and created its index, and true for good after that.
+    """
+    return (
+        self.db.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?",
+            (ENTITY_ALIAS_INDEX,),
+        ).fetchone()
+        is not None
+    )
 
 
 def find_entity(self: KnowledgeStore, name):
@@ -324,7 +484,22 @@ def find_entity(self: KnowledgeStore, name):
     row = self.db.execute("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)", (name,)).fetchone()
     if row:
         return dict(row)
-    # Only rows that can carry an alias. '' and '[]' (the column default)
+    # The alias leg. Graph search calls this for every word, word pair and CJK
+    # sub-run of a query, and ingestion for every alias of every new entity, so
+    # once the alias index is built this is one indexed probe. The key is
+    # ``str.casefold()``, so an alias matches across Unicode case (``MÜNCHEN``,
+    # ``Straße``/``STRASSE``) as the scan below does; every alias writer keeps
+    # it current through ``index_entity_aliases``.
+    name_cf = name.casefold()
+    if self.entity_alias_index_ready():
+        row = self.db.execute(
+            "SELECT e.* FROM entity_aliases a JOIN entities e ON e.id = a.entity_id "
+            "WHERE a.alias_key = ? ORDER BY e.rowid LIMIT 1",
+            (name_cf,),
+        ).fetchone()
+        return dict(row) if row else None
+    # Until the post-bind build has run on a library that predates the index:
+    # scan the rows that can carry an alias. '' and '[]' (the column default)
     # parse to no aliases, so filtering them in SQL returns the same row
     # while sparing a json.loads per entity. The predicate is the partial
     # index idx_entities_with_aliases word for word, so the read walks only
@@ -342,7 +517,7 @@ def find_entity(self: KnowledgeStore, name):
     )
     for rowid, raw in candidates:
         aliases = json.loads(raw) if raw else []
-        if any(a.lower() == name.lower() for a in aliases):
+        if any(isinstance(a, str) and a.casefold() == name_cf for a in aliases):
             # A rowid is not stable: the table has no AUTOINCREMENT, so a row
             # deleted between the two reads can be reused by an unrelated
             # entity. Re-reading by rowid AND the aliases just matched returns

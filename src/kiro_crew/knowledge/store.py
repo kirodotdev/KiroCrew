@@ -49,6 +49,9 @@ from .store_parts.bundle_transfer import _validated_json_column  # noqa: F401
 from .store_parts.bundle_transfer import _validated_properties  # noqa: F401
 from .store_parts.content_stats import ContentStats  # noqa: F401
 from .store_parts.content_stats import SourceContentStats  # noqa: F401
+from .store_parts.entity_graph import ENTITY_ALIAS_INDEX  # noqa: F401
+from .store_parts.entity_graph import MAX_ENTITY_ALIAS_LEN  # noqa: F401
+from .store_parts.entity_graph import MAX_ENTITY_ALIASES  # noqa: F401
 from .store_parts.entity_graph import SimpleDiGraph  # noqa: F401
 from .store_parts.entity_graph import _EdgeView  # noqa: F401
 from .store_parts.entity_graph import _NodeView  # noqa: F401
@@ -629,6 +632,8 @@ class KnowledgeStore:
     reload_graph = _entity_graph.reload_graph
     mark_graph_stale = _entity_graph.mark_graph_stale
     add_entity = _entity_graph.add_entity
+    add_entity_aliases = _entity_graph.add_entity_aliases
+    entity_alias_index_ready = _entity_graph.entity_alias_index_ready
     find_entity = _entity_graph.find_entity
     merge_entities = _entity_graph.merge_entities
     add_entity_relation = _entity_graph.add_entity_relation
@@ -688,6 +693,7 @@ class KnowledgeStore:
     has_pending_one_time_work = _schema_migrations.has_pending_one_time_work
     has_embed_state_index = _schema_migrations.has_embed_state_index
     ensure_search_indexes = _schema_migrations.ensure_search_indexes
+    _ensure_entity_alias_index = _schema_migrations._ensure_entity_alias_index
     _VECTOR_ITEM_COLUMNS = _schema_migrations._VECTOR_ITEM_COLUMNS
     _ensure_vector_generation = _schema_migrations._ensure_vector_generation
     vector_generation = _schema_migrations.vector_generation
