@@ -11,6 +11,14 @@ export interface LinkPreviewGrantRow {
   stagedFullUrl?: boolean
 }
 
+/** An app row's `messageActionGrant` (`apps/message_action_grants.py`): each action
+ *  at its approved reach, and the `<id>:role:<role>` / `<id>:format:markdown`
+ *  entries an update holds back. */
+export interface MessageActionGrantRow {
+  actions?: { id: string; title: string; roles: string[]; format: string; maxChars: number; popover?: { width?: number; maxHeight?: number } }[]
+  staged?: string[]
+}
+
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
  *
@@ -94,6 +102,8 @@ export type InstalledApp = {
   approvedGrants?: { api?: string[]; events?: string[] }
   /** Approved link-preview hosts and text patterns, and the ones an update holds back. */
   linkPreviewGrant?: LinkPreviewGrantRow
+  /** Approved message actions, and the entries an update holds back. */
+  messageActionGrant?: MessageActionGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -146,6 +156,7 @@ export type InstalledApp = {
     contributes?: {
       commands?: unknown
       panelTabs?: unknown
+      messageActions?: unknown
     }
     permissions?: {
       api?: string[]

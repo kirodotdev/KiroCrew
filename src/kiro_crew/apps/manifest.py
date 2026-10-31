@@ -48,10 +48,15 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
     _MAX_LINK_PREVIEW_HOSTS,
+    _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
     _MAX_TITLE,
+    _MESSAGE_ACTION_KEYS,
+    _MESSAGE_ACTION_POPOVER_HEIGHT,
+    _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
+    _POPOVER_KEYS,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
     _TEXT_PATTERN_FLAGS_RE,
@@ -61,17 +66,23 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
     MAX_LINK_PREVIEW_TEXT_PATTERNS,
     MAX_LINK_PREVIEWS_PER_APP,
+    MAX_MESSAGE_ACTION_CHARS,
+    MAX_MESSAGE_ACTIONS_PER_APP,
     MAX_SESSION_CONTROLS_PER_APP,
+    MESSAGE_ACTION_FORMATS,
+    MESSAGE_ACTION_ROLES,
     CommandArgument,
     CommandContribution,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
     LinkPreviewConfig,
+    MessageActionConfig,
     PanelTabConfig,
     SessionControlContribution,
     _mirrored_len,
     _normalize_status_path,
+    _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
     KEBAB_RE,
@@ -520,6 +531,13 @@ class AppManifest:
             refusal = path_refusal(preview.entry)
             if refusal:
                 report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
+        # A message-action entry is imported by the same frame bootstrap.
+        for action in self.contributes.messageActions:
+            refusal = path_refusal(action.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -757,6 +775,8 @@ class AppManifest:
             # A link-preview `entry` is an ESM module the dashboard imports and runs
             # in its own origin, like a panel tab's: same reason to sign it.
             or self.contributes.linkPreviews
+            # A message action's roles and format decide which text the app is handed.
+            or self.contributes.messageActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further

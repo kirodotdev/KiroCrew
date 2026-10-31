@@ -333,7 +333,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   const parsedFiles = parseFiles(content, meta)
   const dirKeys = dirMap ? [...dirMap.keys()].filter(k => tokenPresent(content, k)).slice(0, 20) : []
   if (!parsedFiles.length && !dirKeys.length) {
-    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
+    return <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>{content}</span>
   }
   // Inline-flow variant (adjacent to a paste chip): keep everything inline.
   // Non-image attachments referenced in the text render as inline chips; any
@@ -343,7 +343,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
   // level. Pass the ORIGINAL ordered list so token indices line up.
   const { display, mentionMap, cardPaths, labels } = resolveFileSegment(content, parsedFiles)
   if (!mentionMap.size && !cardPaths.length && !dirKeys.length) {
-    return <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
+    return <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>{display}</span>
   }
 
   // Folder tokens join the same split as file mentions. A dir key always ends
@@ -357,7 +357,7 @@ function renderInlineSegment(content: string, meta: Record<string, unknown> | un
     ? display.split(mentionSplitRe(tokPattern))
     : [display]
   return (
-    <span key={keyBase} style={{ whiteSpace: 'pre-wrap' }}>
+    <span key={keyBase} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
         const tok = hit?.key
@@ -541,7 +541,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   const tokPattern = keys.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const parts = display.split(mentionSplitRe(tokPattern))
   const body = (
-    <span key={`${keyBase}-body`} style={{ whiteSpace: 'pre-wrap' }}>
+    <span key={`${keyBase}-body`} data-message-body="" style={{ whiteSpace: 'pre-wrap' }}>
       {parts.map((part, i) => {
         const hit = mentionPart(part, key => mentionMap.has(key) || !!dirMap?.has(key))
         const tok = hit?.key

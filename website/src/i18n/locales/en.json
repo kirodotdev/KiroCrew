@@ -6189,6 +6189,25 @@
     },
     "linkPreview": {
       "load_failed": "Couldn't load this preview."
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, from {{app}}",
+      "item_from": "From {{app}}",
+      "text_unreadable": "Couldn't read this message, so nothing was sent to {{app}}. Scroll back to it and try again.",
+      "menu_load_failed": "Couldn't load app actions, so this menu may be missing some.",
+      "menu_load_retry": "Load app actions again",
+      "close": "Close",
+      "loading": "Opening {{app}}…",
+      "load_failed": "{{app}} didn't open. Try again in a moment.",
+      "app_error": "{{app}} couldn't finish this.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copy_failed": "Couldn't copy",
+      "open_host": "Open {{host}}",
+      "grant_role_user": "{{title}}: your own messages, not only replies",
+      "grant_role_assistant": "{{title}}: assistant replies",
+      "grant_format_markdown": "{{title}}: the message's markdown, with link addresses"
     }
   },
   "hooks": {

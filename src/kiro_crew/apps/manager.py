@@ -276,6 +276,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         cron_permission_error,
         is_reserved_app_name,
     )
+    from kiro_crew.apps.message_action_grants import (  # noqa: F401
+        message_action_grant_row,
+    )
     from kiro_crew.apps.point_grants import (  # noqa: F401
         grant_source,
         point_grant_families,

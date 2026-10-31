@@ -31,12 +31,27 @@ export interface Minted {
 export const POINT_RE = /^[a-z][A-Za-z]{0,31}$/
 export const POINT_ID_RE = /^[a-z][a-z0-9_-]{0,63}$/
 
-/** Mint the frame URL and capability for one `(point, id)` of an app
- *  (`POST /api/apps/<app>/frames/<point>/<id>`, a dashboard session only); with
- *  `frameId`, a renewal for that frame. */
-export async function mintAppFrame(appName: string, point: string, pointId: string, frameId?: string): Promise<Minted> {
+/**
+ * Mint the frame URL and capability for one `(point, id)` of an app
+ * (`POST /api/apps/<app>/frames/<point>/<id>`, a dashboard session only); with
+ * `frameId`, a renewal for that frame. `request` names the one act the mint is for (a
+ * message action sends its `role` and `format`): the gateway checks it against
+ * the live grant and refuses with 403 when it is outside it, so a tab holding an
+ * older grant cannot act on a reach the owner has since taken back.
+ */
+export async function mintAppFrame(
+  appName: string,
+  point: string,
+  pointId: string,
+  frameId?: string,
+  request?: Readonly<Record<string, string>>,
+): Promise<Minted> {
   if (!POINT_RE.test(point) || !POINT_ID_RE.test(pointId)) throw new Error('app frame: not a point entry')
-  const q = frameId ? `?frame=${encodeURIComponent(frameId)}` : ''
+  const params = new URLSearchParams(request)
+  params.delete('frame')
+  if (frameId) params.set('frame', frameId)
+  const qs = params.toString()
+  const q = qs ? `?${qs}` : ''
   const path = `/api/apps/${encodeURIComponent(appName)}/frames/${point}/${pointId}${q}`
   const res = await fetch(withBase(path), { method: 'POST', credentials: 'same-origin' })
   if (!res.ok) throw new Error(`app frame mint failed: ${res.status}`)

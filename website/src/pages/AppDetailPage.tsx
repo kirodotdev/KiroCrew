@@ -46,6 +46,7 @@ import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/merg
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
+import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
@@ -91,7 +92,10 @@ export default function AppDetailPage() {
   const stagedLinkHosts = app?.linkPreviewGrant?.stagedHosts || []
   const stagedLinkPatterns = app?.linkPreviewGrant?.stagedTextPatterns || []
   const stagedFullUrl = app?.linkPreviewGrant?.stagedFullUrl === true
-  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length > 0 || stagedFullUrl
+  // Message-action reach an update widened (the user role, markdown, a new action).
+  const stagedMessageActions = app?.messageActionGrant?.staged || []
+  const declaredMessageActions = (app?.manifest as { contributes?: { messageActions?: unknown } } | undefined)?.contributes?.messageActions
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedLinkHosts.length + stagedLinkPatterns.length + stagedMessageActions.length > 0 || stagedFullUrl
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -266,6 +270,7 @@ export default function AppDetailPage() {
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
+            messageActionGrant: installed.messageActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -392,6 +397,7 @@ export default function AppDetailPage() {
             sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             approvedGrants: installed.approvedGrants,
             linkPreviewGrant: installed.linkPreviewGrant,
+            messageActionGrant: installed.messageActionGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -983,6 +989,16 @@ export default function AppDetailPage() {
               {stagedFullUrl && (
                 <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_link_full_url')}</div>
               )}
+              {stagedMessageActions.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_message_actions')}</div>
+                  <ul className="mt-1 text-[13px] list-disc pl-5" data-testid="staged-message-actions">
+                    {stagedMessageActions.map(e => (
+                      <li key={e}>{messageActionGrantLabel(e, declaredMessageActions)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -995,7 +1011,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : [])].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions))].join(', ')
                 try {
                   await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1003,6 +1019,7 @@ export default function AppDetailPage() {
                     linkPreviewHosts: stagedLinkHosts,
                     linkPreviewTextPatterns: stagedLinkPatterns,
                     linkPreviewFullUrl: stagedFullUrl ? ['fullUrl'] : [],
+                    messageActions: stagedMessageActions,
                   })
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
