@@ -194,6 +194,7 @@ class AcpRuntime:
     death_summary = _rt_liveness.death_summary
     _stale_by_age = _rt_liveness._stale_by_age
     _is_stale = _rt_liveness._is_stale
+    session_tenancy = _rt_liveness.session_tenancy
     has_active_sessions = _rt_liveness.has_active_sessions
     has_active_or_initializing_sessions = _rt_liveness.has_active_or_initializing_sessions
     saw_not_logged_in = _rt_liveness.saw_not_logged_in

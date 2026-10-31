@@ -67,6 +67,11 @@ class ToolCallState:
 
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
+    # Sticky denial of process-cleanup authority for this call. Liveness may
+    # still track a likely child, but a shared runtime, a program-only match,
+    # or overlap with another shell call can never later become safe merely
+    # because an oracle generation was retired or a sibling exited.
+    shell_cleanup_disqualified: bool = False
     # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
     # start times against, so a child's start can be compared to its dispatch
     # without mixing clocks (see :func:`boottime_now`). Separate from
@@ -298,14 +303,33 @@ class InFlightToolTracker:
         """
         return self._calls
 
+    @staticmethod
+    def _may_run_shell(state: object) -> bool:
+        """Whether *state* may be a shell call; one that cannot say counts as one."""
+        return getattr(state, "is_shell", True) is not False
+
     def dispatch(self, call_id: str, state: ToolCallState, aux: object = None) -> bool:
         """Record *state* under *call_id* and make it the judged call.
 
         A falsy *call_id* is judged but not stored (see the class docstring):
         it takes the id-less slot, which the next dispatch overwrites and which
-        never appears in ``active_calls``. Returns True — a dispatch always
+        never appears in ``active_calls``. Calls that overlap and may each run a
+        shell lose cleanup authority: the latch is set on every one of them that
+        carries ``shell_cleanup_disqualified``. Returns True — a dispatch always
         changes the judged call.
         """
+        if self._may_run_shell(state):
+            active_shells = [
+                existing
+                for existing_id, (existing, _aux) in self._calls.items()
+                if existing_id != (call_id or "") and self._may_run_shell(existing)
+            ]
+            if self._idless is not None and self._may_run_shell(self._idless[0]):
+                active_shells.append(self._idless[0])
+            if active_shells:
+                for shell in (state, *active_shells):
+                    if hasattr(shell, "shell_cleanup_disqualified"):
+                        shell.shell_cleanup_disqualified = True
         self._current_id = call_id or ""
         if call_id:
             self._idless = None

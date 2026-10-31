@@ -16,7 +16,8 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 
 Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
-``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_stderr_task``,
+``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_start_collectors``,
+``_stderr_task``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``recording_allowed``.
 """
 
@@ -262,6 +263,27 @@ async def _is_stale(self: AcpRuntime) -> str | None:
         return "rss"
 
     return None
+
+
+def session_tenancy(self: AcpRuntime, session_id: str) -> int | None:
+    """Registered-session count only when *session_id* is a proven tenant.
+
+    Process cleanup needs a positive exclusivity statement. A session whose
+    ``session/new`` or ``session/load`` is still running may already have
+    spawned children before its queue is registered. A timed-out start collector
+    represents the same window after its caller left. A native backend subagent
+    runs in the harness's own process tree with no queue here, so an announced
+    roster entry, or a roster longer than the cap, is a tenant the count cannot
+    see. Each makes the answer unreadable, as does a handle whose session is
+    absent from the registry.
+    """
+    if self._session_inits_in_flight or self._start_collectors:
+        return None
+    if self._subagent_sessions or self._subagent_roster_overflow:
+        return None
+    if session_id not in self._session_queues:
+        return None
+    return len(self._session_queues)
 
 
 def has_active_sessions(self: AcpRuntime) -> bool:

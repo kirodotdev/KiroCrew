@@ -333,6 +333,10 @@ class AcpSessionHandle:
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
+            cleanup_tenancy=lambda: getattr(
+                self._runtime, "session_tenancy", lambda _session_id: None
+            )(self._session_id),
+            sandbox_wrapped_by_crew=lambda: self._runtime.sandbox_wrapped_by_crew,
             server_launches=self._remote_flat_launches,
         )
         # Keep the executor future, not an await-scoped flag: wait_for can time

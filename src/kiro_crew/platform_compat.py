@@ -357,6 +357,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         pgroup_exists,
         terminate_and_reap,
         terminate_and_reap_sync,
+        terminate_pids_pinned,
     )
     from kiro_crew.platform_compat_links import (  # noqa: F401
         _FILE_ATTRIBUTE_REPARSE_POINT,
