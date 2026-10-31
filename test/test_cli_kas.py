@@ -13,7 +13,9 @@ What is pinned, per subcommand:
 * ``status``: the pin, the route, the root, what is installed and what else is on
   disk; exit 1 only when the route is on and nothing is installed.
 * ``remove``: one version or every version, with a confirmation the ``--yes`` flag
-  skips, and a quiet no-op when nothing matches.
+  skips; a version that is not installed is refused, and an empty root is a quiet
+  no-op. The blank-``--version``, closed-stdin and failed-delete paths are in
+  ``test_cli_kas_remove_guard``.
 * The parser wires every flag the handlers read.
 
 The installer itself is tested in ``test_kas_bundle``; here it is patched through the
@@ -455,9 +457,9 @@ class TestRemove:
         assert not (root / "0.60.0").exists() and (root / _PIN).exists()
         assert f"removed {root / '0.60.0'}" in capsys.readouterr().out
 
-    def test_an_absent_version_is_a_quiet_no_op(self, root, capsys):
-        assert cli_kas.kas_cmd(self._args(version="9.9.9", yes=True)) == 0
-        assert "KAS 9.9.9 is not installed" in capsys.readouterr().out
+    def test_an_absent_version_is_refused(self, root, capsys):
+        assert cli_kas.kas_cmd(self._args(version="9.9.9", yes=True)) == 1
+        assert "KAS 9.9.9 is not installed" in capsys.readouterr().err
         assert (root / _PIN).exists()
 
     def test_everything_asks_first_and_a_no_aborts(self, root, monkeypatch, capsys):
