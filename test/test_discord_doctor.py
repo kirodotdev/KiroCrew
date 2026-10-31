@@ -389,7 +389,7 @@ class TestDoctorDiscordSection:
 
         assert "Discord Integration" in out
         assert "not enabled (optional)" in out
-        assert "Settings → Discord" in out
+        assert "Settings → Messaging Channels → Discord" in out
         assert "DISCORD_BOT_TOKEN" in out
         assert issues == []
 
