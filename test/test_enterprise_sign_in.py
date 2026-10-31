@@ -5,6 +5,7 @@ The vault is a real ``TokenStore`` in a temporary directory.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,6 +16,8 @@ from kiro_crew.auth.store import KasToken, TokenStore
 
 _ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL"
 _OTHER_ARN = "arn:aws:codewhisperer:us-east-1:210987654321:profile/ZYXWVUTSRQPO"
+#: The real store locator, kept before the floor seam swaps it for a missing path.
+_REAL_KIRO_CLI_STORE = sign_in._kiro_cli_store
 
 
 @pytest.fixture(name="store")
@@ -50,6 +53,47 @@ def vault_fixture(store: TokenStore):
                 extra={"start_url": start_url} if start_url else {},
             )
         )
+
+    return save
+
+
+@pytest.fixture(name="kiro_cli")
+def kiro_cli_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Write a kiro-cli store the resolver reads, and return its path."""
+    import json
+    import sqlite3
+
+    path = tmp_path / "kiro-cli" / "data.sqlite3"
+    monkeypatch.setattr(sign_in, "_kiro_cli_store", lambda: path)
+
+    def save(
+        profile_arn: str | None = _ARN,
+        *,
+        expires_in: float = 3600,
+        key: str = "kirocli:odic:token",
+        token_row: bool = True,
+        raw_token: str | None = None,
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.unlink()
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        con.execute("CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT)")
+        if profile_arn:
+            con.execute(
+                "INSERT INTO state VALUES (?, ?)",
+                ("api.codewhisperer.profile", json.dumps({"arn": profile_arn})),
+            )
+        if token_row:
+            expires = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            value = raw_token or json.dumps(
+                {"access_token": "cli-access", "expires_at": expires.isoformat()}
+            )
+            con.execute("INSERT INTO auth_kv VALUES (?, ?)", (key, value))
+        con.commit()
+        con.close()
+        return path
 
     return save
 
@@ -110,10 +154,12 @@ class TestSelection:
         with pytest.raises(AttributeError):
             found.profile_arn = _OTHER_ARN  # type: ignore[misc]
 
-    def test_no_kiro_cli_store_is_read(self, store) -> None:
-        # Vault only in this change; the kiro-cli fallback lands in a follow-up.
-        assert list(sign_in.Source) == [sign_in.Source.VAULT]
-        assert not any("kiro_cli" in name.lower() for name in vars(sign_in))
+    def test_neither_sign_in_names_both_ways_to_sign_in(self, store) -> None:
+        with pytest.raises(sign_in.SignInError) as exc:
+            sign_in.resolve(policy=sign_in.OSS)
+        assert exc.value.cause == sign_in.CAUSE_NO_SIGN_IN
+        assert "`kiro-cli login`" in str(exc.value)
+        assert "kas login --provider idc" in str(exc.value)
 
 
 class TestLapsed:
@@ -136,7 +182,193 @@ class TestLapsed:
         assert sign_in.resolve().source == sign_in.Source.VAULT
 
 
+class TestKiroCli:
+    """kiro-cli's own sign-in: the second source, read only when the vault holds none."""
+
+    def test_kiro_cli_only_is_the_sign_in(self, store, kiro_cli) -> None:
+        kiro_cli()
+        for policy in (sign_in.ENTERPRISE, sign_in.OSS):
+            found = sign_in.resolve(policy=policy)
+            assert (found.source, found.profile_arn) == (sign_in.Source.KIRO_CLI, _ARN)
+
+    def test_the_token_read_returns_kiro_clis_token(self, store, kiro_cli) -> None:
+        kiro_cli(key="kirocli:external-idp:token")
+        found = sign_in.resolve(with_token=True)
+        assert (found.token, found.token_type) == ("cli-access", sign_in.TOKEN_TYPE_EXTERNAL_IDP)
+        assert "cli-access" not in repr(found)
+
+    def test_an_expired_kiro_cli_token_is_not_signed_in(self, store, kiro_cli) -> None:
+        kiro_cli(expires_in=-60)
+        assert sign_in.select().problem is not None
+        with pytest.raises(sign_in.SignInError) as exc:
+            sign_in.resolve()
+        assert exc.value.cause == sign_in.CAUSE_SIGN_IN_UNUSABLE
+        assert "`kiro-cli login`" in str(exc.value)
+
+    def test_a_store_with_no_token_row_is_no_sign_in(self, store, kiro_cli) -> None:
+        kiro_cli(token_row=False)
+        assert _cause() == sign_in.CAUSE_NO_SIGN_IN
+
+    def test_a_damaged_store_is_unusable_not_absent(self, store, kiro_cli) -> None:
+        # SQLite opens a damaged file read-only without complaint; the query fails.
+        kiro_cli().write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+        with pytest.raises(sign_in.SignInError) as exc:
+            sign_in.resolve()
+        assert exc.value.cause == sign_in.CAUSE_SIGN_IN_UNUSABLE
+        assert exc.value.source is sign_in.Source.KIRO_CLI
+
+    def test_a_store_that_cannot_be_reached_is_unusable_not_absent(
+        self, store, kiro_cli, monkeypatch
+    ) -> None:
+        store_path = kiro_cli()
+
+        class Denied:
+            """``os`` as the resolver sees it, with the store's lstat refused."""
+
+            def __getattr__(self, name):
+                return getattr(os, name)
+
+            @staticmethod
+            def lstat(path):
+                if Path(path) == store_path:
+                    raise PermissionError("denied")
+                return os.lstat(path)
+
+        monkeypatch.setattr(sign_in, "os", Denied())
+        assert _cause() == sign_in.CAUSE_SIGN_IN_UNUSABLE
+
+    def test_an_anchor_that_cannot_be_reached_is_unusable_not_absent(
+        self, store, kiro_cli, tmp_path, monkeypatch
+    ) -> None:
+        # Windows: Local is absent, Roaming exists but cannot be reached. The
+        # selector would pick the absent Local anchor; the resolver must not.
+        local, roaming = tmp_path / "Local" / "data.sqlite3", tmp_path / "Roaming" / "data.sqlite3"
+        monkeypatch.setattr(sign_in, "_kiro_cli_store", _REAL_KIRO_CLI_STORE)
+        monkeypatch.setattr(
+            "kiro_crew.identity_stores.kiro_cli_store_candidates", lambda *_a: (local, roaming)
+        )
+        monkeypatch.setattr("kiro_crew.identity_stores.selected_store", lambda *_a: local)
+
+        class Denied:
+            def __getattr__(self, name):
+                return getattr(os, name)
+
+            @staticmethod
+            def lstat(path):
+                if Path(path) == roaming:
+                    raise PermissionError("denied")
+                return os.lstat(path)
+
+        monkeypatch.setattr(sign_in, "os", Denied())
+        assert _cause() == sign_in.CAUSE_SIGN_IN_UNUSABLE
+
+    def test_an_emptied_store_file_is_unusable_not_absent(self, store, kiro_cli) -> None:
+        # SQLite reads a zero-length file as a database with no tables.
+        kiro_cli().write_bytes(b"")
+        assert _cause() == sign_in.CAUSE_SIGN_IN_UNUSABLE
+
+    def test_the_store_read_is_audited_under_a_registered_id(self) -> None:
+        from kiro_crew import hooks
+
+        assert sign_in.KIRO_CLI_STORE_READ_ID in hooks._AUDIT_ONLY_READ_IDS
+
+    def test_a_malformed_token_row_is_unusable_not_absent(self, store, kiro_cli) -> None:
+        kiro_cli(raw_token="{not json")
+        assert _cause() == sign_in.CAUSE_SIGN_IN_UNUSABLE
+
+    def test_a_builder_id_sign_in_counts_in_oss_only(self, store, kiro_cli) -> None:
+        kiro_cli(profile_arn=None)
+        assert sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.KIRO_CLI
+        assert _cause() == sign_in.CAUSE_NOT_ELIGIBLE
+
+    def test_both_present_the_vault_wins(self, vault, kiro_cli) -> None:
+        vault()
+        kiro_cli()
+        for policy in (sign_in.ENTERPRISE, sign_in.OSS):
+            assert sign_in.resolve(policy=policy).source is sign_in.Source.VAULT
+        assert sign_in.resolve(with_token=True).token == "vault-access"
+
+    def test_a_lapsed_vault_never_falls_back_to_kiro_cli(self, vault, kiro_cli) -> None:
+        vault(expires_in=-3600, refresh_token=None)
+        kiro_cli()
+        chosen = sign_in.select(policy=sign_in.OSS)
+        assert chosen.source is sign_in.Source.VAULT and chosen.problem is not None
+        assert "kas logout" in str(chosen.problem)
+        assert "kiro-cli's sign-in" in str(chosen.problem)
+
+    def test_two_accounts_enterprise_refuses_naming_both(self, vault, kiro_cli) -> None:
+        vault()
+        kiro_cli(profile_arn=_OTHER_ARN)
+        with pytest.raises(sign_in.SignInError) as exc:
+            sign_in.resolve()
+        assert exc.value.cause == sign_in.CAUSE_SIGN_INS_DISAGREE
+        assert _ARN in str(exc.value) and _OTHER_ARN in str(exc.value)
+
+    def test_two_accounts_oss_uses_the_vault_and_warns_once(
+        self, vault, kiro_cli, caplog, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(sign_in, "_warned_mismatches", set())
+        vault()
+        kiro_cli(profile_arn=_OTHER_ARN)
+        with caplog.at_level("WARNING", logger="kiro_crew.enterprise_sign_in"):
+            assert sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+            assert sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
+        warnings = [r for r in caplog.records if "different accounts" in r.getMessage()]
+        assert len(warnings) == 1
+        assert _ARN in warnings[0].getMessage() and _OTHER_ARN in warnings[0].getMessage()
+
+    def test_an_unreadable_kiro_cli_store_beside_the_vault_decides_nothing(
+        self, vault, kiro_cli
+    ) -> None:
+        vault()
+        kiro_cli().write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+        assert sign_in.resolve().source is sign_in.Source.VAULT
+
+    def test_the_spawn_owner_follows_the_pick(self, vault, kiro_cli) -> None:
+        from kiro_crew.auth.bridge import vault_holds_identity
+
+        kiro_cli()
+        assert vault_holds_identity() is False
+        vault()
+        assert vault_holds_identity() is True
+
+
 class TestAccountLock:
+    def test_a_damaged_kiro_cli_store_never_stops_the_gateway(
+        self, store, kiro_cli, unpinned, monkeypatch
+    ) -> None:
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        epf = unpinned
+        stops: list[int] = []
+        monkeypatch.setattr(
+            "kiro_crew.platform.policy_distribution.central_ceiling_installed", lambda: True
+        )
+        monkeypatch.setattr(epf.signal, "raise_signal", lambda sig: stops.append(sig))
+        path = kiro_cli()
+        assert epf.pinned_scope()
+        path.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+        with pytest.raises(PlatformCompositionError) as exc:
+            epf.assert_signed_in_unchanged()
+        assert epf.ACCOUNT_CHANGED not in str(exc.value)
+        assert stops == []
+
+    def test_a_kiro_cli_sign_out_is_an_account_change(
+        self, store, kiro_cli, unpinned, monkeypatch
+    ) -> None:
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        epf = unpinned
+        monkeypatch.setattr(
+            "kiro_crew.platform.policy_distribution.central_ceiling_installed", lambda: False
+        )
+        path = kiro_cli()
+        assert epf.pinned_scope()
+        path.unlink()
+        with pytest.raises(PlatformCompositionError) as exc:
+            epf.assert_signed_in_unchanged()
+        assert epf.ACCOUNT_CHANGED in str(exc.value)
+
     def test_a_lapsed_sign_in_is_not_an_account_change(self, vault, unpinned) -> None:
         epf = unpinned
         vault()

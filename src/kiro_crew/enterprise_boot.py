@@ -7,7 +7,7 @@ naming what failed and how to fix it. It never serves a locked gateway for a fai
 boot. An ``oss`` build does nothing here.
 
 * One sign-in (D4): :func:`kiro_crew.enterprise_sign_in.resolve`, Crew's own vault
-  sign-in. The rules fetch reads it first, so the sign-in check and
+  sign-in, or kiro-cli's when the vault holds none. The rules fetch reads it first, so the sign-in check and
   the fetch are one step inside ``boot_platform``, before any port binds. A
   :class:`~kiro_crew.platform.context.PlatformCompositionError` from it reaches
   :func:`refuse_policy_boot`, which picks the fix from the recorded cause.
@@ -59,6 +59,10 @@ _FIX_FOR_CAUSE = {
     sign_in.CAUSE_BAD_RULES: (
         "Ask your administrator to check the organisation's Kiro Crew policy, " f"{_RESTART}."
     ),
+    sign_in.CAUSE_SIGN_INS_DISAGREE: (
+        "Kiro Crew and kiro-cli are signed in to different accounts. Sign one of them "
+        f"in to the other's account, or sign one out, {_RESTART}."
+    ),
 }
 
 _FIX_UNKNOWN = (
@@ -107,7 +111,7 @@ def refuse_policy_boot(exc: BaseException) -> None:
 async def require_kiro_login(*, assume_ready: bool = False) -> KiroPrerequisiteService | None:
     """In an enterprise build, exit unless the one enterprise sign-in resolves now.
 
-    Reads :func:`kiro_crew.enterprise_sign_in.resolve` (Crew's own vault sign-in), the
+    Reads :func:`kiro_crew.enterprise_sign_in.resolve` (Crew's vault, else kiro-cli's), the
     same identity the rules fetch and the account lock read. Returns
     ``None`` in every build: the caller builds its own setup service, and the gate's
     login source is :class:`~kiro_crew.enterprise_sign_in.SignInLoginSource`.

@@ -1440,6 +1440,12 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Same store, read by ``kiro_crew.enterprise_sign_in`` (the shared sign-in
+    # resolver) when Crew's vault holds no sign-in: the token rows and the
+    # ``api.codewhisperer.profile`` row, for the enterprise rules fetch and account
+    # lock and for the oss KAS spawn owner. Read-only, never logged; a token is
+    # handed back only once its ``success`` audit is recorded.
+    "enterprise_sign_in.kiro_cli_store": ".local/share/kiro-cli/data.sqlite3",
     # Same store, read by ``kiro_crew.kiro_prerequisite.identity_fingerprint`` to
     # answer one question on the turn path: does the account signed in NOW differ
     # from the one the running kiro-cli children loaded? Only stable account

@@ -24,7 +24,7 @@ import logging
 from datetime import datetime, timezone
 
 from kiro_crew.auth.provider import KasAuthProvider
-from kiro_crew.auth.store import KasToken, TokenStore, TokenStoreError
+from kiro_crew.auth.store import KasToken, TokenStore
 from kiro_crew.auth.whoami import recorded_start_url
 from kiro_crew.config.paths import data_home
 
@@ -53,47 +53,47 @@ def _usable(token: KasToken) -> bool:
 
 
 def vault_holds_identity(*, warn: bool = True) -> bool:
-    """True when Crew's own vault stores a USABLE Kiro identity (of any stored kind).
+    """True when Crew's own vault is the sign-in: it stores an entry, usable or not.
 
     The spawn-time question the KAS relay asks before choosing its auth owner
     (:mod:`kiro_crew.acp.kas_host_auth`), also reported by ``kirocrew doctor``
-    and asked by the dashboard's usage poll. A plain read of the vault -- no
-    refresh, no network -- that never raises: a missing, unreadable, or linked
-    vault directory is ``False`` (the unreadable case logged at WARNING), and so
-    is an identity whose access token has expired with no refresh token to renew
-    it -- that entry cannot answer a single callback, so handing the spawn to it
-    would only shadow a working ``kiro-cli login``. Both degrade to the
-    kiro-cli-owned spawn rather than failing the spawn. Blocking file IO -- call
-    off the loop.
+    and asked by the dashboard's usage poll. Answered by the shared sign-in
+    resolver (:func:`kiro_crew.enterprise_sign_in.select`, oss policy), so it picks
+    the source the enterprise checks pick: a vault entry means the vault and only
+    the vault; an empty vault means kiro-cli (``False``). A lapsed entry, or a vault
+    that cannot be read, is still ``True`` (fail closed): the spawn is Crew-owned
+    and its first token callback reports "not signed in", never a silent switch to
+    kiro-cli's account. Remove the Crew sign-in (``kirocrew kas logout``) to use
+    kiro-cli's. A plain store read -- no refresh, no network -- that never raises.
+    Blocking file IO -- call off the loop.
 
     ``warn=False`` logs those diagnostics at DEBUG instead of WARNING, for a
     caller that asks on a timer (the usage poll) where a spawn-time diagnostic
     would repeat on every tick; the verdict is the same either way.
     """
     log = logger.warning if warn else logger.debug
+    # The shared sign-in resolver decides, under the oss policy: a vault entry is the
+    # sign-in, lapsed or not, and kiro-cli's only when the vault holds none. The two
+    # are never mixed: a lapsed or unreadable vault keeps the spawn Crew-owned, where
+    # its first token callback fails as "not signed in" instead of quietly running
+    # as kiro-cli's account.
+    from kiro_crew import enterprise_sign_in as sign_in
+
     try:
-        token = default_token_store().resolve()
-        if token is None:
-            return False
-        if not _usable(token):
-            log(
-                "Crew sign-in vault holds an expired %s identity with nothing to renew it; "
-                "KAS spawns cli-owned (sign in again or sign out to clear it)",
-                token.identity,
-            )
-            return False
-        return True
-    except TokenStoreError as exc:
-        # `exc` is a store-level reason (a path or a permissions verdict), never
-        # a stored value -- the store raises before decrypting anything.
-        log("Crew sign-in vault unreadable; KAS spawns cli-owned: %s", exc)
+        chosen = sign_in.select(policy=sign_in.OSS)
+    except sign_in.SignInError as exc:
+        if exc.source is sign_in.Source.VAULT:
+            log("Crew sign-in vault unusable; KAS spawns Crew-owned: %s", exc)
+            return True
         return False
     except Exception as exc:  # noqa: BLE001 - a vault probe must never fail a spawn
-        log(
-            "Crew sign-in vault probe failed (%s); KAS spawns cli-owned",
-            type(exc).__name__,
-        )
+        log("Crew sign-in probe failed (%s); KAS spawns cli-owned", type(exc).__name__)
         return False
+    if chosen.source is not sign_in.Source.VAULT:
+        return False
+    if chosen.problem is not None:
+        log("%s", chosen.problem)
+    return True
 
 
 #: The stored-identity fields that name WHICH account the vault is signed in as.

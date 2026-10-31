@@ -93,7 +93,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 import ssl
 import time
 import urllib.error
@@ -107,7 +106,7 @@ from kiro_crew import hooks
 # The kiro-cli store is also read in this process through the shim; one SQLite
 # library keeps the other readers' locks when this connection closes.
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.identity_stores import Trust, sqlite_dbs
+from kiro_crew.identity_stores import AUTH_TOKEN_KEYS, Trust, parse_token_expiry, sqlite_dbs
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +229,7 @@ _CLI_SQLITE_DBS = sqlite_dbs(Trust.TRUSTED)
 # absent. Untrusted either way (``from_cli_store=False``), so this widens what
 # can be READ for credit reporting, never what is believed.
 _OTHER_SQLITE_DBS = sqlite_dbs(Trust.OTHER)
-_SQLITE_TOKEN_KEYS = ("kirocli:odic:token", "codewhisperer:odic:token", "kirocli:social:token", "kirocli:external-idp:token")
+_SQLITE_TOKEN_KEYS = AUTH_TOKEN_KEYS
 
 # SEL audit label for the SQLite live-token read. Not an allowlist entry (that
 # gate is for sensitive-path reads via safe_read_file_internal); this is only
@@ -341,21 +340,9 @@ def _note_api_outcome(ok: bool, reason: str = "") -> None:
         )
 
 
-def _parse_iso(ts: object) -> datetime | None:
-    """Parse an ISO8601 timestamp (handles trailing Z) to an aware datetime.
-
-    kiro-cli emits nanosecond precision (9 fractional digits); Python 3.10's
-    ``fromisoformat`` accepts at most 6, so the fraction is truncated to
-    microseconds first. Without this the parse fails and an expired token would
-    be treated as non-expiring (fail-open).
-    """
-    try:
-        s = str(ts).replace("Z", "+00:00")
-        s = re.sub(r"(\.\d{6})\d+", r"\1", s)
-        dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
+#: The shared token-expiry parser (``identity_stores.parse_token_expiry``): the sign-in
+#: resolver reads the same rows, so the two readers cannot parse an expiry differently.
+_parse_iso = parse_token_expiry
 
 
 def _expiry_if_unexpired(exp: object, now: datetime) -> datetime | None:
