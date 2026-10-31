@@ -21,6 +21,7 @@ from kiro_crew.sandbox_argv import (
     _sandbox_env_unset_args,
 )
 from kiro_crew.sandbox_precreate import _DELEGATED_OVERLAP_LEAF_REASONS
+from kiro_crew.sandbox_python_env import resolved_python_env_targets as _resolved_python_env_targets
 from kiro_crew.sandbox_tiers import (
     _IN_SANDBOX_MARKER,
     _resolved_install_root_targets,
@@ -211,6 +212,8 @@ def sandbox_init_remediation(layer: str, *, corroborated: bool) -> str:
 
 def delegated_workspace_exposes_sealed_target(
     work_dir: "str | os.PathLike[str] | None",
+    *,
+    confined_linux: bool = False,
 ) -> str | None:
     """Reason a kiro-cli spawn must be refused because its workspace would leave a
     SEALED target writable, or ``None`` when it may proceed.
@@ -222,7 +225,8 @@ def delegated_workspace_exposes_sealed_target(
     example the strict no-alias config leaf ``cloud.json``, which names the container
     image a Fargate launch runs and therefore the image the task's execution role hands
     the model credential to. The gateway's packaged install tree
-    (:func:`_resolved_install_root_targets`) is a target too: it is the code the
+    (:func:`_resolved_install_root_targets`) and the Python environment around it
+    (:func:`_resolved_python_env_targets`) are targets too: they are the code the
     gateway runs on its next start.
 
     A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
@@ -230,9 +234,16 @@ def delegated_workspace_exposes_sealed_target(
     and the delegated sandbox treats the workspace as writable — so a workspace
     that IS, CONTAINS or sits INSIDE any target lets the child rewrite it.
     Refusing here, before the spawn, is the only enforcement point left on those
-    paths. Where Kiro Crew's launcher does wrap the child every seal holds
+    paths. Where Kiro Crew's launcher does wrap the child the seals hold
     regardless of workspace, so this returns ``None`` and keeps ``$HOME``-rooted
-    workspaces working there.
+    workspaces working there, with one exception on Linux: the namespace launcher's
+    child inherits its working directory from before the namespace existed, so a
+    workspace at or inside the gateway's Python environment keeps the writable
+    mount underneath that environment's seal. That workspace is refused by the
+    same rule as on the delegated paths, but only with ``confined_linux=True``:
+    the shared ACP launch tail (``acp.launch.launch``) passes it for every harness
+    once the wrap has put the spawn behind that launcher, so a spawn the sandbox
+    does not confine is never refused for a seal it does not get.
 
     Deliberately NOT conditioned on what the config currently CONTAINS. An agent
     does not need to swap a field it can create: given a writable path and no
@@ -254,12 +265,30 @@ def delegated_workspace_exposes_sealed_target(
     delegated = (sys.platform == "darwin" and kiro_internal_sandbox_enabled()) or (
         sys.platform == "win32"
     )
-    if not delegated:
+    if confined_linux:
+        if not sys.platform.startswith("linux"):
+            return None
+        # The namespace launcher seals the environment by mounting over it, and an
+        # inherited working directory still stands on the writable mount beneath.
+        env_targets = _resolved_python_env_targets()
+        install_targets = list(env_targets)
+        targets = []
+        writable_why = (
+            "an agent started in that directory keeps write access to it beneath "
+            "the sandbox's read-only seal"
+        )
+    elif delegated:
+        env_targets = _resolved_python_env_targets()
+        install_targets = _resolved_install_root_targets() + env_targets
+        targets = _resolved_kiro_agents_targets() + [
+            os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
+        ]
+        writable_why = (
+            "on this platform the spawn is delegated to kiro-cli's internal sandbox, "
+            "which treats the workspace as writable"
+        )
+    else:
         return None
-    install_targets = _resolved_install_root_targets()
-    targets = _resolved_kiro_agents_targets() + [
-        os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
-    ]
     if not targets and not install_targets:
         return None
 
@@ -280,8 +309,9 @@ def delegated_workspace_exposes_sealed_target(
         # refuses a workspace that contains it.
         remedy = f"Choose a workspace that does not contain '{target}'."
         if named is None and target in install_targets:
+            kind = "Python environment" if target in env_targets else "install directory"
             named = (
-                "Kiro Crew install directory",
+                f"Kiro Crew {kind}",
                 "the agent could change the code the gateway runs on its next start",
             )
             remedy = f"Choose a workspace outside '{target}'."
@@ -294,8 +324,7 @@ def delegated_workspace_exposes_sealed_target(
             )
         return (
             f"workspace '{os.fspath(work_dir)}' overlaps the {what} "
-            f"'{target}' ({how}); on this platform the spawn is delegated to kiro-cli's "
-            f"internal sandbox, which treats the workspace as writable, so {consequence}. "
+            f"'{target}' ({how}); {writable_why}, so {consequence}. "
             f"{remedy}"
         )
 

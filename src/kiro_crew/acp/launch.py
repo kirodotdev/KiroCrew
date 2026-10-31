@@ -838,6 +838,12 @@ class LaunchTools:
     remember_namespace_launcher: Callable[[int, Sequence[str], str | None], None] = field(
         default_factory=lambda: _remember_namespace_launcher
     )
+    #: Why a CONFINED Linux spawn may not start in this workspace, or ``None``
+    #: (``sandbox.delegated_workspace_exposes_sealed_target(..., confined_linux=True)``);
+    #: blocking (it stats), run off-loop through the guarded hop.
+    python_env_workspace_refusal: Callable[[str], str | None] = field(
+        default_factory=lambda: _python_env_workspace_refusal
+    )
 
 
 def _remember_namespace_launcher(
@@ -846,6 +852,12 @@ def _remember_namespace_launcher(
     from kiro_crew.sandbox import remember_namespace_launcher
 
     remember_namespace_launcher(pid, wrapped_argv, launcher_script)
+
+
+def _python_env_workspace_refusal(work_dir: str) -> str | None:
+    from kiro_crew.sandbox import delegated_workspace_exposes_sealed_target
+
+    return delegated_workspace_exposes_sealed_target(work_dir, confined_linux=True)
 
 
 def _unscoped(argv: list[str]) -> tuple[list[str], str]:
@@ -1133,6 +1145,19 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     host._sandbox_wrapped_by_crew = tools.wrapped_by_crew_sandbox(argv)
     sandbox_wrapped_argv = tuple(argv)
     host._sandbox_hidden_dirs = tuple(request.extra_hidden_dirs)
+    # Crew's Linux launcher seals the gateway's Python environment by mounting over
+    # it, and a child created in a directory inside it keeps standing on the writable
+    # mount beneath. So a workspace at or inside it is refused here, for every
+    # harness, once the wrap has said this spawn IS behind that launcher: an
+    # unconfined spawn gets no seal to defeat. A launch copy starts the agent in its
+    # own sealed directory instead (``exec_cwd``), which the launcher enters by name.
+    if _launcher_enters_exec_cwd(host) and not getattr(host, "_launch_process_cwd", ""):
+        refusal = await host._to_thread_guarding_sandbox(
+            tools.python_env_workspace_refusal, str(host._work_dir)
+        )
+        if refusal:
+            host._discard_sandbox_cleanup()
+            raise RuntimeError(refusal)
     # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server / tool
     # descendants with pids.max (fork bomb) + memory.max (RSS balloon). No-op +
     # loud warning where cgroup delegation is unavailable. --scope execs into the
