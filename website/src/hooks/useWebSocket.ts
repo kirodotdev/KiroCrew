@@ -40,6 +40,7 @@ import { useSocketConnection } from './websocket/connection'
 import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
 import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
 import { noteAppSlotFrame } from '../utils/appSlotPush'
+import { SilenceWatchdog } from '../utils/socketSilenceWatchdog'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -115,15 +116,10 @@ export {
 
 export { ROW_STALL_MS, ROW_STALL_TICK_MS } from './websocket/rowDeliveryWatchdog'
 
-/** A socket that has delivered nothing for this long while the page is visible
- *  is treated as dead, even when its `readyState` still reads OPEN. The gateway
- *  pushes a `dashboard` status frame on every socket every 5s
- *  (`_WS_STATUS_INTERVAL` in `dashboard/ws.py`), so this is four missed ticks. */
-export const WS_SILENCE_MS = 20_000
-/** How often the silence check runs: the status frame's own cadence. */
-export const WS_SILENCE_CHECK_MS = 5_000
-/** Ceiling for the silence window after repeated silent reconnects. */
-export const WS_SILENCE_MAX_MS = 300_000
+// The silence-watchdog timing constants are owned by the shared helper so the
+// dashboard socket and the two app sockets cannot drift. Re-exported here
+// because existing dashboard consumers (and tests) import them from this module.
+export { WS_SILENCE_MS, WS_SILENCE_CHECK_MS, WS_SILENCE_MAX_MS } from '../utils/socketSilenceWatchdog'
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
 const getDashboardState = () => store.getState().dashboard
@@ -133,16 +129,11 @@ export function useWebSocket() {
   const queryClient = useQueryClient()
   const socket = useSocketConnection()
   const { reconnectingRef } = socket
-  // Silence watchdog state (see WS_SILENCE_MS), kept in visible time: when the
-  // current socket last delivered a frame, when its silence clock started (at
-  // open), when the page was hidden (0 while visible), until when a socket
-  // thawed by a return is spared, and how many silent sockets in a row the
-  // watchdog has replaced.
-  const lastFrameAtRef = useRef(0)
-  const silenceClockStartedAtRef = useRef(0)
-  const hiddenAtRef = useRef(0)
-  const graceUntilRef = useRef(0)
-  const silentReconnectsRef = useRef(0)
+  // The silence watchdog: one instance for this hook's logical connection,
+  // re-seeded by `markOpen` on each socket open and fed `markFrame` on every
+  // delivered frame. Its timing state (visible-time stamps, hidden skip, thaw
+  // grace, window doubling) lives in the shared helper, not here.
+  const silenceRef = useRef<SilenceWatchdog | null>(null)
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
   const approvals = useApprovalRegistry(dispatch, queryClient)
@@ -185,8 +176,7 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       socket.resetBackoff()
-      silenceClockStartedAtRef.current = Date.now()
-      lastFrameAtRef.current = silenceClockStartedAtRef.current
+      silenceRef.current?.markOpen()
       slotList.resetForConnection()
       // A new socket starts unwatched; the gateway's hello re-sends the set.
       foldWatchRef.current?.reset()
@@ -231,7 +221,7 @@ export function useWebSocket() {
     // try/catch covers the table: a throw ends that frame's effects and the
     // next frame routes normally.
     ws.onmessage = (e) => {
-      if (socket.wsRef.current === ws) lastFrameAtRef.current = Date.now()
+      if (socket.wsRef.current === ws) silenceRef.current?.markFrame()
       // The look-preview frame (utils/lookPreview.ts) is a still picture of the
       // product drawn from fixtures: no live frame may repaint it with the
       // user's real sessions, runs or notices. The socket stays open only so
@@ -1031,72 +1021,23 @@ export function useWebSocket() {
 
   /** Replace a socket that is OPEN but has stopped delivering.
    *
-   *  A browser can keep a WebSocket whose transport is gone -- a phone that
-   *  changed networks, or a tab resumed after the OS froze it -- without ever
-   *  firing `onclose`. Nothing else notices: the reconnect catch-up only runs on
-   *  close, and the health probe only polls while `connected` is false. Every
-   *  one-shot frame is then lost until a manual reload; an agent-armed
-   *  `autonudge_state` is the visible case, since no local mutation writes that
-   *  record. The gateway's 5s `dashboard` frame is the liveness signal: while the
-   *  page is visible, a socket silent for WS_SILENCE_MS is torn down through
-   *  `forceReconnect`, whose catch-up re-reads every frame family.
-   *
-   *  Silence is measured in visible time only. Hidden pages are skipped (timers
-   *  are throttled there, and a suspended tab processed nothing); on the return
-   *  every stamp moves past the hidden interval, so silence adds up across tab
-   *  switches while a frame that arrived in the background counts as arriving
-   *  at the return. A thawed socket then gets two checks to deliver its next
-   *  status frame before it can be replaced -- unless its visible silence had
-   *  already passed the window when the page came back, in which case the
-   *  first check replaces it, so a dead socket cannot outlive a run of glances
-   *  each shorter than that grace. Each consecutive silent replacement doubles
-   *  the window up to WS_SILENCE_MAX_MS, so a gateway that stopped sending
-   *  status on a live socket costs one reconnect per window rather than one
-   *  every 20s; a socket observed live for a whole window of visible time since
-   *  it opened resets the count. */
+   *  The rule and its visible-time bookkeeping live in the shared
+   *  `SilenceWatchdog` (see `utils/socketSilenceWatchdog`), so this socket, the
+   *  mochi panel socket and the crew-companion socket cannot drift. Here we only
+   *  wire it to this hook's connection: `isOpen` reads the live socket's
+   *  `readyState`, and `onDead` is `forceReconnect`, whose catch-up re-reads
+   *  every frame family. The agent-armed `autonudge_state` is the visible case a
+   *  dead-but-open socket drops, since no local mutation writes that record. */
   useEffect(() => {
-    const silenceWindowMs = () => Math.min(
-      WS_SILENCE_MS * 2 ** silentReconnectsRef.current,
-      WS_SILENCE_MAX_MS,
-    )
-    const check = () => {
-      if (document.hidden) return
-      const ws = socket.wsRef.current
-      if (!ws || ws.readyState !== WebSocket.OPEN) return
-      const now = Date.now()
-      const silenceMs = silenceWindowMs()
-      if (now - lastFrameAtRef.current <= silenceMs) {
-        if (now - silenceClockStartedAtRef.current > silenceMs) silentReconnectsRef.current = 0
-        return
-      }
-      if (now < graceUntilRef.current) return
-      silentReconnectsRef.current += 1
-      forceReconnect()
-    }
-    const onVisibility = () => {
-      const now = Date.now()
-      if (document.hidden) {
-        hiddenAtRef.current = now
-        return
-      }
-      // Move each stamp past only the hidden time after it, and never past
-      // now: a stamp from before the hide keeps its visible age, and a frame
-      // that arrived while hidden counts as arriving at the return.
-      const skipHidden = (stamp: number) => stamp + now - Math.max(hiddenAtRef.current, stamp)
-      lastFrameAtRef.current = skipHidden(lastFrameAtRef.current)
-      silenceClockStartedAtRef.current = skipHidden(silenceClockStartedAtRef.current)
-      hiddenAtRef.current = 0
-      // Two checks of grace for a thawed socket, none for one whose visible
-      // silence had already passed the window before it was hidden.
-      graceUntilRef.current = now - lastFrameAtRef.current > silenceWindowMs()
-        ? 0
-        : now + WS_SILENCE_CHECK_MS * 2
-    }
-    const timer = setInterval(check, WS_SILENCE_CHECK_MS)
-    document.addEventListener('visibilitychange', onVisibility)
+    const watchdog = new SilenceWatchdog({
+      isOpen: () => socket.wsRef.current?.readyState === WebSocket.OPEN,
+      onDead: forceReconnect,
+    })
+    silenceRef.current = watchdog
+    watchdog.start()
     return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
+      watchdog.stop()
+      silenceRef.current = null
     }
   }, [socket, forceReconnect])
 
