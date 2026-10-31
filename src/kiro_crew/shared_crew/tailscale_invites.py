@@ -288,7 +288,7 @@ async def status_view() -> dict[str, Any]:
 def members_by_login() -> dict[str, dict[str, Any]]:
     """Each accepted person's display record, keyed by lower-cased verified login."""
     return {
-        str(m.get("login") or "").strip().lower(): _member_row(m)
+        _norm_login(m.get("login")): _member_row(m)
         for m in (store.load_state().get("members") or {}).values()
         if m.get("login") and not m.get("removed")
     }
