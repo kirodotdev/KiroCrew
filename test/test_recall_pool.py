@@ -15,13 +15,13 @@ import random
 import sys
 import textwrap
 import threading
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 import kiro_crew.recall_pool as rp
+from kiro_crew import platform_compat
 from kiro_crew.consolidation_write_child import ChildUnavailable
 from kiro_crew.recall_pool import RecallPool
 from kiro_crew.vector_memory import VectorMemoryStore
@@ -32,6 +32,8 @@ from kiro_crew.vector_memory_runtime import semantic as semantic_mod
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and /proc")
 
 _DIM = 8
+#: A fixed free-memory reading, so a child starts whatever the host has free.
+_ROOMY = lambda: 1e9  # noqa: E731
 
 
 def _vector(text: str) -> list[float]:
@@ -49,9 +51,9 @@ class _Embedder:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_settings(monkeypatch: pytest.MonkeyPatch):
+def _fresh_settings(_floor_monkeypatch: pytest.MonkeyPatch):
     """Each test reads the config afresh, not the previous test's cached answer."""
-    monkeypatch.setattr(rp, "_settings_cache", None)
+    _floor_monkeypatch.setattr(rp, "_settings_cache", None)
 
 
 FACTS = {
@@ -82,7 +84,7 @@ def store(tmp_path: Path):
 @pytest.fixture
 def pool(monkeypatch: pytest.MonkeyPatch):
     """A real pool the offload hook uses, with the switch on."""
-    handle = RecallPool(2, 3072, job_timeout_secs=60.0, queue_wait_secs=30.0)
+    handle = RecallPool(2, 3072, job_timeout_secs=60.0, queue_wait_secs=30.0, free_memory_mb=_ROOMY)
     monkeypatch.setattr(rp, "settings", lambda: (2, 3072))
     monkeypatch.setattr(rp, "get_pool", lambda size, max_mb: handle)
     yield handle
@@ -151,10 +153,13 @@ class TestSwitch:
         monkeypatch.setattr(
             "kiro_crew.config.loader.KiroCrewConfig.load", lambda: loads.append(1) or cfg
         )
+        clock = [50.0]
+        monkeypatch.setattr(rp, "_now", lambda: clock[0])
         assert rp.settings() == (2, 4096)
+        clock[0] += rp._SETTINGS_TTL_SECS / 2
         assert rp.settings() == (2, 4096)
         assert len(loads) == 1
-        monkeypatch.setattr(rp, "_SETTINGS_TTL_SECS", 0.0)
+        clock[0] += rp._SETTINGS_TTL_SECS
         rp.settings()
         assert len(loads) == 2
 
@@ -208,16 +213,70 @@ class TestEndToEnd:
         store.get_semantic_context(QUERY, 1500, facts_only=True)
         assert QUERY in embedder.calls[before:]
 
-    def test_the_gateway_records_the_access(
+    def test_the_gateway_records_the_access_later(
+        self, store, pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rp, "_pending_touches", {})
+        monkeypatch.setattr(rp, "_touch_timer", None)
+        _forbid_in_process(monkeypatch)
+        try:
+            row = store._fetch_one_locked("SELECT id, last_accessed_at FROM episodic_memories")
+            assert row["last_accessed_at"] is None
+            assert EPISODE[:20] in store.get_episodic_context(_vector(EPISODE), EPISODE, 3000)
+            # Not committed per read: that would move data_version for every child.
+            row = store._fetch_one_locked("SELECT id, last_accessed_at FROM episodic_memories")
+            assert row["last_accessed_at"] is None
+            rp.flush_touches()
+            row = store._fetch_one_locked("SELECT id, last_accessed_at FROM episodic_memories")
+            assert row["last_accessed_at"] is not None
+            assert row["id"] in store._last_accessed_touch
+        finally:
+            rp.flush_touches()
+
+    @staticmethod
+    def _collected(read):
+        """What a turn's two collectors hold after *read*, from a seeded omission record."""
+        from kiro_crew import context_omissions, injection_receipts
+
+        with context_omissions.collect() as omissions, injection_receipts.collect() as receipts:
+            # A record an earlier render of the same tier left behind in this build.
+            context_omissions.record(
+                context_omissions.LESSON_RULES, "budget", omitted=9, total=9, budget_chars=1
+            )
+            text = read()
+        return text, dict(omissions), dict(receipts)
+
+    @pytest.mark.parametrize(
+        "budgets",
+        [
+            dict(hard_cap=700, directive_budget=300, experience_budget=100),
+            dict(hard_cap=40000, directive_budget=30000, experience_budget=1500),
+        ],
+        ids=["tiers cut for budget", "everything kept"],
+    )
+    def test_lesson_records_reach_the_builds_collectors(
+        self, store, pool, monkeypatch: pytest.MonkeyPatch, budgets
+    ) -> None:
+        for i in range(25):
+            store.write_lesson(f"rule number {i} about rollout " + "word " * 30, "knowledge")
+        kw = _lessons_kwargs(**budgets)
+        expected = self._collected(lambda: lessons_mod.get_lessons_context(store, **kw))
+        _forbid_in_process(monkeypatch)
+        got = self._collected(lambda: store.get_lessons_context(**kw))
+        assert got == expected
+        # The receipt names the rows shown, and the seeded omission is dropped or replaced
+        # exactly as the in-process render does.
+        assert expected[2]
+        if budgets["hard_cap"] < 1000:
+            assert expected[1]["lesson_rules"]["reason"] == "budget"
+        else:
+            assert "lesson_rules" not in expected[1]
+
+    def test_a_read_outside_a_collection_records_nothing(
         self, store, pool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _forbid_in_process(monkeypatch)
-        row = store._fetch_one_locked("SELECT id, last_accessed_at FROM episodic_memories")
-        assert row["last_accessed_at"] is None
-        assert EPISODE[:20] in store.get_episodic_context(_vector(EPISODE), EPISODE, 3000)
-        row = store._fetch_one_locked("SELECT id, last_accessed_at FROM episodic_memories")
-        assert row["last_accessed_at"] is not None
-        assert row["id"] in store._last_accessed_touch
+        assert LESSON in store.get_lessons_context(**_lessons_kwargs())
 
     def test_a_stale_query_vector_ranks_by_keyword_like_the_gateway(
         self, store, pool, monkeypatch: pytest.MonkeyPatch
@@ -252,6 +311,29 @@ class TestEndToEnd:
         assert out == [expected] * 6
         assert len(pool.pids()) <= 2
 
+    def test_a_child_does_not_start_children_of_its_own(
+        self, store, pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``python -m`` runs the module as ``__main__``: the child must still know it is one.
+
+        The child reads the same config as the gateway, so with the switch on in the
+        file it would offload its own reads and start grandchildren, level after level.
+        """
+        from kiro_crew.config.loader import config_path
+
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"memory": {"recall_pool_processes": 2}}))
+        try:
+            _forbid_in_process(monkeypatch)
+            assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
+            assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
+            assert pool.pids()
+            for pid in pool.pids():
+                assert platform_compat.process_descendants(pid) == []
+        finally:
+            path.unlink(missing_ok=True)
+
     def test_a_child_over_its_memory_limit_is_replaced(
         self, store, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -281,17 +363,28 @@ class TestFallback:
         self, store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         handle = RecallPool(
-            2, 3072, ready_timeout_secs=5.0, argv=self._stub(tmp_path, "import sys; sys.exit(3)")
+            2,
+            3072,
+            ready_timeout_secs=5.0,
+            argv=self._stub(tmp_path, "import sys; sys.exit(3)"),
+            free_memory_mb=_ROOMY,
         )
         monkeypatch.setattr(rp, "settings", lambda: (2, 3072))
         monkeypatch.setattr(rp, "get_pool", lambda size, max_mb: handle)
+        clock = [1000.0]
+        monkeypatch.setattr(rp, "_now", lambda: clock[0])
         try:
             assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
             assert handle.spawns == 0
-            assert handle._down_until > time.monotonic()
+            assert handle._down_until == clock[0] + 1.0
             # Backing off: the next read goes straight to the gateway without a spawn.
             assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
             assert handle._failures == 1
+            # Past the backoff the pool tries again, and a second failure doubles it.
+            clock[0] += 1.5
+            assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
+            assert handle._failures == 2
+            assert handle._down_until == clock[0] + 2.0
         finally:
             handle.close()
 
@@ -307,14 +400,13 @@ class TestFallback:
             import time; time.sleep(60)
             """,
         )
-        handle = RecallPool(1, 3072, job_timeout_secs=1.0, argv=argv)
+        handle = RecallPool(1, 3072, job_timeout_secs=1.0, argv=argv, free_memory_mb=_ROOMY)
         monkeypatch.setattr(rp, "settings", lambda: (1, 3072))
         monkeypatch.setattr(rp, "get_pool", lambda size, max_mb: handle)
         try:
-            started = time.monotonic()
             assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
-            assert time.monotonic() - started < 30
             assert handle.pids() == []
+            assert handle._failures == 1
         finally:
             handle.close()
 
@@ -330,7 +422,7 @@ class TestFallback:
             sys.exit(9)
             """,
         )
-        handle = RecallPool(1, 3072, job_timeout_secs=20.0, argv=argv)
+        handle = RecallPool(1, 3072, job_timeout_secs=20.0, argv=argv, free_memory_mb=_ROOMY)
         monkeypatch.setattr(rp, "settings", lambda: (1, 3072))
         monkeypatch.setattr(rp, "get_pool", lambda size, max_mb: handle)
         try:
@@ -354,7 +446,7 @@ class TestFallback:
                 sys.stdout.flush()
             """,
         )
-        handle = RecallPool(1, 3072, job_timeout_secs=20.0, argv=argv)
+        handle = RecallPool(1, 3072, job_timeout_secs=20.0, argv=argv, free_memory_mb=_ROOMY)
         monkeypatch.setattr(rp, "settings", lambda: (1, 3072))
         monkeypatch.setattr(rp, "get_pool", lambda size, max_mb: handle)
         try:
@@ -395,11 +487,52 @@ class TestFallback:
         assert rp.pool_enabled() is False
         assert rp.offload(store, "semantic", {"query_text": QUERY}) is None
 
+    def test_the_environment_marks_a_child_too(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rp, "settings", lambda: (2, 3072))
+        monkeypatch.setenv(rp._CHILD_ENV, "1")
+        assert rp.in_child() is True
+        assert rp.pool_enabled() is False
+        assert rp.offload(store, "semantic", {"query_text": QUERY}) is None
+
     def test_a_closed_pool_refuses_work(self) -> None:
         handle = RecallPool(1, 3072)
         handle.close()
         with pytest.raises(ChildUnavailable):
             handle.run_job({"kind": "semantic"}, serve_embed=lambda f: {})
+
+
+class TestReceiptReplay:
+    def test_replay_records_known_kinds_inside_a_collection(self) -> None:
+        from kiro_crew import injection_receipts
+
+        with injection_receipts.collect() as sink:
+            injection_receipts.replay(
+                {
+                    "lessons": {"ids": ["lesson.a", 3], "omitted": 2},
+                    "findings": {"ids": "bad", "omitted": -4},
+                    "nonsense": {"ids": ["x"], "omitted": 1},
+                    "turn_lessons": "bad",
+                }
+            )
+        assert sink == {
+            "lessons": {"ids": ["lesson.a"], "omitted": 2},
+            "findings": {"ids": [], "omitted": 0},
+        }
+
+    def test_replay_outside_a_collection_is_a_no_op(self) -> None:
+        from kiro_crew import injection_receipts
+
+        injection_receipts.replay({"lessons": {"ids": ["lesson.a"], "omitted": 0}})
+
+    def test_malformed_records_from_a_child_never_fail_a_read(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rp._replay_records({"omissions": {"cleared": 7, "set": [1]}, "receipts": "x"})
+        rp._replay_records(
+            {"omissions": {"cleared": ["nonsense"], "set": {"x": {}, "lesson_rules": 1}}}
+        )
 
 
 def test_the_pool_is_rebuilt_when_the_setting_changes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -550,3 +683,98 @@ class TestServeLoopInProcess:
     def test_the_resident_size_is_readable_here(self) -> None:
         assert rp._rss_mb() > 0
         assert rp._max_rss_mb() >= 0.0
+
+    def test_an_unreadable_resident_size_never_recycles(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("KIROCREW_RECALL_POOL_MAX_RSS_MB", "1")
+        monkeypatch.setattr(rp, "_rss_mb", lambda: None)
+        stdin = self._lines(
+            self._job(store, "nonsense", {}, 1), self._job(store, "nonsense", {}, 2)
+        )
+        out = io.BytesIO()
+        assert rp._serve(stdin, out) == 0
+        results = [f for f in self._frames(out) if f["op"] == "result"]
+        assert len(results) == 2 and not any(f.get("recycle") for f in results)
+
+
+class TestPoolLifecycle:
+    def test_a_child_spawned_while_the_pool_closes_is_not_leaked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handle = RecallPool(1, 3072, free_memory_mb=_ROOMY)
+        closed: list[bool] = []
+
+        class _Conn:
+            proc = MagicMock()
+
+            def close(self) -> None:
+                closed.append(True)
+
+        def spawn_then_close() -> _Conn:
+            handle.close()  # the setting changed while this child was starting
+            return _Conn()
+
+        monkeypatch.setattr(handle, "_spawn", spawn_then_close)
+        with pytest.raises(ChildUnavailable):
+            handle.run_job({"kind": "semantic"}, serve_embed=lambda f: {})
+        assert closed == [True]
+        assert handle.pids() == []
+
+    def test_turning_the_setting_off_stops_the_children(
+        self, store, pool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rp, "_pool", pool)
+        assert "kubernetes" in store.get_semantic_context(QUERY, 1500, facts_only=True)
+        assert pool.pids()
+        monkeypatch.setattr(rp, "settings", lambda: (0, 0))
+        assert rp.pool_enabled() is False
+        assert pool._closed and pool.pids() == []
+        assert rp._pool is None
+
+    def test_flushing_writes_each_stores_buffered_accesses_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(rp, "_pending_touches", {})
+        monkeypatch.setattr(rp, "_touch_timer", None)
+        first, second = MagicMock(), MagicMock()
+        second._touch_last_accessed.side_effect = RuntimeError("store closed")
+        try:
+            rp._queue_touches(first, ["b", "a"])
+            rp._queue_touches(first, ["a", "c"])
+            rp._queue_touches(second, ["z"])
+            assert rp._touch_timer is not None
+            rp.flush_touches()
+            first._touch_last_accessed.assert_called_once_with(["a", "b", "c"])
+            second._touch_last_accessed.assert_called_once_with(["z"])
+            assert rp._touch_timer is None and not rp._pending_touches
+            rp.flush_touches()
+            first._touch_last_accessed.assert_called_once()
+        finally:
+            rp.flush_touches()
+
+
+class TestKeptStoreConfig:
+    def test_an_unchanged_config_leaves_the_resident_sets_alone(
+        self, store, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_RECALL_POOL_MAX_RSS_MB", raising=False)
+        calls: list[int] = []
+        real = VectorMemoryStore.reconfigure
+
+        def counting(self, cfg):
+            calls.append(1)
+            return real(self, cfg)
+
+        monkeypatch.setattr(VectorMemoryStore, "reconfigure", counting)
+        job = TestServeLoopInProcess()._job
+        lessons = {"query_text": QUERY, "background": True}
+        out = io.BytesIO()
+        stdin = TestServeLoopInProcess._lines(
+            job(store, "lessons", lessons, 1),
+            job(store, "lessons", lessons, 2),
+            job(store, "lessons", lessons, 3),
+        )
+        assert rp._serve(stdin, out) == 0
+        # Opening the store applies the config once; the two kept-store jobs apply nothing.
+        assert len(calls) == 1

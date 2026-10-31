@@ -27,8 +27,10 @@ vector, the caps) and returns the rendered text. These stay in the gateway:
 * the query embedding: the child asks over its pipe and the gateway answers from
   its own embedder, so no second copy of the model loads;
 * the ``last_accessed_at`` touch an episodic hit makes: the child reports the row
-  ids and the gateway writes them, through the same debounce, so a read in a child
-  never commits and never moves SQLite's ``data_version`` for its siblings;
+  ids and the gateway writes them, through the same debounce, at most every few
+  minutes (``_TOUCH_FLUSH_SECS``). A read in a child never commits, and the
+  gateway's commit for the accesses moves SQLite's ``data_version`` for every child
+  once per flush instead of once per read;
 * the writes: consolidation, the dashboard, the CLI.
 
 Staying current
@@ -110,7 +112,16 @@ _BACKOFF_CAP_SECS = 300.0
 #: Upper bound on ``memory.recall_pool_processes``.
 MAX_POOL_PROCESSES = 8
 
+#: The pool's clock for backoff, idleness and the settings reuse. A name of its own so a test
+#: can move it without rebinding ``time.monotonic`` for everything else. The per-job deadline
+#: uses the real clock, since it is raced against a real pipe.
+_now = time.monotonic
+
 _IN_CHILD = False
+#: Set in the environment of every child. ``python -m`` runs this file as ``__main__``, so a
+#: flag set by ``main()`` would live on that copy and not on the ``kiro_crew.recall_pool``
+#: the store methods import; the environment reaches both.
+_CHILD_ENV = "KIROCREW_RECALL_POOL_CHILD"
 
 #: The reads a child answers, keyed by the ``kind`` of the job.
 KINDS = ("semantic", "episodic", "lessons")
@@ -118,7 +129,7 @@ KINDS = ("semantic", "episodic", "lessons")
 
 def in_child() -> bool:
     """Whether this process is a pool child (which must never offload again)."""
-    return _IN_CHILD
+    return _IN_CHILD or os.environ.get(_CHILD_ENV) == "1"
 
 
 # ── gateway side ──
@@ -187,9 +198,11 @@ class RecallPool:
         # -P: never put the working directory on the child's sys.path, so a
         # kiro_crew/ directory in the gateway's cwd cannot shadow the package.
         argv = self._argv or platform_compat.isolated_python_argv("-P", "-m", _CHILD_MODULE)
-        env = self._env
-        if env is None:
-            env = {**os.environ, "KIROCREW_RECALL_POOL_MAX_RSS_MB": str(self.max_rss_mb)}
+        env = {
+            **(os.environ if self._env is None else self._env),
+            _CHILD_ENV: "1",
+            "KIROCREW_RECALL_POOL_MAX_RSS_MB": str(self.max_rss_mb),
+        }
         proc = subprocess.Popen(  # noqa: S603 - fixed argv, this interpreter
             argv,
             stdin=subprocess.PIPE,
@@ -218,7 +231,7 @@ class RecallPool:
             self._failures += 1
             # Clamp the exponent: the counter only resets on a completed job.
             delay = min(_BACKOFF_CAP_SECS, _BACKOFF_BASE_SECS * 2 ** min(self._failures - 1, 16))
-            self._down_until = time.monotonic() + delay
+            self._down_until = _now() + delay
         logger.warning(
             "Recall pool child failed (%s); the gateway reads instead, and the pool is "
             "not retried for %.0f s",
@@ -235,12 +248,15 @@ class RecallPool:
         with self._state_lock:
             self._closed = True
             timer, self._idle_timer = self._idle_timer, None
+            conns = []
+            for slot in self._slots:
+                conn, slot.conn = slot.conn, None
+                if conn is not None:
+                    conns.append(conn)
         if timer is not None:
             timer.cancel()
-        for slot in self._slots:
-            conn, slot.conn = slot.conn, None
-            if conn is not None:
-                conn.close()
+        for conn in conns:
+            conn.close()
 
     def _arm_idle_stop(self) -> None:
         with self._state_lock:
@@ -262,7 +278,7 @@ class RecallPool:
         except queue.Empty:
             pass
         try:
-            now = time.monotonic()
+            now = _now()
             for slot in taken:
                 if slot.conn is not None and now - slot.last_job_end >= self._idle_stop:
                     conn, slot.conn = slot.conn, None
@@ -283,7 +299,7 @@ class RecallPool:
         """
         if self._closed:
             raise ChildUnavailable("recall pool is closed")
-        if time.monotonic() < self._down_until:
+        if _now() < self._down_until:
             raise ChildUnavailable("recall pool is backing off")
         try:
             slot = self._free.get(timeout=self._queue_wait)
@@ -292,7 +308,7 @@ class RecallPool:
         try:
             return self._run_on(slot, job, serve_embed)
         finally:
-            slot.last_job_end = time.monotonic()
+            slot.last_job_end = _now()
             self._free.put(slot)
             self._arm_idle_stop()
 
@@ -302,7 +318,7 @@ class RecallPool:
         job: dict[str, Any],
         serve_embed: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> dict[str, Any]:
-        if time.monotonic() < self._down_until:
+        if _now() < self._down_until:
             raise ChildUnavailable("recall pool is backing off")
         conn = slot.conn
         if conn is None or conn.proc.poll() is not None:
@@ -316,10 +332,12 @@ class RecallPool:
             except OSError as exc:
                 raise self._fail(slot, f"could not start: {exc}") from exc
             with self._state_lock:
-                if self._closed:
-                    conn.close()
-                    raise ChildUnavailable("recall pool is closed")
-            slot.conn = conn
+                closed = self._closed
+                if not closed:
+                    slot.conn = conn  # published under the lock close() takes
+            if closed:
+                conn.close()
+                raise ChildUnavailable("recall pool is closed")
         with self._state_lock:
             self._next_id += 1
             job_id = self._next_id
@@ -382,7 +400,7 @@ def settings() -> tuple[int, int]:
     """``(processes, worker_max_mb)`` from ``memory.*``; ``(0, 0)`` when off."""
     global _settings_cache
     cached = _settings_cache
-    now = time.monotonic()
+    now = _now()
     if cached is not None and now - cached[0] < _SETTINGS_TTL_SECS:
         return cached[1]
     value = _read_settings()
@@ -409,7 +427,12 @@ def _read_settings() -> tuple[int, int]:
 
 def pool_enabled() -> bool:
     """Whether recall reads may go to the children (not in a child, switch on)."""
-    return not _IN_CHILD and settings()[0] >= 1
+    if in_child():
+        return False
+    if settings()[0] < 1:
+        _retire_if_off()
+        return False
+    return True
 
 
 def get_pool(size: int, max_rss_mb: int) -> RecallPool:
@@ -430,12 +453,56 @@ def get_pool(size: int, max_rss_mb: int) -> RecallPool:
 
 
 def shutdown_pool() -> None:
-    """Stop the children, if any were started."""
+    """Stop the children, if any were started, and write the buffered accesses."""
     global _pool
     with _pool_lock:
         pool, _pool = _pool, None
     if pool is not None:
         pool.close()
+    flush_touches()
+
+
+#: How long accesses reported by children wait before the gateway writes them. Each write is
+#: a commit, which moves SQLite's ``data_version`` for every child and makes each rebuild its
+#: resident sets (several seconds on a large store); ``last_accessed_at`` only feeds recency
+#: reporting, so a few minutes of delay costs nothing and a rebuild per read would cost a lot.
+_TOUCH_FLUSH_SECS = 300.0
+_touch_lock = threading.Lock()
+_pending_touches: dict[int, tuple[Any, set[str]]] = {}
+_touch_timer: threading.Timer | None = None
+
+
+def _queue_touches(store: Any, ids: list[str]) -> None:
+    """Hold *ids* (episodic rows a child's read returned) until the next flush."""
+    global _touch_timer
+    with _touch_lock:
+        _pending_touches.setdefault(id(store), (store, set()))[1].update(ids)
+        if _touch_timer is None:
+            _touch_timer = threading.Timer(_TOUCH_FLUSH_SECS, flush_touches)
+            _touch_timer.daemon = True
+            _touch_timer.start()
+
+
+def flush_touches() -> None:
+    """Write the buffered accesses through each store's own debounce, in this process."""
+    global _touch_timer
+    with _touch_lock:
+        pending = list(_pending_touches.values())
+        _pending_touches.clear()
+        timer, _touch_timer = _touch_timer, None
+    if timer is not None:
+        timer.cancel()
+    for store, ids in pending:
+        try:
+            store._touch_last_accessed(sorted(ids))
+        except Exception:  # noqa: BLE001 - recency reporting never fails a recall
+            logger.debug("Could not record episodic access", exc_info=True)
+
+
+def _retire_if_off() -> None:
+    """Stop running children once the setting is back to 0, instead of at their idle stop."""
+    if _pool is not None:
+        shutdown_pool()
 
 
 def _eligible(store: Any) -> tuple[str, int | None] | None:
@@ -465,10 +532,11 @@ def offload(store: Any, kind: str, args: dict[str, Any]) -> str | None:
     ``None`` is the answer whenever the pool is off, the store is not one a child can
     open, or the child could not finish: the caller then runs the same method itself.
     """
-    if _IN_CHILD or kind not in KINDS:
+    if in_child() or kind not in KINDS:
         return None
     processes, max_mb = settings()
     if processes < 1:
+        _retire_if_off()
         return None
     target = _eligible(store)
     if target is None:
@@ -498,14 +566,43 @@ def offload(store: Any, kind: str, args: dict[str, Any]) -> str | None:
             frame.get("message"),
         )
         return None
+    _replay_records(frame)
     touched = frame.get("touched")
     if isinstance(touched, list) and touched:
-        try:
-            store._touch_last_accessed([str(t) for t in touched])
-        except Exception:  # noqa: BLE001 - recency reporting never fails a recall
-            logger.debug("Could not record episodic access", exc_info=True)
+        _queue_touches(store, [str(t) for t in touched])
     text = frame.get("text")
     return text if isinstance(text, str) else None
+
+
+def _replay_records(frame: dict[str, Any]) -> None:
+    """Hand the per-turn collectors of this build what the child's read recorded.
+
+    The lesson renderers write an omission record and an injection receipt into
+    ContextVar collectors that the turn opened; those do not cross a process, so the
+    child gathers them and this puts them where the in-process read would have.
+    """
+    from kiro_crew import context_omissions, injection_receipts
+
+    try:
+        omissions = frame.get("omissions")
+        if isinstance(omissions, dict):
+            for kind in omissions.get("cleared") or ():
+                if kind in context_omissions.KINDS:
+                    context_omissions.clear(kind)
+            recorded = omissions.get("set")
+            if isinstance(recorded, dict):
+                context_omissions.replay(
+                    {
+                        k: v
+                        for k, v in recorded.items()
+                        if k in context_omissions.KINDS and isinstance(v, dict)
+                    }
+                )
+        receipts = frame.get("receipts")
+        if isinstance(receipts, dict):
+            injection_receipts.replay(receipts)
+    except Exception:  # noqa: BLE001 - telemetry never fails a recall
+        logger.debug("Could not replay a recall child's records", exc_info=True)
 
 
 def lessons_args(
@@ -557,21 +654,11 @@ def lessons_args(
 
 
 def _rss_mb() -> float | None:
-    """This process's resident set in MB, or ``None`` where it cannot be read."""
-    try:
-        with open("/proc/self/status", encoding="ascii") as fh:
-            for line in fh:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1]) / 1024.0
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        import resource
+    """This process's current resident set in MB, or ``None`` where it cannot be read."""
+    from kiro_crew import platform_compat
 
-        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return peak / (1024.0 * 1024.0) if sys.platform == "darwin" else peak / 1024.0
-    except (ImportError, OSError, ValueError):
-        return None
+    rss = platform_compat.proc_rss_bytes()
+    return rss / (1024.0 * 1024.0) if rss > 0 else None
 
 
 class _RecallState(_ChildState):
@@ -586,12 +673,23 @@ class _RecallState(_ChildState):
     def _refresh(store: Any) -> None:
         from kiro_crew.config.loader import KiroCrewConfig
 
-        store.reconfigure(KiroCrewConfig.load())
+        cfg = KiroCrewConfig.load()
+        # ``reconfigure`` drops the resident episodic set whether or not anything changed,
+        # so a kept store re-applies the settings only when ``memory.*`` is not what it
+        # applied last.
+        fingerprint = repr(cfg.memory)
+        if getattr(store, "_recall_pool_config", None) != fingerprint:
+            store.reconfigure(cfg)
+            store._recall_pool_config = fingerprint
 
 
 def _prepare(state: _ChildState, job: dict[str, Any]) -> tuple[Any, list[str]]:
     """The child's store for *job*, bound to the gateway's embedder, and a touch sink."""
     store = state.store_for(job["db_path"], job.get("embedding_dim"))
+    if not hasattr(store, "_recall_pool_config"):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        store._recall_pool_config = repr(KiroCrewConfig.load().memory)
     state.bind(store, job)
     touched: list[str] = []
     # The gateway records the access, through its own debounce, on its own connection.
@@ -599,7 +697,30 @@ def _prepare(state: _ChildState, job: dict[str, Any]) -> tuple[Any, list[str]]:
     return store, touched
 
 
+#: Marks a kind the read has not touched: ``record`` and ``clear`` both replace or drop
+#: the entry, so an entry still ``is`` its seed was left alone and one that is gone was cleared.
+_OMISSION_SEED: dict[str, Any] = {}
+_RECEIPT_SEED: dict[str, Any] = {}
+
+
 def _run_job(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
+    """Run one read under the two per-turn collectors and return its text and their records."""
+    from kiro_crew import context_omissions, injection_receipts
+
+    with context_omissions.collect() as omissions, injection_receipts.collect() as receipts:
+        omissions.update({k: _OMISSION_SEED for k in context_omissions.KINDS})
+        receipts.update({k: _RECEIPT_SEED for k in injection_receipts.KINDS})
+        reply = _read(state, job)
+    if reply.get("ok"):
+        reply["omissions"] = {
+            "set": {k: v for k, v in omissions.items() if v is not _OMISSION_SEED},
+            "cleared": [k for k in context_omissions.KINDS if k not in omissions],
+        }
+        reply["receipts"] = {k: v for k, v in receipts.items() if v is not _RECEIPT_SEED}
+    return reply
+
+
+def _read(state: _ChildState, job: dict[str, Any]) -> dict[str, Any]:
     from kiro_crew.vector_memory_runtime.embedding import _RecallQuery
 
     store, touched = _prepare(state, job)
@@ -652,6 +773,7 @@ def main() -> int:
     """Child entry: answer recall jobs from stdin until EOF or the gateway goes away."""
     global _IN_CHILD
     _IN_CHILD = True
+    os.environ[_CHILD_ENV] = "1"
     # The protocol owns the original stdout; anything else that prints goes to stderr.
     out = os.fdopen(os.dup(1), "wb")
     try:

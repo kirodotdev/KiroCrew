@@ -54,18 +54,20 @@ total 3.1 GB against 2.6 GB today.
 
 ### What was run
 
-`assets/recall-process-pool/gen_db.py` builds a V1 `memory.db`: 54,000 semantic rows (37,000 `project.*`), 12,000
+A throwaway script built a V1 `memory.db`: 54,000 semantic rows (37,000 `project.*`), 12,000
 lessons, 27,000 episodes, 1024-d float32 embeddings, Zipf-distributed words. It is 436 MB;
 the host in #26600 has 880 MB, with longer values, so row text here is lighter and the
 embeddings, which dominate the resident set, match.
 
-`assets/recall-process-pool/bench.py` runs N sessions at once, twice, 2 s apart. One session is the recall part of
+A second script ran N sessions at once, twice, 2 s apart. One session is the recall part of
 one turn's context: `get_semantic_context`, `get_episodic_context` and `get_lessons_context`
 with the caps a 200k-token window gets (2,541, 2,541 and 7,458 characters, 37,000 for the
 lessons startup tier). Latency is submit to completion. A writer thread in the main process
 writes through the store's own API (`set_semantic` x5, `write_lesson`, `write_episodic`) every
 2 s (heavy) or every 30 s (light), or not at all. The query embedding is a seeded random
 vector computed in the main process in every arm, so embedding cost is out of all of them.
+
+The two scripts are not committed: they reach into private symbols (`_RecallQuery`) and would break silently when those change. This section holds the method and every figure, which is all a reader needs to rebuild them.
 
 Baseline: one `VectorMemoryStore` shared by the 8-thread `mc-embed` pool, as the gateway
 runs it. Pool: the same 8 threads, with `recall_pool_processes` set to 2 or 4.
@@ -88,7 +90,7 @@ so the synthetic store sits where the real one does.
 - 4 children, writer every 30 s: p50 20 s, p95 36 s, 2.70 builds/s, 3.1 GB total.
 - 4 children, writer every 2 s: p50 38 s, p95 68 s, 1.43 builds/s, 3.1 GB total.
 
-Fewer sessions (the same arms, a prototype pool that ran the same functions):
+Fewer sessions (the same arms, with a prototype pool built on `ProcessPoolExecutor` that ran the same functions):
 
 - 20 sessions, today: p50 36 s, p95 50 s. 4 children: p50 9 s, p95 16 s.
 - 50 sessions, today: p50 64 s, p95 110 s. 4 children: p50 19 s, p95 34 s.
@@ -116,6 +118,7 @@ so episodic reads scan per call in both arms; the log line "Episodic scoring set
 
 ### What was not measured
 
+The synthetic episodes never reach the relevance gate, so no episodic read returned a hit and the access-recording path (3.3) ran in no arm.
 No model ran, so the real query embedding (in the gateway, the same in both arms) is not in
 these figures. The gateway also does other work on its interpreter that the benchmark does
 not (the event loop, 200 other threads), which the baseline's real-world numbers in #26600
@@ -162,12 +165,22 @@ pool has `memory.recall_pool_processes` of them (1 to 8) and a caller waits for 
   with the embedding-space token (`consolidation_write_offload._serve_embed`), and no second
   copy of the model loads.
 - The `last_accessed_at` touch of an episodic hit. The child reports the row ids and the
-  gateway writes them through its debounce. A child therefore never commits, and its reads
-  never move `data_version` for its siblings.
+  gateway buffers them and writes them through its debounce at most every 5 minutes. A child
+  therefore never commits, and the gateway's commit for the accesses moves `data_version` for
+  every child once per flush, not once per read (a rebuild of the facts costs several seconds
+  per child, so a commit per read would put every pooled read back on a cold set).
 - The embedding-space check of a lessons query vector. It runs in the gateway, where the
   embedder is known, before the job is sent; a stale vector is dropped there with the
   in-process outcome (keyword ranking for a background read, the exception for an explicit one).
 - All writes.
+
+Two things a read produces besides its text are per-turn records held in ContextVar collectors that the
+turn opened: the omission record (`context_omissions`, what a budget cut) and the injection
+receipt (`injection_receipts`, which lesson rows were shown). They do not cross a process, so
+the child runs each read under its own collectors and returns what they hold, and the gateway
+replays it into the turn's collectors before returning the text. A record the read left alone
+stays alone, a record it made replaces the earlier one, and a record it cleared (a final render
+that kept everything) is cleared, which is what the in-process read does.
 
 ### 3.4 Staying consistent
 
@@ -248,6 +261,7 @@ Non-goals:
 - **Tier differences.** A child answers episodic reads from the numpy scoring tier. On an
   install with `faiss` available, the gateway may answer from its FAISS view; the two rank the
   same candidates but are separate code. The child does not build a FAISS index.
+- **Read counters.** The store's read-volume totals (`read_counters`) count rows the gateway's own connection scanned, so reads answered by a child are not in them.
 - **First read in a cold child** takes about 10 s for the three sets. A pool that has been idle
   for 900 s starts cold again.
 - **Config in children.** A child re-reads `memory.*` before each job, as the write child does;
