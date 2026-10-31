@@ -54,6 +54,12 @@ vi.mock('../api/client', async (importOriginal) => {
   return { ...actual, api: { ...actual.api, ...apiMock } }
 })
 
+// Milestones off in this file: the bar's own controls are under test.
+vi.mock('../components/milestones/useMilestones', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../components/milestones/useMilestones')>(),
+  useMilestones: () => ({ data: undefined }),
+}))
+
 import MobileTopBar from '../pages/chat/page/MobileTopBar'
 import { i18nT } from '../i18n/t'
 import { requestSlotReveal } from '../store/chatSlice'

@@ -17085,7 +17085,10 @@
         "desktop_app": "데스크톱 앱",
         "keep_running_when_window_closed": "창을 닫아도 앱을 백그라운드에서 계속 실행",
         "keep_running_when_window_closed_desc": "창을 닫으면 {{productName}}이(가) 숨겨지고 세션과 작업은 계속 실행됩니다. 이 옵션을 끄면 닫기 버튼이 앱을 종료합니다. 이 앱이 시작한 게이트웨이는 함께 중지되고, 연결만 된 게이트웨이는 계속 실행됩니다.",
-        "keep_running_when_window_closed_save_failed": "이 설정을 저장하지 못했습니다. 아무것도 변경되지 않았습니다. 다시 시도하세요."
+        "keep_running_when_window_closed_save_failed": "이 설정을 저장하지 못했습니다. 아무것도 변경되지 않았습니다. 다시 시도하세요.",
+        "milestones": "탐색",
+        "milestones_hint": "상단 바에 탐색을, 새 채팅에 오늘 해 보기 카드를 표시합니다.",
+        "milestones_save_failed": "탐색 설정을 저장하지 못했습니다. 다시 시도하세요."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",
@@ -20337,5 +20340,84 @@
     "apply_replace_n": "지침 대체 및 {{count}}개 추가",
     "current_directions": "현재 지침(대체될 예정): {{directions}}",
     "done_replaced": "행동 지침을 대체했습니다."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "첫 위젯",
+      "blurb": "데이터를 클릭할 수 있는 카드로 만들기",
+      "starter_prompt": "이번 주 내 캘린더를 보여 주는 위젯을 만들어 줘",
+      "action": "위젯 만들기"
+    },
+    "scheduled_task": {
+      "title": "첫 예약 작업",
+      "blurb": "아침 브리핑처럼 정해진 시간에 실행",
+      "starter_prompt": "매일 아침 브리핑을 해 줘",
+      "action": "작업 예약하기"
+    },
+    "mate": {
+      "title": "Mate 만나기",
+      "blurb": "시작을 도와주는 팀원",
+      "starter_prompt": "Mate를 소개해 줘",
+      "action": "안내자 Mate 만나기"
+    },
+    "parallel_chats": {
+      "title": "첫 병렬 채팅",
+      "blurb": "한 작업을 여러 채팅으로 나누기",
+      "starter_prompt": "채팅 두 개를 동시에 열어 줘: 하나는 조사하고, 하나는 개요를 써",
+      "action": "채팅 두 개 동시에 실행하기"
+    },
+    "slack": {
+      "title": "Slack 연결됨",
+      "blurb": "Slack에서도 일을 맡길 수 있어요",
+      "starter_prompt": "Crew를 내 Slack에 연결해 줘",
+      "action": "Slack 연결하기"
+    },
+    "pr_watch": {
+      "title": "첫 PR 지켜보기",
+      "blurb": "CI가 초록이 되거나 리뷰가 오면 알림",
+      "starter_prompt": "다음에 붙여 넣을 PR을 지켜보다가 CI가 초록이 되면 알려 줘.",
+      "action": "풀 리퀘스트 지켜보기"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode 사용",
+      "blurb": "여러 팀원이 함께 한 목표를 향해 일하기",
+      "starter_prompt": "다음에 설명할 작업을 몇 명의 팀원에게 나눠 병렬로 진행해 줘.",
+      "action": "Ultra Mode 써 보기"
+    },
+    "chats_opened": {
+      "title": "연 채팅",
+      "tier_other": "채팅 {{count}}개"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "최장 연속 기록",
+      "tier_other": "{{count}}일 연속"
+    }
+  },
+  "milestones": {
+    "title": "탐색",
+    "close": "탐색 닫기",
+    "indicator_label": "탐색: 기능 {{total}}개 중 {{done}}개 사용해 봄",
+    "group_streak": "연속 기록",
+    "streak_days_other": "{{count}}일 · 최장 {{best}}일",
+    "try_it": "해 보기",
+    "mark_as_done": "완료로 표시",
+    "notice_one": "달성: {{title}}",
+    "load_failed": "탐색을 불러오지 못했습니다.",
+    "indicator_label_streak_other": "탐색: 기능 {{total}}개 중 {{done}}개 사용해 봄, {{count}}일 연속",
+    "try_today": "오늘 해 보기",
+    "your_progress": "내 진행 상황",
+    "all_tried": "여기 있는 기능을 모두 써 봤어요.",
+    "try_today_entry_other": "오늘 해 보기: 새 기능 {{count}}개",
+    "notice_count_other": "탐색에 새 소식 {{count}}개",
+    "intro_video_title": "15초 만에 보는 {{productName}}",
+    "intro_video_watch": "보기",
+    "intro_video_close": "동영상 닫기",
+    "getting_started": "시작하기",
+    "getting_started_result": "처음 완성한 결과물",
+    "getting_started_brief": "아침 브리핑 설정",
+    "badges": "배지",
+    "try_today_none": "아래 시작하기부터 해 보세요.",
+    "streak_short_other": "{{count}}일 연속"
   }
 }

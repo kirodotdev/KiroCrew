@@ -17381,7 +17381,10 @@
         "desktop_app": "डेस्कटॉप ऐप",
         "keep_running_when_window_closed": "विंडो बंद होने पर ऐप को बैकग्राउंड में चलता रहने दो",
         "keep_running_when_window_closed_desc": "विंडो बंद करने पर {{productName}} छिप जाता है और तुम्हारे सत्र और जॉब चलते रहते हैं। बंद बटन से ऐप से बाहर निकलने के लिए इसे बंद करो। इस ऐप द्वारा शुरू किया गया गेटवे इसके साथ रुक जाता है, और जिस गेटवे से यह केवल जुड़ता है वह चलता रहता है।",
-        "keep_running_when_window_closed_save_failed": "यह सेटिंग सहेजी नहीं जा सकी। कुछ नहीं बदला। फिर से कोशिश करो।"
+        "keep_running_when_window_closed_save_failed": "यह सेटिंग सहेजी नहीं जा सकी। कुछ नहीं बदला। फिर से कोशिश करो।",
+        "milestones": "एक्सप्लोर",
+        "milestones_hint": "ऊपर की बार में एक्सप्लोर और नई चैट में \"आज आज़माओ\" कार्ड दिखाओ।",
+        "milestones_save_failed": "एक्सप्लोर की सेटिंग सेव नहीं हो सकी। फिर कोशिश करो।"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",
@@ -20667,5 +20670,91 @@
     "apply_replace_n": "निर्देश बदलो और {{count}} जोड़ो",
     "current_directions": "मौजूदा निर्देश (बदल दिए जाएँगे): {{directions}}",
     "done_replaced": "व्यवहार निर्देश बदल दिए गए।"
+  },
+  "milestone": {
+    "widgets": {
+      "title": "पहला विजेट",
+      "blurb": "अपने डेटा को क्लिक करने लायक कार्ड बनाओ",
+      "starter_prompt": "एक विजेट बनाओ जो इस हफ़्ते का मेरा कैलेंडर दिखाए",
+      "action": "एक विजेट बनाओ"
+    },
+    "scheduled_task": {
+      "title": "पहला शेड्यूल किया गया काम",
+      "blurb": "समय पर चलता है, जैसे सुबह का सार",
+      "starter_prompt": "हर सुबह मुझे एक ब्रीफ़ दो",
+      "action": "एक काम शेड्यूल करो"
+    },
+    "mate": {
+      "title": "Mate से मिले",
+      "blurb": "एक साथी जो शुरुआत में मदद करता है",
+      "starter_prompt": "मुझे Mate से मिलवाओ",
+      "action": "अपने गाइड Mate से मिलो"
+    },
+    "parallel_chats": {
+      "title": "पहली साथ-साथ चैट",
+      "blurb": "एक काम को कई चैट में बाँटो",
+      "starter_prompt": "एक साथ दो चैट खोलो: एक रिसर्च करे, दूसरी रूपरेखा लिखे",
+      "action": "दो चैट एक साथ चलाओ"
+    },
+    "slack": {
+      "title": "Slack जुड़ा",
+      "blurb": "Slack से भी मुझे काम दो",
+      "starter_prompt": "Crew को मेरे Slack से जोड़ो",
+      "action": "Slack जोड़ो"
+    },
+    "pr_watch": {
+      "title": "पहला PR वॉच",
+      "blurb": "CI हरा होने या रिव्यू आने पर पता चले",
+      "starter_prompt": "जो PR मैं आगे चिपकाऊँ, उस पर नज़र रखो और CI हरा होने पर बताओ।",
+      "action": "एक पुल रिक्वेस्ट पर नज़र रखो"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode इस्तेमाल किया",
+      "blurb": "कुछ साथी मिलकर एक लक्ष्य पर काम करते हैं",
+      "starter_prompt": "जो काम मैं आगे बताऊँ, उसे कुछ साथियों में बाँट दो, ताकि सब साथ-साथ उस पर काम कर सकें।",
+      "action": "Ultra Mode आज़माओ"
+    },
+    "chats_opened": {
+      "title": "खोली गई चैट",
+      "tier_one": "{{count}} चैट",
+      "tier_other": "{{count}} चैट"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "सबसे लंबी लगातार अवधि",
+      "tier_one": "लगातार {{count}} दिन",
+      "tier_other": "लगातार {{count}} दिन"
+    }
+  },
+  "milestones": {
+    "title": "एक्सप्लोर",
+    "close": "एक्सप्लोर बंद करो",
+    "indicator_label": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं",
+    "group_streak": "लगातार दिन",
+    "streak_days_one": "{{count}} दिन · सबसे अच्छा {{best}}",
+    "streak_days_other": "{{count}} दिन · सबसे अच्छा {{best}}",
+    "try_it": "आज़माओ",
+    "mark_as_done": "पूरा मार्क करो",
+    "notice_one": "पूरा हुआ: {{title}}",
+    "load_failed": "एक्सप्लोर लोड नहीं हो सका।",
+    "indicator_label_streak_one": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
+    "indicator_label_streak_other": "एक्सप्लोर: {{total}} में से {{done}} सुविधाएँ आज़माईं, लगातार {{count}} दिन",
+    "try_today": "आज आज़माओ",
+    "your_progress": "तुम्हारी प्रगति",
+    "all_tried": "तुमने यहाँ की सारी सुविधाएँ आज़मा लीं।",
+    "try_today_entry_one": "आज आज़माओ: {{count}} नई सुविधा",
+    "try_today_entry_other": "आज आज़माओ: {{count}} नई सुविधाएँ",
+    "notice_count_one": "एक्सप्लोर में {{count}} नई बात",
+    "notice_count_other": "एक्सप्लोर में {{count}} नई बातें",
+    "intro_video_title": "15 सेकंड में {{productName}}",
+    "intro_video_watch": "देखो",
+    "intro_video_close": "वीडियो बंद करो",
+    "getting_started": "शुरुआत",
+    "getting_started_result": "पहला पूरा हुआ नतीजा",
+    "getting_started_brief": "सुबह की ब्रीफ़ सेट करो",
+    "badges": "बैज",
+    "try_today_none": "नीचे \"शुरुआत\" से शुरू करो।",
+    "streak_short_one": "लगातार {{count}} दिन",
+    "streak_short_other": "लगातार {{count}} दिन"
   }
 }

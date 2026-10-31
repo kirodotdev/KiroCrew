@@ -17677,7 +17677,10 @@
         "desktop_app": "Application de bureau",
         "keep_running_when_window_closed": "Continuer en arrière-plan après la fermeture de la fenêtre",
         "keep_running_when_window_closed_desc": "Fermer la fenêtre masque {{productName}}, et tes sessions et tâches continuent. Désactive cette option pour que le bouton de fermeture quitte l'application. Une passerelle lancée par cette application s'arrête avec elle, et une passerelle à laquelle elle se connecte seulement continue de tourner.",
-        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie."
+        "keep_running_when_window_closed_save_failed": "Impossible d'enregistrer ce réglage. Rien n'a changé. Réessaie.",
+        "milestones": "Explorer",
+        "milestones_hint": "Affiche Explorer dans la barre du haut et une carte « À essayer aujourd'hui » dans une nouvelle discussion.",
+        "milestones_save_failed": "Impossible d'enregistrer le réglage Explorer. Réessaie."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",
@@ -20997,5 +21000,98 @@
     "apply_replace_n": "Remplacer les consignes et ajouter {{count}}",
     "current_directions": "Consignes actuelles (seront remplacées) : {{directions}}",
     "done_replaced": "Consignes de comportement remplacées."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "Premier widget",
+      "blurb": "Transforme tes données en une carte cliquable",
+      "starter_prompt": "Crée un widget qui affiche mon agenda de cette semaine",
+      "action": "Créer un widget"
+    },
+    "scheduled_task": {
+      "title": "Première tâche planifiée",
+      "blurb": "S'exécute à l'heure, comme un point du matin",
+      "starter_prompt": "Chaque matin, fais-moi un point",
+      "action": "Planifier une tâche"
+    },
+    "mate": {
+      "title": "Rencontre avec le Mate",
+      "blurb": "Un coéquipier qui t'aide à démarrer",
+      "starter_prompt": "Présente-moi le Mate",
+      "action": "Rencontrer le Mate, ton guide"
+    },
+    "parallel_chats": {
+      "title": "Premières discussions en parallèle",
+      "blurb": "Répartis une tâche sur plusieurs discussions",
+      "starter_prompt": "Ouvre deux discussions à la fois : l'une fait des recherches, l'autre rédige un plan",
+      "action": "Lancer deux discussions à la fois"
+    },
+    "slack": {
+      "title": "Slack connecté",
+      "blurb": "Confie-moi aussi du travail depuis Slack",
+      "starter_prompt": "Connecte Crew à mon Slack",
+      "action": "Connecter Slack"
+    },
+    "pr_watch": {
+      "title": "Première PR surveillée",
+      "blurb": "Sois prévenu quand la CI passe au vert ou qu’une revue arrive",
+      "starter_prompt": "Surveille la PR que je colle juste après et dis-moi quand la CI passe au vert.",
+      "action": "Surveiller une pull request"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode utilisé",
+      "blurb": "Quelques coéquipiers travaillent sur un même objectif",
+      "starter_prompt": "Répartis la tâche que je décris juste après entre quelques coéquipiers qui travaillent en parallèle.",
+      "action": "Essayer Ultra Mode"
+    },
+    "chats_opened": {
+      "title": "Discussions ouvertes",
+      "tier_one": "{{count}} discussion",
+      "tier_many": "{{count}} discussions",
+      "tier_other": "{{count}} discussions"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Meilleure série",
+      "tier_one": "Série de {{count}} jour",
+      "tier_many": "Série de {{count}} jours",
+      "tier_other": "Série de {{count}} jours"
+    }
+  },
+  "milestones": {
+    "title": "Explorer",
+    "close": "Fermer Explorer",
+    "indicator_label": "Explorer : {{done}} fonctions essayées sur {{total}}",
+    "group_streak": "Série",
+    "streak_days_one": "{{count}} jour · record {{best}}",
+    "streak_days_many": "{{count}} jours · record {{best}}",
+    "streak_days_other": "{{count}} jours · record {{best}}",
+    "try_it": "Essayer",
+    "mark_as_done": "Marquer comme fait",
+    "notice_one": "Atteint : {{title}}",
+    "load_failed": "Impossible de charger Explorer.",
+    "indicator_label_streak_one": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jour",
+    "indicator_label_streak_many": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jours",
+    "indicator_label_streak_other": "Explorer : {{done}} fonctions essayées sur {{total}}, série de {{count}} jours",
+    "try_today": "À essayer aujourd'hui",
+    "your_progress": "Ta progression",
+    "all_tried": "Tu as essayé toutes les fonctions ici.",
+    "try_today_entry_one": "À essayer aujourd'hui : {{count}} nouvelle fonction",
+    "try_today_entry_many": "À essayer aujourd'hui : {{count}} nouvelles fonctions",
+    "try_today_entry_other": "À essayer aujourd'hui : {{count}} nouvelles fonctions",
+    "notice_count_one": "{{count}} nouveauté dans Explorer",
+    "notice_count_many": "{{count}} nouveautés dans Explorer",
+    "notice_count_other": "{{count}} nouveautés dans Explorer",
+    "intro_video_title": "{{productName}} en 15 secondes",
+    "intro_video_watch": "Regarder",
+    "intro_video_close": "Fermer la vidéo",
+    "getting_started": "Premiers pas",
+    "getting_started_result": "Un premier résultat terminé",
+    "getting_started_brief": "Configurer un point du matin",
+    "badges": "Badges",
+    "try_today_none": "Commence par « Premiers pas » ci-dessous.",
+    "streak_short_one": "Série de {{count}} jour",
+    "streak_short_many": "Série de {{count}} jours",
+    "streak_short_other": "Série de {{count}} jours"
   }
 }

@@ -17381,7 +17381,10 @@
         "desktop_app": "ডেস্কটপ অ্যাপ",
         "keep_running_when_window_closed": "উইন্ডো বন্ধ করলে অ্যাপটি পটভূমিতে চালু রাখো",
         "keep_running_when_window_closed_desc": "উইন্ডো বন্ধ করলে {{productName}} লুকিয়ে যায় এবং তোমার সেশন ও নির্ধারিত কাজ চলতে থাকে। বন্ধ বোতামে অ্যাপটি বন্ধ করতে চাইলে এটি বন্ধ করো। এই অ্যাপ যে গেটওয়ে চালু করেছে সেটি অ্যাপের সাথে থেমে যায়, আর যে গেটওয়েতে এটি শুধু সংযুক্ত হয় সেটি চলতে থাকে।",
-        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।"
+        "keep_running_when_window_closed_save_failed": "এই সেটিংটি সংরক্ষণ করা যায়নি। কিছুই বদলায়নি। আবার চেষ্টা করো।",
+        "milestones": "এক্সপ্লোর",
+        "milestones_hint": "উপরের বারে এক্সপ্লোর আর নতুন চ্যাটে \"আজ চেষ্টা করো\" কার্ড দেখাও।",
+        "milestones_save_failed": "এক্সপ্লোরের সেটিং সেভ করা যায়নি। আবার চেষ্টা করো।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",
@@ -20667,5 +20670,91 @@
     "apply_replace_n": "নির্দেশনা বদলাও ও {{count}}টি যোগ করো",
     "current_directions": "বর্তমান নির্দেশনা (বদলে যাবে): {{directions}}",
     "done_replaced": "আচরণ-নির্দেশনা বদলানো হয়েছে।"
+  },
+  "milestone": {
+    "widgets": {
+      "title": "প্রথম উইজেট",
+      "blurb": "তোমার ডেটাকে ক্লিক করার মতো কার্ডে বদলাও",
+      "starter_prompt": "এমন একটা উইজেট বানাও যেটা এই সপ্তাহের আমার ক্যালেন্ডার দেখায়",
+      "action": "একটা উইজেট বানাও"
+    },
+    "scheduled_task": {
+      "title": "প্রথম নির্ধারিত কাজ",
+      "blurb": "সময়মতো চলে, যেমন সকালের সারসংক্ষেপ",
+      "starter_prompt": "প্রতিদিন সকালে আমাকে একটা ব্রিফ দাও",
+      "action": "একটা কাজ শিডিউল করো"
+    },
+    "mate": {
+      "title": "Mate-এর সঙ্গে দেখা",
+      "blurb": "একজন সঙ্গী যে শুরু করতে সাহায্য করে",
+      "starter_prompt": "আমাকে Mate-এর সঙ্গে পরিচয় করিয়ে দাও",
+      "action": "তোমার গাইড Mate-এর সঙ্গে পরিচিত হও"
+    },
+    "parallel_chats": {
+      "title": "প্রথম সমান্তরাল চ্যাট",
+      "blurb": "একটা কাজ কয়েকটা চ্যাটে ভাগ করো",
+      "starter_prompt": "একসঙ্গে দুটো চ্যাট খোলো: একটা গবেষণা করবে, আরেকটা রূপরেখা লিখবে",
+      "action": "একসঙ্গে দুটো চ্যাট চালাও"
+    },
+    "slack": {
+      "title": "Slack যুক্ত হয়েছে",
+      "blurb": "Slack থেকেও আমাকে কাজ দাও",
+      "starter_prompt": "Crew-কে আমার Slack-এ যুক্ত করো",
+      "action": "Slack যুক্ত করো"
+    },
+    "pr_watch": {
+      "title": "প্রথম PR নজরদারি",
+      "blurb": "CI সবুজ হলে বা রিভিউ এলে জানো",
+      "starter_prompt": "এরপর যে PR দেব তাতে নজর রাখো আর CI সবুজ হলে আমাকে জানাও।",
+      "action": "একটা পুল রিকোয়েস্টে নজর রাখো"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode ব্যবহার করেছ",
+      "blurb": "কয়েকজন সঙ্গী মিলে একটা লক্ষ্যে কাজ করে",
+      "starter_prompt": "এরপর যে কাজটা বলব সেটা কয়েকজন সঙ্গীর মধ্যে ভাগ করো, যারা একসঙ্গে কাজ করবে।",
+      "action": "Ultra Mode চেষ্টা করো"
+    },
+    "chats_opened": {
+      "title": "খোলা চ্যাট",
+      "tier_one": "{{count}}টি চ্যাট",
+      "tier_other": "{{count}}টি চ্যাট"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "সেরা টানা দিন",
+      "tier_one": "টানা {{count}} দিন",
+      "tier_other": "টানা {{count}} দিন"
+    }
+  },
+  "milestones": {
+    "title": "এক্সপ্লোর",
+    "close": "এক্সপ্লোর বন্ধ করো",
+    "indicator_label": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে",
+    "group_streak": "টানা দিন",
+    "streak_days_one": "{{count}} দিন · সেরা {{best}}",
+    "streak_days_other": "{{count}} দিন · সেরা {{best}}",
+    "try_it": "চেষ্টা করো",
+    "mark_as_done": "সম্পন্ন চিহ্নিত করো",
+    "notice_one": "পূর্ণ হয়েছে: {{title}}",
+    "load_failed": "এক্সপ্লোর লোড করা যায়নি।",
+    "indicator_label_streak_one": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে, টানা {{count}} দিন",
+    "indicator_label_streak_other": "এক্সপ্লোর: {{total}}টির মধ্যে {{done}}টি ফিচার চেষ্টা করা হয়েছে, টানা {{count}} দিন",
+    "try_today": "আজ চেষ্টা করো",
+    "your_progress": "তোমার অগ্রগতি",
+    "all_tried": "এখানকার সব ফিচার তুমি চেষ্টা করে ফেলেছ।",
+    "try_today_entry_one": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার",
+    "try_today_entry_other": "আজ চেষ্টা করো: {{count}}টি নতুন ফিচার",
+    "notice_count_one": "এক্সপ্লোরে {{count}}টি নতুন খবর",
+    "notice_count_other": "এক্সপ্লোরে {{count}}টি নতুন খবর",
+    "intro_video_title": "15 সেকেন্ডে {{productName}}",
+    "intro_video_watch": "দেখো",
+    "intro_video_close": "ভিডিও বন্ধ করো",
+    "getting_started": "শুরু করা",
+    "getting_started_result": "প্রথম শেষ হওয়া ফল",
+    "getting_started_brief": "সকালের ব্রিফ সেট করো",
+    "badges": "ব্যাজ",
+    "try_today_none": "নিচের \"শুরু করা\" থেকে শুরু করো।",
+    "streak_short_one": "টানা {{count}} দিন",
+    "streak_short_other": "টানা {{count}} দিন"
   }
 }

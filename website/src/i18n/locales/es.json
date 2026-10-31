@@ -17677,7 +17677,10 @@
         "desktop_app": "Aplicación de escritorio",
         "keep_running_when_window_closed": "Mantener la aplicación en segundo plano al cerrar la ventana",
         "keep_running_when_window_closed_desc": "Al cerrar la ventana, {{productName}} se oculta y tus sesiones y trabajos programados siguen en ejecución. Desactívalo para que el botón de cerrar cierre la aplicación por completo. Un gateway iniciado por esta aplicación se detiene con ella, y un gateway al que solo se conecta sigue en ejecución.",
-        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo."
+        "keep_running_when_window_closed_save_failed": "No se pudo guardar este ajuste. No se cambió nada. Inténtalo de nuevo.",
+        "milestones": "Explorar",
+        "milestones_hint": "Muestra Explorar en la barra superior y una tarjeta «Prueba hoy» en un chat nuevo.",
+        "milestones_save_failed": "No se pudo guardar el ajuste de Explorar. Inténtalo de nuevo."
       },
       "importPanel": {
         "agent_data": "Datos del agente",
@@ -20997,5 +21000,98 @@
     "apply_replace_n": "Sustituir directrices y agregar {{count}}",
     "current_directions": "Directrices actuales (se sustituirán): {{directions}}",
     "done_replaced": "Se sustituyeron las directrices de comportamiento."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "Primer widget",
+      "blurb": "Convierte tus datos en una tarjeta que puedes pulsar",
+      "starter_prompt": "Crea un widget que muestre mi calendario de esta semana",
+      "action": "Crea un widget"
+    },
+    "scheduled_task": {
+      "title": "Primera tarea programada",
+      "blurb": "Se ejecuta a su hora, como un resumen matutino",
+      "starter_prompt": "Cada mañana, dame un resumen",
+      "action": "Programa una tarea"
+    },
+    "mate": {
+      "title": "Conociste al Mate",
+      "blurb": "Un compañero que te ayuda a empezar",
+      "starter_prompt": "Preséntame al Mate",
+      "action": "Conoce al Mate, tu guía"
+    },
+    "parallel_chats": {
+      "title": "Primeros chats en paralelo",
+      "blurb": "Divide una tarea en varios chats",
+      "starter_prompt": "Abre dos chats a la vez: uno investiga y otro escribe un esquema",
+      "action": "Ejecuta dos chats a la vez"
+    },
+    "slack": {
+      "title": "Slack conectado",
+      "blurb": "Pídeme trabajo también desde Slack",
+      "starter_prompt": "Conecta Crew a mi Slack",
+      "action": "Conecta Slack"
+    },
+    "pr_watch": {
+      "title": "Primer PR vigilado",
+      "blurb": "Entérate cuando la CI se ponga en verde o llegue una revisión",
+      "starter_prompt": "Vigila el PR que pego a continuación y avísame cuando la CI se ponga en verde.",
+      "action": "Vigila una pull request"
+    },
+    "crew_mode": {
+      "title": "Usaste Ultra Mode",
+      "blurb": "Varios compañeros trabajan juntos en un objetivo",
+      "starter_prompt": "Reparte la tarea que describo a continuación entre varios compañeros que trabajen en paralelo.",
+      "action": "Prueba Ultra Mode"
+    },
+    "chats_opened": {
+      "title": "Chats abiertos",
+      "tier_one": "{{count}} chat",
+      "tier_many": "{{count}} chats",
+      "tier_other": "{{count}} chats"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Mejor racha",
+      "tier_one": "Racha de {{count}} día",
+      "tier_many": "Racha de {{count}} días",
+      "tier_other": "Racha de {{count}} días"
+    }
+  },
+  "milestones": {
+    "title": "Explorar",
+    "close": "Cerrar Explorar",
+    "indicator_label": "Explorar: {{done}} de {{total}} funciones probadas",
+    "group_streak": "Racha",
+    "streak_days_one": "{{count}} día · mejor {{best}}",
+    "streak_days_many": "{{count}} días · mejor {{best}}",
+    "streak_days_other": "{{count}} días · mejor {{best}}",
+    "try_it": "Probar",
+    "mark_as_done": "Marcar como hecho",
+    "notice_one": "Logrado: {{title}}",
+    "load_failed": "No se pudo cargar Explorar.",
+    "indicator_label_streak_one": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} día",
+    "indicator_label_streak_many": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} días",
+    "indicator_label_streak_other": "Explorar: {{done}} de {{total}} funciones probadas, racha de {{count}} días",
+    "try_today": "Prueba hoy",
+    "your_progress": "Tu progreso",
+    "all_tried": "Ya probaste todas las funciones de aquí.",
+    "try_today_entry_one": "Prueba hoy: {{count}} función nueva",
+    "try_today_entry_many": "Prueba hoy: {{count}} funciones nuevas",
+    "try_today_entry_other": "Prueba hoy: {{count}} funciones nuevas",
+    "notice_count_one": "{{count}} novedad en Explorar",
+    "notice_count_many": "{{count}} novedades en Explorar",
+    "notice_count_other": "{{count}} novedades en Explorar",
+    "intro_video_title": "{{productName}} en 15 segundos",
+    "intro_video_watch": "Ver",
+    "intro_video_close": "Cerrar video",
+    "getting_started": "Primeros pasos",
+    "getting_started_result": "Un primer resultado terminado",
+    "getting_started_brief": "Configura un resumen matutino",
+    "badges": "Insignias",
+    "try_today_none": "Empieza por «Primeros pasos», abajo.",
+    "streak_short_one": "Racha de {{count}} día",
+    "streak_short_many": "Racha de {{count}} días",
+    "streak_short_other": "Racha de {{count}} días"
   }
 }

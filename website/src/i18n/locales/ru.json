@@ -17973,7 +17973,10 @@
         "desktop_app": "Настольное приложение",
         "keep_running_when_window_closed": "Оставлять приложение работать в фоне после закрытия окна",
         "keep_running_when_window_closed_desc": "При закрытии окна {{productName}} скрывается, а твои сеансы и задания продолжают работать. Отключи это, чтобы кнопка закрытия завершала приложение. Шлюз, запущенный этим приложением, останавливается вместе с ним, а шлюз, к которому оно только подключается, продолжает работать.",
-        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз."
+        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз.",
+        "milestones": "Обзор",
+        "milestones_hint": "Показывать обзор в верхней панели и карточку «Попробуй сегодня» в новом чате.",
+        "milestones_save_failed": "Не удалось сохранить настройку обзора. Попробуй ещё раз."
       },
       "importPanel": {
         "agent_data": "Данные агента",
@@ -21327,5 +21330,105 @@
     "apply_replace_n": "Заменить указания и добавить ({{count}})",
     "current_directions": "Текущие указания (будут заменены): {{directions}}",
     "done_replaced": "Указания по поведению заменены."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "Первый виджет",
+      "blurb": "Преврати данные в карточку, по которой можно нажать",
+      "starter_prompt": "Сделай виджет с моим календарём на эту неделю",
+      "action": "Сделать виджет"
+    },
+    "scheduled_task": {
+      "title": "Первая задача по расписанию",
+      "blurb": "Запускается вовремя, например утренняя сводка",
+      "starter_prompt": "Каждое утро давай мне сводку",
+      "action": "Запланировать задачу"
+    },
+    "mate": {
+      "title": "Знакомство с Mate",
+      "blurb": "Товарищ по команде, который поможет начать",
+      "starter_prompt": "Познакомь меня с Mate",
+      "action": "Познакомиться с Mate, твоим гидом"
+    },
+    "parallel_chats": {
+      "title": "Первые параллельные чаты",
+      "blurb": "Раздели одну задачу на несколько чатов",
+      "starter_prompt": "Открой два чата сразу: один исследует, другой пишет план",
+      "action": "Запустить два чата сразу"
+    },
+    "slack": {
+      "title": "Slack подключён",
+      "blurb": "Давай мне задачи и из Slack",
+      "starter_prompt": "Подключи Crew к моему Slack",
+      "action": "Подключить Slack"
+    },
+    "pr_watch": {
+      "title": "Первое наблюдение за PR",
+      "blurb": "Узнай, когда CI станет зелёным или придёт ревью",
+      "starter_prompt": "Следи за PR, который я вставлю дальше, и скажи, когда CI станет зелёным.",
+      "action": "Следить за пул-реквестом"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode попробован",
+      "blurb": "Несколько товарищей вместе работают над одной целью",
+      "starter_prompt": "Раздели задачу, которую я опишу дальше, между несколькими товарищами, работающими параллельно.",
+      "action": "Попробовать Ultra Mode"
+    },
+    "chats_opened": {
+      "title": "Открыто чатов",
+      "tier_one": "{{count}} чат",
+      "tier_few": "{{count}} чата",
+      "tier_many": "{{count}} чатов",
+      "tier_other": "{{count}} чата"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Лучшая серия",
+      "tier_one": "{{count}} день подряд",
+      "tier_few": "{{count}} дня подряд",
+      "tier_many": "{{count}} дней подряд",
+      "tier_other": "{{count}} дня подряд"
+    }
+  },
+  "milestones": {
+    "title": "Обзор",
+    "close": "Закрыть обзор",
+    "indicator_label": "Обзор: опробовано {{done}} из {{total}} функций",
+    "group_streak": "Серия",
+    "streak_days_one": "{{count}} день · рекорд {{best}}",
+    "streak_days_few": "{{count}} дня · рекорд {{best}}",
+    "streak_days_many": "{{count}} дней · рекорд {{best}}",
+    "streak_days_other": "{{count}} дня · рекорд {{best}}",
+    "try_it": "Попробовать",
+    "mark_as_done": "Отметить выполненным",
+    "notice_one": "Достигнуто: {{title}}",
+    "load_failed": "Не удалось загрузить обзор.",
+    "indicator_label_streak_one": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} день подряд",
+    "indicator_label_streak_few": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дня подряд",
+    "indicator_label_streak_many": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дней подряд",
+    "indicator_label_streak_other": "Обзор: опробовано {{done}} из {{total}} функций, {{count}} дня подряд",
+    "try_today": "Попробуй сегодня",
+    "your_progress": "Твой прогресс",
+    "all_tried": "Ты попробовал все функции здесь.",
+    "try_today_entry_one": "Попробуй сегодня: {{count}} новая функция",
+    "try_today_entry_few": "Попробуй сегодня: {{count}} новые функции",
+    "try_today_entry_many": "Попробуй сегодня: {{count}} новых функций",
+    "try_today_entry_other": "Попробуй сегодня: {{count}} новой функции",
+    "notice_count_one": "{{count}} новость в обзоре",
+    "notice_count_few": "{{count}} новости в обзоре",
+    "notice_count_many": "{{count}} новостей в обзоре",
+    "notice_count_other": "{{count}} новости в обзоре",
+    "intro_video_title": "{{productName}} за 15 секунд",
+    "intro_video_watch": "Смотреть",
+    "intro_video_close": "Закрыть видео",
+    "getting_started": "Первые шаги",
+    "getting_started_result": "Первый готовый результат",
+    "getting_started_brief": "Настроить утреннюю сводку",
+    "badges": "Значки",
+    "try_today_none": "Начни с «Первых шагов» ниже.",
+    "streak_short_one": "{{count}} день подряд",
+    "streak_short_few": "{{count}} дня подряд",
+    "streak_short_many": "{{count}} дней подряд",
+    "streak_short_other": "{{count}} дня подряд"
   }
 }
