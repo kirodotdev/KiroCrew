@@ -116,6 +116,16 @@ kiro-cli's internal sandbox is confined by that profile instead.
 
 The two layers are mutually exclusive on macOS because a nested seatbelt sandbox fails with `EPERM`. The default is `auto`: it uses the Kiro Crew sandbox where available and defers to the kiro-cli internal sandbox on macOS when that sandbox is enabled.
 
+With kiro-cli's internal sandbox on (`"sandbox": true` in
+`~/.kiro/settings/amazon-internal.json`), kiro-cli also confines the MCP servers it
+starts, and Kiro Crew's own server `kirocrew-core` fails to start there. Every
+kiro-cli session then fails with `mcp-client(kirocrew-core): initial connection or
+tool synchronization failed`. Set `"sandbox"` to `false` in that file and start a
+new session, so Kiro Crew's own sandbox confines the agent instead. If
+`agent.sandbox` is `off`, set it to `auto` first, or the agent runs with no OS
+sandbox at all. `kirocrew doctor` reports this in its MCP Tools section, and the
+session's start error names the same fix.
+
 Set via `kirocrew config set agent.sandbox auto` (or `strict`, or `off`).
 
 ## ACP Backend

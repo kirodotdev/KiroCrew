@@ -29,6 +29,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, TypeVar
 
+from kiro_crew import kiro_sandbox_conflict
 from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import _loggable_request_id
 from kiro_crew.acp._frame_record import record_frame
@@ -872,7 +873,18 @@ async def _wait_for_response(
                 # discipline as the substitution-advisory log site above.
                 _err_log, _ = redact_exfiltration_urls(str(msg.error))
                 _err_log, _ = redact_credentials(_err_log)
-                raise AcpError(f"JSON-RPC error: {_err_log}", code=_jsonrpc_error_code(msg.error))
+                _err_text = f"JSON-RPC error: {_err_log}"
+                if method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME}:
+                    # kiro-cli's own sandbox stops Crew's MCP servers starting, and
+                    # its error names only the server. Off the loop: the
+                    # hint reads kiro-cli's settings file, and only after the error
+                    # text already names a Crew server.
+                    _hint = await asyncio.to_thread(
+                        kiro_sandbox_conflict.session_start_hint, _err_log, self.backend
+                    )
+                    if _hint:
+                        _err_text = f"{_err_text}. {_hint}"
+                raise AcpError(_err_text, code=_jsonrpc_error_code(msg.error))
             return msg.result or {}
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:
