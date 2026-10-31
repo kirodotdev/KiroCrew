@@ -628,6 +628,15 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     proceed()
   }, [confirm, clearActiveDraftSlot, hasCommentDraft])
+  // A chip opened from the full-screen preview activates another tab, and this
+  // panel's overlay would stay on top of it with Escape inert (it is gated on
+  // `active`). Leave full screen first, under the same draft guard as Escape.
+  const fullscreenFileOpen = useMemo(() => onFileOpen
+    ? (path: string, opts?: { line?: number; endLine?: number }) => { void guardDraft(() => { setFullscreen(false); onFileOpen(path, opts) }) }
+    : undefined, [onFileOpen, guardDraft])
+  const fullscreenFolderOpen = useMemo(() => onFolderOpen
+    ? (path: string) => { void guardDraft(() => { setFullscreen(false); onFolderOpen(path) }) }
+    : undefined, [onFolderOpen, guardDraft])
 
   const handleComposerOpen = useCallback((text: string) => {
     composerOpenRef.current = true
@@ -1515,7 +1524,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
             {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} onFileOpen={fullscreenFileOpen} onFolderOpen={fullscreenFolderOpen} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>
