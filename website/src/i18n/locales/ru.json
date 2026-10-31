@@ -7229,9 +7229,16 @@
       "searching_enter_held": "Поиск… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
       "type_2_chars_to_search_files_ctrl_enter_held": "Введите 2+ символа для поиска файлов и папок… — Ctrl+Enter пока не отправляет; нажмите Esc, затем Ctrl+Enter отправит сообщение",
       "type_2_chars_to_search_files_enter_held": "Введите 2+ символа для поиска файлов и папок… — Enter пока не отправляет; нажмите Esc, затем Enter отправит сообщение",
-      "search_failed": "Не удалось выполнить поиск файлов. Попробуйте ещё раз.",
       "outside_project_enter_sends": "Этот путь в итоге оказывается вне проекта, поэтому дополнять нечего — Enter отправит сообщение",
-      "outside_project_ctrl_enter_sends": "Этот путь в итоге оказывается вне проекта, поэтому дополнять нечего — Ctrl+Enter отправит сообщение"
+      "outside_project_ctrl_enter_sends": "Этот путь в итоге оказывается вне проекта, поэтому дополнять нечего — Ctrl+Enter отправит сообщение",
+      "search_denied": "Нет доступа к папке проекта",
+      "search_root_missing": "Папка проекта не найдена",
+      "retry": "Повторить",
+      "check_project_folder": "Нажми на имя папки под полем сообщения, чтобы изменить папку проекта",
+      "search_denied_path": "Нет доступа к этому пути",
+      "check_path_inside_project": "Выбери другой путь",
+      "enter_sends": "Enter отправит сообщение",
+      "ctrl_enter_sends": "Ctrl+Enter отправит сообщение"
     },
     "fileRenderers": {
       "binary_file_download_hint": "Это не текст, поэтому здесь нечего показать. Скачайте копию, чтобы открыть его в другом приложении.",
