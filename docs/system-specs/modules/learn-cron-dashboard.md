@@ -2687,6 +2687,17 @@ throughout; the computer's own Terminal app appears only in the two fallback lin
 not a failure. A failed copy shows an `ErrorNotice` with the standard `askAgent` hand-off. The card gives an agent no authority a `bash` fence did not
 already give it. The command runs in the person's terminal tab, never through the agent's
 tool gate, and no denied-command rule changes.
+After the host answers a Run in terminal request scoped to it (the card's or a shell code
+block's), `useRunInTerminalBridge` reports the answer once per click for its own chat slot
+(`utils/terminalRunNote.ts`, fire and forget, `POST /api/chat/slots/{slot}/terminal-run`
+with `{command, outcome: ran|copied|failed, reason, source: run_yourself|code_block}`):
+`ran` when the command was sent to a new tab, `copied` on the reuse-current copy path,
+`failed` with `not_ready`, `remote_chat`, `no_tab`, `not_sent` or `copy_failed`. The card
+passes `source: 'run_yourself'` on its request; a code block sends none. An unscoped request
+names no chat and reports nothing, and the report never navigates or shows anything. The
+route (owner-only, app tokens refused, `handlers/mate_terminal_run.py`) tells the slot only
+when it is a Bot's own thread (crew-mode.md, "The user's answer reaches the
+Bot"), and answers `{"noted": false}` for any other chat.
 Refusal hints appear eagerly and disable the review action while a refusal
 applies. The terminal-mode region above the editor shows the workspace or
 refusal hint, followed by “Review terminal command” on its own row. Review

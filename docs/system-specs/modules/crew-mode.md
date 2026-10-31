@@ -71,6 +71,7 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/agent_admin/` | Crew CRUD on `/api/agents` (`crew_records.py`, `crew_update.py`, `crew_removal.py`), the roster row serializer (`roster.py`), the Custom agents tab's detail, fork, publish and reset (`agent_detail.py`, `fork_publish.py`, `template_lineage.py`) and the default-agent write (`default_agent.py`) |
 | `src/kiro_crew/dashboard/handlers/agent_catalog.py` | Read-only `/api/agents/catalog` execution choices, with separate member and template namespaces, plus Ultra Mode's `crew_mode_agent` and `conductor_agents` |
 | `src/kiro_crew/crew_mode.py` | Ultra Mode's facts: the configured conductor (`agent.crew_mode_agent`), the one conductor set (every conductor is Ultra Mode, `conductor_agents`), the stamp that marks a chat as Ultra Mode, the known roots and the persisted lineage, which slot rows are Ultra Mode roots and which are their workers (`stamp_rows`), and the session list's view (`list_view`) |
+| `src/kiro_crew/dashboard/mate_user_actions.py` + `handlers/mate_terminal_run.py` | What the user did with a Bot's card or Run in terminal command, as one queued `[User action]` line on that Bot's own thread ("The user's answer reaches the Bot"); the route is `POST /api/chat/slots/{slot}/terminal-run` |
 | `src/kiro_crew/dashboard/handlers/crew_workers.py` | An Ultra Mode root's or a Bot thread's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
 | `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
@@ -1180,7 +1181,9 @@ nothing matches. The card renders in the proposing chat as a row of the conversa
 only the owner's click applies it through the existing settings route, verified by the
 card hook. A secret's value is typed into the card and never passes through the agent.
 Card outcomes reach the agent's next turn as a `[CHANGE CARD RESULTS]` block that never
-starts a turn, and every owner change through those routes, card or manual, is a
+starts a turn; a card raised in a Bot's own thread also starts one `[User action]`
+turn there when the user applies, declines or undoes it ("The user's answer reaches the
+Bot"). Every owner change through those routes, card or manual, is a
 names-only "Dashboard: ..." line in Global memory history.
 An Undo never overwrites a change another tab made after this card wrote. A card's
 Undo baseline is the value the card itself wrote, read back at the revision the write
@@ -3450,7 +3453,8 @@ the worker's principles (`worker.principles`, `mate_worker.MATE_WORKER_PROMPT`),
 every gateway wake (`wake.preamble` and `reminder.*` in
 `dashboard/goal_reminder.py`; `goal_setup.*` in
 `dashboard/goal_setup.py`; `worker_report.*` in
-`dashboard/mate_thread_wakes.py`; `welcome.*` in `dashboard/mate_welcome.py`;
+`dashboard/mate_thread_wakes.py`; `user_action.*` in
+`dashboard/mate_user_actions.py`; `welcome.*` in `dashboard/mate_welcome.py`;
 `upgrade_notice` in `mate_upgrade_notice.py`) and the hand-off capability
 note (`dispatch.*`, `mate_capability_catalog.dispatch_summary`). One key per
 piece; its `_about` entry names where it is assembled and which placeholders
@@ -4381,6 +4385,52 @@ the thread's own turn task, so a report is delivered once, never twice; pending
 reports live in memory. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
 
+**The user's answer reaches the Bot** (`dashboard/mate_user_actions.py`). A
+card press or a Run in terminal click starts no turn, so the Bot that put the
+card or the command in front of the user is told what the user did. Each answer is
+one line queued on that Bot's own pinned thread
+(`mate_thread_wakes.queue_user_action`, at most 12 waiting, the oldest dropped), and
+the thread's flush delivers every queued line as ONE hidden turn
+(`dispatch_hidden_turn`, `human_seen=False`) once the thread is idle: after an upgrade
+notice, before worker reports, never as a steer into a running turn. The turn is the
+`[User action]` envelope, `wake.preamble`, `user_action.head`, the lines and
+`user_action.guidance`, which says these are facts about what the user already did,
+not a new request, not to ask again for what the user declined, that a later
+`[CHANGE CARD RESULTS]` block listing the same cards is the same answer, and to end
+with `nothing_to_do` when they change nothing.
+- **Cards.** A user step through the card hook
+  (`handlers/change_cards._note_card_step`, after the step's record is saved) and a
+  Decline (`api_cards_cancel`, after its save) are read by
+  `mate_user_actions.step_outcome` from the record before the step and after it: an
+  Apply that reached `applied`, `partial` or `failed` (each stamps a new
+  `finished_at`), an Undo that reached `undone`, or an Undo the route refused or that
+  was refused as changed since apply (`undo_failed`). A middle step of a plan, a
+  waiting poll, a replay and a refusal that put the card back say nothing. The line
+  names the card's title and kind, what the user did, and its result summary or error
+  message, flattened and with brackets defused (`card_line`). Expiry, a closed
+  conversation's retirement and hiding a finished card are not the user's answer and
+  say nothing.
+- **One note per answer.** An apply whose route already wakes the Bot marks the
+  request `mate_user_actions.REQ_CARD_OWN_WAKE` and sends no second note: the
+  milestones card's `schedule_milestones_nudge`, the page offer's write-and-apply
+  wake, and `_complete`'s capabilities and tool-access nudges when they were
+  scheduled (`schedule_capabilities_nudge` and `schedule_tool_access_nudge` return
+  whether they were). A `crewmate.goal` card's Apply and Undo send no note at all,
+  whatever its plan's steps, because `rfc-crewmate-goals` §3.8 has a new goal wake
+  through the goal-setup nudge and an Undo or a small edit send nothing; its
+  Decline and a failed Apply or Undo get the note. The other kinds' Decline and
+  Undo get the note like every other kind.
+- **Run in terminal.** The dashboard host reports what became of a Run in terminal
+  click on its own chat (`POST /api/chat/slots/{slot}/terminal-run`,
+  `handlers/mate_terminal_run.py`, owner-only, app tokens refused): ran in a new tab,
+  copied instead, or failed and why. The line names the run-it-yourself card or code
+  block and fences the command, scrubbed and cut to 1,000 characters, between
+  `<<<command` / `>>>end of command` as data (`terminal_line`).
+- **Only the owning thread.** The card's recorded `slot_key`, or the route's slot,
+  must be a Bot's own pinned thread (`is_crewmate_thread`); a card or a command
+  in the main assistant's chat, a worker's or an app's tells nobody new, and the
+  miss is logged at debug. Lines live in memory.
+
 **Adding abilities to a Bot** (`kiro_crew.mate_worker_kit`, owner-only
 `GET/PUT /api/agents/{name}/worker-kit` and `POST .../worker-kit/preview`,
 handler `dashboard/handlers/member_worker_kit.py`): the owner picks another
@@ -5111,6 +5161,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_cron_conductor_scripted.py` | A scripted `cron_add` from a Bot's conductor is dispatched like any caller's |
 | `test/test_mate_conductor_parity.py` | Every section of the root conductor's charter is a shared rule the Bot's conductor is told, a heading, or allowlisted with a reason; no Bot piece copies charter text; every MCP server, tool, auto-approve grant and mapped skill of `kirocrew-conductor` is on `kirocrew-mate-conductor`, both read through the per-session projection, or allowlisted; no allowlist entry is stale; a planted root-only section, server, tool, grant or skill is caught |
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
+| `test/test_mate_user_actions.py` | A card's Apply, Decline, Undo and failed Apply each queue one line on the Bot thread that raised it, a replay none; an apply that woke on its own (`REQ_CARD_OWN_WAKE`) sends no second note; a goal card's Apply and Undo send none; a card in the main assistant's chat tells nobody; Run in terminal ran, copied and failed reach only the owning Bot thread; queued lines go out as one idle turn and wait out a busy one |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |
 | `website/src/components/chat/crewmateBubbles.test.ts` | What a Bot's chat draws (machinery dropped, speech and user-facing rows kept, same array back when nothing is dropped) and the run rule (first/middle/last, single, breaks on a user row and a pending approval but not on a long silence, reads through a resolved approval and an untimestamped streaming row, corners on the left side only); a queued message drawn where it was sent, the requeued twin, undrawn queued rows and injected (cron / app) queued rows dropped; when a send is still awaiting a reply |

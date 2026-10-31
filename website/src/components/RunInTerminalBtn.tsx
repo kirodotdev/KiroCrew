@@ -90,7 +90,14 @@ export type RunInTerminalStatus = 'idle' | 'sent' | 'copied' | 'error'
  * explained with its own notice (a chat on a Session Environment, a cwd still
  * loading), so it leaves `noAnswer` false.
  */
-export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }): {
+export function useRunInTerminal({ code, lang, willCopy, source }: {
+  code: string
+  lang?: string
+  willCopy: boolean
+  /** Where the command sits, sent with the request so the host can tell the
+   *  chat's crewmate which of its hand-overs ran (`utils/terminalRunNote`). */
+  source?: 'run_yourself'
+}): {
   status: RunInTerminalStatus
   noAnswer: boolean
   /** Forget the last unanswered run, so the caller can offer Run again. */
@@ -137,9 +144,10 @@ export function useRunInTerminal({ code, lang, willCopy }: { code: string; lang?
       clearTimeout(resultTimerRef.current)
       resultUnsubRef.current = null
     }
-    const detail = scope == null ? { code: cleaned, reqId, lang } : { code: cleaned, reqId, lang, scope }
+    const base = source ? { code: cleaned, reqId, lang, source } : { code: cleaned, reqId, lang }
+    const detail = scope == null ? base : { ...base, scope }
     window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail }))
-  }, [flash, lang, scope])
+  }, [flash, lang, scope, source])
 
   const askToRun = useCallback(() => {
     const cleaned = stripPromptChars(code)
