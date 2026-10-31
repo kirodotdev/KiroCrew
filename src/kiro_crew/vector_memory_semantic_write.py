@@ -233,14 +233,14 @@ def _write_semantic(
                         now,
                     ),
                 )
-            # Invalidate the resident scoring set for BOTH paths: the
+            # Bring the resident scoring set up to date for BOTH paths: the
             # semantic row was applied to this connection above, so the
             # cache is stale even when the commit is deferred to the
             # consolidation caller. An own-connection commit does not move
             # data_version, so without this a consolidation would hide its
             # new facts from recall until an unrelated write or a restart.
             # The commit itself stays deferred for consolidation batches.
-            self._invalidate_semantic_scoring()
+            self._invalidate_semantic_scoring(key)
             if not _consolidation:
                 self.db.commit()
         except (ValueError, sqlite3.IntegrityError) as exc:

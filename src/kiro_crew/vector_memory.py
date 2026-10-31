@@ -666,6 +666,8 @@ class VectorMemoryStore:
         # in-process generation and cross-process SQLite version remain current.
         self._semantic_scoring: _SemanticScoringSet | None = None
         self._semantic_scoring_generation = 0
+        # One rebuild of the resident set at a time; taken before ``_db_lock``, never inside it.
+        self._semantic_scoring_build_lock = threading.Lock()
         self._semantic_scoring_supported = True
         self._semantic_scoring_refused: tuple[int, int] | None = None
         # Promotion keys already refused: the refusal is deterministic, so warn once per store

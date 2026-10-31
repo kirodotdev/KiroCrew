@@ -68,6 +68,49 @@ class RowTermIndex:
             np,
         )
 
+    def patched(self, drop_row: int | None, new_texts: list[str]) -> RowTermIndex | None:
+        """A copy without row *drop_row*'s two texts and with *new_texts* appended.
+
+        Texts ``2r`` and ``2r + 1`` are row ``r``'s, so dropping a row removes
+        that pair and shifts every later text down by two. *new_texts* are indexed
+        after the surviving ones, exactly as :meth:`build` would index them at the
+        end of the sequence. The vocabulary is shared with this index and only
+        ever grows: an id no surviving text carries is never matched. ``None``
+        past :data:`MAX_TERM_IDS` terms, as :meth:`build` answers.
+        """
+        np = self._np
+        flat, offsets = self._flat, self._offsets
+        if drop_row is not None:
+            first = 2 * drop_row
+            lo, hi = int(offsets[first]), int(offsets[first + 2])
+            flat = np.concatenate([flat[:lo], flat[hi:]])
+            offsets = np.concatenate([offsets[: first + 1], offsets[first + 3 :] - (hi - lo)])
+        vocab, terms = self._vocab, self._terms
+        tail = array("I")
+        tail_offsets = array("q")
+        stems = _text_scoring._row_stem_tokens_uncached
+        base = len(flat)
+        for text in new_texts:
+            for term in stems(text):
+                term_id = vocab.get(term)
+                if term_id is None:
+                    term_id = vocab[term] = len(terms)
+                    terms.append(term)
+                tail.append(term_id)
+            tail_offsets.append(base + len(tail))
+        if base + len(tail) > MAX_TERM_IDS:
+            return None
+        if new_texts:
+            flat = np.concatenate([flat, np.frombuffer(tail, dtype=np.uint32)])
+            offsets = np.concatenate([offsets, np.frombuffer(tail_offsets, dtype=np.int64)])
+        return RowTermIndex(
+            vocab,
+            terms,
+            flat.astype(np.uint32, copy=False),
+            offsets.astype(np.int64, copy=False),
+            np,
+        )
+
     def query(self, query_terms: set[str]) -> QueryHits:
         """Every text's overlap with *query_terms*."""
         np = self._np

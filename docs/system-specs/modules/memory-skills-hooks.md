@@ -849,7 +849,7 @@ nothing reads either. New code for a member goes to the module that owns it. In
 
 | Module | Owns |
 |---|---|
-| `semantic` | Key and value validation and the reject audit, insert-if-absent, delete and review-proposal writes, facet stamping, the publication tail a committed `_write_semantic` runs (V1 audit event, write-time vector, supersession trigger), the V1 and V2 fact and preference readers, and the resident `_SemanticScoringSet` the V1 fact reader ranks from |
+| `semantic` | Key and value validation and the reject audit, insert-if-absent, delete and review-proposal writes, facet stamping, the publication tail a committed `_write_semantic` runs (V1 audit event, write-time vector, supersession trigger), the V1 and V2 fact and preference readers, and the resident `_SemanticScoringSet` the V1 fact reader ranks from (patched in place by a single-fact write, rebuilt on a pooled reader outside `_db_lock` otherwise) |
 | `episodic_search` | The episodic search ladder (V2 population scan, FAISS, stored-vector cosine over the resident `_EpisodicScoringSet`, keyword fallback), the relevance gate and decay, the debounced `last_accessed_at` touch and the episodic context block |
 | `faiss_index` | Building, persisting (stamped in `memory_meta`) and verifying the optional FAISS index, and the content invalidation (`invalidate_episode_content`) that drops resident populations after an episode changes |
 | `retirement` | Supersession retirement on both algorithms and the retired-episode listing |
@@ -865,7 +865,7 @@ nothing reads either. New code for a member goes to the module that owns it. In
 | `episodic_write` | `write_episodic` and `write_episodic_outcome` (screens, dedup, capacity, the FAISS add; the facade's `_injection_audit_snippet` redacts the injection-refusal snippet), forget, restore, cap eviction and row reads |
 | `bulk_ingest` | The writer loops of `migrate_from_markdown`, `import_memory` and `promote_episodic_patterns` |
 | `store_bookkeeping` | Record revisions and eligibility (`_record_mutation`, `with_record_metadata`, `_eligible_rows`), the `memory_events` audit trail (`_log_event`, `get_events`, `rotate_events`, `get_rejection_stats`) and the `memory_meta` helpers |
-| `derived_state` | Vector-space currency (the embedding token and the config guard a managed vector is published under) and the invalidation of both resident scoring sets |
+| `derived_state` | Vector-space currency (the embedding token and the config guard a managed vector is published under) and the invalidation of both resident scoring sets (the semantic one is patched for a keyed write) |
 
 Beside the facade, and bound the same way, live the owners a runtime module may not
 be: the code that opens the connection, and the code that names a relation only the
