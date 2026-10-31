@@ -429,3 +429,32 @@ describe('ChatPane plan-shaped follow-ups', () => {
     expect(slot).toBe('pane-sendnow-plain')
   })
 })
+
+describe('ChatPane follow-up options on a warm catch-up row', () => {
+  // The gateway re-emits the owner's pending choices as one [OPTIONS:] line at
+  // the end of the catch-up row's plain-text content (warm_task_brief.py
+  // `_with_buttons`); the row itself draws as the card.
+  const brief = (content: string) => [
+    { role: 'user', content: 'Status?', ts: '2026-10-31T00:00:00Z' },
+    {
+      role: 'assistant', content, ts: '2026-10-31T00:30:00Z',
+      meta: { kind: 'warm_task_brief_result', brief: { status: 'needs_you', headline: 'Ready to proceed: #26100 waits on you.' } },
+    },
+  ]
+
+  it('draws the gateway choices as working buttons that send their label', async () => {
+    await renderPane('pane-warm-1', {}, brief('Waiting on you: #26100 waits on you.\n\n[OPTIONS: Merge #26100 now | Hold #26100]'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Merge #26100 now' })).toBeTruthy())
+    fireEvent.doubleClick(chip('Hold #26100'))
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const [wireText, slot] = (api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(wireText).toBe('Hold #26100')
+    expect(slot).toBe('pane-warm-1')
+  })
+
+  it('keeps a lone choice with a comma as one button', async () => {
+    await renderPane('pane-warm-2', {}, brief('Waiting on you.\n\n[OPTIONS: Tell me what Fix login, signup needs from me |]'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Tell me what Fix login, signup needs from me' })).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Tell me what Fix login' })).toBeNull()
+  })
+})

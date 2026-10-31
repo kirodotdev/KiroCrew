@@ -5604,7 +5604,8 @@
       "status_blocked": "막힘",
       "status_done": "완료",
       "status_needs_you": "답변 대기",
-      "status_on_track": "순조로움"
+      "status_on_track": "순조로움",
+      "links": "링크"
     },
     "voicePlaybackNotice": {
       "failed": "‘{{speak}}’를 실행하지 못했습니다. 텍스트 음성 변환 설정을 확인하고 다시 시도하세요.",

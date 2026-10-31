@@ -208,7 +208,8 @@ included, retires it, as the "Waiting on you" list does, so an older ask is
 never brought back);
 `changes_since_away` (item reports, decisions and closes after the away
 anchor, and session-ledger events after it, each with its source and `HH:MM`
-time); `transcript_since_owner` (the
+time, plus pull requests the live read found merged or closed); `live_prs`;
+`transcript_since_owner` (the
 owner's last genuine message and every turn since, whole; over budget the
 oldest drop first); `open_items` (open items, and terminal ones that changed
 while the owner was away, questions and blocked first); `goal` (conductor
@@ -216,9 +217,15 @@ goal, else session-ledger goal, else the owner's newest message);
 `goal_progress`; and `owner_recent_messages` (the owner's last three genuine
 messages, which pick the reply language and the script of the fixed lines).
 
-The prompt allows merged, green, approved or conflict states only from a
-change newer than the away time; anything else is written as "not checked
-since HH:MM" with the time of the newest report or message that states it.
+The live read covers only pull requests named in open asks (the pending ask's
+text and the open question or blocked items), at most five, through the
+structured monitor's GitHub probe (`GitHubPullRequestProvider`). A bare `#N`
+is read only when the thread's work names exactly one repository. Each answer
+is cached in process for 15 minutes. Every entry carries `read_at`, or
+`checked: false` with `not_checked_since` (the last good read, or `never`).
+The prompt allows merged, green, approved or conflict states only from
+`live_prs` or a change newer than the away time; anything else is written as
+"not checked since HH:MM".
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the
@@ -239,12 +246,23 @@ apart. Each text field is redacted before and after whitespace is collapsed
 and `**` dropped, then control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any
 bracket form) are defanged, then the field is capped.
 
-The result is one mate message: `meta.brief` holds the fields and `content`
-holds the same brief as labelled plain text.
+The gateway post-checks the result: any pull-request number (`#N` or a PR URL)
+in a model-written field that the prompt never named fails the result, and the
+fixed failure line posts instead. Either message ends with one
+gateway-written `[OPTIONS: ...]` line built from parsed data, never model
+text: the pending ask's options verbatim, then one "Tell me what <title> needs
+from me" choice per open question or blocked item, at most six, each stripped
+of `|` and brackets. The chat draws that line as its working option buttons.
+The result is one mate message: `meta.brief` holds the fields plus `links`
+(`{label: "#N", url}` for each pull request the live read checked that the
+brief or its choices name) and
+`content` holds the same brief as labelled plain text with a links section.
 The transcript draws `meta.brief` as a fixed card (`WarmBriefCard`) that
 renders every field as a plain text node, in the order status and headline,
 Needs you, Progress (only when `progress` exists, plus `remaining`), body,
-What you asked, Done, Next, the `extra` sections, then the `widget` in the sandboxed `WidgetFrame` chat widgets use. `content` never
+What you asked, Done, Next, the `extra` sections, Links (real links, drawn
+only for a `https://github.com/<owner>/<repo>/pull/<n>` URL), then the
+`widget` in the sandboxed `WidgetFrame` chat widgets use. `content` never
 holds the widget. A row without a valid `meta.brief` keeps the ordinary
 bubble. The card is the body of the ordinary assistant bubble, so the row
 keeps its timestamp and row actions, and Copy takes the plain-text `content`;

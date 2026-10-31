@@ -5604,7 +5604,8 @@
       "status_blocked": "止まっています",
       "status_done": "完了",
       "status_needs_you": "あなた待ち",
-      "status_on_track": "順調"
+      "status_on_track": "順調",
+      "links": "リンク"
     },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",

@@ -111,6 +111,8 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
     # brief shows no count rather than one that reads like today's progress.
     assert "progress" not in result["meta"]["brief"]
     assert '"goal_progress": null' in prompts[0]
+    # The open question becomes a working button, built by the gateway.
+    assert result["content"].endswith("[OPTIONS: Tell me what Add the panel needs from me |]")
 
     # Leave and come back again with nothing changed: the claim holds, no spend.
     await _hide_for(state, 1, slot.key, 45 * 60)
