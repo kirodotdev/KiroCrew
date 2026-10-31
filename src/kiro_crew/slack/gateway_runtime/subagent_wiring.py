@@ -92,6 +92,19 @@ async def _subagent_batch_pending(manager: Any, batch_id: str) -> bool:
     return bool(manager.batch_members_pending(batch_id))
 
 
+async def _subagent_nested_live(manager: Any, batch_id: str) -> bool:
+    """Whether a member of *batch_id* has nested work outstanding, store rows
+    included, read off-loop for :func:`_subagent_batch_pending`'s reason. A
+    manager with no async entry answers False here; the digest still makes its
+    own in-memory check."""
+    import inspect
+
+    entry = getattr(manager, "wave_has_live_nested_spawns_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return bool(await entry(batch_id))
+    return False
+
+
 #: Session-key prefixes of a workflow RUN's step sessions, each followed by
 #: ``<run_id>:``: per-call (``wf:``), pooled worker, unpooled call, and the
 #: memory-scoped worker key.
@@ -257,7 +270,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             # below — that would inject a completion turn for an agent that
             # never ran.
             return
-        # The one await on the wave-accounting path runs BEFORE this
+        # The awaits on the wave-accounting path run BEFORE this
         # member touches the wave record. Everything from reading
         # ``_batch_progress`` to the hold-or-flush decision below is then a
         # single synchronous block, so a sibling completion can never close
@@ -265,9 +278,10 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
         # how that line is delivered: the closer's settle set always carries
         # every member its digest names. While this member awaits, its own
         # report hold is still armed, so no sibling closes the wave on it.
-        # The lookup is skipped when this member's count alone closes the
-        # wave; nothing can interleave between the peek and the block.
+        # The membership lookup is skipped when this member's count alone
+        # closes the wave.
         _no_batch_pending = False
+        _nested_live = False
         if _batch_id and not _flush_only and self.subagent_mgr:
             _peek = self._batch_progress.get(_batch_id)
             _peek_done = _peek["done"] if _peek is not None else 0
@@ -277,6 +291,17 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                     _no_batch_pending = not _members
                 except Exception:
                     _no_batch_pending = False
+            # A completion that may close the wave reads the members' nested
+            # work here too: a child queued only in the task store is a store
+            # read, which the synchronous digest block must not make. A
+            # sibling landing during this await cannot close the wave: this
+            # member's done-count contribution has not landed and its report
+            # hold is still armed.
+            if _no_batch_pending or (_batch_total > 0 and _peek_done + 1 >= _batch_total):
+                try:
+                    _nested_live = await _subagent_nested_live(self.subagent_mgr, _batch_id)
+                except Exception:
+                    _nested_live = False
         wave = self._subagent_wave_digest(
             info,
             report=report,
@@ -285,6 +310,7 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
             _batch_total=_batch_total,
             _no_batch_pending=_no_batch_pending,
             _injection_slot_name=_injection_slot_name,
+            _nested_live=_nested_live,
         )
         if wave is None:
             return

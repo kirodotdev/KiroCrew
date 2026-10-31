@@ -966,6 +966,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "user_max_concurrent": ("property", ""),
     "wait_taskq_ready": ("async method", "(self) -> 'None'"),
     "wave_has_live_nested_spawns": ("method", "(self, batch_id: 'str') -> 'bool'"),
+    "wave_has_live_nested_spawns_async": ("async method", "(self, batch_id: 'str') -> 'bool'"),
 }
 
 

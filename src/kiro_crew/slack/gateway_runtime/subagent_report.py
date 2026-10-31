@@ -230,6 +230,7 @@ def _subagent_wave_digest(
     _batch_total: int,
     _no_batch_pending: bool,
     _injection_slot_name: str,
+    _nested_live: bool = False,
 ) -> _WaveDigest | None:
     """Account one completion in its wave and decide how the wave delivers it.
 
@@ -526,13 +527,16 @@ def _subagent_wave_digest(
                 # "This run is complete / All results delivered" claim
                 # is reserved for a wave with no live nested work. The
                 # check is read-only and never withholds the digest.
-                try:
-                    _nested_live = bool(
-                        self.subagent_mgr
-                        and self.subagent_mgr.wave_has_live_nested_spawns(_batch_id)
-                    )
-                except Exception:
-                    _nested_live = False
+                # ``_nested_live`` arrives True when the caller's off-loop
+                # read found a member's child queued only in the task store.
+                if not _nested_live:
+                    try:
+                        _nested_live = bool(
+                            self.subagent_mgr
+                            and self.subagent_mgr.wave_has_live_nested_spawns(_batch_id)
+                        )
+                    except Exception:
+                        _nested_live = False
                 # Members a memory wait ended are dropped work, not
                 # done work. After the tally sentence, which the card
                 # regexes anchor on. "Once memory eases": a member the

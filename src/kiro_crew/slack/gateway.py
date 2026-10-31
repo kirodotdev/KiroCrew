@@ -571,6 +571,7 @@ from kiro_crew.slack.gateway_runtime.subagent_wiring import (
     _WORKFLOW_STEP_PREFIXES,
     _spawn_parent_slot,
     _subagent_batch_pending,
+    _subagent_nested_live,
     _subagent_queued_count,
     _subagent_work_pending,
 )
