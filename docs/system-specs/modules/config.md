@@ -3747,6 +3747,19 @@ clicks. A keystone flag would imply a security decision that does not exist.
 field resolves to OFF rather than raising inside a tool call, and a missing field can
 only ever mean "no decoration", never "start drawing on the user's screen".
 
+#### `computer_use.driver` — which desktop driver runs the tools
+
+`computer_use.driver` is `auto` (default), `agent-desktop` or `native`.
+`auto` uses the pinned `agent-desktop` CLI when it is installed and verifies, and the
+built-in native driver otherwise; `agent-desktop` requires it and refuses without
+it; `native` always uses the built-in driver. Like `cursor_motion` it lives in
+`config.json` because it grants nothing: every computer-use check runs the same on
+either driver, and the keystone still decides whether the tools run at all.
+`backend._configured_driver()` reads it and treats an unreadable config or an
+unknown value as `auto`. The shared backend reads it when it is built, so a change
+takes effect after `reset_shared_backend()`. See
+[computer-use.md § The agent-desktop driver](computer-use.md#the-agent-desktop-driver).
+
 Three consequences for this module: `"computer_use"` MUST be present in
 `_KNOWN_CONFIG_SECTIONS` (the guarded invariant that `to_dict()`'s emitted sections
 equal that set); the dashboard's `_EDITABLE_CONFIG` exposes only the limits

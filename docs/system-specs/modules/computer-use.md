@@ -534,6 +534,19 @@ models is the point.
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
+Three more routes in `dashboard/handlers/computer_use_install.py` set up the
+[agent-desktop driver](#the-agent-desktop-driver). They are browser-called and
+cookie-authed like the config pair:
+
+| Route | Auth | Caller |
+|---|---|---|
+| `GET /api/computer-use/agent-desktop/status` | cookie (browser) | Settings → Computer Use, driver card |
+| `POST /api/computer-use/agent-desktop/install` | cookie (browser), owner only | the card's Install / Update / Reinstall button |
+| `POST /api/computer-use/agent-desktop/permissions-guide` | cookie (browser), owner only | the card's macOS grant button |
+
+A status read never spawns npm. The two POSTs refuse a non-owner with 403 and audit
+the decision either way.
+
 `invoke` is in `server._STRICT_INTERNAL_API_PATHS` — no cookie fall-through, and
 non-loopback is denied outright. It is the entry point to accessibility reads and
 input synthesis, so it is the one route where a cookie fall-through would be a
@@ -1851,6 +1864,122 @@ values.**
 
 ---
 
+## The agent-desktop driver
+
+The tool contract can run on a second driver: the `agent-desktop` CLI (npm package
+`agent-desktop`, pinned to `agent_desktop_locate.PINNED_VERSION`, 1.0.2 today).
+`computer_use.driver` in `config.json` picks it (see [config.md](config.md)):
+
+| `computer_use.driver` | Backend |
+|---|---|
+| `auto` (default) | agent-desktop when a binary is located AND verifies against the pinned digests; otherwise the native driver |
+| `agent-desktop` | agent-desktop, or an `UnsupportedBackend` whose reason says it is missing or unverified. Never a silent downgrade |
+| `native` | the native driver (`backend.select_native_backend()`), as before |
+
+`backend.select_default_backend()` reads the key on every build and never raises; an
+unreadable config means `auto`. The shared backend is built once, so a changed value
+or a fresh install takes effect after `reset_shared_backend()`. The installer calls
+it on success.
+
+### What the driver is, and what stays native
+
+`AgentDesktopBackend` (`computer_use/agent_desktop_driver.py`) wraps the native
+backend. Every observation and element action is one CLI call
+(`snapshot --window-id`, `click`, `get`, `type`, `set-value`, `scroll`, ...),
+addressed by the window id the native inventory gives (`w-<CGWindowID>` matches).
+The native driver stays underneath for what agent-desktop cannot do in the gateway's
+sandbox: the window inventory and `resolve_app` (agent-desktop gives no bundle id,
+and its `list-apps` fails on a `ps` denial), launch, `press_key`, pointer-free
+coordinate clicks and drags (`app_post`, `sky_click`), and screenshots (the native
+`capture_*` function, which owns the secure and truncation floors). When the native
+driver does not load, those verbs refuse.
+
+Every layer above the backend is unchanged: the keystone, the dispatch chokepoint,
+the app lists, `check_input_target`, redaction and the SEL audit all run the same on
+either driver. The driver adds its own checks underneath:
+
+- **Pinned binary.** `agent_desktop_locate.locate()` finds the executable
+  (`KIROCREW_AGENT_DESKTOP_BIN`, then the install prefix, then `PATH`) and says
+  nothing about trust. `verify(path)` accepts it only when its SHA-256, and its
+  helper's, is in `PINNED_SHA256`. Bumping the version means changing
+  `PINNED_VERSION` and every digest together.
+- **Secure fields.** agent-desktop reports `AXSecureTextField` as `states:
+  ["secure"]` and withholds its value. The driver marks such a node secure, never
+  keeps its value, and before `type` or `set-value` re-reads `get --property states`
+  and refuses if the field turned secure.
+- **Index drift.** Each index stores its agent-desktop ref with the fingerprint.
+  A mismatch refuses with the usual drift message; `STALE_REF`,
+  `SNAPSHOT_NOT_FOUND` and `AMBIGUOUS_TARGET` mean "call `computer_get_state`
+  again". Static text gets an index but refuses as not addressable.
+- **Argv as data.** Agent text reaches argv only after `--`, so text like
+  `--headed` is typed, not parsed as a flag. `--headed` is passed only when the
+  call `moves_pointer`.
+- **State.** `AGENT_DESKTOP_HOME` points at `<prefix>/state` (0700). The refstore
+  there holds element names and window titles.
+
+The spawn is `agent_desktop_driver.py::_subprocess_runner`, listed in
+`BENIGN_SPAWNS` (`test/spawn_audit_helpers.py`) with its reason: it is not routed
+through `sandboxed_spawn_argv` because the child must hold the operator's
+Accessibility grant, which a confining sandbox denies.
+
+### Measured cost (macOS, median of 5)
+
+| Op | Native | agent-desktop |
+|---|---|---|
+| snapshot, Notes | 170 ms | 175 ms |
+| snapshot, System Settings | 364 ms | 343 ms |
+| element click | 45 ms | 118-123 ms |
+| drift re-walk, System Settings | 40-70 ms | 366 ms |
+
+Snapshots cost the same. Each action pays ~70-100 ms of spawn plus agent-desktop's
+own preflight, and the drift check is a full re-walk.
+
+### The installer (`computer_use/agent_desktop_install.py`)
+
+One npm command into a prefix the product owns, modelled on the browser installer
+and run through its `_run` / `InstallScope`, so a gateway shutdown kills the child
+(`stop_agent_desktop_install`):
+
+```
+npm install --prefix <data home>/tools/agent-desktop --ignore-scripts --no-fund --no-audit agent-desktop@<PINNED_VERSION>
+```
+
+npm uses the user's own registry configuration. `--ignore-scripts` skips the
+package's postinstall, which only copies the bundled binary into place (and would
+download from GitHub when it is missing); `place_platform_binary()` does that copy
+itself. Then the installed version must equal the pin and `verify_installed()`
+(locate + the driver's `verify`) must accept the binary. Trust comes from the pinned
+digests, never the package's own `.sha256` files. All npm output is redacted before
+it reaches a log or the dashboard. A located binary that fails verification reads as
+not installed and is never run, so the card offers a reinstall.
+
+`readiness()` reports installed, version, pin, path and the OS grants from
+`agent-desktop permissions` (advisory: `granted` / `denied` / `unknown`, and
+`unknown` on any probe failure). `open_permissions_guide()` runs `permissions
+--guide` on macOS, which opens System Settings and returns.
+
+### The Settings card
+
+Settings → Computer Use shows a driver card (`ComputerUseInstallStatus.tsx`, state
+helpers in `computerUseInstallState.ts`) between the enable and the macOS
+permissions card. It shows install state, installed vs pinned version, the active
+driver (`agent-desktop` / `native` / `unsupported`) and each grant. Its one button
+is Install, Update or Reinstall depending on that state; on macOS a second button
+opens the grant guide. It polls the status while a job runs and shows the failed
+step with its redacted error. The routes are in [HTTP surface](#http-surface).
+
+### Open risks
+
+- Typed text and set values sit in agent-desktop's argv while a call runs, so a
+  same-user `ps` can read them. Secure fields are refused, so never a password.
+- Secure detection on Windows (`IsPassword`) and Linux is agent-desktop's and is not
+  verified on a real host; its docs say a GTK4 entry with visibility off is not
+  reported secure.
+- Indices are numbered differently from the native walker. After a driver switch,
+  take a fresh `computer_get_state`.
+- Only macOS was run on a real host. The Windows and Linux paths follow the same CLI
+  contract, untested.
+
 ## Platform support
 
 | Platform | State |
@@ -2646,6 +2775,11 @@ computer use.
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
 | `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
+| `computer_use/agent_desktop_driver.py` | `AgentDesktopBackend`: the tool contract over the `agent-desktop` CLI, wrapping the native backend for inventory, launch, keys, pointer-free coordinates and capture |
+| `computer_use/agent_desktop_locate.py` | `locate()` and `verify()` against `PINNED_VERSION` / `PINNED_SHA256`, `INSTALL_PREFIX()` |
+| `computer_use/agent_desktop_install.py` | The pinned npm install into the private prefix, binary placement, `readiness()`, the permissions probe and guide |
+| `dashboard/handlers/computer_use_install.py` | `/api/computer-use/agent-desktop/{status,install,permissions-guide}` and the background install job |
+| `website/src/pages/settings/ComputerUseInstallStatus.tsx` | Settings → Computer Use driver card (state logic in `computerUseInstallState.ts`) |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
 | `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
 | `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |

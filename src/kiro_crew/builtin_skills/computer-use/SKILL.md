@@ -403,6 +403,13 @@ this is what stops you clicking the same wrong index four times:
   outline. Use it exactly as shown.
 - **Empty containers are elided** from the outline, so numbers are not always
   contiguous. That is expected.
+- **There may be a second driver underneath.** When the user installed
+  `agent-desktop` (Settings → Computer Use), the tools run on it; the tools and
+  refusals are the same. Two differences show: static text has an index but
+  refuses as "not addressable" (act on the control around it), and an index from
+  before a driver switch means nothing, so take a fresh `computer_get_state`. If a
+  refusal says agent-desktop is missing or unverified, tell the user to install or
+  reinstall it from that Settings card; do not try to install it yourself.
 - **The user may be watching, and you cannot see what they see.** Two optional
   views exist for them, not for you: a live panel that mirrors the screenshots you
   take, and a "Cursor Motion" overlay that draws a moving cursor on their real
