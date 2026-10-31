@@ -1504,5 +1504,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.discord.renderer_text import (  # noqa: F401
         _STEER_MARKER_RE,
         _STEER_SUMMARY_RE,
+        _redact_steer,
         _transform_buries_refs,
     )

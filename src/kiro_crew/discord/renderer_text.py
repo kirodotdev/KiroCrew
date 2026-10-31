@@ -3,9 +3,10 @@
 The trailing ``[OPTIONS:]`` and steering-marker strips (an unclosed marker still
 streaming in included), the delivered form a candidate cut is graded through, the check
 that a table card buries no local image reference, Discord subtext, the steer-chip
-neutralizer and the platform-cap slicer every seal bounds its payloads with. None of
-them redacts: the display-form redaction pass stays with the sends in
-:mod:`kiro_crew.discord.renderer`. New text transforms of this kind go here;
+neutralizer and the platform-cap slicer every seal bounds its payloads with. Only the
+steer-chip neutralizer redacts, because its escapes would otherwise split a credential
+before the send-time pass sees it; that display-form redaction pass otherwise stays
+with the sends in :mod:`kiro_crew.discord.renderer`. New text transforms of this kind go here;
 :mod:`kiro_crew.discord.renderer` imports these and stays their import path and patch
 surface.
 """
@@ -15,8 +16,21 @@ from __future__ import annotations
 import re
 
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
+from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import protected_ref_spans
 from kiro_crew.messaging.renderer import chunk_text, split_options_trailer
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+
+def _redact_steer(text: str) -> str:
+    """The redactors ``renderer._redact_all`` applies, in the same order.
+
+    Spelled here because an owner never imports its facade; the facade's own copy
+    stays pinned there by the composition contract.
+    """
+    text, _ = redact_exfiltration_urls(text)
+    return redact_credentials(text)[0]
+
 
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
@@ -101,11 +115,28 @@ def _as_subtext(text: str) -> str:
 
 
 def _neutralize_md(raw: str) -> str:
-    """Collapse whitespace, cap length, and strip Markdown control chars from a
+    r"""Collapse whitespace, cap length, and strip Markdown control chars from a
     steer's text so the chip renders literally (inside a blockquote) and can't
-    perturb surrounding formatting."""
+    perturb surrounding formatting.
+
+    Discord parses markup Telegram does not: spoilers ``||x||``, strikethrough
+    ``~~x~~`` and, at a line start, headings ``# x`` and subtext ``-# x``. Those
+    are backslash-escaped rather than stripped, so the reader sees the words as
+    typed; a leading ``-`` is escaped whole, which covers ``-#`` and a ``- x``
+    list bullet alike. A typed backslash is escaped first so it cannot cancel
+    one of ours.
+
+    The text is redacted BEFORE the escapes go in: an inserted ``\`` splits a
+    token such as ``abc~SECRET`` so the send-time redaction pass misses it,
+    while Discord renders the ``\`` away and shows the reader the
+    whole credential.
+    NOT idempotent: apply it once, to the raw text.
+    """
     t = " ".join((raw or "").split())[:120]
-    return re.sub(r"[*_`\[\]()]", "", t)
+    t = re.sub(r"[*_`\[\]()]", "", t)
+    t, _ = redact_for_display(t, _redact_steer)
+    t = re.sub(r"([\\|~])", r"\\\1", t)
+    return re.sub(r"^([-#])", r"\\\1", t)
 
 
 def _fit_platform_cap(text: str, limit: int = DISCORD_MAX_TEXT) -> list[str]:
