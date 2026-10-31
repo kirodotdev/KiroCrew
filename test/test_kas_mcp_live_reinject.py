@@ -39,6 +39,7 @@ def _handle(**overrides: object) -> SimpleNamespace:
         keep_transcript=False,
         memory_mode="persistent",
         child_fidelity_aware=False,
+        delete_delay_secs=0.0,
         set_model=AsyncMock(),
     )
     base.update(overrides)
@@ -207,12 +208,20 @@ class TestTheApply:
         runtime = _runtime()
         provider = _provider(
             runtime,
-            _handle(keep_transcript=True, memory_mode="ephemeral", child_fidelity_aware=True),
+            _handle(
+                keep_transcript=True,
+                memory_mode="ephemeral",
+                child_fidelity_aware=True,
+                delete_delay_secs=1800.0,
+            ),
         )
         provider.mark_mcp_config_changed()
         await provider.apply_pending_mcp_reinjection()
         assert runtime.new_handle.keep_transcript is True
         assert runtime.new_handle.memory_mode == "ephemeral"
+        # A delayed record kept across the swap: the new handle's 0 would delete it
+        # at once when the session ends.
+        assert runtime.new_handle.delete_delay_secs == 1800.0
         # This turn's admission opted the OLD handle in; the new one must not fall
         # back to the fail-closed default mid-turn.
         assert runtime.new_handle.child_fidelity_aware is True

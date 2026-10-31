@@ -1008,6 +1008,26 @@ class TestOpenTaskSession:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("delay", [0, 1800])
+    async def test_a_step_session_carries_the_configured_delete_delay(self, cfg, delay):
+        """The handle is what ``destroy`` reads, so the delay must reach it. The later
+        delete is a cleanup-loop hook that this path would not otherwise start."""
+        cfg.session.kas_delete_delay_secs = delay
+        created: list = []
+        mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))
+        parent = "taskrunner:run3:runtime"
+
+        provider, _is_new, _resumed = await mgr.open_task_session(
+            parent, "taskrunner:run3:task0", agent="kirocrew"
+        )
+
+        assert provider._handle.delete_delay_secs == float(delay)
+        assert (mgr._cleanup_task is not None) is (delay > 0)
+        mgr.release("taskrunner:run3:task0")
+        await mgr.release_subagent_runtime(parent)
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_open_task_session_registers_under_key(self, cfg):
         created: list = []
         mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))

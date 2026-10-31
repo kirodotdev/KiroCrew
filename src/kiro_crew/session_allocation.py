@@ -898,6 +898,14 @@ class SessionAllocationService:
         except BaseException:
             self._remove_reservation_now(key, token)
             raise
+        # A run's planner, step and review sessions end as soon as their work is
+        # done. Where the host can keep the record, it waits this long before Crew
+        # deletes it, so a finished step can still be read. The later delete is a
+        # cleanup-loop hook, and this path is not the allocation that starts the
+        # loop, so a delay starts it here.
+        handle.delete_delay_secs = float(owner._cfg.session.kas_delete_delay_secs)
+        if handle.delete_delay_secs > 0:
+            owner._ensure_cleanup_task()
         try:
             provider = self._deps.session_provider_type()(handle, runtime)
             setattr(

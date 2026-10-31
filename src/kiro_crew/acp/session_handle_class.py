@@ -181,6 +181,8 @@ class AcpSessionHandle:
     _send_awaited = _sh_lifecycle._send_awaited
     bind_session_key = _sh_lifecycle.bind_session_key
     destroy = _sh_lifecycle.destroy
+    _release_ending = _sh_lifecycle._release_ending
+    _release_for_later_delete = _sh_lifecycle._release_for_later_delete
     _cleanup_transcript = _sh_lifecycle._cleanup_transcript
     cleanup_transcript_files = staticmethod(_sh_lifecycle.cleanup_transcript_files)
     _wait_for_response = _sh_lifecycle._wait_for_response
@@ -306,6 +308,15 @@ class AcpSessionHandle:
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
         self.memory_mode = "persistent"
+        # Seconds the host keeps this session's record after destroy() before Crew
+        # deletes it, on a host that can free a session and keep its record
+        # (``AcpRuntime.can_release``). Set by the opener of a task-runner session
+        # or a workflow worker from ``session.kas_delete_delay_secs``; 0 ends the
+        # session with the teardown, which on KAS deletes the record at once.
+        self.delete_delay_secs = 0.0
+        # The release ``destroy()`` started, kept so a second ``destroy()`` waits for
+        # it instead of releasing again (``_release_ending``).
+        self._release_task: asyncio.Future[None] | None = None
         # Token carried by THIS session's injected broker-stub entries
         # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
         # that created the session. It is what a later claim-push names so

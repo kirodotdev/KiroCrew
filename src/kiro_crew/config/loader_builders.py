@@ -980,6 +980,12 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _safe_int,
             _sections.FILE_CHANGES_KEEP_TURNS_MIN,
         ),
+        kas_delete_delay_secs=section.read(
+            "kas_delete_delay_secs",
+            _safe_int,
+            _sections.KAS_DELETE_DELAY_SECS_MIN,
+            _sections.KAS_DELETE_DELAY_SECS_MAX,
+        ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips

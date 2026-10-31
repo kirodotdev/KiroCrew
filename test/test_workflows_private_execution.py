@@ -56,6 +56,9 @@ class Model:
     def is_process_alive(self):
         return self.alive
 
+    def set_delete_delay(self, seconds):
+        return None
+
     def context_usage_pct(self):
         return 0.0
 
