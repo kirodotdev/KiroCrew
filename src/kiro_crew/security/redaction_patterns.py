@@ -17,13 +17,13 @@ here.
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 from collections.abc import Iterator
 
 import kiro_crew.security.pem_scan as pem_scan
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.jwt_header import is_json_object_segment as _is_json_object_segment  # noqa: F401
+from kiro_crew.jwt_header import is_jwt_lookalike
 
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
@@ -277,7 +277,8 @@ def get_credential_patterns() -> list[re.Pattern[str]]:
 
 
 # The JWS/JWE branch is shape-only (it matches `honeyJar.example.com`), so its hits need a
-# JSON-object header. Only it and the one-dot link token start with `eyJ`: two dots mark them.
+# JSON-object header: `jwt_header.is_jwt_lookalike`, shared with the log floor and the
+# decisions gate. Only it and the one-dot link token start with `eyJ`: two dots mark them.
 _CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
     _CREDENTIAL_PATTERNS.pattern.replace(f"|{JWT_MULTI_SEGMENT}", "", 1)
 )
@@ -388,15 +389,6 @@ def _sans_jwt_start(text: str, pos: int) -> int:
     return len(text) + 1 if found is None else found.start()
 
 
-def _is_json_object_segment(segment: str) -> bool:
-    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
-    try:
-        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(header, dict)
-
-
 _JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
 
 
@@ -483,13 +475,7 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     pos = 0
     starts = [-1, -1, -1, -2]
     while (m := _credential_search(text, pos, starts)) is not None:
-        header = m.group().split(".", 1)[0]
-        if (
-            m.group().startswith("eyJ")
-            and m.group().count(".") >= 2
-            and header.find("eyJ", 1) == -1
-            and not _is_json_object_segment(header)
-        ):
+        if is_jwt_lookalike(m):
             alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
             if alt is None:
                 pos = m.start() + 1
