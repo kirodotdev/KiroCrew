@@ -101,19 +101,21 @@ def workspace_dir_name(workspace: str) -> str:
     return f"{WORKSPACE_DIR_PREFIX}{workspace}"
 
 
-def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> set[Path]:
-    """The directories the entries name, resolved; an entry that cannot be resolved is skipped.
+def _resolved_dirs(entries: Collection[WorkspaceConfig]) -> list[Path]:
+    """Each directory the entries name, resolved; entries that cannot resolve are skipped.
 
+    The list preserves distinct stored spellings that ``Path`` equality may
+    consider equal, so the caller can still compare both directories by identity.
     A hand-written ``dir`` can stop resolving after the fact (``~otheruser/…``
     whose account is gone raises ``RuntimeError`` from ``expanduser``; a path the
     host refuses to stat raises ``OSError``). Such an entry cannot name the fresh
     data-home-relative directory this module allocates, so it cannot collide with
     it; skipping it keeps one stale workspace from refusing every later create.
     """
-    resolved: set[Path] = set()
+    resolved: list[Path] = []
     for entry in entries:
         try:
-            resolved.add(workspace_dir_from_entry(entry).resolve())
+            resolved.append(workspace_dir_from_entry(entry).resolve())
         except (RuntimeError, OSError):
             logger.debug("workspace dir %r does not resolve; skipped", entry.dir, exc_info=True)
     return resolved
@@ -127,6 +129,8 @@ def provision_member_workspace(config, member: str) -> str:
     ``""`` is returned so the caller publishes nothing new. Nothing is written
     to disk here.
     """
+    from kiro_crew.cli_commands_workspace import _ws_dir_in_use
+
     agent = config.agents.get(member)
     if agent is None:
         raise MemberWorkspaceUnavailable(
@@ -139,7 +143,12 @@ def provision_member_workspace(config, member: str) -> str:
     entry = WorkspaceConfig(dir=workspace_dir_name(name))
     # A fresh name whose directory another entry already points at (an absolute
     # ``dir`` spelled by hand) would silently share that tree; walk on instead.
-    while workspace_dir_from_entry(entry).resolve() in _resolved_dirs(config.workspaces.values()):
+    # Disk identity decides when both folders exist (_ws_dir_in_use): on a
+    # case-insensitive disk ``WORKSPACE-MEMBER-ATLAS`` is this same folder.
+    while _ws_dir_in_use(
+        platform_compat.strip_extended_length_prefix(workspace_dir_from_entry(entry).resolve()),
+        map(str, _resolved_dirs(config.workspaces.values())),
+    ):
         taken.add(name)
         name = member_workspace_name(member, taken)
         entry = WorkspaceConfig(dir=workspace_dir_name(name))
@@ -165,6 +174,8 @@ def publish_member_workspace(doc: dict, workspace: str, entry: WorkspaceConfig) 
     for anything else). The directory is a fresh name inside the data home, so
     tightening never touches a folder the owner pointed at by hand.
     """
+    from kiro_crew.cli_commands_workspace import _ws_dir_in_use
+
     workspaces = coerce_dict_section(doc, "workspaces")
     if workspace in workspaces:
         raise MemberWorkspaceUnavailable(
@@ -181,7 +192,12 @@ def publish_member_workspace(doc: dict, workspace: str, entry: WorkspaceConfig) 
         for raw in workspaces.values()
         if isinstance(raw, dict)
     ]
-    if validated in _resolved_dirs(declared):
+    # Another spelling of a folder in use (a case variant on a case-insensitive
+    # disk) is refused too: disk identity decides when both folders exist.
+    if _ws_dir_in_use(
+        platform_compat.strip_extended_length_prefix(validated),
+        map(str, _resolved_dirs(declared)),
+    ):
         raise MemberWorkspaceUnavailable(
             "workspace_dir_in_use",
             f"directory {entry.dir!r} is already used by another workspace; retry",
