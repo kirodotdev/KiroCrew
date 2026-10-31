@@ -18143,7 +18143,6 @@
         "host_surface": "surface hôte",
         "i_understand_this_weakens_kirocrew_s_protection": "Je comprends que cela affaiblit la protection de {{productName}}.",
         "interactive": "Interactif",
-        "invalid_regular_expression": "Expression régulière invalide",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} met en œuvre 6 couches de sécurité. Chaque couche fonctionne indépendamment — un attaquant doit contourner toutes les couches simultanément pour réussir.",
         "layer_auth": "Authentification",

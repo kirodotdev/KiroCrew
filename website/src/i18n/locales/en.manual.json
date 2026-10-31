@@ -8454,7 +8454,6 @@
         "expand_category_rules": "Expand {{category}} rules",
         "hide_pattern": "Hide pattern",
         "interactive": "Interactive",
-        "invalid_regular_expression": "Invalid regular expression",
         "nothing_allowed": "Nothing allowed",
         "policy": "policy",
         "policy_profile": "policy ∩ profile",

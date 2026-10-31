@@ -17837,7 +17837,6 @@
         "host_surface": "হোস্ট সারফেস",
         "i_understand_this_weakens_kirocrew_s_protection": "আমি বুঝতে পারছি, এতে {{productName}}-এর সুরক্ষা দুর্বল হয়।",
         "interactive": "ইন্টার‌্যাক্টিভ",
-        "invalid_regular_expression": "রেগুলার এক্সপ্রেশনটি বৈধ নয়",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} 6টি নিরাপত্তা স্তর প্রয়োগ করে। প্রতিটি স্তর স্বতন্ত্রভাবে কাজ করে — সফল হতে আক্রমণকারীকে একই সাথে সব স্তর পাশ কাটাতে হবে।",
         "layer_auth": "অথ",

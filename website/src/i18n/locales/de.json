@@ -17837,7 +17837,6 @@
         "host_surface": "Host-Oberfläche",
         "i_understand_this_weakens_kirocrew_s_protection": "Ich verstehe, dass dies den Schutz von {{productName}} schwächt.",
         "interactive": "Interaktiv",
-        "invalid_regular_expression": "Ungültiger regulärer Ausdruck",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} implementiert 6 Sicherheitsschichten. Jede Schicht arbeitet unabhängig — ein Angreifer muss alle Schichten gleichzeitig umgehen, um erfolgreich zu sein.",
         "layer_auth": "Auth",

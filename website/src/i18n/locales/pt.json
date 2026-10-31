@@ -18143,7 +18143,6 @@
         "host_surface": "superfície do host",
         "i_understand_this_weakens_kirocrew_s_protection": "Eu entendo que isso enfraquece a proteção do {{productName}}.",
         "interactive": "Interativo",
-        "invalid_regular_expression": "Expressão regular inválida",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "O {{productName}} implementa 6 camadas de segurança. Cada camada funciona de forma independente — um atacante precisa contornar todas as camadas simultaneamente para ter sucesso.",
         "layer_auth": "Autenticação",

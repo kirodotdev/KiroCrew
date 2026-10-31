@@ -17531,7 +17531,6 @@
         "host_surface": "ホスト表面",
         "i_understand_this_weakens_kirocrew_s_protection": "これは {{productName}}の保護を弱めることを理解しています。",
         "interactive": "インタラクティブ",
-        "invalid_regular_expression": "無効な正規表現",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}}は6つのセキュリティレイヤーを実装します。各レイヤーは独立して動作します — 攻撃者がすべてのレイヤーを同時にバイパスする必要があります。",
         "layer_auth": "認証",

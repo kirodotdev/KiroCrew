@@ -17531,7 +17531,6 @@
         "host_surface": "主机接入面",
         "i_understand_this_weakens_kirocrew_s_protection": "我理解这会削弱 {{productName}} 的保护。",
         "interactive": "交互式",
-        "invalid_regular_expression": "无效的正则表达式",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} 实现了 6 层安全防护。每层独立运作 — 攻击者必须同时绕过所有层才能成功。",
         "layer_auth": "认证",

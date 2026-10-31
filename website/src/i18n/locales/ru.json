@@ -18449,7 +18449,6 @@
         "host_surface": "поверхности хоста",
         "i_understand_this_weakens_kirocrew_s_protection": "Я понимаю, что это ослабляет защиту {{productName}}.",
         "interactive": "Интерактивный",
-        "invalid_regular_expression": "Некорректное регулярное выражение",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} реализует 6 уровней защиты. Каждый уровень работает независимо — злоумышленнику нужно обойти все уровни одновременно.",
         "layer_auth": "Аутентификация",
