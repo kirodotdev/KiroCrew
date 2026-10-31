@@ -60,6 +60,7 @@ from kiro_crew.computer_use.types import (
     PLATFORM_MACOS,
     STATE_KEY_ALLOWED_APPS,
     STATE_KEY_ENABLED,
+    DispatchResult,
 )
 from kiro_crew.dashboard.handlers import computer_use as cu_api
 
@@ -67,6 +68,17 @@ from kiro_crew.dashboard.handlers import computer_use as cu_api
 # replaces the module attribute, and ``TestPermissionProbe`` needs the genuine
 # implementation. Captured rather than reloaded: ``importlib.reload`` would rebind
 # the module object the handlers package already holds a reference to.
+
+
+def _as_result(fake):
+    """Wrap a text-returning fake as the ``dispatch_tool_result`` the handler calls."""
+
+    def _wrapped(*args, **kwargs):
+        return DispatchResult(text=fake(*args, **kwargs))
+
+    return _wrapped
+
+
 _REAL_PROBE = cu_api._probe_permissions
 
 
@@ -405,7 +417,9 @@ class TestInvoke:
             )
             return '0 window "Documents"'
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _fake_dispatch)
+        monkeypatch.setattr(
+            "kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_fake_dispatch)
+        )
         async with _client() as client:
             resp = await client.post(
                 "/api/computer-use/invoke",
@@ -439,7 +453,9 @@ class TestInvoke:
             seen["session_key"] = session_key
             return "Error: Blocked: the calling session could not be identified"
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _fake_dispatch)
+        monkeypatch.setattr(
+            "kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_fake_dispatch)
+        )
         async with _client() as client:
             resp = await client.post(
                 "/api/computer-use/invoke", json={"tool": "computer_list_apps"}
@@ -457,7 +473,7 @@ class TestInvoke:
         def _boom(*_a, **_kw):
             raise AssertionError("the dispatcher must not be reached")
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _boom)
+        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_boom))
         async with _client() as client:
             resp = await client.post("/api/computer-use/invoke", json=body)
         assert resp.status == 400
@@ -470,7 +486,7 @@ class TestInvoke:
         def _raise(*_a, **_kw):
             raise RuntimeError("driver exploded")
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _raise)
+        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_raise))
         async with _client() as client:
             resp = await client.post(
                 "/api/computer-use/invoke",
@@ -496,7 +512,9 @@ class TestInvoke:
             seen.update(kw)
             return "ok"
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _fake_dispatch)
+        monkeypatch.setattr(
+            "kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_fake_dispatch)
+        )
         async with _client() as client:
             await client.post(
                 "/api/computer-use/invoke",
@@ -597,8 +615,8 @@ class TestInvokeSecretEnforcement:
         """
         reached: list[str] = []
         monkeypatch.setattr(
-            "kiro_crew.computer_use.tools.dispatch_tool",
-            lambda tool_name, *a, **k: reached.append(tool_name) or "ok",
+            "kiro_crew.computer_use.tools.dispatch_tool_result",
+            _as_result(lambda tool_name, *a, **k: reached.append(tool_name) or "ok"),
         )
         self.reached = reached
 

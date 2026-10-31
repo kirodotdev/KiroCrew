@@ -139,12 +139,15 @@ from kiro_crew.mcp_core import (
     require_strict_session_key,
 )
 from kiro_crew.mcp_instructions import COMPUTER as _INSTRUCTIONS
-from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
+from kiro_crew.mcp_shared import ToolReply, call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError, validate_tool_args
 
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "kirocrew-computer"
+#: MIME types the shim forwards as an MCP image block. The capture modules encode
+#: JPEG, and the inline-image budget can re-encode to PNG; nothing else is expected.
+_INLINE_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
 SERVER_VERSION = "1.0.0"
 SESSION_KIND = "mcp_computer"
 
@@ -709,7 +712,7 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     return validate_tool_args(args, schema)
 
 
-def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
+def _call_tool(name: str, raw_args: dict[str, Any]) -> "str | ToolReply":
     """Validate and forward one tool call, with the standard SEL invocation log."""
     return call_tool_with_logging(
         name,
@@ -721,7 +724,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     )
 
 
-def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
+def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | ToolReply":
     """Forward one validated call to the gateway. All decisions happen there."""
     # Re-checked here as well as in ``_list_tools``: kiro-cli caches the tool list
     # for the life of a session, so a session that started while the feature was
@@ -766,7 +769,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     # checked second — a body carrying both would be reporting a real result.
     text = payload.get("text")
     if isinstance(text, str) and text:
-        return text
+        image = _image_block(payload.get("image"))
+        return ToolReply(text=text, images=(image,)) if image else text
     error = payload.get("error")
     if error:
         # The gateway's refusals are already model-facing prose that deliberately
@@ -777,6 +781,24 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         detail = str(error)
         return detail if detail.startswith(ERROR_PREFIX) else f"{ERROR_PREFIX}{detail}"
     return f"{ERROR_PREFIX}the gateway returned no result for '{name}'"
+
+
+def _image_block(raw: Any) -> "tuple[str, str] | None":
+    """The ``(base64 data, MIME type)`` pair of the gateway's ``image`` member, or ``None``.
+
+    The gateway sends one only for a ``computer_get_state`` whose screenshot the
+    operator chose to show the model and that it already fitted to the inline-image
+    budget. Anything malformed is dropped rather than forwarded: the text half still
+    names the spooled path, so a dropped image costs the model one ``fs_read``.
+    """
+    if not isinstance(raw, dict):
+        return None
+    data, mime = raw.get("data"), raw.get("mimeType")
+    if not (isinstance(data, str) and data and isinstance(mime, str)):
+        return None
+    if mime not in _INLINE_IMAGE_MIMES:
+        return None
+    return data, mime
 
 
 def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -800,7 +822,16 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     peer check on whatever IS declared.
     """
     body = json.dumps(
-        {"tool": name, "args": args, "session_key": session_key, "agent": "", "app": ""}
+        {
+            "tool": name,
+            "args": args,
+            "session_key": session_key,
+            "agent": "",
+            "app": "",
+            # This shim can frame an MCP image block, so it says so. Whether one comes
+            # back is the gateway's decision (the operator setting and the harness).
+            "accept_images": True,
+        }
     ).encode()
     headers = {
         "Content-Type": "application/json",

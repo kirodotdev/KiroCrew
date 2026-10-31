@@ -187,6 +187,9 @@ with no row here.
        the kiro-cli / KAS branch), and the card's kiro-family marker
    * - ``ACP_BACKENDS_NATIVE_TODOS``
      - semantic question (``SessionCapabilities.supports_native_todos``)
+   * - ``ACP_BACKENDS_TOOL_RESULT_IMAGES``
+     - pre-session registry query (whether the gateway may attach a Computer Use
+       screenshot to a tool result as an image block)
    * - ``ACP_BACKENDS_LOCAL_CLEAR``
      - pre-session registry query (whether the dashboard answers ``/clear``
        itself rather than handing it to the harness as prompt text)
@@ -1126,6 +1129,7 @@ from kiro_crew.agent_sdk.backends_turns import (  # noqa: E402,F401 - re-exporte
     ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
+    ACP_BACKENDS_TOOL_RESULT_IMAGES,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     escape_user_message_markup,

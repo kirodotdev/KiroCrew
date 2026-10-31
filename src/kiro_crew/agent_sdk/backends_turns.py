@@ -586,6 +586,15 @@ ACP_BACKENDS_KIRO_FAMILY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # it may interpret as an ordinary user request.
 ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends measured to pass an MCP tool-result ``{"type": "image"}`` content block
+# through to the model. The gateway attaches Computer Use screenshots inline only for
+# these, while the keystone's ``inline_screenshots`` is on. Measured with kiro-cli 2.34.0
+# on a real Computer Use screenshot of a random coloured shape: the v3 engine (KAS)
+# named it every time and answered "none" when no image came back, while the v2
+# engine (Kiro) guessed wrong in every run even though it read a small text-free PNG,
+# so Kiro stays out. A harness joins after passing the same screenshot probe.
+ACP_BACKENDS_TOOL_RESULT_IMAGES = frozenset({ACP_BACKEND_KAS})
+
 # Backends where the dashboard answers ``/clear`` itself, by dropping the
 # conversation the way ``reset_conversation`` does, instead of sending it on.
 #

@@ -422,6 +422,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "reader loses by choosing another harness. A wrong membership forwards a "
         "command the acquired provider cannot serve, which is a defect"
     ),
+    "ACP_BACKENDS_TOOL_RESULT_IMAGES": (
+        "whether the gateway may attach a Computer Use screenshot to a tool result as "
+        "an image. It acts only after the operator turns inline_screenshots on in the "
+        "keystone, which is off by default, and a harness outside the set keeps the "
+        "screenshot's file path, so nothing a reader picks a harness by is lost"
+    ),
     "ACP_BACKENDS_LOCAL_CLEAR": (
         "whether the dashboard answers /clear itself or hands it to the harness. "
         "/clear drops the conversation on every harness either way, so a reader "

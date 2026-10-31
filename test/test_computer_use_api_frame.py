@@ -30,9 +30,19 @@ from computer_use_api_helpers import (  # noqa: F401 -- fixtures are requested b
     profiles_dir_fixture,
 )
 
+from kiro_crew.computer_use.types import DispatchResult
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.governance import parse_policy
+
+
+def _as_result(fake):
+    """Wrap a text-returning fake as the ``dispatch_tool_result`` the handler calls."""
+
+    def _wrapped(*args, **kwargs):
+        return DispatchResult(text=fake(*args, **kwargs))
+
+    return _wrapped
 
 
 def _install_ceiling(policy_body) -> None:
@@ -453,7 +463,9 @@ class TestInvokePublishesTheFrameScope:
             seen["scope"] = scope
             return "ok"
 
-        monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", _fake_dispatch)
+        monkeypatch.setattr(
+            "kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(_fake_dispatch)
+        )
         async with _client() as client:
             await client.post(
                 "/api/computer-use/invoke",

@@ -50,6 +50,7 @@ parking a worker for the driver's whole messaging timeout. See
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
@@ -57,6 +58,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.acp_backends import ACP_BACKENDS_TOOL_RESULT_IMAGES
 from kiro_crew.computer_use import enable_state
 from kiro_crew.computer_use import overlay as cursor_overlay
 from kiro_crew.computer_use.screencast import (
@@ -65,6 +67,7 @@ from kiro_crew.computer_use.screencast import (
     frame_scope,
 )
 from kiro_crew.computer_use.types import (
+    INLINE_IMAGE_NOTE,
     MAX_SCREENSHOT_MAX_PX,
     MAX_TEXT_LIMIT,
     MAX_TREE_DEPTH_LIMIT,
@@ -78,12 +81,14 @@ from kiro_crew.computer_use.types import (
     STATE_KEY_ALLOWED_APPS,
     STATE_KEY_ENABLED,
     STATE_KEY_EXTRA_DENIED_APPS,
+    DispatchResult,
     PolicyConfig,
     PolicyStateError,
 )
-from kiro_crew.config.loader import computer_use_state_path, read_config_text
+from kiro_crew.config.loader import KiroCrewConfig, computer_use_state_path, read_config_text
 from kiro_crew.edition_locks import LOCKED_BY_POLICY
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.imaging import downscale_image_block
 
 logger = logging.getLogger(__name__)
 
@@ -894,7 +899,7 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
     # computer-use service and (on macOS) the native driver, and this handler
     # module is imported by the handlers package at gateway boot. Keeping the boot
     # path free of that graph matters for a feature that is off by default.
-    from kiro_crew.computer_use.tools import dispatch_tool
+    from kiro_crew.computer_use.tools import dispatch_tool_result
 
     # AUTHORIZATION, before anything else is parsed: only the loopback machine
     # caller that presented the local secret may dispatch. ``internal_auth`` is
@@ -950,7 +955,7 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
     # operator enabled ``computer_use.cursor_motion`` on macOS.
     cursor_overlay.bind_gateway_loop()
 
-    def _run() -> str:
+    def _run() -> DispatchResult:
         # ``frame_scope`` publishes the calling surface for the duration of this
         # one dispatch so the capture layer's live-view relay can be GOVERNED for
         # the same identity as the tool result. It is thread-local and restored on
@@ -958,7 +963,7 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
         # next call — and a capture that happens with no scope (a CLI probe, or a
         # future caller that bypassed this handler) emits no frame at all.
         with frame_scope(session_key=resolved_session, agent=resolved_agent, app=resolved_app):
-            return dispatch_tool(
+            return dispatch_tool_result(
                 tool,
                 args,
                 session_key=resolved_session,
@@ -985,7 +990,7 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
             )
 
     try:
-        text = await _dispatch_off_loop(_run)
+        result = await _dispatch_off_loop(_run)
     except Exception as exc:
         # The dispatcher is contracted never to raise, so reaching here is a bug —
         # but it must not become a 5xx the shim cannot relay, and the reason must
@@ -999,7 +1004,48 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
             error=type(exc).__name__,
         )
         return web.json_response({"text": ERR_DISPATCH_FAILED})
-    return web.json_response({"text": text})
+    reply: dict[str, Any] = {"text": result.text}
+    if result.image and body.get("accept_images") is True:
+        image = await _dispatch_off_loop(lambda: _inline_image(result))
+        if image is not None:
+            reply = {"text": f"{result.text}\n{INLINE_IMAGE_NOTE}", "image": image}
+    return web.json_response(reply)
+
+
+def _inline_image(result: "DispatchResult") -> "dict[str, str] | None":
+    """The ``{"mimeType", "data"}`` block for *result*'s screenshot, or ``None``.
+
+    Three conditions, all required, so the default is the path-only reply the model
+    gets today:
+
+    * the shim asked for one (``accept_images``), which an older shim never does;
+    * the operator turned ``inline_screenshots`` on in the keystone
+      ``computer_use.json``, which the agent cannot write and no tool argument
+      reaches (``attach_screenshot`` in ``config.json`` is only the default for a
+      call that omits ``screenshot``, so it cannot be the off switch);
+    * the configured harness is in ``ACP_BACKENDS_TOOL_RESULT_IMAGES``, the
+      harnesses measured to pass a tool-result image to the model.
+
+    The bytes are fitted to the inline-image budget first (``imaging``), whether or
+    not the MCP gateway brokers this server: one oversized block in kiro-cli's
+    replayed history would wedge the session. A block that cannot be fitted is
+    dropped and the text keeps its path note. Blocking (config read and a possible
+    re-encode), so it runs off the event loop.
+    """
+    try:
+        if not enable_state.inline_screenshots_enabled():
+            return None
+        cfg = KiroCrewConfig.load()
+        if getattr(cfg.agent, "acp_backend", None) not in ACP_BACKENDS_TOOL_RESULT_IMAGES:
+            return None
+        fitted = downscale_image_block(result.image, result.image_mime)
+    except Exception:
+        logger.warning("computer-use inline image skipped", exc_info=True)
+        return None
+    if fitted is None:
+        return None
+    data, mime = fitted
+    return {"mimeType": mime, "data": base64.b64encode(data).decode("ascii")}
 
 
 # ── POST /api/computer-use/frame — the live-view (PiP) frame ingress ──

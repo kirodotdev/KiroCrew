@@ -7,7 +7,8 @@ only waits returns one instead of blocking the worker) with ``drive_deferred`` a
 one parked call, ``ToolCancelled``, and ``call_tool_with_logging``, which writes every
 call's SEL audit record.
 
-Split out of ``kiro_crew.mcp_shared``, which stays the import path and the patch target: every
+Split out of ``kiro_crew.mcp_shared``, which stays the
+import path and the patch target: every
 name here is reached as ``kiro_crew.mcp_shared.<name>``, and a patch through that facade
 reaches this module (``kiro_crew._facade_mirror``). Nothing here imports the facade.
 New tool-call work goes here.
@@ -21,7 +22,7 @@ import json
 import queue
 import threading
 import time
-from typing import Any, Callable, Optional, overload
+from typing import Any, Callable, NamedTuple, Optional, overload
 
 from kiro_crew.mcp_caller import INFLIGHT_CAPABILITY_KEY, CallerContext
 from kiro_crew.sel import sel
@@ -111,6 +112,21 @@ def _remember_cancelled_id(
     while len(order) > cap:
         if not _evict_oldest_evictable(cancelled_ids, order, protected):
             break
+
+
+class ToolReply(NamedTuple):
+    """A tool result carrying image content blocks beside its text.
+
+    Returned by a handler instead of a plain string when it has an image to hand
+    the client. ``text`` is what a string result would have been: it is what the
+    SEL audit classifies (an ``Error:`` prefix still means failed) and what every
+    text-only reader sees. ``images`` holds ``(base64 data, MIME type)`` pairs the
+    frame builder appends as ``{"type": "image"}`` blocks after the text. The
+    handler is responsible for having fitted them to the inline-image budget.
+    """
+
+    text: str
+    images: tuple[tuple[str, str], ...] = ()
 
 
 class DeferredTool:
@@ -425,6 +441,20 @@ def call_tool_with_logging(
 ) -> str: ...
 
 
+# A handler returning only ``str`` matches both this and the ``DeferredTool``
+# overload below; the first overload catches it before either, so the overlap mypy
+# reports is unreachable.
+@overload
+def call_tool_with_logging(  # type: ignore[overload-overlap]
+    name: str,
+    raw_args: dict[str, Any],
+    validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
+    inner_fn: Callable[[str, dict[str, Any]], "str | ToolReply"],
+    session_key: str,
+    downstream_service: str,
+) -> "str | ToolReply": ...
+
+
 @overload
 def call_tool_with_logging(
     name: str,
@@ -440,10 +470,10 @@ def call_tool_with_logging(
     name: str,
     raw_args: dict[str, Any],
     validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
-    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool | ToolReply"],
     session_key: str,
     downstream_service: str,
-) -> "str | DeferredTool":
+) -> "str | DeferredTool | ToolReply":
     """Validate args, call inner tool function, and log the invocation.
 
     A :class:`DeferredTool` the handler returns is passed through with its
@@ -512,7 +542,7 @@ def call_tool_with_logging(
         # The call has not finished: audit it when its terminal step runs,
         # whoever drives the steps (the dispatch loop or drive_deferred).
         return _AuditedDeferred(result, _audit)
-    _audit(result)
+    _audit(result.text if isinstance(result, ToolReply) else result)
     return result
 
 

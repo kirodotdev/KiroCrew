@@ -76,6 +76,7 @@ from kiro_crew.computer_use.types import (
     TOOL_SCROLL,
     TOOL_SET_VALUE,
     TOOL_TYPE_TEXT,
+    DispatchResult,
 )
 from kiro_crew.testing.fake_computer_use import (
     FAKE_CREDENTIAL_FIXTURE,
@@ -85,6 +86,15 @@ from kiro_crew.testing.fake_computer_use import (
     FakeComputerUseBackend,
 )
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError
+
+
+def _as_result(fake):
+    """Wrap a text-returning fake as the ``dispatch_tool_result`` the handler calls."""
+
+    def _wrapped(*args, **kwargs):
+        return DispatchResult(text=fake(*args, **kwargs))
+
+    return _wrapped
 
 
 @pytest.fixture
@@ -542,7 +552,9 @@ async def test_gateway_dispatch_runs_on_the_bounded_subprocess_pool(
             seen.append(executor)
             return loop.run_in_executor(executor, fn, *args)
 
-    monkeypatch.setattr("kiro_crew.computer_use.tools.dispatch_tool", lambda *a, **k: "ok")
+    monkeypatch.setattr(
+        "kiro_crew.computer_use.tools.dispatch_tool_result", _as_result(lambda *a, **k: "ok")
+    )
     monkeypatch.setattr(cu_api.asyncio, "get_running_loop", _RecordingLoop)
 
     request = _InvokeRequest({"tool": TOOL_LIST_APPS, "args": {}, "session_key": _SESSION})
