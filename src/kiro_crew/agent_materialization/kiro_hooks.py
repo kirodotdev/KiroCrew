@@ -1280,6 +1280,81 @@ def _drop_refused_kiro_hook_events(hooks: dict) -> dict:
     return kept
 
 
+def resolve_kiro_hooks_dir(agent_cfg: dict, *, audit: bool = True) -> Path:
+    """The ``~/.kiro/hooks`` directory for *agent_cfg*, HOME-contained.
+
+    ``agent.kiro_hooks_dir`` when set and safe, else the default
+    ``~/.kiro/hooks``. ``config.json`` is LLM-writable, so a custom override is
+    required to resolve UNDER the user's HOME (not equal to it) and outside a
+    sensitive location; any failure falls back to the default rather than turning
+    the directory off. Shared by the ``*.sh`` script autoimport and the standalone
+    ``*.json`` hook-file loader
+    (:func:`kiro_crew.agent_sdk.spec_hooks.user_hook_files`) so the two agree on
+    exactly one directory and its containment rule.
+
+    *audit* controls whether a rejected override writes the WARNING and the SEL
+    rejection event. The install path leaves it ``True`` (the rejection is logged
+    and audited once, where it happens). The per-turn resolution
+    (:func:`kiro_crew.agent.resolved_kiro_hooks_dir`) passes ``False``: it runs on
+    every KAS turn, so auditing there would fill the log and the SEL trail with the
+    same rejection on each turn. The fallback itself is unchanged -- only the
+    reporting is suppressed.
+    """
+    hooks_dir = agent_mod._DEFAULT_KIRO_HOOKS_DIR
+    if not isinstance(agent_cfg, dict):
+        return hooks_dir
+    custom_dir = agent_cfg.get("kiro_hooks_dir")
+    if not (isinstance(custom_dir, str) and custom_dir):
+        return hooks_dir
+    # config.json is LLM-writable; a malicious override could point hooks_dir at
+    # /tmp, a world-writable mount, or ~/Downloads. Require the resolved path to
+    # live under the user's HOME and not match a sensitive location. On any
+    # failure, log + SEL audit and fall back to the default (~/.kiro/hooks)
+    # rather than turning the directory off entirely - the safe default is still
+    # available.
+    requested = Path(os.path.expanduser(custom_dir))
+    try:
+        resolved = requested.resolve()
+        home = Path.home().resolve()
+    except (OSError, ValueError):
+        # OSError: ENAMETOOLONG, ELOOP (symlink loop), EACCES.
+        # ValueError: Path() / resolve() reject strings with null bytes
+        # (``"\x00"``) or similar malformed Unicode. An LLM-writable
+        # ``kiro_hooks_dir: "\x00"`` would otherwise propagate ValueError up
+        # through install_agent() and crash agent bootstrap (denial of service).
+        resolved = None
+        home = None
+    if (
+        resolved is None
+        or home is None
+        # Strict containment: require ``resolved`` to be *under* HOME, not equal
+        # to it. ``~`` alone would otherwise scan the entire home directory,
+        # auto-registering anything a user (or attacker) drops anywhere under
+        # ``$HOME``. ``Path.parents`` of e.g. ``/srv/op`` is ``(/, /srv)`` and
+        # does NOT include ``/srv/op`` itself, so a bare ``home not in parents``
+        # rejects ``resolved == home``.
+        or home not in resolved.parents
+        or agent_mod.is_sensitive_path(str(resolved))
+    ):
+        if audit:
+            agent_mod.logger.warning(
+                "kiro_hooks_dir %s rejected (must resolve under %s and not be "
+                "sensitive), falling back to %s",
+                agent_mod._hook_diagnostic(custom_dir),
+                home,
+                agent_mod._DEFAULT_KIRO_HOOKS_DIR,
+            )
+            agent_mod._sel_hook_rejected(
+                "autoimport", str(requested), "kiro_hooks_dir outside HOME or sensitive"
+            )
+        return agent_mod._DEFAULT_KIRO_HOOKS_DIR
+    # Return the already-resolved path, not the unresolved ``requested``. Keeping
+    # ``requested`` would leave a symlink-swap window: a path component could be
+    # swapped between this resolve() and a later one, bypassing the HOME
+    # containment check just performed.
+    return resolved
+
+
 def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     """Merge user-defined kiro_hooks from kirocrew config into *config* (additive).
 
@@ -1309,61 +1384,7 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
     if isinstance(agent_cfg, dict):
         if "kiro_hooks_autoimport" in agent_cfg:
             autoimport_enabled = bool(agent_cfg.get("kiro_hooks_autoimport"))
-        custom_dir = agent_cfg.get("kiro_hooks_dir")
-        if isinstance(custom_dir, str) and custom_dir:
-            # config.json is LLM-writable; a malicious override could point
-            # hooks_dir at /tmp, a world-writable mount, or ~/Downloads.
-            # Require the resolved path to live under the user's HOME and
-            # not match a sensitive location.  On any failure, log + SEL
-            # audit and fall back to the default (~/.kiro/hooks) rather
-            # than turning autoimport off entirely - the safe default is
-            # still available.
-            requested = Path(os.path.expanduser(custom_dir))
-            try:
-                resolved = requested.resolve()
-                home = Path.home().resolve()
-            except (OSError, ValueError):
-                # OSError: ENAMETOOLONG, ELOOP (symlink loop), EACCES.
-                # ValueError: Path() / resolve() reject strings with null
-                # bytes (``"\x00"``) or similar malformed Unicode.  An
-                # LLM-writable ``kiro_hooks_dir: "\x00"`` would otherwise
-                # propagate ValueError up through install_agent() and
-                # crash agent bootstrap (denial of service).
-                resolved = None
-                home = None
-            if (
-                resolved is None
-                or home is None
-                # Strict containment: require ``resolved`` to be *under*
-                # HOME, not equal to it.  ``~`` alone would otherwise scan
-                # the entire home directory for executable ``*.sh`` files,
-                # auto-registering anything a user (or attacker) drops
-                # anywhere under ``$HOME``.  ``Path.parents`` of e.g.
-                # ``/srv/op`` is ``(/, /srv)`` and does NOT include
-                # ``/srv/op`` itself, so a bare ``home not in parents``
-                # rejects ``resolved == home``.
-                or home not in resolved.parents
-                or agent_mod.is_sensitive_path(str(resolved))
-            ):
-                agent_mod.logger.warning(
-                    "kiro_hooks_autoimport: kiro_hooks_dir %s rejected "
-                    "(must resolve under %s and not be sensitive), "
-                    "falling back to %s",
-                    agent_mod._hook_diagnostic(custom_dir),
-                    home,
-                    agent_mod._DEFAULT_KIRO_HOOKS_DIR,
-                )
-                agent_mod._sel_hook_rejected(
-                    "autoimport", str(requested), "kiro_hooks_dir outside HOME or sensitive"
-                )
-            else:
-                # Store the already-resolved path, not the unresolved
-                # ``requested``.  Keeping ``requested`` would leave a
-                # symlink-swap window: a path component could be swapped
-                # between this resolve() and the one inside
-                # _autoimport_kiro_hooks, bypassing the HOME containment
-                # check we just performed.
-                hooks_dir = resolved
+        hooks_dir = resolve_kiro_hooks_dir(agent_cfg)
 
     # Both spec shapes are accepted. The object form goes to the merge below
     # exactly as it is read: that merge is the object form's own validator and
