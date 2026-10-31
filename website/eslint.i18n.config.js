@@ -117,6 +117,18 @@ export default [
       // Parses the ask_question tool result that mcp_tools/control.py writes: wire
       // format matched verbatim, never shown. Keep it parse-only; copy goes in AskAnswersCard.tsx.
       'src/utils/askQuestionTool.ts',
+      // The gateway's sub-agent feed text, matched and written byte-for-byte
+      // against `native_cards.py` / `slot_directory.py` (the truncation line, the
+      // call-bound notice, the `→ title` line over a call's output) so a reconnect
+      // snapshot can be reconciled into the card's held feed. Never shown;
+      // translating one breaks the match. Same exact-path idiom as
+      // `askQuestionTool.ts` above: the module may contain ONLY wire text, and
+      // every string a person reads is rendered by `SubagentTranscript.tsx` and
+      // the subagent reducers through `i18nT`, which stay fully covered.
+      //
+      // Stated as a false-negative class, per this file's convention: copy added
+      // to this module will not be reported. Keep it wire-only.
+      'src/store/chat/subagentFeedWire.ts',
       // Per-shell env-var export command builders for SettingRef's env popover:
       // every string is CLI syntax handed to a terminal (`export`, `$env:`,
       // `set`, `=1`), never user-visible copy — translating a fragment would

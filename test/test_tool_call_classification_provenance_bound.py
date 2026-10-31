@@ -779,9 +779,11 @@ class TestTheProvenanceCachesShareOneBound:
 
     def test_a_native_child_s_terminal_releases_its_own_rows(self) -> None:
         """A child-routed frame writes the shared stores under the child's scope
-        and re-tags only calls and text, so its terminal never reaches the main
-        route's release: the child arm releases itself, and only its own row."""
-        from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY
+        and re-tags everything as subagent activity, so its terminal never
+        reaches the main route's release: the child arm releases itself, and
+        only its own row. The terminal is still re-tagged (as the call's
+        result) -- the release is a cache side effect, not a dropped event."""
+        from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, SUBAGENT_ACTIVITY_TOOL_RESULT
 
         handle, _ = self._handle()
         handle._handle_update(self._frame(self._call(0, rawInput={"targetFile": "/tmp/a"})))
@@ -804,7 +806,10 @@ class TestTheProvenanceCachesShareOneBound:
                 },
             },
         )
-        assert handle._handle_update(settled) == []
+        terminal = handle._handle_update(settled)
+        assert [(ev.kind, ev.activity, ev.tool_call_id) for ev in terminal] == [
+            (EVENT_SUBAGENT_ACTIVITY, SUBAGENT_ACTIVITY_TOOL_RESULT, "tc-7")
+        ]
         assert "child-1|tc-7" not in handle._tool_call_raw_params
         assert "child-1|tc-7" not in handle._tool_call_is_shell
         assert "child-1|tc-7" not in handle._tool_call_kind

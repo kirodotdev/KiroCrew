@@ -431,6 +431,9 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'subagent_queued', data: { slot: ACTIVE, queued: 2, reason: 'memory' } },
     { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'partial' } },
     { type: 'subagent_tool', data: { slot: ACTIVE, id: 'sa-1', tool: 'read', turns: 1 } },
+    { type: 'subagent_tool_result', data: { slot: ACTIVE, id: 'sa-1', tool_call_id: 'tc-1', output: 'body', status: 'completed' } },
+    { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'mid' } },
+    { type: 'subagent_thinking', data: { slot: ACTIVE, id: 'sa-1', text: 'hmm' } },
     { type: 'subagent_stalled', data: { slot: ACTIVE, id: 'sa-1', stalled: true } },
     { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'more' } },
     { type: 'subagent_retrying', data: { slot: ACTIVE, id: 'sa-1', attempt: 2 } },
@@ -438,6 +441,12 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'subagent_recovering', data: { slot: ACTIVE, id: 'sa-1' } },
     { type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-1', text: 'last' } },
     { type: 'subagent_done', data: { slot: ACTIVE, id: 'sa-1', elapsed: 3, credits: 1.5 } },
+  ]],
+  ['subagent result-first row lands after the reasoning before it', [], [
+    { type: 'subagent_spawn', data: { slot: ACTIVE, id: 'sa-1', task: 't', agent: 'a' } },
+    { type: 'subagent_thinking', data: { slot: ACTIVE, id: 'sa-1', text: 'why' } },
+    { type: 'subagent_tool_result', data: { slot: ACTIVE, id: 'sa-1', tool_call_id: 'tc-9', output: 'late', status: 'completed' } },
+    { type: 'subagent_tool', data: { slot: ACTIVE, id: 'sa-1', tool: 'shell', tool_call_id: 'tc-9' } },
   ]],
   ['subagent snapshot and batches', [{ type: 'subagent_chunk', data: { slot: ACTIVE, id: 'sa-2', text: 'buffered' } }], [
     { type: 'subagent_snapshot', data: { slot: ACTIVE, id: 'sa-2', task: 't', agent: 'a', streaming: 'all', last_tool: '', started: 1 } },
@@ -1306,17 +1315,40 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "subagent lifecycle": [
     'action chat/sseSubagentSpawn {"slot":"slot-a","id":"sa-1","task":"t","agent":"a"}',
     'action chat/sseSubagentQueued {"slot":"slot-a","queued":2,"reason":"memory"}',
-    'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"read","turns":1}',
-    'action chat/sseSubagentStalled {"slot":"slot-a","id":"sa-1","stalled":true}',
+    // A tool or thinking frame lands the text buffered before it first, so the
+    // card's transcript keeps the order the agent produced.
     'cancel-frame 1',
-    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"partialmore"}],"recency":[]}',
-    'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1","attempt":2}',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"partial"}],"recency":[]}',
+    'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"read","turns":1}',
+    'action chat/sseSubagentToolResult {"slot":"slot-a","id":"sa-1","tool_call_id":"tc-1","output":"body","status":"completed"}',
+    // Reasoning rides the same coalesced buffer as the answer text. A run of
+    // the other kind is landed the moment the kind changes (no frame to cancel:
+    // the pending flush stays armed for the new run), so "mid" lands when the
+    // reasoning starts and "hmm" when the text resumes -- the wire's order.
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"mid"}]}',
+    'action chat/sseSubagentStalled {"slot":"slot-a","id":"sa-1","stalled":true}',
+    'action chat/sseSubagentBatchChunks {"chunks":[{"id":"sa-1","slot":"slot-a","text":"hmm","kind":"thinking"}]}',
     'cancel-frame 2',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"more"}],"recency":[]}',
+    'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1","attempt":2}',
+    'cancel-frame 3',
     'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"again"}],"recency":[]}',
     'action chat/sseSubagentRetrying {"slot":"slot-a","id":"sa-1"}',
-    'cancel-frame 3',
+    'cancel-frame 4',
     'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"last"}],"recency":[]}',
     'action chat/sseSubagentDone {"slot":"slot-a","id":"sa-1","elapsed":3,"credits":1.5}',
+  ],
+  "subagent result-first row lands after the reasoning before it": [
+    'action chat/sseSubagentSpawn {"slot":"slot-a","id":"sa-1","task":"t","agent":"a"}',
+    // A result whose call has no row yet creates one, so it lands the reasoning
+    // buffered before it first, as the tool frame does (cancelling the armed
+    // flush); the refinement that names the row follows. Before, the row was
+    // pushed above the reasoning it followed, and the refinement's flush then
+    // landed that reasoning below the row.
+    'cancel-frame 1',
+    'action stream/flush {"slots":[],"subagents":[{"id":"sa-1","slot":"slot-a","text":"why","kind":"thinking"}],"recency":[]}',
+    'action chat/sseSubagentToolResult {"slot":"slot-a","id":"sa-1","tool_call_id":"tc-9","output":"late","status":"completed"}',
+    'action chat/sseSubagentTool {"slot":"slot-a","id":"sa-1","tool":"shell","tool_call_id":"tc-9"}',
   ],
   "subagent snapshot and batches": [
     'action chat/sseSubagentSnapshot {"slot":"slot-a","id":"sa-2","task":"t","agent":"a","streaming":"all","last_tool":"","started":1}',

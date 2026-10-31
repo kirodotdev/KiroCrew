@@ -140,6 +140,15 @@ EVENT_MCP_SERVER_INITIALIZED = "mcp_server_initialized"
 EVENT_MCP_SERVER_INIT_FAILURE = "mcp_server_init_failure"
 EVENT_SUBAGENT_LIST = "subagent_list"
 EVENT_SUBAGENT_ACTIVITY = "subagent_activity"
+#: ``AcpEvent.activity`` values for an ``EVENT_SUBAGENT_ACTIVITY``. Empty means
+#: one of the two shapes the event has always carried: a child's tool call
+#: (``tool_call_id`` + ``title``) or its streamed text (``text``). These name
+#: the two further shapes a child-routed frame can take, so a consumer can tell
+#: a call's RESULT from the call itself and the child's REASONING from its
+#: answer. Both reach the Subagents panel as their own WS frames
+#: (``subagent_tool_result`` / ``subagent_thinking``).
+SUBAGENT_ACTIVITY_THINKING = "thinking"
+SUBAGENT_ACTIVITY_TOOL_RESULT = "tool_result"
 EVENT_STEER_QUEUED = "steer_queued"
 EVENT_STEER_CONSUMED = "steer_consumed"
 EVENT_STEER_CLEARED = "steer_cleared"
@@ -1072,6 +1081,12 @@ class AcpEvent:
     # Owning sub-agent session id (EVENT_SUBAGENT_ACTIVITY) — ties a tool call
     # to a specific native sub-agent card.
     sub_session_id: str = ""
+    #: Which shape of child activity an ``EVENT_SUBAGENT_ACTIVITY`` is: empty for
+    #: a tool call or streamed text, ``SUBAGENT_ACTIVITY_THINKING`` for a
+    #: reasoning chunk (``text``), ``SUBAGENT_ACTIVITY_TOOL_RESULT`` for a call's
+    #: result (``tool_call_id`` with ``tool_output`` / ``tool_status`` /
+    #: ``tool_final``).
+    activity: str = ""
     # Agent TODO-list snapshot (EVENT_TODO_UPDATE) — normalised
     # {description, tasks:[{id,text,completed}]}. Every todo_list command
     # returns the WHOLE list, so this is a full snapshot, never a delta.

@@ -11546,7 +11546,6 @@
         "model_label": "মডেল: {{model}}",
         "model_downgraded": "অনুরোধ {{requested}}, ব্যবহৃত {{resolved}}",
         "model_effective": "বর্তমানে {{model}} তে চলছে (ব্যাকএন্ড মডেল নির্বাচন করে)",
-        "tool_calls": "টুল কল",
         "tool_calls_not_listed_one": "আগের {{count}}টি কল দেখানো হয়নি",
         "tool_calls_not_listed_other": "আগের {{count}}টি কল দেখানো হয়নি",
         "waiting_for_output": "আউটপুটের অপেক্ষায়…",
@@ -11563,7 +11562,15 @@
         "artifacts_load_failed": "এই সেশনের আর্টিফ্যাক্ট লোড করা যায়নি",
         "library_load_failed": "আর্টিফ্যাক্ট লাইব্রেরি লোড করা যায়নি",
         "artifact_save_failed": "আর্টিফ্যাক্ট সংরক্ষণ করা যায়নি",
-        "workflow_runs_load_failed": "ওয়ার্কফ্লো রান লোড করা যায়নি"
+        "workflow_runs_load_failed": "ওয়ার্কফ্লো রান লোড করা যায়নি",
+        "live_activity": "লাইভ কার্যকলাপ",
+        "full_result": "সম্পূর্ণ ফলাফল",
+        "tool_call_failed": "টুল কল ব্যর্থ হয়েছে",
+        "tool_call_failed_no_output": "কোনো আউটপুট ফেরত দেওয়া হয়নি।",
+        "ask_agent_about_failed_call": "এই ব্যর্থ কলটি সম্পর্কে এজেন্টকে জিজ্ঞাসা করো",
+        "untitled_call": "নামহীন টুল কল",
+        "transcript_steps_not_listed_one": "আগের {{count}}টি ধাপ দেখানো হয়নি",
+        "transcript_steps_not_listed_other": "আগের {{count}}টি ধাপ দেখানো হয়নি"
       },
       "assistantMessage": {
         "applied_to_tasks": "টাস্কে প্রয়োগ করা হয়েছে",

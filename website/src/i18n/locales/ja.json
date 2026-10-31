@@ -11376,7 +11376,6 @@
         "model_label": "モデル: {{model}}",
         "model_downgraded": "要求 {{requested}}、実行 {{resolved}}",
         "model_effective": "{{model}} で実行中（バックエンドがモデルを選択）",
-        "tool_calls": "ツール呼び出し",
         "tool_calls_not_listed_other": "以前の {{count}} 件の呼び出しは表示されていません",
         "waiting_for_output": "出力待機中…",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始を待機中 — 同時実行制限の後ろのキューに入っています",
@@ -11392,7 +11391,14 @@
         "artifacts_load_failed": "このセッションのアーティファクトを読み込めませんでした",
         "library_load_failed": "アーティファクトライブラリを読み込めませんでした",
         "artifact_save_failed": "アーティファクトを保存できませんでした",
-        "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
+        "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした",
+        "live_activity": "ライブアクティビティ",
+        "full_result": "結果（全文）",
+        "tool_call_failed": "ツール呼び出しが失敗しました",
+        "tool_call_failed_no_output": "出力は返されませんでした。",
+        "ask_agent_about_failed_call": "この失敗した呼び出しについてエージェントに質問",
+        "untitled_call": "名前のないツール呼び出し",
+        "transcript_steps_not_listed_other": "以前の {{count}} 件のステップは表示されていません"
       },
       "assistantMessage": {
         "applied_to_tasks": "タスクに適用済み",

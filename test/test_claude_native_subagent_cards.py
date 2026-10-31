@@ -856,4 +856,6 @@ async def test_a_stop_pressed_while_a_child_replies_keeps_the_reply_on_its_card(
     events = await _turn(client, _pong_turn(), stop_reason="cancelled")
     record = await run_turn(TurnScript(events=events, provider=_over(client)))
     [result] = _done_results(record)
-    assert result.endswith("\npong")
+    # The call the child made before replying is named in the feed by its
+    # result row, and no result arrives before the Stop: the reply stands alone.
+    assert result.endswith("pong")

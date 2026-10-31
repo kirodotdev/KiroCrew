@@ -575,6 +575,550 @@ class TestChatRunnerDirectiveSeam:
         assert "sub-agent" in note
 
     @pytest.mark.asyncio
+    async def test_a_childs_refused_directive_reads_as_not_applied_on_its_card_too(
+        self, tmp_path, monkeypatch
+    ):
+        """The gate's refusal is written onto the parent's tool row (above). The
+        child's CARD takes the same result frame on a wire that copies a child's
+        calls onto the parent stream, and must say the same: no marker, the
+        not-applied note. Before this the card took the frame's raw output --
+        the marker, its payload and the tool's confirmation -- so the card read
+        as if the refused directive had taken effect."""
+        from kiro_crew.dashboard import chat_runner
+
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-card")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        events = [
+            AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=[
+                    {
+                        "sessionId": "sub-1",
+                        "role": "tester",
+                        "initialQuery": "do the work",
+                        "status": {"type": "working"},
+                    }
+                ],
+            ),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-1", tool_call_id="tc-nat"),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-nat",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-nat",
+                tool_output=marker,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        card_frames = [
+            (c.args[0], c.args[1])
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] in ("subagent_chunk", "subagent_tool_result")
+        ]
+        assert all(
+            session_directive._SENTINEL not in str(f.get("text", "")) + str(f.get("output", ""))
+            for _, f in card_frames
+        ), f"the marker reached the card: {card_frames!r}"
+        results = [f for kind, f in card_frames if kind == "subagent_tool_result" and "output" in f]
+        assert [r["output"] for r in results] == [
+            session_directive.strip_marker(marker) + chat_runner._NATIVE_NOT_APPLIED_NOTE
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_flat_copy_of_a_childs_result_redacts_a_credential_split_across_frames(
+        self, tmp_path, monkeypatch
+    ):
+        """A wire that copies a child's calls onto the parent stream delivers the
+        child's result as PARENT-tagged frames too. Those take the child path's
+        terminal rule and per-call rolling redactor: a bearer prefix and its
+        token in separate frames, redacted alone and published, would cross the
+        WebSocket in halves that neither redaction sees."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("flatsplit")
+        slot._titled = True
+        token = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8"
+        events = [
+            AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=[
+                    {
+                        "sessionId": "sub-1",
+                        "role": "tester",
+                        "initialQuery": "do the work",
+                        "status": {"type": "working"},
+                    }
+                ],
+            ),
+            AcpEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sub-1",
+                tool_call_id="tc-nat",
+                title="Running: curl -v",
+            ),
+            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="tc-nat", title="Running: curl -v"),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="tc-nat", tool_output="Authorization: Bearer "
+            ),
+            AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-nat", tool_output=token),
+            AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-nat", tool_output="\nok\n"),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-nat",
+                tool_status="completed",
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        await _drive(state, slot, events, monkeypatch, applied_result=None)
+        card_frames = [
+            (c.args[0], c.args[1])
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] in ("subagent_chunk", "subagent_tool_result")
+        ]
+        assert all(
+            token not in str(f.get("text", "")) and token not in str(f.get("output", ""))
+            for _, f in card_frames
+        ), f"a bare token crossed the wire: {card_frames!r}"
+        results = [f for kind, f in card_frames if kind == "subagent_tool_result" and "output" in f]
+        assert [r["output"] for r in results] == ["[REDACTED: credential]\nok\n"]
+
+    @pytest.mark.asyncio
+    async def test_native_subagent_directive_is_refused_for_an_uncarded_child(
+        self, tmp_path, monkeypatch
+    ):
+        """The refusal does not depend on the child having a card. kiro-cli
+        sometimes announces a child with an empty ``initialQuery`` and
+        ``sessionName``; the roster sync records it done at once and never
+        cards it. Its calls are still the CHILD's: the child-tagged activity
+        frame must map the id even though nothing is projected, or the flat
+        result arm claims the child's parked directive for the parent."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-uncarded")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        events = [
+            AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=[
+                    {
+                        "sessionId": "sub-2",
+                        "role": "tester",
+                        "initialQuery": "",
+                        "sessionName": "",
+                        "status": {"type": "working"},
+                    }
+                ],
+            ),
+            AcpEvent(
+                kind=EVENT_SUBAGENT_ACTIVITY,
+                sub_session_id="sub-2",
+                tool_call_id="tc-nat-2",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="tc-nat-2",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id="tc-nat-2",
+                tool_output=marker,
+                tool_final=True,
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        outputs = _tool_result_outputs(state)
+        note = next((o for o in outputs if "[Not applied:" in o), "")
+        assert note, f"expected a not-applied note in {outputs!r}"
+        assert "sub-agent" in note
+
+    @pytest.mark.asyncio
+    async def test_a_childs_call_past_the_bound_is_still_refused_as_a_childs(
+        self, tmp_path, monkeypatch
+    ):
+        """Past ``NATIVE_SUBAGENT_CALLS_MAX`` a child's call holds no row in the
+        attribution map, but it is still a child's: ``_native_child_tc`` takes
+        every child-tagged call id before admission, so the directive gate
+        refuses its flat copy on a wire that copies child calls onto the parent
+        stream, with the ordinary note -- no bound was crossed by the parent,
+        and the note does not claim one. The call bound is lowered for the test
+        so the turn can cross it."""
+        from kiro_crew.dashboard import chat_runner, native_subagent_cards
+
+        monkeypatch.setattr(native_subagent_cards, "NATIVE_SUBAGENT_CALLS_MAX", 2)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-bound")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        roster = AcpEvent(
+            kind=EVENT_SUBAGENT_LIST,
+            subagents=[
+                {
+                    "sessionId": "sub-3",
+                    "role": "tester",
+                    "initialQuery": "run the checks",
+                    "sessionName": "child",
+                    "status": {"type": "working"},
+                }
+            ],
+        )
+        events = [
+            roster,
+            # Two admitted calls fill the bound; the first one's flat copy on the
+            # parent stream marks this wire as one that copies child calls.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-1"),
+            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="c-1", title="ls", tool_name="shell"),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-2"),
+            # The third call is refused a row (bound = 2) ...
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-3"),
+            # ... and its flat copy, a directive call, carries no attribution.
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="c-3",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="c-3", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        outputs = _tool_result_outputs(state)
+        note = next((o for o in outputs if "[Not applied:" in o), "")
+        assert note, f"expected a not-applied note in {outputs!r}"
+        assert chat_runner._NATIVE_NOT_APPLIED_NOTE.strip() in note
+        assert "more tool calls" not in note
+
+    @pytest.mark.asyncio
+    async def test_the_audit_row_of_a_childs_directive_denied_past_the_bound_reads_like_any_child_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        """Both denials are a child's refusals, the one past the bound included:
+        the id is in ``_native_child_tc`` whether or not it holds a row, so the
+        SEL row carries no ``error``. A row naming a bound here would report a
+        truncation that never reached the parent."""
+        from kiro_crew.dashboard import chat_runner, native_subagent_cards
+
+        monkeypatch.setattr(native_subagent_cards, "NATIVE_SUBAGENT_CALLS_MAX", 2)
+        rows: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_tool_invocation = lambda **kw: rows.append(kw)
+        monkeypatch.setattr(chat_runner, "sel", lambda: fake_sel)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-bound-audit")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        roster = AcpEvent(
+            kind=EVENT_SUBAGENT_LIST,
+            subagents=[
+                {
+                    "sessionId": "sub-3",
+                    "role": "tester",
+                    "initialQuery": "run the checks",
+                    "sessionName": "child",
+                    "status": {"type": "working"},
+                }
+            ],
+        )
+        events = [
+            roster,
+            # An admitted call whose flat copy is a directive: an ordinary child
+            # refusal, with a row to attribute it by.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-1"),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="c-1",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="c-1", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-2"),
+            # The third call is refused a row (bound = 2); its flat copy, a
+            # directive, is refused as the child's all the same.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-3", tool_call_id="c-3"),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="c-3",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="c-3", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        denied = [
+            r for r in rows if r.get("source") == "mcp-directive" and r.get("outcome") == "denied"
+        ]
+        assert len(denied) == 2, denied
+        assert not denied[0].get("error"), denied[0]
+        assert not denied[1].get("error"), denied[1]
+
+    @pytest.mark.asyncio
+    async def test_a_closed_childs_call_past_the_bound_is_refused_on_a_copying_wire(
+        self, tmp_path, monkeypatch
+    ):
+        """A child the roster already closed (or one announced with an empty
+        task, which is done at once and never carded) still makes calls, and
+        one past the bound holds no row. Its id is a child's all the same
+        (``_native_child_tc`` is filled before admission and the record's
+        closing does not empty it), so the flat copy that carries its directive
+        is refused with the ordinary note."""
+        from kiro_crew.dashboard import chat_runner, native_subagent_cards
+
+        monkeypatch.setattr(native_subagent_cards, "NATIVE_SUBAGENT_CALLS_MAX", 2)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-bound-closed-child")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+
+        def roster(status: str) -> AcpEvent:
+            return AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=[
+                    {
+                        "sessionId": "sub-9",
+                        "role": "tester",
+                        "initialQuery": "run the checks",
+                        "sessionName": "child",
+                        "status": {"type": status},
+                    }
+                ],
+            )
+
+        events = [
+            roster("working"),
+            # Two admitted calls fill the bound; the first one's flat copy marks
+            # this wire as one that copies child calls onto the parent stream.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-9", tool_call_id="c-1"),
+            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="c-1", title="ls", tool_name="shell"),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-9", tool_call_id="c-2"),
+            # The roster closes the child before its last call arrives ...
+            roster("terminated"),
+            # ... which is refused a row (bound = 2) on a closed record ...
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-9", tool_call_id="c-3"),
+            # ... and its flat copy, a directive call, carries no attribution.
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="c-3",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="c-3", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        outputs = _tool_result_outputs(state)
+        note = next((o for o in outputs if "[Not applied:" in o), "")
+        assert note, f"expected a not-applied note in {outputs!r}"
+        assert chat_runner._NATIVE_NOT_APPLIED_NOTE.strip() in note
+
+    @pytest.mark.asyncio
+    async def test_a_childs_crossing_of_the_bound_does_not_cost_the_parent_its_own_directive_on_a_copying_wire(
+        self, tmp_path, monkeypatch
+    ):
+        """On a wire that copies a child's calls onto the parent stream, a
+        child crossing the bound must not refuse the parent's own directives
+        for the rest of the turn: every child call id is in
+        ``_native_child_tc`` before admission, so an id that never arrived
+        child-tagged is the parent's, bound or no bound. An earlier revision
+        failed closed here and refused the parent's title, autonudge and
+        monitor directives once any child had a refused call."""
+        from kiro_crew.dashboard import native_subagent_cards
+
+        monkeypatch.setattr(native_subagent_cards, "NATIVE_SUBAGENT_CALLS_MAX", 2)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-bound-copying-wire-parent")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        roster = AcpEvent(
+            kind=EVENT_SUBAGENT_LIST,
+            subagents=[
+                {
+                    "sessionId": "sub-5",
+                    "role": "tester",
+                    "initialQuery": "run the checks",
+                    "sessionName": "child",
+                    "status": {"type": "working"},
+                }
+            ],
+        )
+        events = [
+            roster,
+            # Two admitted calls fill the bound; the first one's flat copy on the
+            # parent stream marks this wire as one that copies child calls.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-5", tool_call_id="c-1"),
+            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="c-1", title="ls", tool_name="shell"),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-5", tool_call_id="c-2"),
+            # The third call is refused a row (bound = 2).
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-5", tool_call_id="c-3"),
+            # The parent's own directive call: no child-tagged frame named it.
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="p-1",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="p-1", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_called_once()
+        assert not any("[Not applied:" in o for o in _tool_result_outputs(state))
+
+    @pytest.mark.asyncio
+    async def test_an_untracked_childs_directive_is_refused_with_the_ordinary_note_and_no_bound_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """A child the roster never listed (past the roster cap, or its spawn
+        link refused) has no record, so its call is never admitted and never
+        holds a row -- but its frames are child-tagged, so the directive gate
+        refuses its flat copy through ``_native_child_tc``. The refusal is an
+        ordinary child refusal: the note does not claim the call bound was
+        crossed and the SEL row carries no ``error``. An earlier revision chose
+        the past-bound wording and ``error="native_call_bound"`` for any refused
+        id without a row, so this refusal read as a truncation."""
+        from kiro_crew.dashboard import chat_runner
+
+        rows: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_tool_invocation = lambda **kw: rows.append(kw)
+        monkeypatch.setattr(chat_runner, "sel", lambda: fake_sel)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-untracked-child")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        events = [
+            # No roster ever lists sub-ghost: its call has no record to be
+            # admitted against, only the child tag on its frame.
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-ghost", tool_call_id="g-1"),
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="g-1",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="g-1", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_not_called()
+        outputs = _tool_result_outputs(state)
+        note = next((o for o in outputs if "[Not applied:" in o), "")
+        assert note, f"expected a not-applied note in {outputs!r}"
+        assert chat_runner._NATIVE_NOT_APPLIED_NOTE.strip() in note
+        assert "more tool calls" not in note
+        denied = [
+            r for r in rows if r.get("source") == "mcp-directive" and r.get("outcome") == "denied"
+        ]
+        assert len(denied) == 1, denied
+        assert not denied[0].get("error"), denied[0]
+
+    @pytest.mark.asyncio
+    async def test_the_bound_does_not_refuse_the_parents_own_directive_on_a_wire_without_copies(
+        self, tmp_path, monkeypatch
+    ):
+        """kiro-cli 2.31 never copies a child's calls onto the parent stream, so
+        on that wire an unattributed call IS the parent's: a child crossing the
+        bound must not cost the parent its own directives."""
+        from kiro_crew.dashboard import native_subagent_cards
+
+        monkeypatch.setattr(native_subagent_cards, "NATIVE_SUBAGENT_CALLS_MAX", 1)
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("nativesub-bound-current-wire")
+        slot._titled = True
+        marker = session_directive.encode(
+            "monitor_start", {"message": "x", "idle_secs": 5}, "armed"
+        )
+        events = [
+            AcpEvent(
+                kind=EVENT_SUBAGENT_LIST,
+                subagents=[
+                    {
+                        "sessionId": "sub-4",
+                        "role": "tester",
+                        "initialQuery": "run the checks",
+                        "sessionName": "child",
+                        "status": {"type": "working"},
+                    }
+                ],
+            ),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-4", tool_call_id="c-1"),
+            AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id="sub-4", tool_call_id="c-2"),
+            # The parent's own directive call: no child-tagged frame named it.
+            AcpEvent(
+                kind=EVENT_TOOL_CALL,
+                tool_call_id="p-1",
+                title="Arming monitor",
+                tool_name="monitor_start",
+                mcp_server_name="kirocrew-core",
+            ),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id="p-1", tool_output=marker, tool_final=True
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+            AcpEvent(kind=EVENT_COMPLETE),
+        ]
+        spy = await _drive(state, slot, events, monkeypatch)
+        spy.assert_called_once()
+        assert not any("[Not applied:" in o for o in _tool_result_outputs(state))
+
+    @pytest.mark.asyncio
     async def test_applier_output_is_re_redacted_before_surfacing(self, tmp_path, monkeypatch):
         """The applier's return OVERWRITES the entry-redacted `_out`, and it
         interpolates LLM-derived text (autonudge_stop's reason, a bad path in

@@ -11376,7 +11376,6 @@
         "model_label": "모델: {{model}}",
         "model_downgraded": "요청 {{requested}}, 실제 {{resolved}}",
         "model_effective": "{{model}} 에서 실행 중 (백엔드가 모델 선택)",
-        "tool_calls": "도구 호출",
         "tool_calls_not_listed_other": "표시되지 않은 이전 호출 {{count}}개",
         "waiting_for_output": "출력 대기 중…",
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다",
@@ -11392,7 +11391,14 @@
         "artifacts_load_failed": "이 세션의 아티팩트를 불러올 수 없습니다",
         "library_load_failed": "아티팩트 라이브러리를 불러올 수 없습니다",
         "artifact_save_failed": "아티팩트를 저장할 수 없습니다",
-        "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다"
+        "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다",
+        "live_activity": "실시간 활동",
+        "full_result": "전체 결과",
+        "tool_call_failed": "도구 호출 실패",
+        "tool_call_failed_no_output": "출력이 반환되지 않았습니다.",
+        "ask_agent_about_failed_call": "이 실패한 호출에 대해 에이전트에게 질문",
+        "untitled_call": "이름 없는 도구 호출",
+        "transcript_steps_not_listed_other": "이전 단계 {{count}}개는 표시되지 않음"
       },
       "assistantMessage": {
         "applied_to_tasks": "작업에 적용됨",

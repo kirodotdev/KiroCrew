@@ -11716,7 +11716,6 @@
         "model_label": "Modello: {{model}}",
         "model_downgraded": "Richiesto {{requested}}, servito {{resolved}}",
         "model_effective": "In esecuzione su {{model}} (il backend seleziona il modello)",
-        "tool_calls": "Chiamate agli strumenti",
         "tool_calls_not_listed_many": "{{count}} chiamate precedenti non mostrate",
         "tool_calls_not_listed_one": "{{count}} chiamata precedente non mostrata",
         "tool_calls_not_listed_other": "{{count}} chiamate precedenti non mostrate",
@@ -11734,7 +11733,16 @@
         "artifacts_load_failed": "Impossibile caricare gli artefatti di questa sessione",
         "library_load_failed": "Impossibile caricare la libreria degli artefatti",
         "artifact_save_failed": "Impossibile salvare l’artefatto",
-        "workflow_runs_load_failed": "Impossibile caricare le esecuzioni di workflow"
+        "workflow_runs_load_failed": "Impossibile caricare le esecuzioni di workflow",
+        "live_activity": "Attività in corso",
+        "full_result": "Risultato completo",
+        "tool_call_failed": "Chiamata allo strumento non riuscita",
+        "tool_call_failed_no_output": "Non è stato restituito alcun output.",
+        "ask_agent_about_failed_call": "Chiedi all'agente di questa chiamata non riuscita",
+        "untitled_call": "Chiamata a strumento senza nome",
+        "transcript_steps_not_listed_one": "{{count}} passaggio precedente non mostrato",
+        "transcript_steps_not_listed_many": "{{count}} passaggi precedenti non mostrati",
+        "transcript_steps_not_listed_other": "{{count}} passaggi precedenti non mostrati"
       },
       "assistantMessage": {
         "applied_to_tasks": "Applicato alle attività",

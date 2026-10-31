@@ -11546,7 +11546,6 @@
         "model_label": "मॉडल: {{model}}",
         "model_downgraded": "अनुरोधित {{requested}}, प्रयुक्त {{resolved}}",
         "model_effective": "{{model}} पर चल रहा है (बैकएंड मॉडल चुनता है)",
-        "tool_calls": "टूल कॉल",
         "tool_calls_not_listed_one": "पिछली {{count}} कॉल नहीं दिखाई गई",
         "tool_calls_not_listed_other": "पिछली {{count}} कॉल नहीं दिखाई गईं",
         "waiting_for_output": "आउटपुट की प्रतीक्षा…",
@@ -11563,7 +11562,15 @@
         "artifacts_load_failed": "इस सत्र के आर्टिफ़ैक्ट लोड नहीं हो सके",
         "library_load_failed": "आर्टिफ़ैक्ट लाइब्रेरी लोड नहीं हो सकी",
         "artifact_save_failed": "आर्टिफ़ैक्ट सहेजा नहीं जा सका",
-        "workflow_runs_load_failed": "वर्कफ़्लो रन लोड नहीं हो सके"
+        "workflow_runs_load_failed": "वर्कफ़्लो रन लोड नहीं हो सके",
+        "live_activity": "लाइव गतिविधि",
+        "full_result": "पूरा परिणाम",
+        "tool_call_failed": "टूल कॉल विफल हुआ",
+        "tool_call_failed_no_output": "कोई आउटपुट नहीं लौटाया गया।",
+        "ask_agent_about_failed_call": "इस विफल कॉल के बारे में एजेंट से पूछें",
+        "untitled_call": "अनाम टूल कॉल",
+        "transcript_steps_not_listed_one": "{{count}} पहले का चरण नहीं दिखाया गया",
+        "transcript_steps_not_listed_other": "{{count}} पहले के चरण नहीं दिखाए गए"
       },
       "assistantMessage": {
         "applied_to_tasks": "कार्यों पर लागू",

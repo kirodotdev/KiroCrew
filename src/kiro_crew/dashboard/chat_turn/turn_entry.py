@@ -745,7 +745,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # tool_call_ids whose output was already streamed to a native card — kiro
     # emits two tool_call_update frames per tool (content + rawOutput), so we
     # dedupe to avoid printing the same output twice.
-    _native_result_seen: set[str] = set()
+    # native call id -> digest of the last output printed for it (admitted
+    # calls only; see native_subagent_cards._native_output_is_new).
+    _native_result_seen: dict[str, int] = {}
     turn._native_result_seen = _native_result_seen
     # native card id -> accumulated activity feed (tool calls + outputs). The
     # published frontend replaces a card's live `streaming` text with `result`
@@ -755,6 +757,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     slot._native_subagent_output = _native_card_output
     _native_card_output_len: dict[str, int] = {}
     turn._native_card_output_len = _native_card_output_len
+    # native child session_id -> its two rolling redactors (reasoning, text), so
+    # a credential split across streamed chunks is withheld, as the parent's is.
+    _native_streams_red: dict[str, dict[str, StreamRedactor]] = {}
+    turn._native_streams_red = _native_streams_red
     needs_session_reset = False
     turn.needs_session_reset = needs_session_reset
     # Poisoned-conversation escalation: unlike needs_session_reset (which
@@ -993,6 +999,8 @@ async def _turn_release_handles(turn: _ChatTurn) -> None:
             _native_tracker,
             _native_card_output,
             error=NATIVE_SUBAGENT_INTERRUPTED_ERROR,
+            card_output_len=turn._native_card_output_len,
+            streams=turn._native_streams_red,
         )
     finally:
         slot._native_subagent_tracker = _retain_terminal_native(_native_tracker)

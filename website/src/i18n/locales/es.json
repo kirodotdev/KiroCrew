@@ -11716,7 +11716,6 @@
         "model_label": "Modelo: {{model}}",
         "model_downgraded": "Solicitado {{requested}}, servido {{resolved}}",
         "model_effective": "Ejecutando en {{model}} (el backend selecciona el modelo)",
-        "tool_calls": "Llamadas a herramientas",
         "tool_calls_not_listed_many": "{{count}} llamadas anteriores sin mostrar",
         "tool_calls_not_listed_one": "{{count}} llamada anterior sin mostrar",
         "tool_calls_not_listed_other": "{{count}} llamadas anteriores sin mostrar",
@@ -11734,7 +11733,16 @@
         "artifacts_load_failed": "No se pudieron cargar los artefactos de esta sesión",
         "library_load_failed": "No se pudo cargar la biblioteca de artefactos",
         "artifact_save_failed": "No se pudo guardar el artefacto",
-        "workflow_runs_load_failed": "No se pudieron cargar las ejecuciones de flujos de trabajo"
+        "workflow_runs_load_failed": "No se pudieron cargar las ejecuciones de flujos de trabajo",
+        "live_activity": "Actividad en vivo",
+        "full_result": "Resultado completo",
+        "tool_call_failed": "La llamada a la herramienta falló",
+        "tool_call_failed_no_output": "No se devolvió ninguna salida.",
+        "ask_agent_about_failed_call": "Preguntar al agente sobre esta llamada fallida",
+        "untitled_call": "Llamada a herramienta sin nombre",
+        "transcript_steps_not_listed_one": "{{count}} paso anterior no mostrado",
+        "transcript_steps_not_listed_many": "{{count}} pasos anteriores no mostrados",
+        "transcript_steps_not_listed_other": "{{count}} pasos anteriores no mostrados"
       },
       "assistantMessage": {
         "applied_to_tasks": "Aplicado a Tareas",

@@ -279,6 +279,7 @@
   "apps.commandBar.attention_more",
   "components.changeCards.scope_count",
   "pages.chat.activityViewer.tool_calls_not_listed",
+  "pages.chat.activityViewer.transcript_steps_not_listed",
   "commandCenter.cards_withheld",
   "commandCenter.crewMain.turns",
   "commandCenter.crewMain.turns_refused",

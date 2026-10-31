@@ -44,7 +44,7 @@ if TYPE_CHECKING:
         _snapshot_write_target,
     )
     from kiro_crew.dashboard.chat_turn.native_cards import (
-        _append_native_output,
+        _native_subagent_flat_call,
         _post_native_question_card,
     )
     from kiro_crew.dashboard.chat_turn.recipient import (
@@ -227,9 +227,8 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
     _mirror_stream_ts = turn._mirror_stream_ts
     _mirror_task_counter = turn._mirror_task_counter
     _mirror_thread = turn._mirror_thread
-    _native_card_output = turn._native_card_output
-    _native_card_output_len = turn._native_card_output_len
     _native_tc_card = turn._native_tc_card
+    _native_tracker = turn._native_tracker
     _pending_dir_for_digest = turn._pending_dir_for_digest
     _pending_dir_tool = turn._pending_dir_tool
     _pending_input_digest = turn._pending_input_digest
@@ -457,21 +456,12 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
             )
         turn._undelivered_watch.on_call(event)
     # If this tool call belongs to a native sub-agent (mapped via
-    # _kiro.dev/session/update), stream it onto that sub-agent's card.
-    _nat_card = _native_tc_card.get(event.tool_call_id) if event.tool_call_id else None
-    if _nat_card:
-        _ntool, _ = redact_exfiltration_urls(_raw or event.title or "")
-        _ntool, _ = redact_credentials(_ntool)
-        _ntool = _ntool[:80]
-        _native_card_output_len[_nat_card] = _append_native_output(
-            _native_card_output.setdefault(_nat_card, []),
-            f"\u2192 {_ntool}\n",
-            _native_card_output_len.get(_nat_card, 0),
-        )
-        state.broadcast_ws(
-            "subagent_chunk",
-            {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
-        )
+    # _kiro.dev/session/update), it is the parent-tagged copy of a
+    # call the activity path admitted: a refinement of that call's
+    # row, not a second call and not a feed line (the result row
+    # names the call in the feed, once).
+    if event.tool_call_id and event.tool_call_id in _native_tc_card:
+        _native_subagent_flat_call(state, slot, event, _native_tracker, _native_tc_card)
     # Where Crew fires the spec's hooks, every call a PreToolUse hook
     # covers comes back as a permission request (the projection
     # withholds its auto-approval) and KAS sends this frame first, so
