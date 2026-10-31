@@ -19815,6 +19815,13 @@
       "search_in": "{{path}} 内で「{{query}}」を検索",
       "search_web": "ウェブで「{{query}}」を検索",
       "view_image": "画像 {{path}} を表示"
+    },
+    "heicImage": {
+      "unreadable": "{{name}} を HEIC 写真として読み取れませんでした。ファイルが破損している可能性があります。JPEG として書き出し、そのファイルを添付してください。",
+      "too_large": "{{name}} は、ここで HEIC 写真を変換できる上限 {{max}} を超えています。JPEG として書き出し、そのファイルを添付してください。",
+      "too_many_pixels": "{{name}} は {{width}} × {{height}} ピクセルで、ここで HEIC 写真を変換できる上限 {{max}} メガピクセルを超えています。より小さい JPEG を書き出して添付してください。",
+      "convert_failed": "このブラウザーでは {{name}} を JPEG に変換できませんでした。ページを再読み込みしてもう一度試すか、JPEG として書き出してそのファイルを添付してください。",
+      "cannot_fit": "{{name}} を JPEG で {{max}} 未満に縮小できませんでした。より小さい JPEG を書き出して添付してください。"
     }
   },
   "memoryV2": {

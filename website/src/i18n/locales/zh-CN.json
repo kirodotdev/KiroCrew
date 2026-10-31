@@ -19815,6 +19815,13 @@
       "search_in": "在 {{path}} 中搜索“{{query}}”",
       "search_web": "在网上搜索“{{query}}”",
       "view_image": "查看图片 {{path}}"
+    },
+    "heicImage": {
+      "unreadable": "无法将 {{name}} 读取为 HEIC 照片，文件可能已损坏。请将其导出为 JPEG，然后改为附加该文件。",
+      "too_large": "{{name}} 超过了此处转换 HEIC 照片的 {{max}} 上限。请将其导出为 JPEG，然后改为附加该文件。",
+      "too_many_pixels": "{{name}} 为 {{width}} × {{height}} 像素，超过了此处转换 HEIC 照片的 {{max}} 百万像素上限。请导出较小的 JPEG，然后改为附加该文件。",
+      "convert_failed": "此浏览器无法将 {{name}} 转换为 JPEG。请重新加载页面后重试，或将其导出为 JPEG，然后改为附加该文件。",
+      "cannot_fit": "无法将 {{name}} 作为 JPEG 压缩到 {{max}} 以下。请导出较小的 JPEG，然后改为附加该文件。"
     }
   },
   "memoryV2": {

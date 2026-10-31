@@ -594,6 +594,29 @@ async def test_upload_jpeg_that_is_heic_names_the_conversion_remedy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["IMG_0001.HEIC", "photo.heif"])
+async def test_upload_unconverted_heic_names_the_reload_remedy(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+) -> None:
+    """A HEIC the browser did not convert (a page loaded before conversion
+    shipped, or another client) is still refused -- no model reads HEIC --
+    with the unsupported-type code and a sentence naming the way past it."""
+    form = aiohttp.FormData()
+    form.add_field("file", _HEIC_HEAD, filename=filename, content_type="image/heic")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "unsupported_file_type"
+    assert body["error"].startswith(f"Unsupported file type: {Path(filename).suffix.lower()}.")
+    assert "reload the page" in body["error"]
+    assert "JPEG" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_upload_html_under_an_image_extension_is_still_refused(
     upload_dir: Path,
     mock_sel,

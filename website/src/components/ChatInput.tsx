@@ -102,7 +102,10 @@ const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
 /** Set once the user dismisses the visible list-indent hint under the composer. */
 const LIST_HINT_DISMISSED_KEY = 'kirocrew:list-indent-hint-dismissed'
-const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
+// HEIC/HEIF is listed by type AND extension: macOS file dialogs often report
+// an iPhone photo with no type, so the extension is what offers it. The upload
+// converts it to JPEG in the browser (utils/heicImage.ts).
+const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml,image/heic,image/heif,.heic,.heif'
 // Video containers the server accepts (see `_ALLOWED_VIDEO_EXT`). MIME form, not
 // extensions, because this string is also what the MOBILE photo picker filters
 // the library by: iOS shows videos only when a video/* type is listed, so an
