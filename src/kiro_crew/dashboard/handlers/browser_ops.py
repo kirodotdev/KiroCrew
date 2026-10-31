@@ -559,9 +559,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
     try:
         # The route's first check may be a whole queued op old by now: ask again for
         # the caller before anything reaches the browser, the credential refresh too.
-        denied = await _denied_after_op(request, session_key)
-        if denied is not None:
-            return web.json_response(denied)
+        late = await _denied_after_op(request, session_key)
+        if late is not None:
+            return web.json_response(late)
         if op in _NAVIGATING_OPS:
             await _refresh_credentials(supervisor)
         # The per-session fence is shared with the person's Take over (LiveHub.claim):
