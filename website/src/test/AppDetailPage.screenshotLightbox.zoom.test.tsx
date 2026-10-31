@@ -132,6 +132,43 @@ describe('ScreenshotGallery lightbox magnification', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull()
   })
 
+  it('focuses the viewer once on open, so Next keeps focus after it is pressed', () => {
+    // Three shots, so Next is still there after one press.
+    render(<MemoryRouter><ScreenshotGallery screenshots={[S1, S2, '/shots/c.png']} /></MemoryRouter>)
+    fireEvent.click(document.querySelector('button[aria-label="Open screenshot 1"]')!)
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    expect(document.activeElement).toBe(dialog)
+    // Moving to the next screenshot re-renders the viewer; that must not pull
+    // focus back to the dialog box, or Enter on Next would only work once.
+    const next = document.querySelector('[role="dialog"] button[aria-label="Next"]') as HTMLButtonElement
+    next.focus()
+    act(() => { fireEvent.click(next) })
+    expect(lightboxImg().getAttribute('src')).toContain(S2)
+    expect(document.activeElement).toBe(next)
+
+    // Next on the second-to-last shot removes Next itself. Focus goes back to
+    // the dialog, so Escape (handled on the dialog) still closes it.
+    act(() => { fireEvent.click(next) })
+    expect(document.querySelector('[role="dialog"] button[aria-label="Next"]')).toBeNull()
+    expect(document.activeElement).toBe(dialog)
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('hands focus back to the viewer when a failed shot removes the focused Next', () => {
+    openLightbox()
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    const next = document.querySelector('[role="dialog"] button[aria-label="Next"]') as HTMLButtonElement
+    next.focus()
+    // The second shot fails to load and has no fallback, so it is hidden and
+    // Next goes away without `selected` changing.
+    act(() => {
+      fireEvent.error(document.querySelector('button[aria-label="Open screenshot 2"] img')!)
+    })
+    expect(document.querySelector('[role="dialog"] button[aria-label="Next"]')).toBeNull()
+    expect(document.activeElement).toBe(dialog)
+  })
+
   it('opts the lightbox img out of the root pan-only touch-action', () => {
     const img = openLightbox()
     expect(img.className).toContain('touch-none')

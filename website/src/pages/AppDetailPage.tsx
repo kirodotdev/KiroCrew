@@ -33,6 +33,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
+import { focusOnMount } from '../utils/focusOnMount'
 import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
@@ -1054,7 +1055,7 @@ export default function AppDetailPage() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
             onClick={() => setShowUninstallConfirm(false)}
             onKeyDown={e => { if (e.key === 'Escape') setShowUninstallConfirm(false) }}
-            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
+            tabIndex={-1} ref={focusOnMount} role="dialog" aria-modal="true" aria-label={i18nT('pages.appDetailPage.confirm_uninstall')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss on inner clicks. */}
             {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}

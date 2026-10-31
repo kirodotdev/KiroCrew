@@ -42,6 +42,7 @@ import LaunchpadTile from './LaunchpadTile'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
+import { focusOnMount } from '../../utils/focusOnMount'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -309,7 +310,7 @@ export default function LibraryPage() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
             onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}
             onKeyDown={e => { if (e.key === 'Escape') { setUninstallTarget(null); setUninstallPreview(null) } }}
-            tabIndex={-1} ref={el => el?.focus()} role="dialog" aria-modal="true" aria-label={i18nT('pages.appsPage.confirm_uninstall')}
+            tabIndex={-1} ref={focusOnMount} role="dialog" aria-modal="true" aria-label={i18nT('pages.appsPage.confirm_uninstall')}
           >
             {/* Stop clicks inside the dialog card from reaching the backdrop's
                 dismiss handler; presentation-only, no interaction of its own. */}

@@ -40,6 +40,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import type { LibraryApp } from './useAppsData'
 import { guidePick, guidePickAlias, guidePickControl, guidePickOf } from '../../uiLocations/targetRegistry'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 
 /** Management verbs the tile can request. */
 export type LaunchpadAction = 'enable' | 'disable' | 'uninstall' | 'update'
@@ -78,6 +79,9 @@ export default function LaunchpadTile({
   /** The ⋯ menu opened or closed (the page tells a guide which app is picked). */
   onMenuOpenChange?: (open: boolean) => void
 }) {
+  // Uninstall opens the page's confirm dialog, which takes focus once. Keep
+  // the closing menu from handing focus back to the ⋯ trigger behind it.
+  const menuFocus = useMenuOpensDialog()
   const m = app.manifest
   const name = app.name
   const display = appDisplayName(app)
@@ -216,7 +220,7 @@ export default function LaunchpadTile({
           </DropdownMenuTrigger>
           {/* The menu is drawn outside the card: it names the app it is for,
               so a guide about one app never points into another's menu. */}
-          <DropdownMenuContent align="center" {...guidePickOf(display)}>
+          <DropdownMenuContent align="center" onCloseAutoFocus={menuFocus.onCloseAutoFocus} {...guidePickOf(display)}>
             <DropdownMenuItem onSelect={onDetail} {...uiLocation('apps.library.tile-details')}>
               <Info size={12} aria-hidden /> {i18nT('pages.libraryPage.tile_details')}
             </DropdownMenuItem>
@@ -265,7 +269,7 @@ export default function LaunchpadTile({
               <DropdownMenuItem
                 className="text-danger focus:text-danger"
                 disabled={actionLoading === `${name}:uninstall`}
-                onSelect={() => onAction(name, 'uninstall')}
+                onSelect={() => menuFocus.openLayer(() => onAction(name, 'uninstall'))}
                 {...uiLocation('apps.library.tile-uninstall')}
               >
                 <Trash2 size={12} aria-hidden /> {i18nT('components.appstore.installedAppCard.uninstall')}
