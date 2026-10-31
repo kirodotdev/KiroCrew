@@ -8,6 +8,7 @@ import { X } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery } from '@tanstack/react-query'
 import ChatMessageList from '../app-sdk/ChatMessageList'
+import { RunInTerminalOriginSlot } from './runInTerminalScope'
 import type { VirtualTranscriptHandle } from '../app-sdk/ChatMessageList'
 import { EdgeFade, JumpToBottomButton } from '../app-sdk/ChatScrollChrome'
 import { createTranscriptVersioner } from '../chat-core/transcript/transcriptVersion'
@@ -974,6 +975,7 @@ export default function ChatPane({
             sentinels/spacers) is ChatMessageList's virtualized mount — see
             TranscriptScrollShell for the style contract it enforces. */}
         <ChatProjectDirCtx.Provider value={paneProjectDir}>
+          <RunInTerminalOriginSlot.Provider value={crewmate ? slotKey : null}>
           <ChatMessageList
             ref={listRef}
             messages={listMessages}
@@ -1089,6 +1091,7 @@ export default function ChatPane({
               ),
             }}
           />
+          </RunInTerminalOriginSlot.Provider>
         </ChatProjectDirCtx.Provider>
         {/* Composer dock. Floats over the bottom of the transcript scroller
             instead of sitting under it in the flex column (ChatPage's iOS
