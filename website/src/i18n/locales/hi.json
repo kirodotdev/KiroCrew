@@ -7993,6 +7993,7 @@
         "keep_receiving_these": "। इन्हें प्राप्त करते रहें?",
         "mark_all_as_read": "सभी को पढ़ा हुआ चिह्नित करें",
         "mute_channel": "चैनल म्यूट करें",
+        "mute_failed": "यह चैनल म्यूट नहीं हो सका। फिर से कोशिश करो।",
         "muted_2": "म्यूट",
         "no_notifications": "कोई सूचना नहीं",
         "open_notification": "सूचना खोलो: {{title}}",

@@ -7866,6 +7866,7 @@
         "keep_receiving_these": "。要继续接收这类通知吗？",
         "mark_all_as_read": "全部标为已读",
         "mute_channel": "静音频道",
+        "mute_failed": "未能静音此频道，请重试。",
         "muted_2": "已静音",
         "no_notifications": "暂无通知",
         "open_notification": "打开通知：{{title}}",
