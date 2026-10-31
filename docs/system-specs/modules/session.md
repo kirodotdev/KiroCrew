@@ -175,62 +175,96 @@ A Crew Mode root (a root chat running a conductor) is eligible on the same
 rules as a mate thread, with one stricter trigger: only an explicit page hide
 (`hidden: true`) starts its away episode, because a split-view pane can stay
 visible while another pane holds focus. A pane or sidebar switch, a socket loss
-and a restart never do. Its workers and other chats are not eligible. Its prompt names
-the conductor as the writer and asks which work items finished, which wait on
-the owner, and which still run.
+and a restart never do. Its workers and other chats are not eligible; a plain
+chat never gets a brief. Any thread that owns a work ledger (a conductor
+record or work items), whatever its slot mode, gets the conductor prompt,
+which asks which work items finished, which wait on the owner, and which
+still run.
 
-A qualifying return writes a hidden durable fingerprint claim, then posts a
-short fixed mate opener ("Welcome back, let me catch you up on where we
-are."), picked by the script of the user's request. It starts
-one tool-free background model call. The fingerprint covers the original
-genuine user request, conversation task rows, session ledger, and work ledger.
-The prompt names the facts the owner must come away with and lets the model
-pick tone and layout,
-worded to the user's `dashboard.verbosity` level. It returns one JSON object:
+A qualifying return writes a hidden durable fingerprint claim. The
+fingerprint covers the original genuine user request, conversation task rows,
+session ledger, and work ledger. There is no separate opener message. When
+nothing changed while the owner was away and nothing waits on them (no
+unanswered `[OPTIONS: ...]` reply, no open work item with status `question` or
+`blocked`, no work item reported, decided or closed after the away anchor, no
+session-ledger progress after it, and no visible assistant row after it), the
+brief is one fixed line ("Nothing new since HH:MM.", with the date when it is
+not today), posted as a plain message without a card or status chip, and no
+model call is made. The line claims nothing about what waits:
+a question asked in prose before the owner left is the message right above it.
+Otherwise the slot's `preparing` flag shows "Preparing your catch-up…" in the
+chat's working indicator while the gateway reads its inputs and makes one
+tool-free background model call; the finished message posts while the flag is
+still up, so it replaces the indicator in place. The claim and every staleness
+check use the first read's fingerprint; what the brief says comes from the
+re-read made once the claim is on disk, so a worker report that lands in
+between is not missed.
+
+The model reads one JSON snapshot assembled by `warm_task_brief_inputs.py`.
+Each section has its own character budget and keeps whole entries, most
+important first; the serialized document is never cut. In order:
+`pending_ask` (the newest reply, whole up to 4,000 characters, when it ends in
+`[OPTIONS: ...]`; any later user or assistant row, a wake or an earlier brief
+included, retires it, and so does a change card the person pressed after it,
+as the "Waiting on you" list does, so an older ask is never brought back);
+`changes_since_away` (item reports, decisions and closes after the away
+anchor, and session-ledger events after it, each with its source (worker
+report, conductor decision, work ledger or session ledger) and `HH:MM`
+time); `transcript_since_owner` (the
+owner's last genuine message and every turn since, whole; over budget the
+oldest drop first); `open_items` (open items, and terminal ones that changed
+while the owner was away, questions and blocked first); `goal` (conductor
+goal, else session-ledger goal, else the owner's newest message);
+`goal_progress`; and `owner_recent_messages` (the owner's last three genuine
+messages, which pick the reply language and the script of the fixed lines).
+
+The prompt allows merged, green, approved or conflict states only from a
+change newer than the away time; anything else is written as "not checked
+since HH:MM" with the time of the newest report or message that states it.
+
+The prompt asks for parts in order: the goal, what changed since the owner
+left (each fact with source and time), numbered asks (what, why only the
+owner, every option with its consequence, the recommendation and why), problems
+that do not need the owner, and what runs next. It returns one JSON object:
 `status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
 `needs_you` when `needs_you` has items, else `on_track`, and `on_track` or
 `done` beside `needs_you` items reads as `needs_you`), `headline` (at most
-240 characters), `asked` (160), `remaining` (160), `done` (at most four items
-of 120), `needs_you` and `next` (at most three items of 120 each), and `extra`
-(at most two `{title, items}` sections of three items, empty ones dropped).
-The prompt asks only for `status`, `headline`, `needs_you`, a free-form
-plain-text `body` (lines kept, 900 characters) and an optional `widget` (HTML,
-redacted, dropped whole over 6,000 characters); the other fields still parse.
-`headline` is required; an older `now` or `{"message"}` reply is read as it,
-and a missing `asked` falls back to the quoted original request. `progress`
-is never the model's: the gateway stores `{accepted, total}` counted over the
-current goal's work items (the newest `goal_items_used` after a `new_goal`
-write; every item on a board that never recorded a goal), and leaves it out
-when there are none or the goal's items cannot be told apart. The snapshot
-the model reads carries the same count. Each text field is redacted before and after whitespace is
-collapsed and `**` dropped, then control markers (`[OPTIONS:`, `[STEERING`,
-`<!--`, any bracket form) are defanged so no reader of `content` turns a field
-into a live control, then the field is capped. The result is a second mate
-message: `meta.brief` holds the fields and `content` holds the same brief as
-labelled plain text. The transcript draws `meta.brief` as a fixed card
-(`WarmBriefCard`) that renders every field as a plain text node, in the order
-status and headline, Needs you, Progress (an `accepted of total` bar only when
-`progress` exists, plus `remaining`), What you asked, Done, Next, then the
-`extra` sections, with `body` after Progress and the `widget` last, in the
-sandboxed `WidgetFrame` chat widgets use. `content` never holds the widget.
-An older `meta.brief` (`asked`, `now`, `needs_you`, `next`) draws with `now` as the headline and no status chip; a row without a
-valid `meta.brief` keeps the ordinary bubble. The card is the body of the
-ordinary assistant bubble, so the row keeps its timestamp and row actions, and
-Copy takes the plain-text `content`; chat search reads the card's own visible
-text, so its count matches what can be highlighted. Only an assistant row draws it: any other
-role carrying the same `meta.kind` (the send route keeps client `meta` keys on
-the user row) draws as its own role. These generated rows
-are excluded from the task fingerprint. A new user turn, slot replacement,
-reset, close, and a finished task drop a stale result unposted. The owner
-leaving drops the brief only before its opener is posted; after the opener,
-the result still posts as ordinary history while the owner is away. Patrol turns, `[work-ledger wake]` rows, and worker reports change
-the dedup fingerprint but do not make a prepared result stale; a turn running
-at publication defers the result until it ends. Only a live user row the person
-typed cancels a brief in preparation; assistant rows, automation rows and turn
-admission never do. Repeated frames, reconnects and several windows share one
-in-flight task and then the durable claim, so each task state gets at most one
-brief, and the claim's time keeps a patrol-changed fingerprint from briefing
-again until another 30 minutes pass without the owner typing.
+240 characters), `needs_you` (at most four items of 200), a plain-text `body`
+(lines kept, 2,400 characters, 32 lines) and an optional `widget` (HTML,
+redacted, dropped whole over 6,000 characters). Older fields (`asked`,
+`remaining`, `done`, `next`, `extra`) still parse; `headline` is required and
+an older `now` or `{"message"}` reply is read as it. `progress` is never the
+model's: the gateway stores `{accepted, total}` only over the current goal's
+work items after a `new_goal` write (the newest `goal_items_used`), and leaves
+it out when the board never recorded a goal or the goal's items cannot be told
+apart. Each text field is redacted before and after whitespace is collapsed
+and `**` dropped, then control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any
+bracket form) are defanged, then the field is capped.
+
+The result is one mate message: `meta.brief` holds the fields and `content`
+holds the same brief as labelled plain text.
+The transcript draws `meta.brief` as a fixed card (`WarmBriefCard`) that
+renders every field as a plain text node, in the order status and headline,
+Needs you, Progress (only when `progress` exists, plus `remaining`), body,
+What you asked, Done, Next, the `extra` sections, then the `widget` in the sandboxed `WidgetFrame` chat widgets use. `content` never
+holds the widget. A row without a valid `meta.brief` keeps the ordinary
+bubble. The card is the body of the ordinary assistant bubble, so the row
+keeps its timestamp and row actions, and Copy takes the plain-text `content`;
+chat search reads the card's own visible text. Only an assistant row draws it:
+any other role carrying the same `meta.kind` draws as its own role. These
+generated rows are excluded from the task fingerprint. A new user turn, slot
+replacement, reset, close, and a finished task drop a stale result unposted.
+The owner leaving drops the brief only before the indicator shows; after
+that, the result still posts as ordinary history while the owner is away.
+Patrol turns, `[work-ledger wake]` rows, and worker reports change the dedup
+fingerprint but do not make a prepared result stale; a turn running at
+publication defers the result until it ends. Only a live user row the person
+typed cancels a brief in preparation. Repeated frames, reconnects and several
+windows share one in-flight task and then the durable claim, so each task
+state gets at most one brief, and the claim's time keeps a patrol-changed
+fingerprint from briefing again until another 30 minutes pass without the
+owner typing. Rows from older builds with `meta.kind` `warm_task_brief_preparing`
+(the retired opener) still render and stay excluded like the other kinds.
 
 ## Implementation Boundaries
 

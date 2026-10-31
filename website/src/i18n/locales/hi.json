@@ -6571,7 +6571,8 @@
       "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
       "type_to_filter": "फ़िल्टर करने के लिए टाइप करें…",
       "earlier_conversation_show": "{{time}} पर नई शुरुआत · पिछले मैसेज दिखाओ ({{count}})",
-      "earlier_conversation_hide": "{{time}} पर नई शुरुआत · पिछले मैसेज छिपाओ (अब याद नहीं)"
+      "earlier_conversation_hide": "{{time}} पर नई शुरुआत · पिछले मैसेज छिपाओ (अब याद नहीं)",
+      "preparing_catch_up": "तुम्हारे लिए सार तैयार हो रहा है…"
     },
     "cliPanel": {
       "copied": "कॉपी हो गया",

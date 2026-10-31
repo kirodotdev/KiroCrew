@@ -45,10 +45,10 @@ export interface WarmBrief {
 // The gateway caps every field already; these are the renderer's own bound so
 // a hand-edited or foreign row can never stretch the card.
 const MAX_FIELD = 240
-const MAX_ITEMS = 3
+const MAX_ITEMS = 4
 const MAX_DONE = 4
 const MAX_EXTRA = 2
-const MAX_BODY = 1200
+const MAX_BODY = 3000
 // A widget over this is dropped whole: cut HTML would draw broken.
 const MAX_WIDGET = 8000
 const STATUSES: readonly WarmBriefStatus[] = ['on_track', 'needs_you', 'blocked', 'done']
