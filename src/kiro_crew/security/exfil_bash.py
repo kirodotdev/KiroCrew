@@ -54,7 +54,6 @@ _BASH_EXFIL_PATTERNS: list[str] = [
     "--data-urlencode=@",
     "-F *=@",  # curl multipart file upload, any field name (glob)
     "--form *=@",
-    "--upload-file",  # curl upload, long form
     "wget --post-file",  # wget file upload
     "/dev/tcp/",  # bash builtin reverse shell (>/dev/tcp/host/port)
     "/dev/udp/",
@@ -74,10 +73,6 @@ _BASH_EXFIL_RES: list[tuple[re.Pattern[str], str]] = [
     # anchored at a word boundary so `rsync -e ssh` (contains `nc -e`) and
     # `vnc -e` do NOT match; a plain substring `"nc -e"` false-positived on them.
     (re.compile(r"(?:^|\s)nc(?:at)?\s+-e\b", re.IGNORECASE), "nc/ncat reverse shell"),
-    # curl upload short form `-T <file>` / `-Tfile` (no space). CASE-SENSITIVE
-    # `-T`: curl's upload flag is uppercase, so this does NOT match lowercase long
-    # options such as `--trace-time`. `-T` must begin at a word boundary.
-    (re.compile(r"\bcurl\b.*(?:^|\s)-T\s*\S"), "curl -T upload"),
 ]
 
 
@@ -98,7 +93,6 @@ _BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
     "--data-urlencode=@": "data-exfil-curl-file-body",
     "-F *=@": "data-exfil-curl-multipart-upload",
     "--form *=@": "data-exfil-curl-multipart-upload",
-    "--upload-file": "data-exfil-curl-upload",
     "wget --post-file": "data-exfil-wget-post-file",
     "/dev/tcp/": "reverse-shell-devtcp",
     "/dev/udp/": "reverse-shell-devtcp",
@@ -110,7 +104,6 @@ _BASH_EXFIL_RULE_BY_PATTERN: dict[str, str] = {
 _BASH_EXFIL_RULE_BY_LABEL: dict[str, tuple[str, ...]] = {
     "nc/ncat file redirect": ("data-exfil-nc-file-redirect",),
     "nc/ncat reverse shell": ("reverse-shell-nc", "reverse-shell-ncat"),
-    "curl -T upload": ("data-exfil-curl-upload",),
 }
 
 #: For a label whose regex spans several catalog rows, the token that identifies

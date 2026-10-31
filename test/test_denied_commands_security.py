@@ -45,14 +45,17 @@ class TestCatalog:
         # The one literal pin on the catalog size: every other size assertion in
         # this file derives from ``len(BUILTIN_DENIED_RULES)``. A row added or
         # deleted changes this number on purpose, and the commit doing it says why.
-        # Most recently: the sensitive-file-read category (27 rows matching a
+        # Most recently: the data-exfil-curl-upload row was deleted (113 -> 112);
+        # its lowercased `-T` match refused `find -type f`, `od -tx1` and spec
+        # hooks, and a case-correct regex form kept leaking. Before that: the
+        # sensitive-file-read category (27 rows matching a
         # credential-store path in command text) was deleted -- the OS sandbox hides
         # those stores from the agent process tree and is_sensitive_path fences the
         # file tools, so a text regex over the command added refusals of read-only
         # work and no protection. Before that: the four product-name-anywhere
         # self-management rows and the seven legacy identifier-substring rows.
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112).
-        assert len(BUILTIN_DENIED_RULES) == 113
+        assert len(BUILTIN_DENIED_RULES) == 112
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
