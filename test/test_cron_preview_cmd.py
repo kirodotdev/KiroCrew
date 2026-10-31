@@ -346,3 +346,80 @@ class TestCronPreviewNotifyParity:
         # The kwarg value is redacted too, not just the text.
         assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY" not in out
         assert "REDACTED" in out
+
+
+class TestCronPreviewScriptContextParity:
+    """The preview ctx must offer every method production ScriptContext offers.
+
+    A script that works in production and fails in preview on a missing attribute
+    cannot be dry-run at all, and the failure reads like a bug in the script.
+    """
+
+    def test_every_public_script_context_method_exists_in_preview(self, tmp_path: Path, capsys):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "from kiro_crew.cron_script_context import ScriptContext\n"
+            "def run(ctx):\n"
+            "    names = [n for n in dir(ScriptContext) if not n.startswith('_')\n"
+            "             and callable(getattr(ScriptContext, n))]\n"
+            "    raise Report('missing=' + ','.join(n for n in names if not hasattr(ctx, n)))\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert "missing=\n" in out or out.rstrip().endswith("missing="), out
+
+    def test_session_and_crew_log_calls_are_printed_not_made(self, tmp_path: Path, capsys):
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    folders = ctx.list_session_folders()\n"
+            "    folder = ctx.create_session_folder('Reports', parent_id='')\n"
+            "    slot = ctx.open_session('Daily', folder_id=folder['id'], agent='kirocrew')\n"
+            "    sent = ctx.send_to_session(slot, 'summarize the queue')\n"
+            "    mode = ctx.set_session_mode(slot, 'trust_reads')['mode']\n"
+            "    logged = ctx.crew_log_append('note', {'text': 'opened'})['recorded']['type']\n"
+            "    raise Report(str(len(folders)) + ' folders, slot ' + slot + ', sent '\n"
+            "                 + str(sent['ok']) + ', ' + mode + ', ' + logged)\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        for method in (
+            "list_session_folders",
+            "create_session_folder",
+            "open_session",
+            "send_to_session",
+            "set_session_mode",
+            "crew_log_append",
+        ):
+            assert f"[{method} suppressed]" in out, out
+        assert "summarize the queue" in out
+        assert "0 folders, slot preview-dry-run-slot, sent True, trust_reads, note" in out
+
+    def test_a_private_key_in_a_suppressed_call_is_redacted(self, tmp_path: Path, capsys):
+        # A key with no END line, split across lines the way a script holds it.
+        header = "-----BEGIN " + "RSA PRIVATE KEY-----"
+        body = ["MIIEpAIBAAKCAQEA" + "wq3Zx9Lm" * 6, "Q7mNpL2r" * 8, "aB3dE5fG" * 8]
+        key = "\n".join([header, *body])
+        _write_script(
+            tmp_path,
+            "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            f"KEY = {key!r}\n"
+            "def run(ctx):\n"
+            "    ctx.send_to_session('slot', KEY)\n"
+            "    ctx.crew_log_append('note', {'text': KEY, 'parts': [KEY]})\n"
+            "    raise Report('done')\n",
+        )
+        with _patch_resolve(tmp_path):
+            _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert "[send_to_session suppressed]" in out, out
+        assert "[crew_log_append suppressed]" in out, out
+        for line in body:
+            assert line not in out, out
