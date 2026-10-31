@@ -40,6 +40,7 @@ from kiro_crew.acp.runtime_models import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
 )
@@ -1625,6 +1626,18 @@ def _format_acp_error_worded(
                 "which case the same credential works within a few seconds. Retry in a "
                 "moment; if it keeps failing the access key itself is invalid (deleted, "
                 "rotated, or mistyped) — refresh your AWS credentials."
+                f"{req_id_suffix}"
+            )
+        elif _RE_AUTH.search(haystack) and backend == ACP_BACKEND_STRANDS:
+            # Strands runs inside the sandbox, whose mask hides ~/.aws, so the
+            # host's AWS profiles never reach it. The remedy is the per-harness
+            # vault mapping, which the operator must be told by name.
+            formatted = (
+                "Bedrock authentication failed. Strands runs sandboxed and cannot "
+                "read ~/.aws profiles: store a Bedrock API key in the vault and map "
+                "it with agent.strands_env "
+                '({"AWS_BEARER_TOKEN_BEDROCK": "secret://<name>", '
+                '"AWS_REGION": "secret://<name>"}), then start a new chat.'
                 f"{req_id_suffix}"
             )
         elif _RE_AUTH.search(haystack):

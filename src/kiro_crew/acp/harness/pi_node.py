@@ -174,7 +174,10 @@ def _node_version(
 
 
 def _too_old_issue(
-    found: str, version: tuple[int, int, int] | None, floor: tuple[int, int, int]
+    found: str,
+    version: tuple[int, int, int] | None,
+    floor: tuple[int, int, int],
+    label: str = "pi",
 ) -> str:
     floor_text = format_node_version(floor)
     if found and version is not None:
@@ -184,8 +187,8 @@ def _too_old_issue(
         what = "no 'node' is on the session's PATH"
         where = "put it on PATH"
     return (
-        f"pi needs Node.js {floor_text} or newer (the 'engines' floor in its package.json), but {what}, and no Node.js "
-        f"that new was found beside pi or later on that PATH. Install Node.js "
+        f"{label} needs Node.js {floor_text} or newer (the 'engines' floor in its package.json), but {what}, and no Node.js "
+        f"that new was found beside {label} or later on that PATH. Install Node.js "
         f"{floor_text} or newer and {where}, then start a new chat."
     )
 
@@ -197,12 +200,14 @@ def choose_pi_node(
     *,
     cwd: str = "",
     wrap: ProbeWrap = nullcontext,
+    label: str = "pi",
 ) -> PiNodeChoice:
     """How to run *pi_bin* so the Node under it meets *floor*.
 
     *search_path* is the PATH the pi child inherits, which is what its shebang's
     ``env`` searches; *floor* is the one pi's manifest declares. *wrap* confines each ``node --version`` child
-    (:func:`_node_version`).
+    (:func:`_node_version`). *label* names the program in the refusal: the Strands
+    CLI is a Node script of the same shape and takes the same choice.
     """
     if platform_compat.IS_WINDOWS:
         return PiNodeChoice()
@@ -230,4 +235,4 @@ def choose_pi_node(
         candidate_version = _node_version(candidate, search_path, cwd, wrap)
         if candidate_version is not None and candidate_version >= floor:
             return PiNodeChoice(argv=(candidate, script))
-    return PiNodeChoice(issue=_too_old_issue(current, version, floor))
+    return PiNodeChoice(issue=_too_old_issue(current, version, floor, label))

@@ -73,6 +73,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
 )
 from kiro_crew.kiro_cli_bundle import KIRO_CLI_LOGIN_COMMAND, spawn_login_command
@@ -462,6 +463,37 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         signed_out_message=_KAS_SIGNED_OUT,
         host_logout_retires_children=True,
         entitlement_source=ENTITLEMENT_HOST_IDENTITY_STORE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_STRANDS,
+        # The Strands CLI stores no credential of its own: its config keeps provider
+        # settings and strips every key name (``normalizeStoredProviderEnvironment``
+        # deletes the ``PROVIDER_CREDENTIAL_KEYS``). A key reaches it from the process
+        # environment, which Crew fills from its own vault (``agent.strands_env``), and
+        # Bedrock otherwise rides the standard AWS chain.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        # Nothing spared: the routing is ``VERIFIED_GATE_EXTENSION`` (enforced), so the
+        # mask denies the child the whole floor, and the vault keys arrive as
+        # environment variables the gate module withholds from every shell and code
+        # child the agent runs -- proved per spawn by its load marker.
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "The Strands harness reaches its model with the provider settings Kiro Crew "
+            "holds for it. Save a key under Settings → Secrets and map it in "
+            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, GEMINI_API_KEY, AWS_BEARER_TOKEN_BEDROCK, ...). Bedrock "
+            "also works through the standard AWS credential chain."
+        ),
+        signed_out_message=(
+            "The Strands harness has no model credential. Save a key under Settings > "
+            "Secrets and map it in `agent.strands_env` (for example "
+            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`), or set up AWS "
+            "credentials for Bedrock, then start a new chat."
+        ),
+        # Its credential is not the host's: a kiro-cli logout cannot bear on it.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HOST_VAULT,
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_CODEX,

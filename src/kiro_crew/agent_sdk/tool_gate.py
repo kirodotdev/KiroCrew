@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     Readback,
     Routing,
     gate_probe_command_for,
@@ -931,10 +932,18 @@ def gate_marker_issue(
                 "transport whose programs reach Node's own APIs around the gate"
             )
         return _deepseek_child_env_issue(marker.get("child_env"), child_scrub_names)
+    if backend == ACP_BACKEND_STRANDS:
+        # The Strands gate module proves the same property on a child of the local
+        # sandbox it patched, in the same proof shape.
+        return _deepseek_child_env_issue(
+            marker.get("child_env"), child_scrub_names, mapping="agent.strands_env"
+        )
     return ""
 
 
-def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> str:
+def _deepseek_child_env_issue(
+    proof: object, expected_names: Sequence[str], *, mapping: str = "agent.deepseek_env"
+) -> str:
     """Why the marker's child-env proof does not clear the vault-fed names, or ``""``.
 
     *proof* is the plugin's ``child_env`` snapshot; *expected_names* the names Crew
@@ -974,7 +983,7 @@ def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> s
     if sorted(set(names)) != expected:
         return (
             f"the gate's child-environment proof covers {sorted(set(names))!r} rather than "
-            f"the configured agent.deepseek_env names {expected!r}, so it does not vouch "
+            f"the configured {mapping} names {expected!r}, so it does not vouch "
             "for the key this session would inject"
         )
     if parent_missing:

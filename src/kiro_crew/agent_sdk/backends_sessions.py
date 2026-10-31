@@ -24,6 +24,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
@@ -157,6 +158,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -263,6 +265,10 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # strands persists each session under the directory Crew names (its gate
+        # module's ``session`` option) and restores it on ``session/load`` by id:
+        # ``test/fixtures/acp_frames/strands/session-load-live.jsonl``.
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -285,7 +291,13 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
 # rejects modes across its whole surface, so it can never return one. Membership is
 # what keeps a restored conversation from being discarded by a check for a block this
 # harness has nothing to put in.
-ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset({ACP_BACKEND_OPENCODE, ACP_BACKEND_DEEPSEEK})
+#
+# strands is a member on a capture: its project-mode ``session/load`` answers ``{}``
+# after replaying the restored history
+# (``test/fixtures/acp_frames/strands/session-load-live.jsonl``).
+ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset(
+    {ACP_BACKEND_OPENCODE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_STRANDS}
+)
 
 # Backends that restore a session with ``session/resume`` instead of
 # ``session/load``, and advertise it under ``sessionCapabilities.resume`` instead of
