@@ -614,7 +614,26 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#: Then by 197 more for the allowed link hosts. 43 are the
+#: ``redaction_allowed_host_used`` audit event in ``exfil.py``. It shares
+#: ``_log_operator_list_use`` with the OAuth extension event, so the event
+#: construction was folded into one helper rather than copied, and the
+#: allowed-host list reuses ``_OAUTH_EXTENSION_HOST_RE`` instead of a second host
+#: regex. Its per-process dedupe memo carries a count ceiling so revoked hosts
+#: cannot grow it without bound. 87 make the list's narrowing auditable: the
+#: render scope's workspace in that event and its memo key, the ``*.localhost``
+#: refusal and its reason, and one ``redaction.allowed_hosts.dropped_invalid``
+#: event per file when a load drops entries. 15 are the revoke epoch and scoped
+#: workspace the render memo keys on, so a re-allowed host is audited again
+#: on a memoized history render, and 6 the one lock a revoke and a render share
+#: on that memo, and 1 the facade import of the shared SEL helper from
+#: ``exfil_oauth``. 18 are ``allowed_host_use_unaudited``, which the save-time
+#: display-verdict projection opens so a render nobody reads writes no use
+#: event, and 5 the 63-letter top-level label cap beside the shared regex. 22
+#: carry the revoke epoch a render read before its hosts into the use audit, so
+#: a render in flight across a revoke does not re-add the memo entry. No check
+#: was relaxed.
+_PACKAGE_LINE_BUDGET = 33_720
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
