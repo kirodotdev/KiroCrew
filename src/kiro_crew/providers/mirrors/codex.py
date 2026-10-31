@@ -67,6 +67,9 @@ from typing import Any, Mapping
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.base import (
     AgentConfigMirror,
@@ -90,6 +93,94 @@ _D = Disposition
 #: element with no ``type`` at all is this one: ACP v1 spells ``McpServer`` as
 #: ``serde(tag = "type")`` with the stdio variant as the untagged fallback.
 _ACP_BASELINE_TRANSPORT = "stdio"
+
+
+def _work_ledger_server() -> str:
+    """The work-ledger server's name, read from its own module.
+
+    Deferred rather than spelled: this module derives Crew's server names instead
+    of restating them, and ``mcp_work`` reaches ``mcp_core``, which the mirror
+    registry has no reason to load at import time.
+    """
+    from kiro_crew.mcp_work import SERVER_NAME
+
+    return SERVER_NAME
+
+
+def _stub_registered_servers(args: Any) -> list[str] | None:
+    """Every ``--server`` value a broker-stub argv names, or ``None`` if it is not one.
+
+    ``None`` when the argv is not a list of strings, its flag envelope cannot be
+    read, or it does not run :data:`~kiro_crew.mcp_gateway.STUB_MODULE` -- an
+    element that is not the gateway's stub is not vouched for by the gateway.
+    """
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return None
+    try:
+        argv = expand_stub_flags(args)
+    except ValueError:
+        return None
+    if not any(
+        token == "-m" and i + 1 < len(argv) and argv[i + 1] == STUB_MODULE
+        for i, token in enumerate(argv)
+    ):
+        return None
+    servers: list[str] = []
+    for i, token in enumerate(argv):
+        if not isinstance(token, str):
+            return None
+        if token == "--server":
+            if i + 1 >= len(argv) or not isinstance(argv[i + 1], str):
+                return None
+            servers.append(argv[i + 1])
+        elif token.startswith("--server="):
+            servers.append(token.partition("=")[2])
+    return servers
+
+
+def is_session_bound_work_ledger_stub(stub: Mapping[str, Any], session_token: str) -> bool:
+    """Whether *stub* is the gateway's work-ledger broker stub for THIS session.
+
+    The work ledger is identity-bound, so codex withholds it like every other
+    managed Crew server that is not the control plane. A broker stub is the one
+    form that can still work here: the gateway rewriter authored it from the
+    managed launch, and the session it serves is named by the stub token the
+    broker checks on every call, not by anything the spec chose. This admits
+    exactly that shape and nothing near it:
+
+    * the name is the work-ledger server's;
+    * it is a stdio element whose argv runs the broker stub module and registers
+      under exactly one ``--server``, that same name;
+    * its ``env`` is exactly one pair: :data:`STUB_SESSION_TOKEN_ENV` carrying
+      *session_token*, which must be nonempty. The gateway clears a stub's env and
+      the client adds only that token, so any other pair, a second token, or a
+      token naming another session means the element is not this session's stub.
+
+    Fails closed: anything unreadable answers ``False``. Grants and restrictions
+    are not decided here; the caller still applies them.
+    """
+    if not session_token:
+        return False
+    server = _work_ledger_server()
+    if stub.get("name") != server:
+        return False
+    if str(stub.get("type") or _ACP_BASELINE_TRANSPORT) != _ACP_BASELINE_TRANSPORT:
+        return False
+    command = stub.get("command")
+    if not isinstance(command, str) or not command:
+        return False
+    if _stub_registered_servers(stub.get("args")) != [server]:
+        return False
+    env = stub.get("env")
+    if not isinstance(env, list) or len(env) != 1:
+        return False
+    pair = env[0]
+    return (
+        isinstance(pair, Mapping)
+        and set(pair) == {"name", "value"}
+        and pair.get("name") == STUB_SESSION_TOKEN_ENV
+        and pair.get("value") == session_token
+    )
 
 
 def drop_unadvertised_transports(
@@ -264,7 +355,10 @@ def codex_elements(
     appearing unusable -- :func:`codex_withheld_servers` drops them upstream of
     this function. The projection additionally reconstructs an explicitly granted
     dashboard entry before attaching identity; its broker stub may carry verified
-    per-call identity instead. The work ledger remains withheld.
+    per-call identity instead. The work ledger is admitted only as the gateway's
+    broker stub bound to this session's token
+    (:func:`is_session_bound_work_ledger_stub`); a spec-described work-ledger
+    entry stays withheld and is never handed a credential.
 
     A folded name is still claimed only once, first writer keeping it: two spec
     entries CAN legitimately fold together (``"my server"`` and ``"my_server"``),
@@ -386,9 +480,14 @@ def codex_projection(
             continue
         name = stub.get("name")
         # A dashboard stub is produced by the gateway rewriter, which rebuilds
-        # managed launches and verifies each caller. Keep the spec restrictions.
+        # managed launches and verifies each caller. A work-ledger stub is admitted
+        # only in its exact gateway shape, bound to this session's token. Both
+        # keep the spec restrictions.
+        admissible = name == MEMBER_DISPATCH_SERVER or is_session_bound_work_ledger_stub(
+            stub, session_token
+        )
         if name in withheld and not (
-            name == MEMBER_DISPATCH_SERVER
+            admissible
             and name not in projection.restricted
             and name not in projection.disabled_servers
         ):
@@ -456,7 +555,11 @@ class CodexMirror(AgentConfigMirror):
                 "holding it. Every OTHER managed Crew server is withheld rather than "
                 "mounted credential-less, since it would answer not_bound to every "
                 "call, and that set is DERIVED as the managed servers minus the "
-                "control plane -- see _identity_bound_crew_servers. The array and "
+                "control plane -- see _identity_bound_crew_servers. Two gateway "
+                "broker stubs are the exceptions, since gatewayd verifies their "
+                "caller: a granted dashboard stub, and a work-ledger stub only in "
+                "its exact shape bound to this session's stub token "
+                "(is_session_bound_work_ledger_stub). The array and "
                 "the withhold set come from ONE parse of the spec "
                 "(session_mcp_projection), so a narrowing that lands between two "
                 "reads of a user-writable file cannot leave a narrowed server "
