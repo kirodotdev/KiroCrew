@@ -567,11 +567,10 @@ class WaveDigestCoordinator(ManagerComponent):
                     # A restart orphan's notice: its own record, outcome included.
                     await asyncio.to_thread(write_tombstone, agent_id, **delivery.tombstone)
                 else:
+                    # Through the batch settle, so a leaked completed run's
+                    # tombstone keeps ``leaked_process`` the way a digest's does.
                     await asyncio.to_thread(
-                        mark_delivered,
-                        agent_id,
-                        elapsed=delivery.elapsed,
-                        credits=delivery.credits,
+                        settle_delivered_batch, (delivery,), writer=mark_delivered
                     )
             except Exception:
                 logger.debug(
