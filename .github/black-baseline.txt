@@ -530,7 +530,6 @@ test/test_knowledge_ingest_magic_byte.py
 test/test_knowledge_items_source_filter.py
 test/test_knowledge_kiroignore.py
 test/test_knowledge_source_spend.py
-test/test_learn.py
 test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py

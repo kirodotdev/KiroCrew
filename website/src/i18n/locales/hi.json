@@ -15215,7 +15215,13 @@
         "summarize_now": "अभी सारांश बनाओ",
         "tool": "टूल",
         "when": "कब",
-        "save_profile": "प्रोफ़ाइल सहेजो"
+        "save_profile": "प्रोफ़ाइल सहेजो",
+        "search_lessons": "पाठ खोजो…",
+        "edit": "संपादित करो",
+        "cancel": "रद्द करो",
+        "edit_rule": "नियम संपादित करो",
+        "edit_failed": "पाठ को अपडेट नहीं किया जा सका",
+        "lessons_refresh_failed_edit": "पाठ अपडेट किया गया, लेकिन सूची को रीफ़्रेश नहीं किया जा सका"
       },
       "portabilityTab": {
         "archive_contents": "आर्काइव की सामग्री:",

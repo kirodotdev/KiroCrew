@@ -429,7 +429,13 @@ class LessonStore:
         return self._insert_or_enrich(lesson, enrich=False)
 
     @named_store_operation
-    def save_or_enrich(self, lesson: Lesson, *, superseded_out: list[str] | None = None) -> str:
+    def save_or_enrich(
+        self,
+        lesson: Lesson,
+        *,
+        replaces: str | None = None,
+        superseded_out: list[str] | None = None,
+    ) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
         rule, in ONE lock acquisition. Returns
         ``inserted``/``enriched``/``unchanged``/``refused``.
@@ -441,14 +447,26 @@ class LessonStore:
         check, which matches on the rule alone: returning before looking at
         ``negative`` would drop the clause behind an HTTP 200.
 
+        When *replaces* is given, the named rule is replaced in the same locked write:
+        the old row is retired before capacity pruning, so an edit against a full
+        store never evicts an unrelated oldest lesson. Any retired rule is appended
+        to *superseded_out* when provided.
+
         A ``preference`` insert also replaces the stored preferences it
         conflicts with (newest wins, :func:`_conflicting_preference`). The rule
         text of each replaced row is appended to *superseded_out* when given.
         """
-        return self._insert_or_enrich(lesson, enrich=True, superseded_out=superseded_out)
+        return self._insert_or_enrich(
+            lesson, enrich=True, replaces=replaces, superseded_out=superseded_out
+        )
 
     def _insert_or_enrich(
-        self, lesson: Lesson, *, enrich: bool, superseded_out: list[str] | None = None
+        self,
+        lesson: Lesson,
+        *,
+        enrich: bool,
+        replaces: str | None = None,
+        superseded_out: list[str] | None = None,
     ) -> str:
         """Shared body for :meth:`save` and :meth:`save_or_enrich`.
 
@@ -501,10 +519,50 @@ class LessonStore:
             # non-reentrant Lock. Do NOT call save() from in here for the same reason.
             existing = self._load_for_write()
             wanted = lesson.rule.lower().strip()
+            replaces_clean = (
+                replaces.strip().lower() if isinstance(replaces, str) and replaces.strip() else None
+            )
+            same_rule = replaces_clean is not None and replaces_clean == wanted
+
+            replaced_le: Lesson | None = None
+            if replaces_clean is not None:
+                for le in existing:
+                    if wanted_scope == le.repo_scope and le.rule.lower().strip() == replaces_clean:
+                        replaced_le = le
+                        break
+                if replaced_le is None:
+                    logger.info("Refused lesson edit: replaces target %r not found", replaces)
+                    return "refused"
+
+            inherited_negative: str | None = None
+            if replaced_le is not None and wanted_negative is None:
+                inherited_negative = replaced_le.negative
+
+            if replaced_le is not None and not same_rule:
+                dest_le: Lesson | None = None
+                for le in existing:
+                    if wanted_scope == le.repo_scope and le.rule.lower().strip() == wanted:
+                        dest_le = le
+                        break
+                if (
+                    dest_le is not None
+                    and wanted_negative is None
+                    and replaced_le.negative is not None
+                    and dest_le.negative is not None
+                    and replaced_le.negative != dest_le.negative
+                ):
+                    logger.info(
+                        "Refused lesson edit: incompatible NOT-clause merge into existing rule %s",
+                        lesson.rule,
+                    )
+                    return "refused"
+
             updated: list[Lesson] = []
             matched = False
+            replaced_original = False
             outcome = "inserted"
             for le in existing:
+                le_norm = le.rule.lower().strip()
                 # Scope is part of a lesson's IDENTITY, not a field to overwrite, and
                 # the comparison is STRICT. The same rule with and without a scope is
                 # two lessons, exactly as in the vector store, where the scope is
@@ -516,27 +574,32 @@ class LessonStore:
                 # save-this-globally request bind to a scoped row and report success
                 # without ever creating the global lesson. Addressing a scoped lesson
                 # therefore means naming its scope.
-                if (
-                    not matched
-                    and wanted_scope == le.repo_scope
-                    and (le.rule.lower().strip() == wanted)
-                ):
+                if not matched and wanted_scope == le.repo_scope and (le_norm == wanted):
                     matched = True
                     # A field is enriched only when the submission carries a value
                     # for it AND that value differs. A bare re-submit therefore
                     # never strips a stored clause or scope -- it reports
                     # ``unchanged``, matching the vector store for the same case.
                     next_negative = le.negative
-                    if wanted_negative is not None:
-                        next_negative = wanted_negative
+                    effective_negative = (
+                        wanted_negative if wanted_negative is not None else inherited_negative
+                    )
+                    if effective_negative is not None:
+                        next_negative = effective_negative
                     next_scope = le.repo_scope
                     if wanted_scope is not None:
                         next_scope = wanted_scope
-                    if not enrich or (next_negative == le.negative and next_scope == le.repo_scope):
+                    rule_changed = bool(same_rule and lesson.rule != le.rule)
+                    if not enrich or (
+                        next_negative == le.negative
+                        and next_scope == le.repo_scope
+                        and not rule_changed
+                    ):
                         outcome = "unchanged"
                         updated.append(le)
                     else:
                         outcome = "enriched"
+                        next_rule = lesson.rule if same_rule else le.rule
                         # Build a REPLACEMENT record rather than mutating in place:
                         # load_all() hands back the cached objects, so an in-place
                         # edit followed by a failed write would leave the cache
@@ -545,15 +608,29 @@ class LessonStore:
                         updated.append(
                             replace(
                                 le,
+                                rule=next_rule,
                                 negative=next_negative,
                                 repo_scope=next_scope,
                                 written_by=lesson.written_by or le.written_by,
                             )
                         )
                     continue
+                if (
+                    not replaced_original
+                    and replaces_clean
+                    and not same_rule
+                    and wanted_scope == le.repo_scope
+                    and (le_norm == replaces_clean)
+                ):
+                    replaced_original = True
+                    if superseded_out is not None:
+                        superseded_out.append(le.rule)
+                    continue
                 updated.append(le)
-            if outcome == "unchanged":
+            if outcome == "unchanged" and not replaced_original:
                 return outcome  # nothing to write; leave the file untouched
+            if outcome == "unchanged" and replaced_original:
+                outcome = "enriched"
             replaced: list[str] = []
             if not matched and enrich:
                 # Newest wins: an explicit preference replaces the stored
@@ -570,7 +647,8 @@ class LessonStore:
             if not matched:
                 # Insert the normalised clause too, so a whitespace-only one is stored
                 # as absent rather than as blanks.
-                submitted = replace(lesson, negative=wanted_negative, repo_scope=wanted_scope)
+                effective_negative = wanted_negative or inherited_negative
+                submitted = replace(lesson, negative=effective_negative, repo_scope=wanted_scope)
                 updated.append(submitted)
                 if len(updated) > _MAX_LESSONS_TOTAL:
                     updated = _prune_to_total(updated)

@@ -62,6 +62,7 @@ def write_lesson(
     defer_backfills: bool = False,
     facets: "memory_schema.MemoryFacets | None" = None,
     written_by: Mapping[str, str] | None = None,
+    replaces: str | None = None,
 ) -> LessonWriteResult:
     """Write a lesson as a semantic entry with key lesson.<hash>.
 
@@ -237,6 +238,29 @@ def write_lesson(
     # then set_semantic refused the replacement, and the route still returned
     # HTTP 200 with no lesson stored. Validating here makes the whole call a
     # no-op when the replacement cannot land.
+    # Deduplication is SCOPE-LOCAL, and both passes below share this list.
+    lesson_rows = _lessons.lesson_rows_in_scope(self.get_lessons(), repo_scope)
+
+    replaces_clean = replaces.strip() if isinstance(replaces, str) and replaces.strip() else None
+    if replaces_clean is not None:
+        replaces_target_row: dict | None = None
+        for r in lesson_rows:
+            try:
+                dec = json.loads(r.get("value_json", "{}"))
+                f = _lessons._lesson_fields_for_row(dec, r.get("key", ""))
+                if f is not None:
+                    stored_r, stored_neg = f
+                    if stored_r == replaces_clean or stored_r.strip() == replaces_clean:
+                        replaces_target_row = r
+                        if negative is None and stored_neg:
+                            negative = stored_neg
+                        break
+            except Exception:
+                pass
+        if replaces_target_row is None:
+            logger.info("Lesson edit rejected: replaces target %r not found", replaces)
+            return LessonWriteResult(LessonWriteOutcome.REFUSED, "replaces_target_not_found")
+
     key = _lesson_key(rule, repo_scope)
     # The mapping shape keeps the two halves as separate fields, so they
     # survive a round-trip regardless of what characters the rule contains.
@@ -305,12 +329,35 @@ def write_lesson(
     # cosine similarity) reach across scopes and DELETE guidance the submitter
     # never addressed -- writing a repo-scoped rule could retire a global one
     # that merely shared most of its significant words.
-    #
-    lesson_rows = _lessons.lesson_rows_in_scope(self.get_lessons(), repo_scope)
+    replaces_key = _lesson_key(replaces_clean, repo_scope) if replaces_clean else None
+    same_rule_replacement = bool(
+        replaces_clean
+        and (replaces_clean == rule or (replaces_key is not None and replaces_key == key))
+    )
 
+    def _is_replaced_row(existing_row: dict) -> bool:
+        if not replaces_clean or same_rule_replacement:
+            return False
+        if existing_row.get("key") == key:
+            return False
+        try:
+            dec = json.loads(existing_row.get("value_json", "{}"))
+            f = _lessons._lesson_fields_for_row(dec, existing_row.get("key", ""))
+            if f is not None:
+                stored_r, _ = f
+                return bool(stored_r == replaces_clean or stored_r.strip() == replaces_clean)
+        except Exception:
+            pass
+        return False
+
+    exact_rows = (
+        [r for r in lesson_rows if not _is_replaced_row(r)]
+        if replaces_clean and not same_rule_replacement
+        else lesson_rows
+    )
     exact = _lessons.resolve_exact_rule(
         self,
-        lesson_rows,
+        exact_rows,
         rule=rule,
         key=key,
         negative=negative,
@@ -378,6 +425,8 @@ def write_lesson(
         and not matched
     ):
         for existing in lesson_rows:
+            if _is_replaced_row(existing):
+                continue
             pre_text = _lessons._lesson_row_text(existing)
             if pre_text is None:
                 continue
@@ -470,6 +519,18 @@ def write_lesson(
                         ),
                     )
 
+    if replaces_clean:
+        for existing in lesson_rows:
+            if _is_replaced_row(existing):
+                existing_report = (
+                    _lessons._lesson_row_report_text(existing)
+                    or _lessons._lesson_row_text(existing)
+                    or replaces_clean
+                )
+                deferred_supersedes.append(
+                    (existing["key"], existing_report, existing["value_json"], "replaced")
+                )
+
     # Private V2 keeps exact-rule enrichment above, but similarity cannot
     # authorize deleting a different instruction. Corrections target a key
     # explicitly; uncertain conflicts remain visible for owner review.
@@ -485,6 +546,9 @@ def write_lesson(
         # when a row has no display form, so the report can never be emptier than
         # the row it names.
         existing_report = _lessons._lesson_row_report_text(existing) or existing_text
+
+        if _is_replaced_row(existing):
+            continue
 
         may_retire_existing, covering_row_arrives_less_often = _lessons.tier_permissions(
             existing, applies

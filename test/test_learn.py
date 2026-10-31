@@ -497,7 +497,7 @@ class TestSaveOrEnrich:
     def test_distinct_words_differing_only_by_sharp_s_are_not_conflated(
         self, tmp_path: Path
     ) -> None:
-        """"Maße" (dimensions) and "Masse" (mass) are DIFFERENT rules. casefold() maps ß
+        """ "Maße" (dimensions) and "Masse" (mass) are DIFFERENT rules. casefold() maps ß
         to ss, so under it these compared equal and a clause submitted for "Masse"
         attached itself to the stored "Maße" while the intended lesson was never
         created -- the wrong rule enriched, the right one discarded. lower() keeps them
@@ -536,9 +536,10 @@ class TestSaveOrEnrich:
         store = LessonStore(base_dir=tmp_path)
         store.save(_make_lesson("Pin the port", "tool", "Do not autopick"))
 
-        assert store.save_or_enrich(
-            _make_lesson("Pin the port", "tool", "Do not autopick")
-        ) == "unchanged"
+        assert (
+            store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
+            == "unchanged"
+        )
         assert len(store.load_all()) == 1
 
     def test_a_whitespace_only_clause_never_overwrites_a_stored_one(self, tmp_path: Path) -> None:
@@ -635,9 +636,7 @@ class TestSaveOrEnrich:
         handle. The repo's replace_with_retry exists for exactly that; this pins that
         the store's write routes through it rather than hand-rolling the rename."""
         store = LessonStore(base_dir=tmp_path)
-        with patch(
-            "kiro_crew.atomic_write.replace_with_retry", wraps=replace_with_retry
-        ) as spy:
+        with patch("kiro_crew.atomic_write.replace_with_retry", wraps=replace_with_retry) as spy:
             store.save(_make_lesson("Pin the port", "tool"))
         assert spy.called, "the write bypassed replace_with_retry"
 
@@ -715,9 +714,7 @@ class TestConcurrentClauseAttach:
         different = LessonStore(base_dir=tmp_path / "other")
         assert different._lock is not a._lock, "a different file must not share it"
 
-    def test_concurrent_writes_from_separate_instances_lose_nothing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_concurrent_writes_from_separate_instances_lose_nothing(self, tmp_path: Path) -> None:
         stores = [LessonStore(base_dir=tmp_path) for _ in range(6)]
         barrier = threading.Barrier(len(stores))
 
@@ -765,9 +762,7 @@ class TestAtomicWrite:
 
         # Patched inside atomic_write, which is where the rename now happens. This is
         # the real seam: learn.py does not touch os itself.
-        with patch(
-            "kiro_crew.atomic_write.replace_with_retry", side_effect=OSError("disk full")
-        ):
+        with patch("kiro_crew.atomic_write.replace_with_retry", side_effect=OSError("disk full")):
             with pytest.raises(OSError):
                 store.save_or_enrich(_make_lesson("Pin the port", "tool", "Do not autopick"))
 
@@ -775,3 +770,110 @@ class TestAtomicWrite:
         store._cache = None
         assert all(le.negative is None for le in store.load_all()), "file was modified"
         assert list(tmp_path.rglob("*.tmp")) == [], "temp file survived a failed swap"
+
+    def test_save_or_enrich_replaces_in_full_store_without_evicting_unrelated(
+        self, tmp_path: Path
+    ) -> None:
+        from kiro_crew.learn import _MAX_LESSONS_TOTAL
+
+        store = LessonStore(base_dir=tmp_path)
+        for i in range(_MAX_LESSONS_TOTAL):
+            store.save(_make_lesson(f"Rule {i:03d}", "tool"))
+        assert len(store.load_all()) == _MAX_LESSONS_TOTAL
+        oldest_before = store.load_all()[0].rule
+
+        outcome = store.save_or_enrich(
+            _make_lesson("Rule 199 modified", "tool"),
+            replaces="Rule 199",
+        )
+        assert outcome == "inserted"
+        all_rules = [l.rule for l in store.load_all()]
+        assert len(all_rules) == _MAX_LESSONS_TOTAL
+        assert oldest_before in all_rules, "Oldest rule was improperly evicted"
+        assert "Rule 199 modified" in all_rules
+        assert "Rule 199" not in all_rules
+
+    def test_save_or_enrich_same_rule_capitalization(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("use tabs", "tool"))
+        outcome = store.save_or_enrich(_make_lesson("USE TABS", "tool"), replaces="use tabs")
+        assert outcome == "enriched"
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].rule == "USE TABS"
+
+    def test_save_or_enrich_replaces_retires_old_even_when_enriching_existing(
+        self, tmp_path: Path
+    ) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Prefer tabs", "tool", "NOT spaces"))
+        store.save(_make_lesson("Use tabs", "tool", "NOT spaces"))
+        outcome = store.save_or_enrich(
+            _make_lesson("Use tabs", "tool", "NOT braces"), replaces="Prefer tabs"
+        )
+        assert outcome == "enriched"
+        rules = {l.rule: l.negative for l in store.load_all()}
+        assert "Prefer tabs" not in rules
+        assert rules.get("Use tabs") == "NOT braces"
+
+    def test_save_or_enrich_bare_resubmit_different_casing_reports_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare re-submit with differing casing must report unchanged and not rewrite casing."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run pytest -K first", "tool"))
+        outcome = store.save_or_enrich(_make_lesson("run pytest -k first", "tool"))
+        assert outcome == "unchanged"
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].rule == "Run pytest -K first"
+
+    def test_save_or_enrich_replaces_preserves_stored_negative_when_omitted(
+        self, tmp_path: Path
+    ) -> None:
+        """An inline replacement rule without a negative clause preserves the replaced negative."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("old rule text", "tool", negative="do not do bad things"))
+        outcome = store.save_or_enrich(
+            _make_lesson("new rule text", "tool"), replaces="old rule text"
+        )
+        assert outcome == "inserted"
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].rule == "new rule text"
+        assert loaded[0].negative == "do not do bad things"
+
+    def test_save_or_enrich_merge_into_existing_rule_preserves_negative_clause(
+        self, tmp_path: Path
+    ) -> None:
+        """Editing into an existing rule preserves the original NOT-clause onto the destination."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run tests", "tool", negative=None))
+        store.save(_make_lesson("Run all tests", "tool", negative="NOT on prod"))
+        outcome = store.save_or_enrich(_make_lesson("Run tests", "tool"), replaces="Run all tests")
+        assert outcome == "enriched"
+        loaded = store.load_all()
+        assert len(loaded) == 1
+        assert loaded[0].rule == "Run tests"
+        assert loaded[0].negative == "NOT on prod"
+
+    def test_save_or_enrich_incompatible_negative_merge_refused(self, tmp_path: Path) -> None:
+        """An edit merging into an existing rule with a different negative clause is refused."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run tests", "tool", negative="NOT in staging"))
+        store.save(_make_lesson("Run all tests", "tool", negative="NOT on prod"))
+        outcome = store.save_or_enrich(_make_lesson("Run tests", "tool"), replaces="Run all tests")
+        assert outcome == "refused"
+        rules = {l.rule: l.negative for l in store.load_all()}
+        assert len(rules) == 2
+        assert rules["Run tests"] == "NOT in staging"
+        assert rules["Run all tests"] == "NOT on prod"
+
+    def test_save_or_enrich_replaces_nonexistent_refused(self, tmp_path: Path) -> None:
+        """Editing with a replaces target that does not exist is refused."""
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run tests", "tool"))
+        outcome = store.save_or_enrich(_make_lesson("New rule", "tool"), replaces="Nonexistent")
+        assert outcome == "refused"
+        rules = [l.rule for l in store.load_all()]
+        assert rules == ["Run tests"]

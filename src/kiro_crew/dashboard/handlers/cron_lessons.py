@@ -328,6 +328,19 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 
     writer = memory_changes.writer_principal(request, state, sk)
     written_by = memory_changes.writer_stamp(writer)
+    replaces_raw = body.get("replaces")
+    replaces = (
+        replaces_raw.strip() if isinstance(replaces_raw, str) and replaces_raw.strip() else None
+    )
+    if replaces and _redact_memory_field(replaces) != replaces:
+        return web.json_response(
+            {
+                "ok": False,
+                "outcome": "refused",
+                "reason": "memory_record_redacted",
+            },
+            status=409,
+        )
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -391,6 +404,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             # to it.
             defer_backfills=True,
             written_by=written_by,
+            replaces=replaces,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -501,6 +515,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         )
         # save_or_enrich, not save: a re-submit of a stored rule carrying a new
         # NOT-clause has to attach it rather than be skipped as a duplicate.
+        # When ``replaces`` is given, the named rule is retired atomically within
+        # the single store-locked write before capacity pruning.
         # Off the loop because it reads the file and rewrites it whole -- the
         # same reason dashboard/ws.py offloads load_all.
         #
@@ -511,7 +527,12 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # LessonWriteOutcome on the wire.
         replaced_rules: list[str] = []
         outcome = await asyncio.to_thread(
-            functools.partial(store.save_or_enrich, lesson, superseded_out=replaced_rules)
+            functools.partial(
+                store.save_or_enrich,
+                lesson,
+                replaces=replaces,
+                superseded_out=replaced_rules,
+            )
         )
         # This store has exactly THREE refusal paths -- the volatile-text
         # predicate, the blocked-content screen and the row cap -- and all answer
@@ -522,22 +543,32 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # ``volatile_session_fact`` told a user at the row cap to reword a rule
         # whose wording was never the problem. The blocked-content reason is the
         # vector store's own code, so both stores answer one text alike.
+        stored = outcome != "refused"
         reason = None
         if outcome == "refused":
             if contains_volatile_lesson_fact(rule, negative):
                 reason = "volatile_session_fact"
             elif lesson_contains_injection(rule, negative):
                 reason = SemanticRejectCode.INJECTION.value
+            elif replaces:
+                replaces_clean = replaces.lower().strip()
+                target_found = any(
+                    l.repo_scope == repo_scope and l.rule.lower().strip() == replaces_clean
+                    for l in store.load_all()
+                )
+                if not target_found:
+                    reason = "replaces_target_not_found"
+                else:
+                    reason = "replaces_incompatible_merge"
             else:
                 reason = LESSON_REFUSED_AT_CAPACITY
-        stored = outcome != "refused"
-        # Only a ``preference`` insert supersedes here: it replaces the stored
-        # preferences it conflicts with (newest wins). Every other rule matches on
-        # exact rule text plus scope and either attaches a clause or reports
-        # ``unchanged``, so this store keeps both a general rule and the narrower
-        # rule containing it, which the vector store does not. (It can still drop
-        # the oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an
-        # eviction, not this write superseding a rule it overlaps.) Redacted on the
+        # Only a ``preference`` insert or an explicit ``replaces`` edit supersedes here:
+        # it replaces the stored preferences it conflicts with (newest wins) or the row
+        # named by replaces. Every other rule matches on exact rule text plus scope and
+        # either attaches a clause or reports ``unchanged``, so this store keeps both a
+        # general rule and the narrower rule containing it, which the vector store does not.
+        # (It can still drop the oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is
+        # an eviction, not this write superseding a rule it overlaps.) Redacted on the
         # same chain as the vector path.
         superseded = _redact_memory_field(replaced_rules) if replaced_rules else []
         # This store never answers ``deduped``, so there is no winner to name.
@@ -958,6 +989,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         negative: object = None,
         repo_scope: object = None,
         *,
+        bare_rule: object = None,
         tier: tuple[str, str | None] | None = None,
         applies: object = None,
         source: object = None,
@@ -993,6 +1025,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         normalized_category = normalize_lesson_category(category, strict=False)
         safe_rule = _redact_memory_field(rule)
         safe_category = _redact_memory_field(normalized_category)
+        is_redacted = safe_rule != rule
         result = {
             "rule": safe_rule,
             "category": safe_category,
@@ -1015,6 +1048,18 @@ async def api_lessons(request: web.Request) -> web.Response:
             result["applies"] = authored_applies
         if isinstance(source, str) and source.strip():
             result["source"] = _redact_memory_field(source.strip())[:64]
+        if isinstance(negative, str) and negative.strip():
+            safe_neg = _redact_memory_field(negative.strip())
+            result["negative"] = safe_neg
+            if safe_neg != negative.strip():
+                is_redacted = True
+        if isinstance(bare_rule, str) and bare_rule.strip():
+            safe_bare = _redact_memory_field(bare_rule.strip())
+            result["bare_rule"] = safe_bare
+            if safe_bare != bare_rule.strip():
+                is_redacted = True
+        if is_redacted:
+            result["is_redacted"] = True
         if contains_volatile_lesson_fact(rule, negative):
             result["withheld_reason"] = "volatile_session_fact"
         return result
@@ -1079,6 +1124,7 @@ async def api_lessons(request: web.Request) -> web.Response:
         rule = _lesson_display_text(decoded) or str(decoded)
         fields = _lesson_fields_for_row(decoded, e["key"])
         negative = fields[1] if fields is not None else None
+        bare_rule = fields[0] if fields is not None else rule
         raw_category = decoded.get("category") if isinstance(decoded, dict) else None
         # The RAW stored value, key-present or not: a legacy string row has
         # nowhere to carry a scope and reads as global, exactly as the
@@ -1092,6 +1138,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 e.get("updated_at", ""),
                 negative,
                 raw_scope,
+                bare_rule=bare_rule,
                 applies=raw_applies,
                 source=e.get("source"),
             )
@@ -1169,6 +1216,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 le.ts,
                 le.negative,
                 le.repo_scope,
+                bare_rule=le.rule,
                 tier=tier,
                 # ``getattr``, not ``le.applies``: this branch renders whatever
                 # the JSONL loader produced, and a row from an older file (or a

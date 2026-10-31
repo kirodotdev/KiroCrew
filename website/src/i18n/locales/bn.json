@@ -15215,7 +15215,13 @@
         "summarize_now": "এখনই সারসংক্ষেপ করো",
         "tool": "টুল",
         "when": "কখন",
-        "save_profile": "প্রোফাইল সংরক্ষণ করো"
+        "save_profile": "প্রোফাইল সংরক্ষণ করো",
+        "search_lessons": "পাঠ খোঁজো…",
+        "edit": "সম্পাদনা করো",
+        "cancel": "বাতিল",
+        "edit_rule": "নিয়ম সম্পাদনা করো",
+        "edit_failed": "পাঠ আপডেট করা যায়নি",
+        "lessons_refresh_failed_edit": "পাঠ আপডেট করা হয়েছে, কিন্তু তালিকা রিফ্রেশ করা যায়নি"
       },
       "portabilityTab": {
         "archive_contents": "আর্কাইভের বিষয়বস্তু:",
