@@ -1375,6 +1375,22 @@ export function RedactionCoach({ count, slotKey }: { count: number; slotKey?: st
 /** Rules an allowed host relaxes: the host exemption skips only these. */
 const ALLOWABLE_RULES = new Set(['exfil_query_length', 'exfil_query_pattern'])
 
+/**
+ * Hosts the allowed-host list can hold: the shape `redaction_allow._HOST_RE`
+ * accepts, a DNS name with a letter TLD. An IP literal is refused there, so the
+ * card offers no Allow for it rather than one that always fails. A `*.localhost`
+ * name is refused too (`redaction_allow.LOOPBACK_SUFFIX`): browsers send it to
+ * loopback without a lookup.
+ */
+const ALLOWABLE_HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/
+const LOOPBACK_SUFFIX = '.localhost'
+const MAX_TLD_LEN = 63
+function isAllowableHost(host: string): boolean {
+  const h = host.toLowerCase()
+  const tld = h.slice(h.lastIndexOf('.') + 1)
+  return ALLOWABLE_HOST_RE.test(h) && !h.endsWith(LOOPBACK_SUFFIX) && tld.length <= MAX_TLD_LEN
+}
+
 function linkReason(record: BlockedLink): string {
   switch (record.rule) {
     case 'exfil_query_length':
@@ -1513,7 +1529,11 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
   const url = record.url
-  const allowable = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
+  const allowRule = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
+  const allowable = allowRule && isAllowableHost(record.domain)
+  // Where Allow would otherwise sit, say why it is missing so a reader who
+  // has allowed other hosts does not take its absence for a bug.
+  const hostRefused = allowRule && !allowable
   const openOnce = () => {
     // Re-derived at the click, so what opens is the address on screen and it
     // passes the same shape check. noopener/noreferrer: the page gets no handle
@@ -1599,6 +1619,11 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
               </button>
             )}
           </div>
+          {hostRefused && (
+            <div className="mt-1.5 text-[12px] leading-[18px] text-muted" data-testid="blocked-link-allow-unsupported">
+              {i18nT('components.redaction.link_allow_unsupported')}
+            </div>
+          )}
         </>
       ) : (
         <div className="text-[13px] leading-5" data-testid="blocked-link-withheld">

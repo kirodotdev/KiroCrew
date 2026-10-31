@@ -34,6 +34,7 @@ import logging
 import re
 import socket
 import sys as _sys
+import threading
 import time  # noqa: F401  (a test clock installs here and the mirror carries it to exfil_oauth)
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,7 @@ from .exfil_oauth import (  # noqa: F401
     _OAUTH_QUERY_PARAMS,
     OAuthUrlCredentialDiagnostic,
     _approved_oauth_authorization_endpoint,
+    _log_operator_list_use,
     _oauth_diagnostic,
     _oauth_query_diagnostic,
     _oauth_url_payload_diagnostic,
@@ -913,16 +915,54 @@ def redact_exfiltration_urls(
 _SCOPED_EXEMPT_HOSTS: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "kiro_crew_scoped_exempt_hosts", default=frozenset()
 )
+#: The workspace those hosts were allowed in, so a use audit names the allowance.
+_SCOPED_EXEMPT_WORKSPACE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "kiro_crew_scoped_exempt_workspace", default=""
+)
+#: The revoke epoch read before those hosts were, so a use audit can tell a
+#: snapshot taken before a revoke from one taken after it. None outside a scope.
+_SCOPED_AUDIT_EPOCH: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "kiro_crew_scoped_audit_epoch", default=None
+)
 
 
 @contextlib.contextmanager
-def scoped_exempt_hosts(hosts: frozenset[str]) -> Iterator[None]:
-    """Relax the length and base64 checks for ``hosts`` inside the block only."""
+def scoped_exempt_hosts(
+    hosts: frozenset[str], workspace: str | None = None, epoch: int | None = None
+) -> Iterator[None]:
+    """Relax the length and base64 checks for ``hosts`` inside the block only.
+
+    ``workspace`` is the stored workspace key the hosts came from; it is only
+    written into the use audit and changes no verdict. ``epoch`` is
+    :func:`allowed_host_audit_epoch` read before ``hosts`` was; a use audit
+    from a scope whose epoch a revoke has since passed is not remembered.
+    """
     token = _SCOPED_EXEMPT_HOSTS.set(frozenset(h.lower() for h in hosts))
+    ws_token = _SCOPED_EXEMPT_WORKSPACE.set(workspace or "")
+    epoch_mark = _SCOPED_AUDIT_EPOCH.set(_allowed_host_audit_epoch if epoch is None else epoch)
     try:
         yield
     finally:
+        _SCOPED_AUDIT_EPOCH.reset(epoch_mark)
+        _SCOPED_EXEMPT_WORKSPACE.reset(ws_token)
         _SCOPED_EXEMPT_HOSTS.reset(token)
+
+
+#: False inside :func:`allowed_host_use_unaudited`. A save-time projection
+#: restores links to judge them, not to show them, so it writes no use audit.
+_AUDIT_ALLOWED_HOST_USE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kiro_crew_audit_allowed_host_use", default=True
+)
+
+
+@contextlib.contextmanager
+def allowed_host_use_unaudited() -> Iterator[None]:
+    """Restore allowed links in the block without auditing a use nobody saw."""
+    marker = _AUDIT_ALLOWED_HOST_USE.set(False)
+    try:
+        yield
+    finally:
+        _AUDIT_ALLOWED_HOST_USE.reset(marker)
 
 
 #: The rules an allowed host relaxes (see :func:`scoped_exempt_hosts`): a long
@@ -995,9 +1035,80 @@ def restore_allowed_links(
         failed = {d for d, at, url in placed if starts.get(at) != url}
         if not failed:
             restored = {i for d in domains for i in by_domain[d]}
+            if _AUDIT_ALLOWED_HOST_USE.get():
+                for domain in domains:
+                    _emit_allowed_host_used_event(domain, records)
             return out, [r for i, r in enumerate(records) if i not in restored]
         domains -= failed
     return text, records
+
+
+# One ``redaction_allowed_host_used`` event per (workspace, host) per process:
+# every history load and live frame re-restores the same links. The memo holds
+# at most ``_ALLOWED_HOST_AUDITED_MAX`` pairs; past it a new pair is audited on
+# every restore but not remembered: more SEL records, bounded memory, owner-added
+# hosts. A revoke forgets the host, so a later re-allow is audited on first use.
+_ALLOWED_HOST_AUDITED: set[tuple[str, str]] = set()
+_ALLOWED_HOST_AUDITED_MAX = 1024
+# One lock for the memo and the epoch: a revoke iterates the set while render
+# workers add to it, and an unguarded add mid-iteration raises.
+_ALLOWED_HOST_AUDIT_LOCK = threading.Lock()
+# Bumped on every revoke. Render memos key on it, so a row restored before the
+# revoke is rendered again after a re-allow and its use is audited again.
+_allowed_host_audit_epoch = 0
+
+
+def allowed_host_audit_epoch() -> int:
+    """How many revokes this process has seen, for render memo keys."""
+    return _allowed_host_audit_epoch
+
+
+def current_scoped_workspace() -> str:
+    """The workspace :func:`scoped_exempt_hosts` has in effect here, for cache keys."""
+    return _SCOPED_EXEMPT_WORKSPACE.get()
+
+
+def current_scoped_audit_epoch() -> int:
+    """The revoke epoch :func:`scoped_exempt_hosts` took with its hosts, for cache keys."""
+    scoped = _SCOPED_AUDIT_EPOCH.get()
+    return _allowed_host_audit_epoch if scoped is None else scoped
+
+
+def forget_allowed_host_use(host: str) -> None:
+    """Drop ``host`` from the use memo in every workspace (called on revoke)."""
+    global _allowed_host_audit_epoch
+    with _ALLOWED_HOST_AUDIT_LOCK:
+        for key in [k for k in _ALLOWED_HOST_AUDITED if k[1] == host]:
+            _ALLOWED_HOST_AUDITED.discard(key)
+        _allowed_host_audit_epoch += 1
+
+
+def _emit_allowed_host_used_event(host: str, records: list[dict]) -> None:
+    """SEL-audit that a reader-allowed host put a blocked link back on screen."""
+    workspace = _SCOPED_EXEMPT_WORKSPACE.get()
+    key = (workspace, host)
+    with _ALLOWED_HOST_AUDIT_LOCK:
+        if key in _ALLOWED_HOST_AUDITED:
+            return
+        # A snapshot taken before a revoke still shows its links, so the use
+        # is audited, but remembering it would hide the first use after a
+        # re-allow that the revoke's forget was meant to expose.
+        scoped = _SCOPED_AUDIT_EPOCH.get()
+        fresh = scoped is None or scoped == _allowed_host_audit_epoch
+        if fresh and len(_ALLOWED_HOST_AUDITED) < _ALLOWED_HOST_AUDITED_MAX:
+            _ALLOWED_HOST_AUDITED.add(key)
+    rules = sorted(
+        {str(r.get("rule")) for r in records if str(r.get("domain", "")).lower() == host}
+    )
+    meta = {
+        "workspace": workspace,
+        "host": host,
+        "rules": rules,
+        "mechanism": "REDACTION_ALLOWED_HOST",
+    }
+    _log_operator_list_use(
+        "redaction_allowed_host_used", "restore_allowed_links", host, lambda: meta
+    )
 
 
 def current_scoped_exempt_hosts() -> frozenset[str]:
