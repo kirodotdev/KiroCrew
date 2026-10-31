@@ -180,6 +180,8 @@ async def _init_heartbeat(self: GatewayOrchestrator) -> None:
                 self.ctx_builder.build_message,
                 injected,
                 is_new,
+                # Unattended: no user reads a heartbeat turn live.
+                interactive=False,
                 memory_store=_memory_store,
                 needs_reinjection=_needs_reinjection,
                 skill_bodies_session=session_key,
