@@ -151,6 +151,11 @@ class UpdatePins:
     # (e.g. "linux-x86_64", "darwin-arm64"). Falls back to the top-level
     # check_command/apply_command when the current platform has no override.
     platform_commands: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    # False stops the gateway installing an update by itself on every route: the
+    # check still runs, the badge still lights, and a person's Update applies it.
+    # A build below ``min_version`` still takes its mandatory update. True (the
+    # default, and what an absent key means) keeps today's behaviour.
+    unattended_apply: bool = True
 
     def permits_source(self, url: str) -> bool:
         """Does *url* satisfy the source pin? An empty pin permits anything.
@@ -203,6 +208,7 @@ class UpdatePins:
                 "check_command",
                 "apply_command",
                 "platform_commands",
+                "unattended_apply",
             },
             "updates",
         )
@@ -211,6 +217,11 @@ class UpdatePins:
             # UNPINNING a policy that plainly meant to pin. Fail closed instead.
             if d.get(key) is not None and not isinstance(d[key], str):
                 raise PlatformCompositionError(f"updates.{key} must be a string")
+        unattended = d.get("unattended_apply")
+        # `bool("false")` is True: coercing would turn unattended installs ON for a
+        # policy that plainly meant to turn them off. Fail closed instead.
+        if unattended is not None and not isinstance(unattended, bool):
+            raise PlatformCompositionError("updates.unattended_apply must be true or false")
         raw_platform = d.get("platform_commands")
         platform_commands: dict[str, dict[str, str]] = {}
         if raw_platform is not None:
@@ -255,6 +266,7 @@ class UpdatePins:
             check_command=str(d.get("check_command") or "").strip(),
             apply_command=str(d.get("apply_command") or "").strip(),
             platform_commands=platform_commands,
+            unattended_apply=unattended is not False,
         )
 
 

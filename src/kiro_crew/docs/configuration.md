@@ -822,6 +822,12 @@ section: its commands then check and apply on every install shape except
 Windows, where they never run and the gateway does not update itself. See the
 [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
 
+A security policy can also turn unattended installs off with
+`"unattended_apply": false` in its `updates` block. The gateway then never
+applies an update by itself, whatever `auto_update` says: it still checks and
+shows the update badge, and Update installs the update when you ask. A policy
+minimum version still installs a mandatory update.
+
 | Install | With `auto_update` on |
 |---|---|
 | Git or source checkout (any OS) on a primary branch: `main`, `mainline` or `master` <!-- wokeignore:rule=master --> | Applies |

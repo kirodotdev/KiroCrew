@@ -187,11 +187,12 @@ is kept. Over a profile this is a no-op, because a profile cannot carry posture.
 Everything outside `controls` stays the
 **authority's** — identity, signature state, tier and the `updates` *commands* — so a
 subordinate document cannot relabel whose ceiling this is or supply a command the
-gateway would run unsandboxed. The two `updates` pins that are themselves restrictions
-fold instead (`_intersect_update_pins`): `updates.source` is an allowlist and
-`updates.min_version` a floor, so a subordinate that sets one the authority left empty
-narrows the ceiling and keeps it; where both set one, the authority's source stands and
-the higher floor wins. Keeping "the authority's" there would have voided a pure
+gateway would run unsandboxed. The `updates` pins that are themselves restrictions
+fold instead (`_intersect_update_pins`): `updates.source` is an allowlist,
+`updates.min_version` a floor and `updates.unattended_apply` a switch whose `false`
+restricts, so a subordinate that sets one the authority left empty narrows the ceiling
+and keeps it; where both set one, the authority's source stands, the higher floor
+wins, and either tier's `false` stands. Keeping "the authority's" there would have voided a pure
 tightening — an empty source pin permits any remote, so a central document silent on
 updates plus a local source pin would have composed to "install from anywhere". Two
 things follow a declared-wins rule instead, because for them "the authority's" is only
@@ -374,9 +375,19 @@ every wheel apply checks the pin again under the update lock before downloading
   overrides each non-empty field it sets. Any command in any entry selects the
   provider on every host, so a host whose platform has no command then never
   checks or applies.
+- **`unattended_apply`** — a JSON boolean; absent or `null` reads `true`. `false`
+  stops the gateway installing an update by itself on every install shape,
+  whatever the user's `auto_update` says: the check still runs, the badge still
+  lights, and a person's Update applies it. `auto_update_effect` answers `notify`
+  but keeps the route, so the provider path still reads `can_apply` off it and
+  About keeps its Update button (see [cli](cli.md)). Each routine install reads
+  the pin again at its last step before it changes anything, so a policy
+  installed while the update waited still decides. A build below `min_version`
+  still takes its mandatory update, because the floor is the stronger pin. A
+  string such as `"false"` fails the load rather than reading as on.
 
-These five are the only keys `updates` accepts (`UpdatePins.from_dict`). Any
-other key, or a non-string value, **fails closed** (`_reject_unknown_keys`); what
+The bullets above name every key `updates` accepts (`UpdatePins.from_dict`). Any
+other key, or a value of the wrong type, **fails closed** (`_reject_unknown_keys`); what
 an unparsable file does at boot is in [Loading + precedence](#loading--precedence).
 The desktop marker's camelCase names (`checkCommand`, `updateCommand`) are
 **not** valid here.
@@ -419,7 +430,9 @@ boundary against a local operator who could edit the checkout directly.
 **Roll the build before the pin.** The parser fails closed on an unknown key, so a
 build predating `updates` refuses to boot on a pinned policy — which inverts the
 `min_version` case, since the stale hosts a floor targets are exactly the ones
-that would stop booting. Recovery is a manual `kirocrew update`.
+that would stop booting. Recovery is a manual `kirocrew update`. The same holds
+for a key added later: a build predating `unattended_apply` refuses a policy that
+sets it.
 
 ## Central distribution (`distribution`) — policy-only
 

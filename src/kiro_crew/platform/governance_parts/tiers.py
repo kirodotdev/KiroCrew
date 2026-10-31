@@ -212,7 +212,8 @@ def _intersect_ceilings(
 
     * **A restriction that folds** -- ``updates.source`` (an allowlist; empty permits
       any remote), ``updates.min_version`` (a floor; empty is none),
-      ``updates.channel`` (the authority's, else the subordinate's) and
+      ``updates.channel`` (the authority's, else the subordinate's),
+      ``updates.unattended_apply`` (``false`` from either tier stands) and
       ``yolo_max_seconds`` (the lower cap).  A subordinate
       supplying one where the authority left it empty NARROWS the ceiling, so it is
       kept; where both set one, the authority's source stands and the higher floor
@@ -275,7 +276,7 @@ def _lower_cap(authority: int, subordinate: int) -> int:
 
 
 def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> UpdatePins:
-    """Fold the two update pins that are restrictions; keep the commands the authority's.
+    """Fold the update pins that are restrictions; keep the commands the authority's.
 
     ``source`` is an allowlist and ``min_version`` a floor, so a subordinate that sets
     one the authority left empty tightens the ceiling and must not be discarded.  Two
@@ -283,6 +284,8 @@ def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> Up
     authority's stands (the subordinate cannot loosen it; its own narrowing is not
     applied).  Two floors intersect as the higher one; an unparseable floor imposes
     none (:meth:`UpdatePins.meets_min_version`), so it yields to a parseable one.
+    ``unattended_apply`` is a restriction too: ``true`` is the permissive value an
+    absent key also reads as, so either tier's ``false`` stands.
     """
     source = authority.source or subordinate.source
     # A channel is a value, not an allowlist: the authority's stands, and a
@@ -300,7 +303,14 @@ def _intersect_update_pins(authority: UpdatePins, subordinate: UpdatePins) -> Up
             width = max(len(upper), len(lower))
             if lower + (0,) * (width - len(lower)) > upper + (0,) * (width - len(upper)):
                 min_version = subordinate.min_version
-    return replace(authority, source=source, min_version=min_version, channel=channel)
+    unattended_apply = authority.unattended_apply and subordinate.unattended_apply
+    return replace(
+        authority,
+        source=source,
+        min_version=min_version,
+        channel=channel,
+        unattended_apply=unattended_apply,
+    )
 
 
 def _audit_policy_tier(operation: str, authority_tier: str, lower_tier: str) -> None:

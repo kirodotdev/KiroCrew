@@ -2620,8 +2620,9 @@ before. Commit distance without a version bump lights the dashboard badge, and
 **What `auto_update` does on this install is derived once.**
 `update_capability.auto_update_effect()` answers `install` (with the switch on,
 an available update is installed and the gateway restarts), `notify` (the switch
-cannot install here, so it only notifies), or `mandatory` (a policy floor this
-build is below installs it whatever the switch says). It is read from install
+cannot install here, or policy turns unattended installs off, so it only
+notifies), or `mandatory` (a policy floor this build is below installs it
+whatever the switch says). It is read from install
 shape and policy alone, before any check runs: a policy provider owns the update
 and installs only with an `apply_command` it can run; a git checkout installs only
 past the unattended git apply's static gates (a trusted `git`, a primary branch,
@@ -2632,7 +2633,18 @@ gateway's update loop branches on that answer, and `notify` never reaches
 `_prepare_auto_update_apply`, so admission is not paused for an update the install
 will not apply (a provider with no `apply_command`, a feature-branch checkout).
 `notify` is also what a source pin produces, and no badge then points at a
-`kirocrew update` the same pin refuses.
+`kirocrew update` the same pin refuses. A policy with
+`updates.unattended_apply: false` turns every remaining `install` into `notify`
+but keeps the route, the path a person's Update takes: the provider path reads
+`can_apply` (the Update button) off it, so About disables the switch and shows
+its note for an install that updates only when asked. A build below the floor
+still answers `mandatory`. The effect is derived before the check and the wait
+for idle, so each routine install reads the pin again with nothing awaited
+between that read and the change: the provider path before and after its memory
+copy, the last of the git route's refusals before `reset --hard` (they run before
+and after its copy too), and the managed venv before and after the memory copy at
+the swap (`run_wheel_apply`'s `refuse_if_unattended_off`), where a refusal ends
+`deferred` and the next cycle notifies.
 Dynamic conditions stay with the update itself: the git route still requires
 `version_newer`, the managed-venv route a newer build. A voluntary `install` is
 also withheld for a version the user put off: the update prompt's "Remind me

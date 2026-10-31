@@ -231,6 +231,77 @@ class TestMemorySnapshotHook:
         ]
 
 
+class TestUnattendedOffAtTheSwap:
+    """A routine install reads the unattended pin at the swap; nothing else does."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("refuse", "allowed", "status", "copies"),
+        [
+            pytest.param(True, False, "deferred", 0, id="routine-install-policy-off"),
+            pytest.param(True, True, "promoted", 1, id="routine-install-policy-on"),
+            pytest.param(False, False, "promoted", 1, id="approve-or-floor-policy-off"),
+        ],
+    )
+    async def test_the_pin_is_read_before_the_memory_copy_and_the_swap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        refuse: bool,
+        allowed: bool,
+        status: str,
+        copies: int,
+    ) -> None:
+        import kiro_crew.memory_backup as backup
+
+        copied: list[int] = []
+
+        def snapshot() -> tuple[int, str]:
+            copied.append(1)
+            return 1, ""
+
+        def apply(**kwargs: object) -> Path:
+            kwargs["before_promote"]()  # type: ignore[operator]
+            return tmp_path / "crew-venv-9.9.9"
+
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", snapshot)
+        monkeypatch.setattr(backup, "newest_backup", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: allowed
+        )
+        outcome = await _run(apply, monkeypatch, refuse_if_unattended_off=refuse)
+        assert outcome.status == status
+        assert len(copied) == copies
+
+    @pytest.mark.asyncio
+    async def test_a_policy_landing_during_the_memory_copy_still_refuses_the_swap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import kiro_crew.memory_backup as backup
+
+        policy = {"unattended_apply": True}
+        promoted: list[int] = []
+
+        def snapshot() -> tuple[int, str]:
+            policy["unattended_apply"] = False
+            return 1, ""
+
+        def apply(**kwargs: object) -> Path:
+            kwargs["before_promote"]()  # type: ignore[operator]
+            promoted.append(1)
+            return tmp_path / "crew-venv-9.9.9"
+
+        monkeypatch.setattr(wheel_apply, "snapshot_memory_before_update", snapshot)
+        monkeypatch.setattr(backup, "newest_backup", lambda *a: None)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed",
+            lambda: policy["unattended_apply"],
+        )
+        outcome = await _run(apply, monkeypatch, refuse_if_unattended_off=True)
+        assert outcome.status == "deferred"
+        assert promoted == []
+
+
 class TestUsernsReattach:
     """Fakes only: the real AppArmor state of the host running the suite is never read."""
 
