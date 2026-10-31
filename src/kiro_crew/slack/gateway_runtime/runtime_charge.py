@@ -102,10 +102,14 @@ def _apply_gate_verdict(job: CronJob, tally: _GateTally) -> bool:
     return False
 
 
-def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tuple[bool, bool]:
+def _cron_failure_attribution(
+    job: CronJob, _run_provider: object | None, *, auth_expiry: bool = False
+) -> tuple[bool, bool]:
     """Whether a failed cron run is its job's own failure, and whether its streak hands over.
 
     Returns ``(job_owns_failure, hand_over_streak)`` for :func:`_charge_failure`.
+    ``auth_expiry`` suppresses ``note_shared_death`` so a credential-expiry
+    failure does not inflate the shared-death streak.
     """
     # Was this run's failure this JOB's, or its runtime's? A cron
     # runtime hosts the job's own sub-agents, so a death there is a
@@ -138,7 +142,12 @@ def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tup
         # exemption would be unbounded for exactly the jobs that most
         # need it. A substitute bound is keyed to whatever owns the
         # counter it replaces.
-        _shared_streak = runtime_death.note_shared_death(f"cron:{job.id}")
+        # Auth-expiry failures must not inflate the shared-death streak — a
+        # credential problem is environmental, not a sign the job is broken.
+        # Read the streak without incrementing; the hand-over threshold can
+        # still fire if a prior non-auth run already filled it, but no new
+        # debt is added.
+        _shared_streak = runtime_death.note_shared_death(f"cron:{job.id}") if not auth_expiry else 0
         if _shared_streak >= _AUTO_PAUSE_THRESHOLD:
             # At the limit the substitute bound HANDS OVER its
             # accumulated value to the counter it stood in for,
@@ -185,7 +194,7 @@ def _cron_failure_attribution(job: CronJob, _run_provider: object | None) -> tup
     return _job_owns_failure, _hand_over_streak
 
 
-def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
+def _charge_failure(job: CronJob, _hand_over_streak: bool, *, auth_expiry: bool = False) -> None:
     """Charge this run's failure, performing any pending hand-over first.
 
     The two are one indivisible move. The hand-over raises the
@@ -197,11 +206,19 @@ def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
     charges nothing on its way out, so a torn move would leave the
     counter and the streak disagreeing with no writer left to
     reconcile them.
+
+    ``auth_expiry`` is forwarded to :meth:`CronJob.record_failure` so
+    credential/session-expiry failures are not counted toward auto-pause.
+    When set, the hand-over is also skipped: an auth-exempt shared death
+    must not transfer the streak into the job's own failure budget, since
+    the deaths were environmental and the counter must stay unchanged.
     """
-    if _hand_over_streak:
+    if _hand_over_streak and not auth_expiry:
+        # Auth-exempt failures do not acquire the shared-death streak: clearing
+        # it would discard earlier non-auth failures that are still owed.
         job.consecutive_failures = max(job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1)
         runtime_death.clear_shared_deaths(f"cron:{job.id}")
-    job.record_failure()
+    job.record_failure(auth_expiry=auth_expiry)
 
 
 async def _inject_with_retry(

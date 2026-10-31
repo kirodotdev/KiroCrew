@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         context_meter_reading,
         dataclass,
         declared_mcp_not_ready_note,
+        is_auth_error_message,
         logger,
         persist_token_record_async,
         provider_fallback_active,
@@ -779,6 +780,7 @@ async def _cron_run_single(
         # attempt fails it may have dispatched, so the transient ladder
         # must not run again. A failed reset leaves it unset.
         _acp_retry_attempted = False
+        _retry_exc_for_auth: Exception | None = None  # set when the retry ran and failed
         if (
             # Match the death by type: the pipe-broken raise sites in
             # acp/client.py word it "pipe broken", which no substring
@@ -830,8 +832,13 @@ async def _cron_run_single(
                 _turn_compaction["completed"] = False
                 _acp_retry_attempted = True
                 return await retry(job)
-            except Exception:
-                pass  # retry failed — fall through to dedup + alert
+            except Exception as _retry_exc:
+                # Capture the retry's exception for auth classification only
+                # (see _auth_expiry below). The outer raise stays bare so the
+                # original process-death exception is reported and stored, and
+                # the transient-retry ladder can still read it.
+                if _acp_retry_attempted:
+                    _retry_exc_for_auth = _retry_exc
             finally:
                 job._acp_retried = False  # type: ignore[attr-defined]
         # ── Transient backend errors: retry the whole callback with ──
@@ -917,9 +924,44 @@ async def _cron_run_single(
         # and advances dedup state, duplicating the outer handler.
         if getattr(job, "_acp_retried", False):
             raise
-        _job_owns_failure, _hand_over_streak = _cron_failure_attribution(job, _run_provider)
+        # Use the retry's exception for auth classification when the ACP retry
+        # ran (so an auth-expiry retry does not count toward auto-pause), or the
+        # original exception otherwise. Compute BEFORE attribution so the
+        # shared-death streak is not raised for credential-expiry failures.
+        _exc_for_auth = _retry_exc_for_auth if _retry_exc_for_auth is not None else exc
+        # Use credential_expired only — not auth_required, which can be True
+        # for KAS permanent permission denials via the broad HTTP-403 latch.
+        # agent-only: command/script stderr can contain third-party auth-shaped
+        # text that a Kiro re-auth cannot fix.
+        # 1. credential_expired=True — set by _raise_acp_error (Bedrock expiry,
+        #    JSON-RPC session expiry) and by startup/death translation when
+        #    saw_session_sign_out() is True (prose-only sign-out wording, no 403).
+        # 2. is_auth_error_message(str(exc)) — text fallback for errors whose
+        #    messages were NOT rewritten by _raise_acp_error. Guarded by
+        #    not user_worded: a curated message (like "Your session has expired"
+        #    rewritten from a permanent 403) must not be read as expiry here.
+        _auth_expiry = (
+            getattr(_exc_for_auth, "credential_expired", False)
+            and not job.command
+            and not job.script
+            or (
+                not job.command
+                and not job.script
+                and not getattr(_exc_for_auth, "user_worded", False)
+                and is_auth_error_message(str(_exc_for_auth))
+            )
+        )
+        _job_owns_failure, _hand_over_streak = _cron_failure_attribution(
+            job, _run_provider, auth_expiry=_auth_expiry
+        )
         await self._cron_single_failure(
-            job, exc, session_key, _gate_counted, _job_owns_failure, _hand_over_streak
+            job,
+            exc,
+            session_key,
+            _gate_counted,
+            _job_owns_failure,
+            _hand_over_streak,
+            _auth_expiry=_auth_expiry,
         )
         raise
     finally:

@@ -114,6 +114,7 @@ def _runtime(lines):
     runtime.recording_allowed = True
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
+    runtime._saw_session_sign_out = False
     runtime._saw_sandbox_init_failure = False
     runtime._saw_delegate_launch_failure = False
     runtime._initialized = False

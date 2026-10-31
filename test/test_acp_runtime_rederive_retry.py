@@ -166,6 +166,7 @@ def _failed_start(tmp_path) -> AcpRuntime:
     rt = AcpRuntime(work_dir=tmp_path / "wd", agent="kirocrew", sandbox_mode="off")
     rt._stderr_lines.extend(["auth failed", "sandbox refused"])
     rt._saw_auth_failure = True
+    rt._saw_session_sign_out = True
     rt._saw_sandbox_init_failure = True
     rt._scratch_dir = tmp_path / "scratch-of-the-dead-child"
     rt._mark_dead("killed (failed init handshake cleanup)")
@@ -186,6 +187,7 @@ async def test_the_revive_clears_what_the_dead_child_left(tmp_path):
     assert runtime_death.death_of(rt) is None
     assert rt._stderr_lines == []
     assert rt._saw_auth_failure is False
+    assert rt._saw_session_sign_out is False, "the retry's failure would read as a sign-out"
     assert rt._saw_sandbox_init_failure is False
     assert rt._scratch_dir is None, "the next launch would adopt the dead child's scratch"
     assert rt._process_tree_confirmed_dead is False

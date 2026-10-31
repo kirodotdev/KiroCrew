@@ -713,7 +713,14 @@ async def _start_kiro_runtime_impl(
             # One synchronous table read, so the kiro path compares and stops (H13).
             if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                 signed_out = _with_credential_mask_note(runtime, signed_out, exc)
-            raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+            auth_exc = AcpAuthRequired(signed_out, backend=self._client.backend)
+            # Tag as a self-healing expiry when the stderr specifically said
+            # "session has expired", "not logged in", etc. — not when it was
+            # a permanent AccessDeniedException whose re-auth cannot restore
+            # the missing permission.
+            if runtime.saw_session_sign_out():
+                auth_exc.credential_expired = True
+            raise auth_exc from exc
         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
             _name_credential_mask(runtime, exc)
         raise
@@ -863,7 +870,10 @@ async def _start_kiro_runtime_impl(
                         signed_out = host_auth.signed_out_message(self._client.backend)
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                             signed_out = _with_credential_mask_note(runtime, signed_out, exc)
-                        raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+                        auth_exc = AcpAuthRequired(signed_out, backend=self._client.backend)
+                        if runtime.saw_session_sign_out():
+                            auth_exc.credential_expired = True
+                        raise auth_exc from exc
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         _name_credential_mask(runtime, exc)
                     raise
@@ -896,7 +906,10 @@ async def _start_kiro_runtime_impl(
                     signed_out = host_auth.signed_out_message(self._client.backend)
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                         signed_out = _with_credential_mask_note(runtime, signed_out, exc)
-                    raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+                    auth_exc = AcpAuthRequired(signed_out, backend=self._client.backend)
+                    if runtime.saw_session_sign_out():
+                        auth_exc.credential_expired = True
+                    raise auth_exc from exc
                 if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
                     _name_credential_mask(runtime, exc)
                 raise

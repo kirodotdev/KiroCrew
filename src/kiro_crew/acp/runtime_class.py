@@ -197,6 +197,7 @@ class AcpRuntime:
     has_active_sessions = _rt_liveness.has_active_sessions
     has_active_or_initializing_sessions = _rt_liveness.has_active_or_initializing_sessions
     saw_not_logged_in = _rt_liveness.saw_not_logged_in
+    saw_session_sign_out = _rt_liveness.saw_session_sign_out
     settle_stderr = _rt_liveness.settle_stderr
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
     saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
@@ -574,6 +575,7 @@ class AcpRuntime:
         # stays observed for the life of this runtime, which is correct because
         # nothing about a rejected credential un-rejects itself mid-process.
         self._saw_auth_failure = False
+        self._saw_session_sign_out = False
         # Latched sandbox-init-refusal observation, latched for the same reason
         # and at the same sink as the auth latch above: the question ("why is this
         # runtime dead?") is asked after the ring has already turned over on a
