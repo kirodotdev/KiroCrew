@@ -114,6 +114,31 @@ def test_payload_glued_between_cjk_prose_is_still_caught() -> None:
     assert _BLOB not in redact_exfiltration_urls(text)[0]
 
 
+@pytest.mark.parametrize("scheme", ["HTTPS", "https", "HtTpS"])
+def test_glued_url_inside_an_exempt_link_is_judged_under_its_own_host(scheme: str) -> None:
+    """The exempt outer host's relaxed checks cover only its own span."""
+    exempt = "docs.example.com"
+    outer = f"{scheme}://{exempt}/r?x=1`[open]("
+    text = f"{outer}https://{_EVIL}/?data={_BLOB})"
+    cleaned, warnings = redact_exfiltration_urls(text, exempt_hosts=frozenset({exempt}))
+    assert warnings and cleaned == f"{outer}{_TAG})"
+    _, _, records = redact_exfiltration_urls_with_records(text, exempt_hosts=frozenset({exempt}))
+    assert [r["domain"] for r in records] == [_EVIL]
+
+
+def test_embedded_url_past_a_chain_of_exempt_ones_is_caught() -> None:
+    exempt = "docs.example.com"
+    text = f"https://{exempt}/r?n=https://{exempt}/x?m=https://{_EVIL}/?d={_BLOB}"
+    cleaned, warnings = redact_exfiltration_urls(text, exempt_hosts=frozenset({exempt}))
+    assert warnings and _BLOB not in cleaned and _TAG in cleaned
+
+
+def test_clean_url_inside_an_exempt_link_is_left_alone() -> None:
+    exempt = "docs.example.com"
+    text = f"https://{exempt}/r?next=https://{_EVIL}/page?id=7"
+    assert redact_exfiltration_urls(text, exempt_hosts=frozenset({exempt})) == (text, [])
+
+
 def test_allowed_link_before_a_paren_is_restored() -> None:
     host = "reviews.example.com"
     link = f"https://{host}/x?q=" + "a" * 250

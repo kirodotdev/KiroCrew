@@ -57,6 +57,7 @@ from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serv
     _MAX_URL_DECODE_PASSES,
     _URL_RE,
     _URL_SCAN_RE,
+    _embedded_url_match,
     _heavy_percent_encoding,
     _is_safe_presigned,
     _url_scan_candidates,
@@ -456,29 +457,35 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     for match in _URL_SCAN_RE.finditer(text):
         flagged = _flagged_url_span(match, exempt_hosts)
         if flagged:
-            warnings.append(flagged[2])
+            warnings.append(flagged[3])
     return warnings
 
 
 def _flagged_url_span(
     match: re.Match[str], exempt_hosts: frozenset[str], rules: list[str] | None = None
-) -> tuple[str, str, str] | None:
-    """``(url, path_and_query, warning)`` for the span of *match* to replace, or None.
+) -> tuple[re.Match[str], str, str, str] | None:
+    """``(judged_match, url, path_and_query, warning)`` for the span to replace, or None.
 
     Each span from :func:`_url_scan_candidates` is judged narrowest first, and
-    the first flagged one is returned.
+    the first flagged one is returned. When *match* is clean, the first URL
+    embedded in it on a host *exempt_hosts* does not hold is judged the same
+    way under its own host, and its span is the one replaced; the outer host's
+    exemption covers only the outer span.
     """
-    for url, path_and_query in _url_scan_candidates(match):
-        warning = _exfil_url_warning(
-            match.group(1),
-            path_and_query,
-            exempt_hosts,
-            port=match.group(2) or "",
-            is_https=url.lower().startswith("https://"),
-            _rule_out=rules,
-        )
-        if warning:
-            return url, path_and_query, warning
+    judged: re.Match[str] | None = match
+    while judged is not None:
+        for url, path_and_query in _url_scan_candidates(judged):
+            warning = _exfil_url_warning(
+                judged.group(1),
+                path_and_query,
+                exempt_hosts,
+                port=judged.group(2) or "",
+                is_https=url.lower().startswith("https://"),
+                _rule_out=rules,
+            )
+            if warning:
+                return judged, url, path_and_query, warning
+        judged = _embedded_url_match(match, exempt_hosts) if judged is match else None
     return None
 
 
@@ -829,13 +836,13 @@ def redact_exfiltration_urls_with_records(
     blocked: dict[str, str] = {}
     overflow = 0
     for match in _URL_SCAN_RE.finditer(text):
-        domain = match.group(1)
-        port = match.group(2) or ""
         rules: list[str] = []
         flagged = _flagged_url_span(match, exempt_hosts, rules)
         if not flagged:
             continue
-        matched, path_and_query, warning = flagged
+        judged, matched, path_and_query, warning = flagged
+        domain = judged.group(1)
+        port = judged.group(2) or ""
         is_https = matched.lower().startswith("https://")
         warnings.append(warning)
         placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"

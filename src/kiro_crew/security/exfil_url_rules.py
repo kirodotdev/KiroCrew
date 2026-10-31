@@ -115,6 +115,29 @@ def _url_scan_candidates(match: re.Match[str]) -> tuple[tuple[str, str], ...]:
     return (narrow, (url, narrow[1] + _NON_ASCII_RUN_RE.sub(" ", tail)))
 
 
+# Where a URL starts: its scheme and host, nothing after.
+_URL_START_RE = re.compile(_URL_SCHEME + r"(" + _URL_HOST + r")")
+
+
+def _embedded_url_match(match: re.Match[str], exempt_hosts: frozenset[str]) -> re.Match[str] | None:
+    """The first URL starting inside *match* on a host not in *exempt_hosts*.
+
+    The narrow span of a ``_URL_SCAN_RE`` match does not stop at a second
+    ``http(s)://`` (a redirect carries one in its query), so a glued link such
+    as ``https://exempt/r?x=1`[open](https://evil/?d=<blob>)`` is one match,
+    judged under the exempt first host. The embedded URL is returned matched on
+    its own, ending where *match* ends, so the caller judges it under its own
+    host. One is enough: it spans every later embedded URL, and its query holds
+    theirs, so a clean verdict on it is a clean verdict on them. Exempt hosts
+    are skipped with the start pattern alone, which keeps the scan linear.
+    """
+    text = match.string
+    for start in _URL_START_RE.finditer(text, match.start() + 1, match.end()):
+        if start.group(1).lower() not in exempt_hosts:
+            return _URL_SCAN_RE.match(text, start.start(), match.end())
+    return None
+
+
 # Query string length threshold — normal URLs rarely exceed this
 _EXFIL_QUERY_MIN_LEN = 200
 
