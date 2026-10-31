@@ -114,6 +114,7 @@ from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.external_text import redact_external_text as _redact_external
 from kiro_crew.gateway_identity import gateway_id
+from kiro_crew.loopback_peer_challenge import CHALLENGE_HEADER, PROOF_HEADER, peer_proof
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
@@ -349,9 +350,48 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
     return payload
 
 
+def _gateway_peer_proof(request: web.Request) -> str | None:
+    """This gateway's answer to a loopback peer challenge, or ``None``.
+
+    A sender that cannot resolve the peer of its loopback TCP connection (the
+    sandboxed Code Review Sage backend talking to a TCP-only gateway) sends a
+    nonce in ``CHALLENGE_HEADER`` and checks the answer before it writes the
+    internal secret on the same connection (see
+    :mod:`kiro_crew.loopback_peer_challenge`). The answer is an HMAC keyed with
+    this gateway's internal secret over the nonce and the connection's endpoints
+    as THIS side's kernel reports them, so it proves the secret's holder is the
+    far end of that exact connection. It grants nothing and reveals nothing about
+    the secret. Answered only to a direct-local TCP caller with a well-formed
+    nonce and a Host this gateway serves: the proof marks the listener as a Kiro
+    Crew gateway, so it sits behind the same ``check_host`` gate as the identity
+    in :func:`_liveness_payload`, and a DNS-rebound page still learns only
+    ``{"ok": true}``.
+    """
+    nonce = request.headers.get(CHALLENGE_HEADER)
+    if nonce is None or not (is_direct_local_request(request) and check_host(request)):
+        return None
+    transport = request.transport
+    if transport is None:
+        return None
+    return peer_proof(
+        request.app.get("local_secret") or "",
+        nonce,
+        transport.get_extra_info("sockname"),
+        transport.get_extra_info("peername"),
+    )
+
+
 async def api_health(request: web.Request) -> web.Response:
-    """GET /api/health — liveness, with identity for direct-local callers."""
-    return web.json_response(await _liveness_payload(request))
+    """GET /api/health — liveness, with identity for direct-local callers.
+
+    A direct-local caller that sends a peer challenge also gets this gateway's
+    proof in ``PROOF_HEADER`` (see :func:`_gateway_peer_proof`).
+    """
+    response = web.json_response(await _liveness_payload(request))
+    proof = _gateway_peer_proof(request)
+    if proof is not None:
+        response.headers[PROOF_HEADER] = proof
+    return response
 
 
 async def api_version(request: web.Request) -> web.Response:

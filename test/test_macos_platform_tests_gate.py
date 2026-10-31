@@ -271,6 +271,8 @@ class TestTheMovedLaneIsTheSameLane:
         )
         for node_id in (
             "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves",
+            "test/test_sage_sender_proves_peer_in_sandbox.py::"
+            "test_sage_peer_proof_reaches_match_inside_seatbelt",
             "test/test_terminal_handler.py",
         ):
             assert node_id in runs, f"{node_id} is no longer executed on real Darwin"
