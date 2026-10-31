@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 import kiro_crew.skills as skills_mod
+from conftest import requires_symlinks
 from kiro_crew.skills import MAX_SKILL_VERSIONS, AutoSkillProvenance, SkillsLoader
 
 
@@ -735,7 +736,7 @@ def test_approve_update_matching_base_still_succeeds(loader):
     assert loader.get_auto_skill_version("auto/insync") == 5
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@requires_symlinks
 def test_read_auto_skill_body_reads_the_validated_path_not_the_original(tmp_path, monkeypatch):
     """The guards vet the RESOLVED path, so the read must use that same path.
 
@@ -764,7 +765,7 @@ def test_read_auto_skill_body_reads_the_validated_path_not_the_original(tmp_path
     assert seen == [os.path.realpath(str(live / "SKILL.md"))]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
+@requires_symlinks
 def test_read_auto_skill_body_returns_none_when_safe_read_refuses(tmp_path, monkeypatch):
     """A PermissionError from the hardened reader (sensitive path or a detected
     symlink swap) must surface as None, not propagate into the merge path."""
