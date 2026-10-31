@@ -162,6 +162,10 @@ from kiro_crew.dashboard.chat_title import (  # noqa: F401
     api_chat_slot_generate_title,
     api_chat_slot_rename,
 )
+from kiro_crew.dashboard.chat_title_bulk import (  # noqa: F401
+    api_chat_slots_generate_titles,
+    api_chat_slots_generate_titles_status,
+)
 from kiro_crew.dashboard.chat_todo import api_chat_slot_todo  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,

@@ -434,6 +434,25 @@ async def test_generate_title_keeps_real_reply(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_manual_title_falls_back_to_the_opening_message_when_the_model_fails(monkeypatch):
+    async def _model_down(*_a, **_kw):
+        raise TimeoutError("titling model timed out")
+
+    async def _no_key(_key):
+        return ""
+
+    monkeypatch.setattr(chat_title, "_generate_title_via_kiro", _model_down)
+    monkeypatch.setattr(chat_title, "_ticket_key_if_enabled", _no_key)
+    slot = _ChatSlot("s")
+    slot.messages.append({"role": "user", "content": "plan the launch blog"})
+
+    title = await chat_title.generate_manual_title(SimpleNamespace(), slot)
+
+    assert title == chat_title._fallback_title_from_messages(slot.messages)
+    assert title
+
+
+@pytest.mark.asyncio
 async def test_discarded_prose_is_redacted_before_it_is_logged(monkeypatch, caplog):
     """A refusal can quote the user's message back, credentials included.
 
