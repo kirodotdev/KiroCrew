@@ -51,6 +51,9 @@ def _refused(cmd: str) -> bool:
         f"{_CM} --reference=template 777",
         f"{_CM} --reference /etc localdir",
         f"{_CO} --reference /etc localdir",
+        # A dash-led symbolic mode is the mode, so ``777`` here is a file name.
+        f"{_CM} -w 777",
+        f"{_CM} -R -x 0777",
         # Printed data, not a command.
         f"cat <<'EOF'\n{_CM} -R 777 dir\nEOF",
         f"printf '%s\\n' ';' {_CM} -R 777",
@@ -113,6 +116,14 @@ def test_ssh_batchmode_is_not_refused(monkeypatch):
         f"find . -name x -exec {_CM} 600 /etc/shadow ;",
         f"su -c '{_CM} 600 /etc/shadow'",
         f"time -p {_CM} 777 x",
+        # A wrapper's long option and its value are stepped over, both forms.
+        f"printf '%s\\n' report.txt | xargs --max-args 1 {_CM} 777",
+        f"xargs --max-args=1 {_CM} 777 report.txt",
+        f"sudo --user root {_CM} 777 report.txt",
+        f"sudo --user=root {_CM} 777 report.txt",
+        f"sudo --group staff {_CM} 777 report.txt",
+        f"/usr/bin/time --format %e {_CM} 777 report.txt",
+        f"stdbuf --output L {_CM} 777 report.txt",
         f"cat <<-EOF\n\thello\n\tEOF\n{_CM} 600 /etc/shadow",
         f"cat <<'EOF'\nhello\nEOF\n{_CM} 777 report.txt",
         f"cat <<'EOF' && {_CM} 600 /etc/shadow\nhello\nEOF",

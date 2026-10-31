@@ -33,10 +33,20 @@ from .denied_rules import BUILTIN_DENIED_RULES
 #: Programs that run another command from their arguments, as
 #: ``wrapper -> (options that take a value, positional words before the command)``:
 #: ``timeout 5 chown ...`` has one positional (the duration), ``chroot / chmod ...``
-#: one (the new root). An unlisted option that takes a value leaves the value read
-#: as the program, which only misses -- never over-blocks.
+#: one (the new root). Long options are listed in their ``--opt value`` form; the
+#: ``--opt=value`` form is one word and needs no entry. An unlisted option that
+#: takes a value leaves the value read as the program, which only misses.
 _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
-    "sudo": (frozenset({"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"}), 0),
+    "sudo": (
+        frozenset(
+            {
+                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
+                *("--user", "--group", "--close-from", "--host", "--prompt"),
+                *("--other-user", "--role", "--type", "--chdir", "--chroot"),
+            }
+        ),
+        0,
+    ),
     "doas": (frozenset({"-u", "-C"}), 0),
     "pkexec": (frozenset({"--user"}), 0),
     "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
@@ -46,13 +56,22 @@ _WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
     "exec": (frozenset({"-a"}), 0),
     "nohup": (frozenset(), 0),
     "setsid": (frozenset(), 0),
-    "time": (frozenset({"-f", "-o"}), 0),
+    "time": (frozenset({"-f", "-o", "--format", "--output"}), 0),
     "nice": (frozenset({"-n", "--adjustment"}), 0),
     "ionice": (frozenset({"-c", "-n", "-p", "--class", "--classdata"}), 0),
-    "stdbuf": (frozenset({"-i", "-o", "-e"}), 0),
+    "stdbuf": (frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
     "timeout": (frozenset({"-s", "-k", "--signal", "--kill-after"}), 1),
     "chroot": (frozenset({"--userspec", "--groups"}), 1),
-    "xargs": (frozenset({"-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"}), 0),
+    "xargs": (
+        frozenset(
+            {
+                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
+                *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
+                *("--delimiter", "--arg-file", "--process-slot-var"),
+            }
+        ),
+        0,
+    ),
     "systemd-run": (frozenset({"-p", "-u", "-E", "--unit", "--property", "--setenv"}), 0),
 }
 
@@ -256,6 +275,8 @@ def _changes_system_dir(root: str) -> "Callable[[str, list[str]], bool]":
 def _is_mode_777(_program: str, args: "list[str]") -> bool:
     if any(a == "--reference" or a.startswith("--reference=") for a in _options(args)):
         return False  # ``chmod --reference=f x`` has no mode operand
+    # A symbolic mode may start with ``-`` (``chmod -w 777``): it is the mode.
+    args = ["+" + a[1:] if _CHMOD_DASH_MODE.match(a) else a for a in args]
     return _operands(args)[:1] in (["777"], ["0777"])
 
 
