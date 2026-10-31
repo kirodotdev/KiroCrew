@@ -509,9 +509,12 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"{'NAME':<25} {'VERSION':<10} {'STATUS':<10} {'DISPLAY NAME'}")
         for app in apps:
             status = "enabled" if app.get("enabled") else "disabled"
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
             print(
-                f"{app['name']:<25} {app.get('version', '?'):<10} "
-                f"{status:<10} {app.get('displayName', '')}"
+                f"{safe_terminal_line(str(app['name'])):<25} "
+                f"{safe_terminal_line(str(app.get('version', '?'))):<10} "
+                f"{status:<10} {safe_terminal_line(str(app.get('displayName', '')))}"
             )
 
     elif action == "enable":
