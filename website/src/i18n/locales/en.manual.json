@@ -2544,7 +2544,18 @@
       "click_to_send_instantly_shift_click_to_add_without_sending": "Click to send instantly, Shift+Click to add to the message without sending",
       "click_to_replace_selection": "Click to replace selection",
       "click_to_replace_selection_double_click_to_send": "Click to replace selection (double-click to send)",
-      "send_now_2": "Send now: {{option}}"
+      "send_now_2": "Send now: {{option}}",
+      "action_unavailable_while_options_are_selected": "Unavailable while a picked option is in your message — this would discard it",
+      "action_unavailable_while_the_composer_has_unsent": "Unavailable while the input has unsent text or attachments — closing would discard them",
+      "action_unavailable_short_options_selected": "Unavailable — deselect your picks first",
+      "action_unavailable_short_unsent_draft": "Unavailable — send or clear your draft first",
+      "action_unavailable_while_capture_in_flight": "Unavailable while a recording or upload is still in progress — closing would discard it",
+      "action_unavailable_short_capture_in_flight": "Unavailable — wait for the recording or upload to finish",
+      "action_closes_this_session": "Close session — {{label}}",
+      "action_unavailable_short_unsent_draft_elsewhere": "Unavailable — send or clear the draft in your other pane",
+      "action_unavailable_short_unsent_draft_window": "Unavailable — send or clear the draft in your other window",
+      "action_unavailable_while_unsent_draft_elsewhere": "This action is unavailable while another pane of this session — a side panel or split view — holds an unsent draft. Send or clear it there first.",
+      "action_unavailable_while_unsent_draft_window": "This action is unavailable while another browser window of this session holds an unsent draft. Send or clear it in that window first."
     },
     "followUpCard": {
       "create_worktree_and_open_session": "Create a git worktree from {{path}} and open a new session there",

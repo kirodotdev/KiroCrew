@@ -7268,7 +7268,18 @@
       "scroll_suggestions_left": "Faire défiler les suggestions vers la gauche",
       "scroll_suggestions_right": "Faire défiler les suggestions vers la droite",
       "send_now": "Envoyer maintenant",
-      "send_now_2": "Envoyer maintenant : {{option}}"
+      "send_now_2": "Envoyer maintenant : {{option}}",
+      "action_unavailable_while_options_are_selected": "Indisponible tant qu'une sélection est préparée sous forme de texte dans le champ de saisie — elle serait supprimée",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponible tant que le champ de saisie contient du texte ou des pièces jointes non envoyés — la fermeture les supprimerait",
+      "action_unavailable_short_options_selected": "Indisponible — options à désélectionner d'abord",
+      "action_unavailable_short_unsent_draft": "Indisponible — brouillon à envoyer ou à effacer",
+      "action_closes_this_session": "Fermer la session — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponible pendant qu'un enregistrement ou un envoi est en cours — fermer l'annulerait",
+      "action_unavailable_short_capture_in_flight": "Indisponible — enregistrement ou envoi encore en cours",
+      "action_unavailable_short_unsent_draft_elsewhere": "Indisponible — brouillon de l'autre volet à envoyer ou à effacer",
+      "action_unavailable_short_unsent_draft_window": "Indisponible — brouillon de l'autre fenêtre à envoyer ou à effacer",
+      "action_unavailable_while_unsent_draft_elsewhere": "Cette action est indisponible tant qu'un autre volet de cette session — panneau latéral ou vue divisée — contient un brouillon non envoyé. À envoyer ou à effacer là d'abord.",
+      "action_unavailable_while_unsent_draft_window": "Cette action est indisponible tant qu'une autre fenêtre de navigateur de cette session contient un brouillon non envoyé. À envoyer ou à supprimer d'abord dans cette fenêtre."
     },
     "followUpCard": {
       "add_to_this_session": "Ajouter à cette session",
