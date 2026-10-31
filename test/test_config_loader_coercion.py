@@ -44,7 +44,7 @@ _ENUM_FIELDS: list[tuple[str, str, list[str]]] = [
     ("agent", "provider", ["acp"]),
     ("agent", "sandbox", ["auto", "strict", "off"]),
     ("agent", "log_level", ["DEBUG", "INFO", "WARNING", "ERROR"]),
-    ("memory", "embedding_provider", ["llama_cpp"]),
+    ("memory", "embedding_provider", ["llama_cpp", "ollama_http"]),
 ]
 
 # Top-level keys recognised by the schema. Keep the property strategy aligned

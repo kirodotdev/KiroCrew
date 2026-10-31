@@ -614,8 +614,16 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` is the only accepted value; any other value in an existing config (including a legacy `"ollama"` or `"none"`) is coerced to it on load | `"llama_cpp"` |
-| `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused | `1024` |
+| `memory.embedding_provider` | Vector embedding backend. `"llama_cpp"` runs the model in-process; `"ollama_http"` embeds through the Ollama server at `memory.ollama_url` (see [memory-and-learning.md](memory-and-learning.md#using-an-ollama-server)). Any other value in an existing config, including a legacy `"ollama"` or `"none"`, is coerced to `"llama_cpp"` on load. Needs a restart | `"llama_cpp"` |
+| `memory.embedding_dim` | Output width of the embedding model in use. Must match a custom model's real width, or the load is refused; with `"ollama_http"`, a server model of another width embeds nothing and the log names the width to set | `1024` |
+| `memory.ollama_url` | Base URL of the Ollama server for `"ollama_http"`. A loopback address needs nothing more; any other host needs `memory.ollama_allow_remote` and `https://`. Credentials, query strings and redirects are refused. Needs a restart | `"http://127.0.0.1:11434"` |
+| `memory.ollama_model` | Embedding model the server serves, as `/api/tags` lists it (for example `"nomic-embed-text"`). Required for `"ollama_http"`; changing it regenerates stored embeddings. Needs a restart | `""` |
+| `memory.ollama_timeout_secs` | Seconds one `/api/embed` request may take, clamped to [1, 600]. Needs a restart | `30.0` |
+| `memory.ollama_allow_remote` | Permit a non-loopback `memory.ollama_url`. Memory and knowledge text then leaves this machine. Needs a restart | `false` |
+| `memory.ollama_auth` | `"none"`, or `"aws_sigv4"` to sign every request with AWS Signature Version 4 for a server behind an IAM-authorized endpoint such as API Gateway. Needs the `botocore` package. A request that cannot be signed is not sent, and any other value stops the backend. Needs a restart | `"none"` |
+| `memory.ollama_aws_region` | Region the signature is scoped to. Empty uses `AWS_REGION`, then `AWS_DEFAULT_REGION`; with neither set the backend stays off. Needs a restart | `""` |
+| `memory.ollama_aws_service` | Service the signature is scoped to: `"execute-api"` for API Gateway, `"lambda"` for a Lambda function URL. Needs a restart | `"execute-api"` |
+| `memory.ollama_aws_profile` | AWS profile whose credentials sign requests; empty uses the default credential chain. Only the name is stored. Needs a restart | `""` |
 | `memory.embedding_threads` | CPU threads llama.cpp may use per embedding call; explicit settings are clamped to the CPUs the process may run on, which a CPU-set restriction (`--cpuset-cpus`, `taskset`) narrows below the host's cores | `4` (`6` where the process may use 12 or more CPUs; a saved `4` is read as this default there, so set 3 or 5 to stay low) |
 | `memory.embedding_bulk_threads` | Threads used for background embedding; `0` inherits `embedding_threads` | `1` |
 | `memory.embedding_bulk_duty` | Target fraction of worker time spent on background embedding; interactive queries take priority | `0.2` |
