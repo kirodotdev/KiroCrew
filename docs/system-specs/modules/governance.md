@@ -2119,7 +2119,59 @@ one committed, so the committed fingerprint always describes the snapshot actual
 published.
 
 mtime hot-reload itself is unchanged: an operator edit to a profile is picked up
-without a restart. What the store deliberately does **not** have is a per-thread
+without a restart. On the **event loop** a WARM store re-stats the profiles
+DIRECTORY at most once per `_LOOP_RESTAT_MIN_INTERVAL_S` (1 s): `_dir_fingerprint`
+is an `iterdir` plus a `stat` per file, the synchronous PreToolUse gate reaches
+`_ensure_fresh` on every gated tool call, and under GIL contention that per-call
+walk stalls the loop (#17873). So inside the window a warm on-loop caller reuses
+the directory part it last stat'd rather than walking again, and a profile-FILE
+edit's on-loop pickup is bounded by that window rather than instant. The **ceiling
+token is never rate-limited**: `_ceiling_token()` is two locked integer reads with
+no filesystem I/O, so it is re-read on every on-loop call and folded into the
+freshness key fresh. A mid-session ceiling swap
+(`policy_distribution.apply_ceiling` bumps `governance_generation()`) therefore
+changes the key even inside the window, misses the cached fingerprint and takes the
+reload path at once — the window defers only the profiles-directory re-stat, never
+the ceiling (the reload composes the snapshot against the ceiling, so deferring a
+ceiling change would serve profiles built against a retired ceiling). The window is
+**loop-only**: an off-loop caller (`_on_event_loop()` false) re-stats every call, so
+the dashboard config watcher, the capability-prime bracket and the
+profile-projection watch all pick up a profile-file edit at once, and the
+read-your-writes callers that depend on an immediate re-stat keep their exact
+semantics. It is also **warm-only** — gated on `self._snap.loaded` — so a
+cold/unprimed store still loads on the first touch and never serves an empty
+snapshot (the fail-closed path is untouched). The `_last_loop_restat` stamp is a
+plain unlocked float because it is only a freshness hint: a torn read at most skips
+or runs one extra bounded stat and never changes a decision. Pinned by
+`test_warm_store_on_loop_rate_limits_the_fingerprint_walk` (at most one walk per
+window on the loop, under a pinned clock), `test_off_loop_caller_is_not_rate_limited`,
+`test_on_loop_edit_is_picked_up_after_the_window` (the window is a delay, never a
+miss), `test_ceiling_swap_is_picked_up_on_the_loop_inside_the_window` (a ceiling
+swap busts the window even with the directory untouched and the clock frozen) and
+`test_on_loop_cold_store_is_never_rate_limited`.
+
+**The staleness this accepts, stated plainly.** For up to the window (worst case
+≤ 1 s) after a profile file is edited, an on-loop gate call can be judged against
+the previously-published snapshot rather than the new one. This cuts **both**
+directions equally: a tightening edit is enforced up to ≤ 1 s late (a call in that
+window is judged against the older, *looser* profile), and a loosening edit is
+honoured up to ≤ 1 s late the same way — the window is a symmetric delay, not a
+one-sided weakening. It is bounded and acceptable because the profile layer already
+reacts to a file edit with latency of the same order and larger: a profile is
+changed only by writing a file (there is no in-process tighten-notify hook, unlike
+config's `notify_config_written`), and the off-loop re-stats that observe such a
+write run on timers — the profile-projection watch every `_PROFILE_PROJECTION_POLL_S`
+= 15 s and the dashboard governance watch every `_WS_STATUS_INTERVAL` = 5 s — while
+the first (cold) load is itself allowed up to `_COLD_LOAD_WAIT_S` = 2 s. A ≤ 1 s
+on-loop window is strictly tighter than every one of those, so it widens no
+pre-existing exposure; it only moves the on-loop gate from "re-stat on *every*
+call" to "re-stat at most once per second", which is the stall #17873 reports. If
+an in-process tighten-notify path existed it would be used to invalidate the window
+eagerly (as `config/live.py` does via `notify_config_written`); none does, so there
+is nothing to bypass the window with and no reduction in freshness below what the
+file-watcher path already provides.
+
+What the store deliberately does **not** have is a per-thread
 "always block" discipline for off-loop callers on a **warm** store. There its only
 benefit is closing a staleness window one call wide while a reload is concurrently
 in flight — not worth a thread-local plus a dual code path, and it invites a future
