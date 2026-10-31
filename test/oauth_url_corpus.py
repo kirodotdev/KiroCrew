@@ -409,6 +409,23 @@ LEGIT_OAUTH_URLS: list[tuple[str, str]] = [
         "&code_challenge_method=S256"
         "&state=" + ("a1B2c3D4" * 16),
     ),
+    # TickTick (Connections registry, launch-gated). Endpoint is the
+    # ``authorization_endpoint`` from https://ticktick.com's RFC 8414 document,
+    # reached via RFC 9728 discovery from https://mcp.ticktick.com. The scope
+    # pair is the one the registry entry requests, space-delimited per RFC 6749
+    # section 3.3; it is also the whole ``scopes_supported`` list the resource
+    # metadata publishes.
+    (
+        "ticktick-mcp",
+        "https://ticktick.com/oauth/authorize"
+        "?client_id=0123456789abcdef0123456789abcdef"
+        "&response_type=code"
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A33418%2Fcallback"
+        "&scope=tasks%3Aread%20tasks%3Awrite"
+        "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        "&code_challenge_method=S256"
+        "&state=" + ("f6E5d4C3" * 16),
+    ),
 ]
 
 # Consent URLs that the ACP banner-safety gate
