@@ -42,6 +42,7 @@ from kiro_crew.acp.liveness import (
     steady_now,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
@@ -52,6 +53,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     STATUS_EXTENSION_KEY,
+    SUBAGENT_LIFECYCLE_UPDATES,
     TERMINAL_TOOL_STATUSES,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
@@ -264,6 +266,16 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     # session's own transcript events — a child's text chunks and tool
     # cards must not render as parent output.
     frame_sid = str(params.get("sessionId") or "")
+    if (
+        self._runtime.acp_backend == ACP_BACKEND_CODEX
+        and isinstance(update.get("sessionUpdate"), str)
+        and update.get("sessionUpdate") in SUBAGENT_LIFECYCLE_UPDATES
+    ):
+        # A native child announced or settled on this session or, nested, on
+        # one of its children. It feeds the card roster, never the transcript,
+        # whichever session the frame names. Positive codex gate (H5): codex is
+        # the only harness that declares clientCapabilities.subagents.
+        return self._handle_announced_subagent(update, frame_sid)
     if frame_sid and frame_sid != self._session_id:
         # Native-subtask residency seam (RFC §14.8): a child-routed frame is
         # the only per-child identity the harness exposes. Counted here so
@@ -318,13 +330,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 # Same closure as the tool arm: observed child output means
                 # the wave did work, so the zero-activity verdict is gone.
                 self._prompt_or_tool_seen = True
-                out.append(
-                    AcpEvent(
-                        kind=EVENT_SUBAGENT_ACTIVITY,
-                        sub_session_id=frame_sid,
-                        text=ev.text,
-                    )
-                )
+                # The native-children owner streams an announced child's
+                # text through that child's own redactor.
+                out.extend(self._child_text_activity(frame_sid, ev.text))
             # Thinking chunks, tool results, and refinements update the
             # caches above but emit nothing: the crew monitor only shows
             # coarse activity, and the caches are the security payload.
@@ -376,6 +384,18 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         kas_events = self._handle_kas_update(session_update, update)
         if kas_events is not None:
             return kas_events
+
+    # codex-acp without native subagent sessions (an ACP SDK 1.x adapter drops
+    # the ``subagents`` declaration) reports a child only as "Start/Complete
+    # subagent" tool rows. Read them as the child's card lifecycle instead of
+    # rendering them as tool calls. Positive codex gate (H5).
+    if self._runtime.acp_backend == ACP_BACKEND_CODEX and session_update in (
+        "tool_call",
+        "tool_call_update",
+    ):
+        legacy_events = self._handle_legacy_codex_subagent(update)
+        if legacy_events is not None:
+            return legacy_events
 
     # KAS sub-agent progress: tool_call/tool_call_update frames carrying
     # _meta.kiro.agentSubtaskId or _meta.kiro.pipeline are sub-agent

@@ -460,6 +460,11 @@ class AcpSessionProvider(LLMProvider):
         """The session tree's ``$KIROCREW_SCRATCH`` directory (see ``AcpRuntime.work_scratch_dir``)."""
         return self._runtime.work_scratch_dir
 
+    def flush_native_child_text(self) -> list:
+        """See AcpSessionHandle.flush_native_child_text (a turn cut short)."""
+        flush = getattr(self._handle, "flush_native_child_text", None)
+        return list(flush()) if callable(flush) else []
+
     @property
     def child_fidelity_aware(self) -> bool:
         """See AcpSessionHandle.child_fidelity_aware."""

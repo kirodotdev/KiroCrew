@@ -7,11 +7,12 @@ Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` 
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_between_turn_credits``,
+Instance fields written: ``_abandoned_prompt_id``, ``_announced_subagent_roster``,
+``_awaiting_permission``, ``_between_turn_credits``,
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
-``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``,
-``_native_child_overflow``, ``_native_child_sids``, ``_native_child_tool_call_ids``,
-``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
+``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``, ``_legacy_subagent_tool_ids``,
+``_native_child_overflow``, ``_native_child_redactors``, ``_native_child_sids``,
+``_native_child_tool_call_ids``, ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
 ``_prompt_written``, ``_skill_reads``, ``_stale_eligible``, ``_stale_probe``,
 ``_status_rejected``, ``_steers_accepted``, ``_steers_proven``,
@@ -402,6 +403,14 @@ async def _run_turn(
     # which the fresh per-turn _native_tracker resurrects as a duplicate
     # spawn/done card — and the roster would grow unbounded for the session.
     self._kas_subagent_roster.clear()
+    # Same reset for codex's announced children. A child continued in a later
+    # turn is announced again (codex-acp gives it a new generation id), so it
+    # gets a fresh card instead of a resurrected one.
+    self._announced_subagent_roster.clear()
+    # Each child's redactor goes with its row. A tail still held here belongs
+    # to a card the last turn already closed, so it is dropped, never shown.
+    self._native_child_redactors.clear()
+    self._legacy_subagent_tool_ids.clear()
 
     # Drain frames left over from a prior abandoned turn. The cancel-unacked
     # / stale / tool-stall / timeout paths synthesize a terminal
@@ -843,6 +852,13 @@ async def _run_turn(
                     _codex_settle = self._settle_codex_compaction(event.stop_reason)
                     if _codex_settle is not None:
                         yield _codex_settle
+                    # Every terminal closes this turn's native cards, and the
+                    # next turn resets the roster, so the text an announced
+                    # child's redactor still holds goes onto its card now,
+                    # whatever ended the turn (an end_turn, a timeout, a stale
+                    # recovery). Same choke point, same reason as above.
+                    for _held_text in self.flush_native_child_text():
+                        yield _held_text
                     # Set BEFORE the yield: a consumer that closes the stream ON
                     # the terminal still received it, and marking it after would
                     # report a lost terminal that was in fact delivered.

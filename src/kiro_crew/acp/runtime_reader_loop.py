@@ -10,7 +10,8 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_answer_tasks``, ``_last_activity``, ``_load_replay_frames``,
 ``_pending_requests``, ``_routed_requests``.
 
-Instance fields read: ``_acp_backend``, ``_kas_host_auth``, ``_launch_cwd_roots``,
+Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_overflow``,
+``_kas_host_auth``, ``_launch_cwd_roots``,
 ``_map_launch_cwd_paths``, ``_max_answer_tasks``,
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
@@ -192,6 +193,58 @@ def _runtime_rpc_exception(error: object) -> AcpRuntimeError:
     return AcpRuntimeError(message)
 
 
+async def _route_owned_child_frame(
+    self: AcpRuntime, msg: JsonRpcMessage, session_id: str, owner: str
+) -> None:
+    """Deliver one backend-child frame to the registered session that owns it.
+
+    The two child routes share this governance: the ownerless roster's child on a
+    single-session runtime, and a child announced on its owner's own session.
+
+    A permission REQUEST is routed only while the owner has an in-flight prompt
+    (an outstanding routed request = the dispatch loop is consuming the queue).
+    Between turns nothing reads the queue until the next prompt's drain, so a
+    background child's request would sit unanswered -- the original hang with
+    extra steps. It is answered fail-closed NOW instead.
+    """
+    _owner_turn_active = owner in self._turn_active_sessions
+    if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION) and not _owner_turn_active:
+        await self._spawn_answer_task(
+            msg,
+            session_id,
+            # Registered + announced — the owner just has no in-flight prompt.
+            # A distinct SEL tag keeps normal background-child behavior
+            # distinguishable from a real misconfiguration in the audit trail.
+            reason="owner_no_active_turn",
+        )
+        # Yield so spawned answer tasks actually RUN between frames: with 129+
+        # frames already buffered, readline() returns without suspending, and
+        # the reader would hit the flood cap before any answer task had a
+        # chance to complete — falsely killing a responsive runtime. One
+        # loop-tick lets quick answers drain; a genuinely wedged backend still
+        # accumulates blocked tasks and trips the cap.
+        await asyncio.sleep(0)
+    elif not _owner_turn_active:
+        # An UPDATE between the owner's turns (either session/update spelling).
+        # Nothing reads the queue until the next prompt's dispatch loop, and
+        # _run_turn clears the per-toolCallId caches at turn start and then
+        # discards stale non-permission frames from the queue — so a
+        # between-turns update can never contribute a cache write or an activity
+        # event. Queueing it would only grow an unbounded queue in gateway memory
+        # while the slot idles (session queues have no depth cap). Unlike a
+        # REQUEST there is no protocol obligation to answer, so take the
+        # counted-drop path.
+        self._note_dropped_frame(session_id, msg.method)
+    else:
+        # Hang-resilience series: a child permission request delivered to the
+        # mode-parity pipeline. Counted so routed requests are observable next to
+        # the dropped-frame counter — a permission request that is neither routed
+        # nor answered leaves its crew waiting on a prompt nobody can see.
+        if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
+            emit_counter(CHILD_PERMISSION_ROUTED, {"surface": "runtime"})
+        await self._session_queues[owner].put(msg)
+
+
 async def _reader_loop(self: AcpRuntime) -> None:
     """Single reader task — owns stdout exclusively. Routes frames by type.
 
@@ -212,6 +265,15 @@ async def _reader_loop(self: AcpRuntime) -> None:
     _session_update = _aliases.session_update
     _subagent_list_update = _aliases.subagent_list_update
     _mcp_init = _aliases.mcp_init
+    # Children announced ON a session exist only for a host that asked for them:
+    # one whose handshake declares clientCapabilities.subagents (today codex).
+    # Read off the harness's own declaration, never off the backend's identity.
+    # A backend with no runtime harness declared nothing, so it learns none; the
+    # reader must not die over a question only this route asks.
+    try:
+        _announces_children = "subagents" in self._harness.client_capabilities
+    except ValueError:
+        _announces_children = False
 
     try:
         while True:
@@ -464,16 +526,42 @@ async def _reader_loop(self: AcpRuntime) -> None:
                 # session. Route to it if registered; otherwise DROP it.
                 # Broadcasting a known-but-unregistered session's frame to
                 # every other session would be cross-talk.
+                _child_frame = (
+                    msg.is_method(METHOD_REQUEST_PERMISSION) or msg.method in _session_update
+                )
+                if (
+                    _announces_children
+                    and msg.method in _session_update
+                    # Learn a child announced on this frame BEFORE routing it,
+                    # so the child's own first frame already has a route.
+                    and not self._note_announced_child(session_id, msg.params or {})
+                ):
+                    # The route map is full, so this child's frames could never
+                    # reach its owner. Drop the announcement too, or the owner
+                    # would draw a card that never shows output.
+                    self._note_dropped_frame(session_id, msg.method)
+                    continue
                 queue = self._session_queues.get(session_id)
+                _announced_owner = self._announced_children.get(session_id)
                 if queue is not None:
                     if msg.is_method(METHOD_AGENT_SWITCHED):
                         self._note_switched_model(session_id, msg.params)
                     await queue.put(msg)
                 elif (
+                    _announced_owner is not None
+                    and _announced_owner in self._session_queues
+                    and _child_frame
+                ):
+                    # A child announced ON a registered session (codex-acp's
+                    # native subagents). The announcing frame named its owner,
+                    # so this routes even while other sessions share the
+                    # runtime; the governance below is the roster route's.
+                    await self._route_owned_child_frame(msg, session_id, _announced_owner)
+                elif (
                     session_id in self._subagent_sessions
                     and self._subagent_owner is not None
                     and list(self._session_queues) == [self._subagent_owner]
-                    and (msg.is_method(METHOD_REQUEST_PERMISSION) or msg.method in _session_update)
+                    and _child_frame
                 ):
                     # A frame for a backend-internal subagent the backend
                     # itself announced via `subagent/list_update`, on a
@@ -506,66 +594,7 @@ async def _reader_loop(self: AcpRuntime) -> None:
                     # owner; a permission request then falls to the
                     # fail-closed auto-answer below and updates are
                     # counted drops as before.
-                    #
-                    # A permission REQUEST is routed only while the owner
-                    # has an in-flight prompt (an outstanding routed
-                    # request = the dispatch loop is consuming the queue).
-                    # Between turns nothing reads the queue until the next
-                    # prompt's drain, so a background child's request
-                    # would sit unanswered — the original hang with extra
-                    # steps. Answer it fail-closed NOW instead.
-                    _owner_turn_active = self._subagent_owner in self._turn_active_sessions
-                    if (
-                        msg.id is not None
-                        and msg.is_method(METHOD_REQUEST_PERMISSION)
-                        and not _owner_turn_active
-                    ):
-                        await self._spawn_answer_task(
-                            msg,
-                            session_id,
-                            # Registered + announced — the owner just
-                            # has no in-flight prompt. A distinct SEL
-                            # tag keeps normal background-child
-                            # behavior distinguishable from a real
-                            # misconfiguration in the audit trail.
-                            reason="owner_no_active_turn",
-                        )
-                        # Yield so spawned answer tasks actually RUN
-                        # between frames: with 129+ frames already
-                        # buffered, readline() returns without
-                        # suspending, and the reader would hit the
-                        # flood cap before any answer task had a chance
-                        # to complete — falsely killing a responsive
-                        # runtime. One loop-tick lets quick answers
-                        # drain; a genuinely wedged backend still
-                        # accumulates blocked tasks and trips the cap.
-                        await asyncio.sleep(0)
-                    elif not _owner_turn_active:
-                        # An UPDATE between the owner's turns (either
-                        # session/update spelling). Nothing reads the
-                        # queue until the next prompt's dispatch loop,
-                        # and _run_turn clears the per-toolCallId caches
-                        # at turn start and then discards stale
-                        # non-permission frames from the queue — so a
-                        # between-turns update can never contribute a
-                        # cache write or an activity event. Queueing it
-                        # would only grow an unbounded queue in gateway
-                        # memory while the slot idles (session queues
-                        # have no depth cap). Unlike a REQUEST there is
-                        # no protocol obligation to answer, so take the
-                        # counted-drop path.
-                        self._note_dropped_frame(session_id, msg.method)
-                    else:
-                        # Hang-resilience series: a child permission
-                        # request delivered to the mode-parity pipeline.
-                        # Counted so routed requests are observable next
-                        # to the dropped-frame counter — a permission
-                        # request that is neither routed nor answered
-                        # leaves its crew waiting on a prompt nobody can
-                        # see.
-                        if msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
-                            emit_counter(CHILD_PERMISSION_ROUTED, {"surface": "runtime"})
-                        await next(iter(self._session_queues.values())).put(msg)
+                    await self._route_owned_child_frame(msg, session_id, self._subagent_owner)
                 elif msg.id is not None and msg.is_method(METHOD_REQUEST_PERMISSION):
                     # Unannounced, ambiguous, or announced past the
                     # recognition cap: nobody on this client can see or
@@ -586,7 +615,7 @@ async def _reader_loop(self: AcpRuntime) -> None:
                         session_id,
                         reason=(
                             _ROSTER_OVERFLOW_REJECT_REASON
-                            if self._subagent_roster_overflow
+                            if self._subagent_roster_overflow or self._announced_overflow
                             else _UNREGISTERED_REJECT_REASON
                         ),
                     )

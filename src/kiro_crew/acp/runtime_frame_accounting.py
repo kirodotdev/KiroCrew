@@ -6,9 +6,9 @@ Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
 of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_dropped_frames_flushed_at``, ``_roster_overflow_peak``,
-``_roster_overflow_repeats``, ``_roster_overflow_summary_at``, ``_subagent_owner``,
-``_subagent_roster_overflow``, ``_subagent_sessions``.
+Instance fields written: ``_announced_children``, ``_announced_overflow``, ``_dropped_frames_flushed_at``,
+``_roster_overflow_peak``, ``_roster_overflow_repeats``, ``_roster_overflow_summary_at``,
+``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``.
 
 Instance fields read: ``_dropped_frames``, ``_session_queues``.
 """
@@ -22,7 +22,12 @@ from typing import TYPE_CHECKING
 from kiro_crew.acp._dispatch import redact_backend_text
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.session_handle import NATIVE_CHILD_ROSTER_CAP
-from kiro_crew.acp.types import METHOD_REQUEST_PERMISSION
+from kiro_crew.acp.types import (
+    METHOD_REQUEST_PERMISSION,
+    SUBAGENT_TERMINAL_STATES,
+    UPDATE_SUBAGENT_SPAWNED,
+    UPDATE_SUBAGENT_STATE,
+)
 from kiro_crew.metrics.events import DROPPED_FRAMES, emit_counter
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
@@ -176,6 +181,76 @@ def _snapshot_subagent_sessions(self: AcpRuntime, params: dict) -> None:
     self._subagent_owner = (
         next(iter(self._session_queues)) if len(self._session_queues) == 1 else None
     )
+
+
+def _note_announced_child(self: AcpRuntime, frame_sid: str, params: dict) -> bool:
+    """Remember a native child that a session/update announced on ``frame_sid``.
+
+    codex-acp announces each native subagent with a lifecycle ``session/update``
+    on its PARENT's session (``subagent_spawned`` keyed on ``subagentSessionId``)
+    and then streams the child's own work under the child's id. The announcing frame
+    names its owner, so the owner is the registered session it arrived on, or,
+    for a nested child announced on a child's session, that child's owner. A
+    frame on any other session announces nothing.
+
+    Only a first announcement is stored: a later frame for a known id cannot move
+    it to another owner. Ids are backend-controlled, so they are type- and
+    length-checked, and past ``NATIVE_CHILD_ROSTER_CAP`` they are counted in
+    ``_announced_overflow`` instead of stored, which keeps the auto-reject
+    audit reason accurate for a child the cap cost its route.
+
+    Returns False only when the cap refused an announcement. The caller then
+    drops the announcing frame, so the handle draws no card for a child whose
+    frames could never reach it. Every other frame returns True.
+    """
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return True
+    kind = update.get("sessionUpdate")
+    owner = (
+        frame_sid if frame_sid in self._session_queues else self._announced_children.get(frame_sid)
+    )
+    if owner is None or owner not in self._session_queues:
+        return True
+    if kind == UPDATE_SUBAGENT_STATE:
+        # codex-acp 2.2.x ends a child id for good on a terminal state: it
+        # ignores that thread's later events, and a continued child is
+        # announced under a new generation id. So the route is released here
+        # rather than held until the owner leaves. Any other state keeps it.
+        child = update.get("subagentSessionId")
+        state = update.get("state")
+        # Backend-controlled: a list or dict here must not raise in the
+        # frozenset lookup, since this runs on the shared reader.
+        if (
+            isinstance(state, str)
+            and state in SUBAGENT_TERMINAL_STATES
+            and isinstance(child, str)
+            and self._announced_children.get(child) == owner
+        ):
+            del self._announced_children[child]
+        return True
+    if kind != UPDATE_SUBAGENT_SPAWNED:
+        return True
+    child = update.get("subagentSessionId")
+    if not isinstance(child, str) or not child or len(child) > MAX_ACP_SESSION_ID_LEN:
+        return True
+    if child in self._session_queues or child in self._announced_children:
+        return True
+    if len(self._announced_children) >= NATIVE_CHILD_ROSTER_CAP:
+        if not self._announced_overflow:
+            # Loud once per episode; the episode ends when the map empties
+            # (unregister_session resets the count), so a recovery re-arms it.
+            logger.warning(
+                "native subagent route map is full (%d ids): refusing children "
+                "announced on session %s; they get no card, and their frames are "
+                "dropped or answered fail-closed",
+                NATIVE_CHILD_ROSTER_CAP,
+                _loggable_request_id(owner),
+            )
+        self._announced_overflow += 1
+        return False
+    self._announced_children[child] = owner
+    return True
 
 
 def _note_roster_overflow(self: AcpRuntime, overflow: int) -> None:

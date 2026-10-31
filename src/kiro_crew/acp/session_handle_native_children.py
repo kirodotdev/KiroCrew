@@ -1,13 +1,15 @@
 """Harness-native child sessions.
 
-The KAS sub-agent roster and child chunks, the child-session bookkeeping, the resume
-refusal and the uncharged report (harness-parity row H16).
+The KAS sub-agent roster and child chunks, the codex-acp announced-child roster, the
+child-session bookkeeping, the resume refusal and the uncharged report (harness-parity
+row H16).
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_kas_subagent_roster``, ``_native_child_overflow``,
+Instance fields written: ``_announced_subagent_roster``, ``_kas_subagent_roster``,
+``_legacy_subagent_tool_ids``, ``_native_child_overflow``, ``_native_child_redactors``,
 ``_native_child_sids``, ``_prompt_or_tool_seen``.
 
 Instance fields read: ``_session_id``.
@@ -19,7 +21,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import parse_text_chunk, redact_text
-from kiro_crew.acp.types import EVENT_SUBAGENT_ACTIVITY, EVENT_SUBAGENT_LIST, AcpEvent
+from kiro_crew.acp.types import (
+    EVENT_SUBAGENT_ACTIVITY,
+    EVENT_SUBAGENT_LIST,
+    UPDATE_SUBAGENT_SPAWNED,
+    UPDATE_SUBAGENT_STATE,
+    AcpEvent,
+)
+from kiro_crew.security import StreamRedactor
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:
@@ -233,6 +242,210 @@ def _build_child_tool_activity_prefix(self: AcpSessionHandle, update: dict) -> l
             title=title,
         )
     ]
+
+
+#: Roster status types for the lifecycle states codex-acp reports. Every value
+#: that is not in ``_native_subagent_sync``'s running set closes the card, and a
+#: ``failed`` with a message shows that message as the card's error.
+_RUNNING = {"type": "working", "message": ""}
+_COMPLETED = {"type": "completed", "message": ""}
+
+
+def _failed(message: str) -> dict[str, str]:
+    return {"type": "failed", "message": _bounded_label(message or "failed")}
+
+
+#: codex-acp 2.2.x ``subagent_state_update.state`` values.
+_LEGACY_STATE_STATUS: dict[str, dict[str, str]] = {
+    "completed": _COMPLETED,
+    "failed": _failed("failed"),
+    "cancelled": _failed("cancelled"),
+    # Sent for a child still open when a history replay ends: its end was not
+    # observed, so the card closes without claiming it succeeded.
+    "disconnected": _failed("disconnected"),
+}
+
+
+def _name_from_agent_path(path: str, fallback: str) -> str:
+    """``/root/probe_worker`` -> ``Probe worker``, the name codex-acp itself shows."""
+    leaf = path.strip().rstrip("/").rsplit("/", 1)[-1].strip()
+    words = " ".join(leaf.replace("_", " ").replace("-", " ").split())
+    return words[:1].upper() + words[1:] if words else fallback
+
+
+def _announced_row(
+    self: AcpSessionHandle, child_sid: str, parent_sid: str, name: str, task: str
+) -> dict[str, Any] | None:
+    """Get or create the roster row for ``child_sid``; None when the cap refuses it."""
+    row = self._announced_subagent_roster.get(child_sid)
+    if row is not None:
+        return row
+    if not self._note_native_child(child_sid):
+        return None
+    # Redacted whole BEFORE the storage cut: a credential the cut splits (a
+    # connection URI clipped before its ``@host``) does not read as one, so
+    # redacting the clipped string downstream would let it through.
+    name = _bounded_label(redact_text(name) or f"Agent {child_sid[-8:]}")
+    row = {
+        "sessionId": child_sid,
+        "sessionName": name,
+        "agentName": name,
+        "initialQuery": _bounded_label(redact_text(task) or f"Delegated task for {name}"),
+        "status": dict(_RUNNING),
+        # The session the child was announced on: this handle's own for a
+        # direct child, a child's for a nested one.
+        "parentSessionId": "" if parent_sid == self._session_id else parent_sid,
+    }
+    self._announced_subagent_roster[child_sid] = row
+    return row
+
+
+def _roster_event(self: AcpSessionHandle) -> list[AcpEvent]:
+    # Observed children mean the wave started: a spawned child can act before
+    # its first frame reaches this handle, so the announcement itself closes
+    # the registration-throttle window, as the KAS lifecycle frame does.
+    self._prompt_or_tool_seen = True
+    return [
+        AcpEvent(
+            kind=EVENT_SUBAGENT_LIST,
+            subagents=[dict(row) for row in self._announced_subagent_roster.values()],
+        )
+    ]
+
+
+def _handle_announced_subagent(
+    self: AcpSessionHandle, update: dict, frame_sid: str
+) -> list[AcpEvent]:
+    """Turn a native-subagent lifecycle ``session/update`` into the card roster.
+
+    codex-acp announces each native child on the session that spawned it and
+    reports its state there; the child's own work arrives under the child's id
+    and is re-tagged as activity by ``_handle_update``. The shape read is
+    codex-acp 2.2.x's ``subagent_spawned`` / ``subagent_state_update``, keyed on
+    ``subagentSessionId``.
+
+    The roster is emitted whole, as kiro-cli's ``subagent/list_update`` is, so
+    ``_native_subagent_sync`` sees one shape from every harness. A state for a
+    child this turn never announced is dropped: it has no card to settle, and
+    a row created from it would be unbounded by any announcement.
+    """
+    kind = update.get("sessionUpdate")
+    parent_sid = frame_sid or self._session_id
+    if kind == UPDATE_SUBAGENT_SPAWNED:
+        child = update.get("subagentSessionId")
+        if not isinstance(child, str) or not child:
+            return []
+        row = self._announced_row(
+            child, parent_sid, str(update.get("name") or ""), str(update.get("task") or "")
+        )
+        return self._roster_event() if row is not None else []
+    if kind == UPDATE_SUBAGENT_STATE:
+        child = update.get("subagentSessionId")
+        row = self._announced_subagent_roster.get(child) if isinstance(child, str) else None
+        status = _LEGACY_STATE_STATUS.get(str(update.get("state") or ""))
+        if row is None or status is None:
+            return []
+        row["status"] = dict(status)
+        # Every state read here closes the card, so the text the child's
+        # redactor still holds goes onto the card first.
+        return self._flush_announced_child_text(str(child)) + self._roster_event()
+    return []
+
+
+def _child_text_activity(self: AcpSessionHandle, child_sid: str, text: str) -> list[AcpEvent]:
+    """One chunk of a routed child's text as card activity.
+
+    An announced child's text goes through that child's own ``StreamRedactor``:
+    a chunk redacted alone would let a credential split across two chunks reach
+    the card, so the redactor holds back a tail that could still be the start of
+    one, and an empty list means it held the whole chunk. Only children in this
+    turn's announced roster get a redactor, so the store is bounded by
+    ``NATIVE_CHILD_ROSTER_CAP``. Any other child's chunk passes as it came.
+    """
+    if child_sid in self._announced_subagent_roster:
+        redactor = self._native_child_redactors.get(child_sid)
+        if redactor is None:
+            redactor = self._native_child_redactors[child_sid] = StreamRedactor()
+        text = redactor.feed(text)
+        if not text:
+            return []
+    return [AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=text)]
+
+
+def _flush_announced_child_text(self: AcpSessionHandle, child_sid: str) -> list[AcpEvent]:
+    """The text ``child_sid``'s redactor holds, as one activity event, and drop the redactor."""
+    redactor = self._native_child_redactors.pop(child_sid, None)
+    tail = redactor.flush() if redactor is not None else ""
+    if not tail:
+        return []
+    return [AcpEvent(kind=EVENT_SUBAGENT_ACTIVITY, sub_session_id=child_sid, text=tail)]
+
+
+def flush_native_child_text(self: AcpSessionHandle) -> list[AcpEvent]:
+    """The text every announced child's redactor still holds, flushed as activity events.
+
+    For a turn cut short (a Stop, a timeout, a provider error): the state frame
+    that flushes a child's tail never arrives, and the cards close.
+    ``native_cards._native_flush_cut_short`` calls this through the provider,
+    as it calls ``AcpClient.flush_native_child_text`` for a Claude turn.
+    """
+    out: list[AcpEvent] = []
+    for child_sid in list(self._native_child_redactors):
+        out.extend(self._flush_announced_child_text(child_sid))
+    return out
+
+
+#: ``rawInput.activityKind`` of codex-acp's legacy subagent activity rows.
+_LEGACY_ACTIVITY_STATUS: dict[str, dict[str, str]] = {
+    "started": _RUNNING,
+    "completed": _COMPLETED,
+    "interrupted": _failed("cancelled"),
+}
+
+
+def _handle_legacy_codex_subagent(self: AcpSessionHandle, update: dict) -> list[AcpEvent] | None:
+    """Read codex-acp's legacy "Start/Complete subagent" rows as card lifecycle.
+
+    An adapter whose ACP SDK predates ``clientCapabilities.subagents`` drops the
+    declaration and reports a native child only as generic tool rows on the
+    parent, ``rawInput`` carrying ``agentThreadId``, ``agentPath`` and
+    ``activityKind``. Those rows still give the child an identity and a
+    lifecycle, so they feed the same roster; the child's own work is not sent
+    by such an adapter at all, so its card has no output.
+
+    Returns None for every other frame, which then takes the ordinary path.
+    A row read here is not also rendered as a tool call, and its trailing
+    ``tool_call_update`` is dropped with it.
+    """
+    tool_call_id = update.get("toolCallId")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        return None
+    if tool_call_id in self._legacy_subagent_tool_ids:
+        return []
+    raw = update.get("rawInput")
+    if not isinstance(raw, dict):
+        return None
+    child = raw.get("agentThreadId")
+    path = raw.get("agentPath")
+    status = _LEGACY_ACTIVITY_STATUS.get(str(raw.get("activityKind") or ""))
+    if not isinstance(child, str) or not child or not isinstance(path, str) or status is None:
+        return None
+    # The path is redacted before it is turned into a name: the leaf and the
+    # ``_``/``-`` folding would break a token apart so it does not read as one.
+    row = self._announced_row(
+        child, self._session_id, _name_from_agent_path(redact_text(path), ""), ""
+    )
+    if row is None:
+        return []
+    # Remembered only for a child that got a row, and only while the id is a
+    # plausible call id: the set is bounded in count AND in bytes per entry.
+    if (
+        len(tool_call_id) <= MAX_ACP_SESSION_ID_LEN
+        and len(self._legacy_subagent_tool_ids) < NATIVE_CHILD_ROSTER_CAP
+    ):
+        self._legacy_subagent_tool_ids.add(tool_call_id)
+    row["status"] = dict(status)
+    return self._roster_event()
 
 
 def _note_native_child(self: NativeChildIds, child_sid: object) -> bool:

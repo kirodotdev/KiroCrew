@@ -229,6 +229,7 @@ class AcpRuntime:
     _answer_ownerless_request = _rt_host._answer_ownerless_request
     # What the reader drops, counted: ``kiro_crew.acp.runtime_frame_accounting``.
     _snapshot_subagent_sessions = _rt_frames._snapshot_subagent_sessions
+    _note_announced_child = _rt_frames._note_announced_child
     _note_roster_overflow = _rt_frames._note_roster_overflow
     _flush_roster_overflow = _rt_frames._flush_roster_overflow
     _end_roster_overflow_episode = _rt_frames._end_roster_overflow_episode
@@ -236,6 +237,7 @@ class AcpRuntime:
     _flush_dropped_frames = _rt_frames._flush_dropped_frames
     # The single stdout reader: ``kiro_crew.acp.runtime_reader_loop``.
     _reader_loop = _rt_reader._reader_loop
+    _route_owned_child_frame = _rt_reader._route_owned_child_frame
     _notification_aliases = _rt_reader._notification_aliases
     # A remote session's workspace: ``kiro_crew.acp.runtime_remote_workspace``.
     _close_remote_workspace = _rt_remote._close_remote_workspace
@@ -654,6 +656,16 @@ class AcpRuntime:
         # Both are cleared when the owning session unregisters.
         self._subagent_sessions: set[str] = set()
         self._subagent_owner: str | None = None
+        # Native children announced ON a session (a ``subagent_spawned``
+        # session/update, codex-acp's shape), mapped to the
+        # registered session that owns them. Unlike the ownerless roster above,
+        # the announcing frame names its owner, so a child's frames route to that
+        # owner even when other sessions share the runtime. A nested child maps
+        # to the same root owner. Bounded by NATIVE_CHILD_ROSTER_CAP and pruned
+        # when the owner unregisters.
+        self._announced_children: dict[str, str] = {}
+        # Announcements refused at that cap since the map was last emptied.
+        self._announced_overflow: int = 0
         # How many ids the LAST roster named past NATIVE_CHILD_ROSTER_CAP.
         # Non-zero means an announced child may be unrecognisable here, so a
         # permission request for an unknown session is audited under

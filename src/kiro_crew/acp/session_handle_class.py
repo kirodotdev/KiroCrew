@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     steering_advertised,
 )
 from kiro_crew.recovery.ladder import InfraError
+from kiro_crew.security import StreamRedactor
 
 #: The owner modules whose functions ``AcpSessionHandle`` binds as its members, this
 #: shell included.
@@ -140,6 +141,13 @@ class AcpSessionHandle:
     _handle_kas_subagent = _sh_children._handle_kas_subagent
     _handle_kas_subagent_chunk = _sh_children._handle_kas_subagent_chunk
     _build_child_tool_activity_prefix = _sh_children._build_child_tool_activity_prefix
+    _handle_announced_subagent = _sh_children._handle_announced_subagent
+    _handle_legacy_codex_subagent = _sh_children._handle_legacy_codex_subagent
+    _announced_row = _sh_children._announced_row
+    _roster_event = _sh_children._roster_event
+    _child_text_activity = _sh_children._child_text_activity
+    _flush_announced_child_text = _sh_children._flush_announced_child_text
+    flush_native_child_text = _sh_children.flush_native_child_text
     _note_native_child = _sh_children._note_native_child
     _note_native_roster = _sh_children._note_native_roster
     native_child_resume_refusal = _sh_children.native_child_resume_refusal
@@ -737,6 +745,15 @@ class AcpSessionHandle:
         # KAS sub-agent roster keyed by agentSubtaskId. Each entry is shaped for
         # EVENT_SUBAGENT_LIST consumption by _native_subagent_sync in chat_runner.
         self._kas_subagent_roster: dict[str, dict[str, Any]] = {}
+        # Native children announced by lifecycle session/updates (codex-acp),
+        # keyed by the child's session id, same row shape as the KAS roster.
+        self._announced_subagent_roster: dict[str, dict[str, Any]] = {}
+        # toolCallIds of codex's legacy "Start/Complete subagent" rows this turn,
+        # so their trailing tool_call_update is dropped with the row it updates.
+        self._legacy_subagent_tool_ids: set[str] = set()
+        # One StreamRedactor per announced child whose text is streaming, keyed
+        # by the child's session id (_child_text_activity).
+        self._native_child_redactors: dict[str, StreamRedactor] = {}
 
     @property
     def session_id(self) -> str:
