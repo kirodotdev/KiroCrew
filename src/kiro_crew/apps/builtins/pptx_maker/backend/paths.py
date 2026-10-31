@@ -72,6 +72,26 @@ def engine_root() -> Path:
     return app_root() / "vendor" / _ENGINE_DIRNAME
 
 
+def engine_mcp_dir_for(root: Path) -> Path:
+    """The local MCP project directory inside an engine tree."""
+    return root / "servers" / "local"
+
+
+def engine_sdpm_dir_for(root: Path) -> Path:
+    """The SDPM distribution root inside an engine tree."""
+    return root / "sdpm"
+
+
+def engine_sdpm_package_dir_for(root: Path) -> Path:
+    """The importable ``sdpm`` package directory inside an engine tree."""
+    return engine_sdpm_dir_for(root) / "sdpm"
+
+
+def engine_shared_dir_for(root: Path) -> Path:
+    """The repository-level shared package required by SDPM attachments."""
+    return root / "shared"
+
+
 def venv_python(root: Path) -> Path:
     """The engine venv's interpreter inside *root*, in this platform's venv layout.
 
@@ -86,7 +106,7 @@ def venv_python(root: Path) -> Path:
     interpreter path that does not exist, so provisioning could never succeed —
     and one caller had already grown a private Windows workaround instead.
     """
-    venv = root / "mcp-local" / ".venv"
+    venv = engine_mcp_dir_for(root) / ".venv"
     if platform_compat.IS_WINDOWS:
         return venv / "Scripts" / "python.exe"
     return venv / "bin" / "python"
@@ -120,13 +140,13 @@ def preview_tools_bin() -> Path:
 
 
 def engine_mcp_dir() -> Path:
-    """The engine's MCP project dir — the cwd every engine call uses."""
-    return engine_root() / "mcp-local"
+    """The engine's local MCP project dir — the cwd every engine call uses."""
+    return engine_mcp_dir_for(engine_root())
 
 
-def engine_skill_dir() -> Path:
-    """The engine's bundled skill tree (styles, templates, icon scripts)."""
-    return engine_root() / "skill"
+def engine_sdpm_dir() -> Path:
+    """The engine's bundled SDPM package and data root."""
+    return engine_sdpm_dir_for(engine_root())
 
 
 def engine_config_path() -> Path:

@@ -21,7 +21,7 @@ import { i18nT } from '../../i18n/t'
 import { pptxMakerApi, type StyleEntry, type TemplateEntry } from './api'
 import { BoardThumb } from './BoardFrame'
 import BoardFrame from './BoardFrame'
-import { nameFromFilename, templateAccents } from './lib'
+import { libraryChatToken, nameFromFilename, templateAccents } from './lib'
 import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
@@ -36,26 +36,6 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 const fontSpecimen = (): string => i18nT('apps.pptxMaker.libraryPanel.font_specimen')
 
 type LibraryKind = 'styles' | 'templates'
-
-/**
- * The chat token this panel tells the user to paste, e.g. `[Style: my-deck]`.
- *
- * Deliberately NOT a catalog value: the agent prompts parse exactly this spelling
- * — see `builtin_skills/pptx-maker/SKILL.md` and `prompts/spec-studio.md` — so a
- * translated keyword would render a token the agent does not recognise, per
- * `website/AGENTS.md` ("a literal token the user must type must never be a catalog
- * value").
- *
- * Composed in one function rather than left as two loose `'Style'`/`'Template'`
- * word constants, so the string shown to the user and the grammar the agent
- * matches are a single expression that cannot drift.
- */
-const CHAT_TOKEN_KEYWORD: Record<LibraryKind, string> = {
-  styles: 'Style',
-  templates: 'Template',
-}
-const chatTokenFor = (kind: LibraryKind, name: string): string =>
-  `[${CHAT_TOKEN_KEYWORD[kind]}: ${name}]`
 
 function isUserOwned(entry: { source?: string }): boolean {
   return entry.source === 'user'
@@ -407,7 +387,7 @@ export default function LibraryPanel({ kind }: { kind: LibraryKind }) {
             <div className="text-[12px] text-muted mb-3">
               {i18nT('apps.pptxMaker.libraryPanel.reference_in_chat')}{' '}
               <code className="font-mono text-text">
-                {chatTokenFor(kind, current.name)}
+                {libraryChatToken(kind, current.name)}
               </code>
             </div>
           )}

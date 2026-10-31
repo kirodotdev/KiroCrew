@@ -4859,6 +4859,7 @@
         "engine_requirements": "Lädt eine geprüfte Kopie der Engine herunter — nichts zu installieren. Festgelegt auf {{tag}}.",
         "install_engine": "Engine installieren",
         "loading": "Wird geladen…",
+        "mode_context_failed": "Der gewählte Modus konnte nicht an den Chat gesendet werden. Wähl den Modus erneut, um es noch einmal zu versuchen.",
         "mode_spec": "Spec-Modus",
         "mode_spec_hint": "Erst ein Gespräch, dann Briefing, Gliederung und Art-Direction, bevor eine Folie entsteht.",
         "mode_style": "Stil-Werkstatt",

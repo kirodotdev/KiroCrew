@@ -12,7 +12,7 @@ Slide composition and `.pptx` writing are NOT implemented here. They are done by
 [spec-driven-presentation-maker](https://github.com/aws-samples/sample-spec-driven-presentation-maker)
 (AWS Samples, MIT-0), a public open-source engine that is **fetched as a
 sha256-pinned tarball into the app's data dir on first use and never modified**.
-This app supplies the Kiro Crew integration: the agents that drive the engine over
+This app supplies the Kiro Crew integration: the agent that drives the engine over
 MCP, the studio page, and the deck / style / template API.
 
 **Nothing has to be installed by hand.** `pip install kirocrew` is the only
@@ -30,7 +30,7 @@ or Windows venv layout.
 ## Architecture
 
 ```
-chat session (pptx-maker-spec / pptx-maker-vibe / pptx-maker-style)
+chat session (pptx-maker)
   └─ @sdpm/* MCP tools ──► vendored engine (uv venv, pinned tag)
                               └─ writes decks to the deck root
                                     ▲
@@ -41,6 +41,28 @@ The page **never** generates a deck. It reads what the engine wrote and manages
 the style/template library. Generation happens in the real chat surface, so the
 user gets the full native chat (follow-up chips, question cards, tool groups)
 instead of a reduced embed.
+
+The verified archive is kept as a full v0.10 repository because the local server
+and SDPM distribution depend on their repository-relative layout:
+
+```
+<data>/vendor/sdpm/
+  servers/local/               # MCP project, server_acp.py, uv.lock, .venv/
+  sdpm/                        # Python distribution plus references/templates/assets
+    sdpm/                      # importable package
+  shared/                      # attachment pipeline dependency used by sdpm.tools
+```
+
+Archive acceptance requires one top-level directory containing the ACP server
+under `servers/local`, the package initializer under `sdpm/sdpm`, and a `shared/`
+directory. The engine
+pin is fixed as one unit in `backend/engine_source.py`:
+
+| Constant | Value |
+|----------|-------|
+| `ENGINE_TAG` | `v0.10.4` (display only) |
+| `ENGINE_COMMIT` | `1ce83dd4555ebfb06db26fac5c7c2b9722d63bd9` |
+| `ENGINE_TARBALL_SHA256` | `b476ba7a52ed214ee71156a3f53b84703836847676c89345ce95507bf6d30155` |
 
 ## Routes
 
@@ -57,8 +79,8 @@ access.
 | GET | `/engine` | Engine readiness (`clone`/`venv` probes) + the provisioning job's state, log tail and pinned tag |
 | POST | `/engine/provision` | Fetch the engine at the pinned digest, build its venv, and install the managed `pdftoppm` launcher. 202 + poll `/engine`; idempotent |
 | GET | `/deps` | Optional preview binaries (`soffice`, `pdftoppm`): `present`/`missing`/`managed` plus a per-OS install `hints` command for the ones the app will not install — reports only |
-| GET | `/assets` | Icon-pack provisioning status, keyed on the engine tag |
-| POST | `/assets/provision` | Download the engine's bundled icon packs (`?force=true` to redo) |
+| GET | `/assets` | Icon-pack provisioning status from each source's `manifest.json` under `~/.config/sdpm/assets/` (or the configured XDG root) |
+| POST | `/assets/provision` | Call `sdpm.knowledge.assets.download.install_assets()` for the `aws` and `material` sources and write them under `~/.config/sdpm/assets/` (`?force=true` to redo) |
 | GET/PUT | `/config` | The deck output directory. The PUT accepts **only** `deckRoot` (exact key equality) and writes `output_dir` into the ENGINE's own config |
 | GET | `/decks` | Deck list, newest id first, capped at `MAX_DECKS` (500) |
 | GET | `/deck?id=` | One deck's deliverables, slides and `updatedAt` map |
@@ -138,13 +160,14 @@ honestly:
   and ~133MB unpacked, i.e. ~31 digests to maintain per platform.
 
 **Which PROCESS sees the managed dir is the whole problem.** `pdftoppm` and
-`soffice` are invoked *by name* from `skill/sdpm/api.py`, which runs inside the
+`soffice` are invoked *by name* from `api.py` in the engine's `sdpm/sdpm`
+package, which runs inside the
 engine's **`sdpm` MCP server** — a process **kiro-cli** spawns from the rendered
 agent config, not any gateway subprocess. `engine._spawn`'s children only ever run
-the metadata snippets and the icon scripts, so a `PATH` overlay applied there
+the engine snippets, so a `PATH` overlay applied there
 reaches a child that never rasterizes anything. The managed dir therefore has to
-be on the `PATH` declared in `mcpServers.sdpm.env` of the four `agents/*.json`
-templates, rendered from the `{TOOLS_PATH}` placeholder by **both** renderers
+be on the `PATH` declared in `mcpServers.sdpm.env` of the single agent
+template, rendered from the `{TOOLS_PATH}` placeholder by **both** renderers
 (`provision._render_agents` and the gateway's `bridges._placeholder_values`, which
 compute it identically via `provision.mcp_tools_path()`).
 
@@ -217,7 +240,10 @@ variable body is opaque to the contract scanner.
 | `template_write_failed` / `template_rename_failed` / `template_delete_failed` | Filesystem error on a template mutation | 500 |
 | `pin_write_failed` | `state.json` write failed | 500 |
 | `engine_config_write_failed` | Engine config write failed | 500 |
+| `engine_config_unreadable` | `PUT /config` could not read the existing engine config to snapshot it | 500 |
+| `agent_refresh_rollback_failed` | `PUT /config` saved the deck root, could not re-register the agent, and could not roll the config back | 500 |
 | `engine_not_ready` | The engine's user config dir is unavailable | 503 |
+| `agent_refresh_failed` | `PUT /config` saved the deck root but could not re-register the agent with it; the config is rolled back | 503 |
 
 ## Storage
 
@@ -228,23 +254,23 @@ disagree about state.
 ```
 ~/.kiro/crew/apps/pptx-maker/
   app.json, installed.json          # platform-written
-  data/vendor/sdpm/                 # the pinned engine tree + its uv venv
+  data/vendor/sdpm/                 # the pinned engine tree
     .kirocrew-engine.json           #   tag/commit/digest of the verified install
+    servers/local/.venv/            #   the MCP server's uv venv
   data/vendor/preview-tools/bin/    # managed preview tools; appended to the
     pdftoppm (or pdftoppm.cmd)      #   engine child's PATH, never the gateway's
-  agents/*.json                     # rendered from the shipped templates
-  prompts/                          # staged from the package at provision time
+  agents/pptx-maker.json            # rendered from the shipped template
 
 <engine user config>/               # $XDG_CONFIG_HOME/sdpm, else ~/.config/sdpm
   config.json                       # output_dir (the deck root)
   state.json                        # pinned_styles, template_metadata
   styles/*.html, templates/*.pptx   # the user's library
-  assets/{aws,material}/            # icon packs + .pptx-maker-provisioned.json
+  assets/{aws,material}/            # icon packs + their manifest.json
 
 <deck root>/<deck-id>/              # engine-owned layout
   deck.json, specs/{brief,outline,art-direction}.*
   slides/<slug>.json, compose/<slug>_<epoch>.json, compose/defs_<epoch>.json
-  preview/page<N>-*.png, output.pptx
+  preview/<slug>.png (v0.10), preview/page<N>-*.png (legacy), output.pptx
 ```
 
 `deck_root()` resolves on every call — env override (`KIROCREW_PPTX_DECK_ROOT`,
@@ -281,32 +307,29 @@ deliberately: with the only engine moved aside, the tree must go back even on
 swallowed. On a FIRST install the new tree is still removed rather than left in
 place, so no source marker survives to make `is_installed()` short-circuit the retry.
 
-`backend/provision.py` resolves `uv`, fetches and verifies the engine tree
-(`backend/engine_source.py`), runs `uv sync`, reinstalls the engine's skill package
-**editable** (a normal install drops its sibling data dirs, so bundled styles and
-templates would silently vanish), stages this app's prompt files into the
-install dir, and renders the agent templates against the resolved engine paths.
+`backend/provision.py` resolves `uv`, fetches and verifies the full engine tree,
+runs `uv sync --frozen --directory <engine>/servers/local`, and reinstalls
+`<engine>/sdpm` **editable**. The editable relink runs first in staging and again
+at the final path: the `.pth` stores an absolute path, and a normal install drops
+the sibling references, styles, and templates that `sdpm.config` resolves. The
+single agent starts the MCP server with `uv run --no-sync`; without `--no-sync`,
+each launch re-syncs the project and replaces that editable link with a normal
+install, so later engine snippets lose bundled styles/templates even though the
+MCP handshake succeeds. There is no app-owned role prompt to stage or patch.
 
-Prompt staging repairs owner directory permissions on the existing copy before
-forced removal, then normalizes the fresh copy's directories to owner rwx.
-This replaces copies inherited from read-only packaged sources on POSIX and
-Windows while preserving copied file modes. A failed removal raises an `OSError`
-that staging records in its log; it never copies over a surviving stale tree.
-
-**It does NOT register those resources.** The enable path and the boot reconcile both
-call `bridges.register_app`, and `bridges._placeholder_values` computes this app's
-`{UV_BIN}` / `{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from
-the data home and the installed package — the same values the provisioner resolves — so
-the agents and skill land without the provisioner registering anything. Registering here
-would be redundant AND an unclosable race: provisioning is a detached job that runs for
-minutes, so an operator can disable the app mid-run, and the enable re-check cannot be
-atomic (the lifecycle lock is an `asyncio.Lock`; this runs synchronously on a worker
-thread). A disable that deregisters and *then* sets `enabled=false` reads as
-still-enabled, and registering recreates the agent and MCP configs the disable had just
-removed — leaving a DISABLED app with live, callable resources. Not registering removes
-the window instead of narrowing it. `_register_resources` is kept as the seam its
-disable-check tests drive. Pinned by
-`test_pptx_maker_provision.py::test_provisioning_does_not_register_resources_itself`.
+The worker deliberately does **not** register resources.
+After a successful worker run, `routes._provision_job` returns to the event loop
+and calls `_register_current_engine_if_enabled`. That function acquires
+`app_lifecycle_lock("pptx-maker")`, then re-checks both current engine readiness
+and the app's enabled state **under the lock** before running `register_app` on the
+subprocess executor. Cancellation is shielded until registration finishes so the
+lock cannot be released mid-write. A concurrent disable therefore either wins
+first and prevents registration, or runs after registration and removes it. The
+job stays `running` until registration finishes, ends `error` with "the app agent
+could not be registered" appended to its log when registration fails, and ends
+`done` without registering when the app is disabled or the engine is not ready. A
+successful `PUT /config` uses the same path after changing `deckRoot`, so the next
+session receives the new `SDPM_DECK_ROOT` without reviving a disabled app.
 
 It is a Python job rather than a `setup.onInstall` script because the platform
 does not stage a BUILTIN app's non-manifest files into `~/.kiro/crew/apps/<name>/`
@@ -387,7 +410,7 @@ half-removed one:
   loudly, so no unvetted tree is left for a later step or a retry to build;
 - **hostile archive** (see below) → same, and nothing is written outside the
   scratch dir;
-- **not the engine** (no single top-level dir, or no `mcp-local/`) → refused;
+- **not the engine** (no single top-level dir, no ACP server under `servers/local`, no package initializer under `sdpm/sdpm`, or no `shared/` directory) → refused;
 - **network failure with a tree already present** → the existing tree is
   untouched. The new tree is only swapped into place after a verified extraction,
   so `engine_root` is never partially replaced.
@@ -429,11 +452,11 @@ as the wire name the dashboard reads; it reports `engine_source.is_installed`.
 
 ## Agents
 
-Four agent templates ship with the app, rendered at provision time
-(`{ENGINE_ROOT}` / `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` placeholders). Each
-config's declared `name` is the dispatchable identifier; the platform writes the
+One agent template ships with the app, rendered at provision time
+(`{UV_BIN}` / `{ENGINE_MCP_DIR}` / `{DECK_ROOT}` / `{TOOLS_PATH}` placeholders). Its
+declared `name`, `pptx-maker`, is the dispatchable identifier; the platform writes the
 FILE under a namespaced `pptx-maker--<name>.json` filename, but that stem (like
-the `pptx-maker/<name>` display namespace) is not a name dispatch can resolve:
+the `pptx-maker/<name>` display namespace) is not a name dispatch can resolve.
 
 Every substituted value is **JSON-escaped** (`provision._json_escape`) because the
 placeholders sit inside JSON string literals. This is not cosmetic: each value is
@@ -444,24 +467,48 @@ provisioned **zero** agent configs. Pinned by
 `test_pptx_maker_provision.py::TestRenderAgents`, which simulates a backslash
 path (and a quote) on every platform rather than only on Windows.
 
-| Agent | Role |
-|-------|------|
-| `pptx-maker-spec` | Briefing → outline → art direction with the user, then delegates composition |
-| `pptx-maker-vibe` | Fast deck from a URL / pasted text / short brief |
-| `pptx-maker-composer` | Autonomous slide composition; a sub-agent of the two above |
-| `pptx-maker-style` | Creates a reusable style guide through conversation |
+The template is a thin server-driven client and deliberately declares neither
+`prompt` nor `resources`; role and procedure text comes from SDPM's live
+`start_presentation`, `start_composing`, `start_style`, or `start_translation`
+response. Kiro Crew does not copy, patch, or override that prose.
 
-**App-owned prompt guidance lives in `prompts/spec-studio.md`**, loaded as an
-agent `resource`. The upstream app patched the vendored engine prompt in place on
-every install, which meant an engine upgrade silently reverted the customization.
-Keeping it in a separate file is what lets the engine stay an unmodified,
-replaceable dependency. The file covers: reply in the user's language, how to open
-a session, Kiro Crew's `[OPTIONS: …]` question affordance in place of the engine's
-web-only `hearing` tool, and writing each deliverable incrementally so the studio
-can show it.
+The MCP entry is the v0.10 ACP server:
 
-None of the four declares `autoApprove` on its MCP server. kiro-cli approves an
-autoApproved MCP tool locally and emits no permission request, so
+```
+{UV_BIN} run --no-sync --directory {ENGINE_MCP_DIR} python server_acp.py
+```
+
+Its environment clears `PYTHONPATH`, appends the managed preview-tool directory
+to `PATH`, and sets `SDPM_DECK_ROOT={DECK_ROOT}`. `server_acp.py` is used instead
+of the generic server so attachments stay confined to the deck root and style
+listing does not open a browser.
+
+The template grants the v0.10 `@sdpm/*` tools individually. It excludes
+`hearing`, which Kiro Crew cannot render, and includes
+`@kirocrew-core/ask_question` so the standard question card is available. It
+also grants `use_subagent` with both `availableAgents` and `trustedAgents` set to
+`["pptx-maker"]`: a composer is another instance of the same agent, dispatched
+with an instruction to call `start_composing(deck_id, assigned_slugs)`.
+
+The page's Spec, Vibe, and Style controls are modes, not agent names. Every control
+creates a persistent `pptx-maker` slot and sends one ephemeral context line before
+the first user turn:
+
+| Mode | Context |
+|------|---------|
+| Spec | `Interaction mode: dialogue` |
+| Vibe | `Interaction mode: fast` |
+| Style | `The user wants to create a reusable style. Call start_style() first.` |
+
+If context delivery fails, the page does not open the chat. It shows the error in
+an `ErrorNotice` titled `mode_context_failed` and keeps the created slot, so choosing
+a mode again sends the context to that slot instead of creating another; the chat
+opens once delivery succeeds. Library insertion uses SDPM's standard `@style:<name>` and
+`@template:<name>` mentions, quoting names that contain whitespace.
+
+The template declares no `autoApprove` on its MCP server and no agent
+`allowedTools`. kiro-cli approves an autoApproved MCP tool locally and emits no
+permission request, so
 `hooks.on_tool_call` — the PreToolUse gate carrying the deny floor, the
 sensitive-path check and the governance ceiling — would never be reached.
 
@@ -646,7 +693,7 @@ sensitive-path check and the governance ceiling — would never be reached.
 
   **`GET /style` goes through the same helper.** A style is easy to misfile as inert
   user upload, because a user CAN import one by hand (`POST /styles/import`) — but
-  the `pptx-maker-style` agent's entire purpose is to WRITE one, and it holds `web_fetch` /
+  the `pptx-maker` agent in its style role is able to WRITE one, and it holds `web_fetch` /
   `web_search`, so the boundary has to assume the untrusted author. It reuses
   `_redact_artifact` rather than a bare `redact()` for the raster reason above: a
   style embeds the same inline art, so an unguarded pass would blank the preview.
@@ -869,8 +916,9 @@ Decks, Library, Settings. i18n keys under `apps.pptxMaker.*` in every shipped ca
 | `SlidePreview.tsx` | Assembles a compose payload into SVG, fading in only what changed |
 | `BoardFrame.tsx` | Sandboxed scaled iframe for style / art-direction documents (+ `BoardThumb`) |
 | `LibraryPanel.tsx` | Style and template library CRUD |
+| `modeContext.prompt.ts` | Exact non-translated SDPM mode protocol strings |
 | `api.ts` | Typed client; `artifactUrl()` is the one place a relative artifact path becomes a request |
-| `lib.ts` | Pure helpers — deck filter, tab-follow rule, board scaling, filename sanitising |
+| `lib.ts` | Pure helpers — deck filter, tab-follow rule, board scaling, filename sanitising, library chat mentions |
 
 **The tab-follow rule is the page's defining behaviour.** `tabToFollow` compares
 two successive `updatedAt` maps and switches to the newest changed deliverable, so
@@ -883,6 +931,12 @@ touched days ago.
 only the components the engine marked `changed`, so opening a finished deck does
 not look like it is being rebuilt. `prefers-reduced-motion` renders the final
 state immediately.
+
+For raster thumbnails, both list and detail APIs prefer SDPM v0.10's
+`preview/<slug>.png`, using outline order to find the first slide, then fall back
+to legacy `preview/page<N>-*.png` variants. The backend uses the outline's first
+non-blank leading `# ` heading as the deck display name when deck metadata has no
+name; later level-1 headings are not treated as titles.
 
 ## Tests
 
@@ -900,7 +954,9 @@ ladder, collision refusal, pin/metadata bookkeeping across rename and delete),
 CSP header, artifact redaction — an `AKIA`-shaped credential in a served
 `.json`/`.md`/`.svg`/`.html` comes back redacted, a `.pptx`/`.png` comes back
 byte-identical, inline raster art survives, an undecodable byte sequence does not
-raise — `PUT /config` key equality, no `/deps/install`), `..._engine.py`
+raise — `PUT /config` key equality, no `/deps/install`), `..._routes_assets.py`
+(the icon manifest, the asset download worker, and its status route; it shares
+the live-routes fixture in `test/pptx_maker_routes_helpers.py`), `..._engine.py`
 (readiness probes, marker-derived tag, snippet spawning),
 `..._provision.py` (the cached `uv` resolver, the
 credential-scrubbing spawn, provisioning's failure ladder),

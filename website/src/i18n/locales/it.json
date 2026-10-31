@@ -4858,6 +4858,7 @@
         "engine_requirements": "Scarica una copia verificata del motore: non c'è nulla da installare. Fissato a {{tag}}.",
         "install_engine": "Installa il motore",
         "loading": "Caricamento…",
+        "mode_context_failed": "Non è stato possibile inviare la modalità selezionata alla chat. Scegli di nuovo una modalità per riprovare.",
         "mode_spec": "Modalità specifica",
         "mode_spec_hint": "Prima un colloquio, poi un brief, una scaletta e una direzione artistica prima di qualsiasi diapositiva.",
         "mode_style": "Creatore di stili",

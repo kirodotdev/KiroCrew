@@ -877,13 +877,12 @@ class TestShippedAgentTemplatesAreRenderedByTheGateway:
         values = _placeholder_values("pptx-maker")
         assert set(values) == {
             "{UV_BIN}",
-            "{ENGINE_ROOT}",
             "{ENGINE_MCP_DIR}",
-            "{APP_PROMPTS}",
+            "{DECK_ROOT}",
             "{TOOLS_PATH}",
         }
         # Under the data home this fixture set, i.e. derived here rather than read.
-        assert str(app_env["home"]) in values["{ENGINE_ROOT}"]
+        assert str(app_env["home"]) in values["{ENGINE_MCP_DIR}"]
         # `{TOOLS_PATH}` becomes the MCP server's PATH, and an empty element there
         # means the CWD on POSIX — tool resolution would depend on where kiro-cli
         # happened to start the server.

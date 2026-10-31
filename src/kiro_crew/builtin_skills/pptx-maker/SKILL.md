@@ -10,20 +10,24 @@ triggers: pptx, powerpoint, presentation, slides, deck, slide deck, keynote
 Builds real `.pptx` files through the PPTX Maker app, which wraps the public
 `spec-driven-presentation-maker` engine. The engine's tools are exposed as the
 `@sdpm/*` MCP tool family, and they are only available inside this app's own
-agents — so slide generation happens by switching to one of those agents, not by
-calling the tools from a general chat session.
+`pptx-maker` agent — so slide generation happens by switching to that agent, not
+by calling the tools from a general chat session.
 
-## Which agent to use
+## Which mode to use
 
-| Agent | Use it for |
-|---|---|
-| `pptx-maker-spec` | An important deck. Works through a brief, an outline and an art direction with the user, then delegates composition. |
-| `pptx-maker-vibe` | A fast draft from a URL, pasted text, or a one-line brief. Few questions. |
-| `pptx-maker-composer` | Slide composition itself — invoked as a sub-agent by the two above, not directly. |
-| `pptx-maker-style` | Creating a reusable style guide through conversation. |
+Spec, Vibe, and Style are modes of the one `pptx-maker` agent. The engine owns
+every role's procedure and hands it out through its entry tools:
+
+- New or continued deck: `@sdpm/start_presentation`
+- Reusable style: `@sdpm/start_style`
+- Assigned slide composition (a sub-agent copy of `pptx-maker`): `@sdpm/start_composing`
+- Translating a deck: `@sdpm/start_translation`
+
+Call the entry tool before anything else and follow the workflow it returns. Use
+`@kirocrew-core/ask_question` when a decision needs a question card.
 
 If the user asks for a presentation in an ordinary chat session, point them at
-the **PPTX Maker** page in the dashboard: the studio there runs these agents
+the **PPTX Maker** page in the dashboard: the studio there runs this agent
 beside a live preview of each deliverable, which is the experience the app is
 built around. Generating a deck outside it works but shows the user nothing until
 the file lands.
@@ -32,7 +36,7 @@ app, so if they cannot find it, tell them to enable it first.
 
 ## How a deck gets built
 
-1. The agent calls `@sdpm/init_presentation` to create the deck directory.
+1. The agent calls `@sdpm/init_deck_workspace` to create the deck directory.
 2. It writes `specs/brief.md`, then `specs/outline.md`, then the art direction.
    The studio shows each file as it appears, so write them as you finish them
    rather than all at the end.
@@ -51,9 +55,9 @@ format.
   colours and fonts.
 
 Users manage both from the app's library panel, which can import their own HTML
-style or existing `.pptx`. The panel shows a `[Style: name]` or
-`[Template: name]` token for the selected entry, which the user pastes into
-chat — treat either token as an instruction to use that style or template.
+style or existing `.pptx`. The panel shows a `@style:name` or
+`@template:name` mention for the selected entry, which the user pastes into
+chat — treat either mention as an instruction to use that style or template.
 
 ## Requirements
 
@@ -66,8 +70,7 @@ preview fidelity — `.pptx` generation works without them.
 The app declares `macos`, `linux` and `windows`. The deck root is a setting in
 the app, so ask before assuming where `output.pptx` lands.
 
-The agents can also import an existing `.pptx` back to editable JSON
-(`@sdpm/pptx_to_json`), pull in an attachment (`@sdpm/import_attachment`),
+The agent can also pull in an attachment (`@sdpm/import_attachment`),
 analyse a template (`@sdpm/analyze_template`) and search the asset sources
 (`@sdpm/search_assets`) — so restyling or extending a deck the user already has
 is in scope, not just building a new one.

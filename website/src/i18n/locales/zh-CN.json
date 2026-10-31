@@ -4682,6 +4682,7 @@
         "engine_requirements": "自动下载并校验引擎副本，无需手动安装。版本锁定为 {{tag}}。",
         "install_engine": "安装引擎",
         "loading": "正在加载……",
+        "mode_context_failed": "无法将所选模式发送到聊天。请再次选择模式以重试。",
         "mode_spec": "规格模式",
         "mode_spec_hint": "先访谈，再依次产出简报、大纲和美术方向，然后才开始做幻灯片。",
         "mode_style": "风格工坊",

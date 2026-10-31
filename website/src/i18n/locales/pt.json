@@ -4858,6 +4858,7 @@
         "engine_requirements": "Baixa uma cópia verificada do motor — nada a instalar. Fixado em {{tag}}.",
         "install_engine": "Instalar o motor",
         "loading": "A carregar…",
+        "mode_context_failed": "Não foi possível enviar o modo selecionado ao chat. Escolha um modo novamente para tentar outra vez.",
         "mode_spec": "Modo especificação",
         "mode_spec_hint": "Primeiro uma entrevista, depois um briefing, uma estrutura e uma direção de arte antes de qualquer diapositivo.",
         "mode_style": "Criador de estilos",

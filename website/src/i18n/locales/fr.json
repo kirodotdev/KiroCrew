@@ -4948,6 +4948,7 @@
         "engine_requirements": "Télécharge une copie vérifiée du moteur — rien à installer. Figé sur {{tag}}.",
         "install_engine": "Installer le moteur",
         "loading": "Chargement…",
+        "mode_context_failed": "Le mode sélectionné n’a pas pu être envoyé au chat. Choisis à nouveau un mode pour réessayer.",
         "mode_spec": "Mode spécification",
         "mode_spec_hint": "D’abord un entretien, puis un brief, un plan et une direction artistique avant la moindre diapositive.",
         "mode_style": "Créateur de styles",
