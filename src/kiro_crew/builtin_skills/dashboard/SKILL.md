@@ -94,15 +94,10 @@ page named for you) you never replace it unasked. When a Kiro Crew note in your
 turn says you can offer your own page, call `offer_dashboard_page` once: it
 raises one card asking whether to build a page around your goal in place of
 that template, and writes nothing. If the user says yes you are woken to write,
-save and apply it, with no second question, and post the same one message; a
-locked layout refuses the apply, and you say so once and stop. If they say no,
+save and apply it, with no second question, and post the same one message. If they say no,
 or the card expires, nothing changes and you are not asked again. A page the
 user asks for in chat needs no card: write it then.
 
-**Layout lock.** The person's **Lock dashboard layout** switch on Profile
-holds the current page. A `[DASHBOARD]` block marked LOCKED means apply and
-rollback answer `dashboard_locked`. The person can unlock it; you can explain
-that path and wait. Field writes and template previews remain available.
 Only the owner writes its page or values. A worker reports through
 `work_report`, whose record feeds the owner's folds.
 
