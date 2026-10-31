@@ -259,8 +259,10 @@ class AgentConfig:
             "with its own Node runtime, instead of reaching the engine through "
             "kiro-cli's ACP relay. kiro-cli is not needed on this route, and the "
             "engine always takes its credential from Kiro Crew's own sign-in "
-            "(the dashboard's Sign in), never from kiro-cli's store. A true value "
-            "with nothing installed refuses the spawn and names the install command.",
+            "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
+            "installed the gateway installs the pinned engine at the first spawn. "
+            "With false, KAS still takes this route when kiro-cli's relay cannot "
+            "run on the host (no kiro-cli, or one that is not signed in).",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
             restart=True,

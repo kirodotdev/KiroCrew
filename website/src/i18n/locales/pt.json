@@ -10567,6 +10567,13 @@
       "read_failed_title": "Não foi possível verificar as versões das suas equipes remotas após esta atualização",
       "unread": "Ainda não há versão de {{names}}, então elas também podem estar desatualizadas."
     },
+    "kasEngineNotice": {
+      "downloading": "Baixando o mecanismo KAS do {{productName}}. O chat começa quando terminar.",
+      "downloading_progress": "Baixando o mecanismo KAS do {{productName}} ({{percent}}). O chat começa quando terminar.",
+      "failed_title": "Não foi possível instalar o mecanismo KAS do {{productName}}",
+      "retry": "Tentar novamente",
+      "retry_failed": "A nova tentativa não começou ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Login do Kiro expirado",
       "open_sign_in": "Abrir configurações de login",
@@ -14280,7 +14287,9 @@
         "installing_progress": "Instalando o KAS {{version}}: {{percent}} ({{done}} de {{total}})",
         "install_failed": "Não foi possível iniciar a instalação do mecanismo KAS.",
         "save_failed": "Não foi possível salvar a configuração do mecanismo KAS.",
-        "status_unavailable": "Não foi possível ler o status do mecanismo KAS."
+        "status_unavailable": "Não foi possível ler o status do mecanismo KAS.",
+        "route_auto_no_kiro_cli": "O Kiro CLI não está instalado, então o KAS usa o mecanismo próprio do {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "O Kiro CLI não está conectado, então o KAS usa o mecanismo próprio do {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Login do Kiro",

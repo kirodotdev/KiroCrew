@@ -98,6 +98,7 @@ const UpdateFoundModal = lazy(() => import('./components/UpdateFoundModal'))
 // lapsed stored sign-in), so it is always mounted and its chunk is fetched once
 // at boot; it renders nothing in the common case.
 const KiroSignInNotice = lazy(() => import('./components/KiroSignInNotice'))
+const KasEngineNotice = lazy(() => import('./components/KasEngineNotice'))
 
 // Route-level code splitting for the App Store split (PR1): Discover and
 // Library are independent surfaces, and neither belongs in the app-core
@@ -790,6 +791,17 @@ export default function App() {
           >
             <Suspense fallback={null}>
               <KiroSignInNotice />
+            </Suspense>
+          </ErrorBoundary>
+          {/* Route-independent too: the first KAS chat on a host without a
+              working kiro-cli waits on the gateway downloading Kiro Crew's own
+              engine, whatever page is open. */}
+          <ErrorBoundary
+            scope="kas-engine-notice"
+            fallback={error => <KiroSignInNoticeFallback error={error} />}
+          >
+            <Suspense fallback={null}>
+              <KasEngineNotice />
             </Suspense>
           </ErrorBoundary>
           {/* The rail renderer reaches the chat page through context rather than

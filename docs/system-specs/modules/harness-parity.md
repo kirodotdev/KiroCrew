@@ -217,12 +217,15 @@ MCP session report. Only names are shown: a server's `env`, `headers`, `command`
 and `args` are never read, and the reply is redacted.
 
 A **route** is not a harness, and is not expressed as one. KAS runs either
-through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`),
+through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`,
+or chosen automatically when the relay cannot run: `acp/kas_route.py`, which
+names the route by positive facts -- no kiro-cli resolves, or its sign-in is
+proven absent -- never by the absence of another harness),
 and the dashboard model picker answers differently on the two: from
 `kiro-cli chat --list-models` on the relay, from the engine's recorded `model`
 select on the bundle (`dashboard/handlers/models_kas_bundle.py`,
 [model-selection.md](../common/model-selection.md)). That is a decision over two
-facts -- `acp_backend == ACP_BACKEND_KAS` AND the switch -- so it is the positive
+facts -- `acp_backend == ACP_BACKEND_KAS` AND the bundle route -- so it is the positive
 two-fact predicate `agent_sdk.kas_bundle.kas_bundle_route()`, placed BEFORE the kiro-cli path in
 `api_models` and never a capability set: a set keyed on the backend alone would
 put the relay route (kiro-cli present, catalog printable) and the bundle route

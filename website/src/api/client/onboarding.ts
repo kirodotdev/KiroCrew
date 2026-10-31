@@ -176,6 +176,18 @@ export interface KasBundleStatus {
   progress: { done: number; total: number }
   /** The last install's failure, as the remedy text; '' when none. */
   error: string
+  /**
+   * The route the last KAS spawn in this gateway took, or null before the first.
+   * `automatic` is true when Crew's own engine was chosen because kiro-cli's relay
+   * cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'). Optional:
+   * an older gateway sends no such key.
+   */
+  route?: {
+    route: 'bundle' | 'relay'
+    automatic: boolean
+    reason: string
+    summary: string
+  } | null
 }
 
 export interface KasLoginStatus {

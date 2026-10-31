@@ -784,19 +784,34 @@ def test_the_kiro_signed_out_message_is_unchanged() -> None:
         "then start a new chat."
     )
     assert host_auth.signed_out_message("") == expected
-    # KAS may draw its access token from Crew's own vault (the dashboard's Kiro
-    # sign-in card, under Settings > Agent Harness) OR from kiro-cli's store,
-    # and the formatter cannot see which one a process had, so its sentence
-    # names both sign-ins rather than repeating kiro's. The kiro-cli remedy
-    # stays in it verbatim.
+    # Choosing KAS means Kiro Crew's own sign-in: where kiro-cli cannot run a
+    # session the spawn moves onto Crew's own engine, so the KAS sentence names
+    # the Kiro sign-in card alone and never sends the user to kiro-cli.
     kas = host_auth.signed_out_message("kas")
     assert kas != expected
-    assert "`kiro-cli login`" in kas
+    assert "kiro-cli login" not in kas
     assert "Settings → Agent Harness → Kiro sign-in" in kas
     assert "start a new chat" in kas
-    # The standing (unprobed) remedy names the same two paths, in plain prose.
+    # The standing (unprobed) remedy names the same path, in plain prose.
     remedy = host_auth.declaration_for("kas").sign_in_remedy
-    assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" in remedy
+    assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" not in remedy
+
+
+def test_kas_messages_name_the_route_the_last_spawn_took(monkeypatch):
+    """Once a spawn chose a route, the KAS messages lead with it, so a person reads
+    which engine answered; other harnesses' messages are untouched."""
+    from kiro_crew.acp import kas_route
+
+    base = host_auth.signed_out_message("kas")
+    monkeypatch.setattr(
+        kas_route,
+        "_LAST_SPAWN_ROUTE",
+        kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI),
+    )
+    led = host_auth.signed_out_message("kas")
+    assert led == ("KAS runs on Kiro Crew's own engine because kiro-cli is not installed. " + base)
+    assert host_auth.sign_in_remedy("kas").startswith("KAS runs on Kiro Crew's own engine")
+    assert "Kiro Crew's own engine" not in host_auth.signed_out_message("")
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +831,8 @@ def _gate_login_command(environ: dict, platform_name: str) -> str:
     return login
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+# KAS names the Kiro sign-in, never a kiro-cli command (test_kas_messages_*).
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO])
 @pytest.mark.parametrize("platform_name", ["linux", "darwin", "win32"])
 def test_a_path_install_names_the_bare_sign_in_command(backend: str, platform_name: str) -> None:
     """With no bundled copy and no override, the shell finds ``kiro-cli`` on PATH,
@@ -831,7 +847,8 @@ def test_a_path_install_names_the_bare_sign_in_command(backend: str, platform_na
     assert kiro_cli_bundle.KIRO_CLI_LOGIN_COMMAND in declaration.sign_in_remedy
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+# KAS names the Kiro sign-in, never a kiro-cli command (test_kas_messages_*).
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO])
 @pytest.mark.parametrize(
     ("platform_name", "bundled_dir", "entry"),
     [
@@ -864,7 +881,8 @@ def test_a_bundled_install_names_the_absolute_path_the_gate_serves(
     assert "`" not in remedy
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+# KAS names the Kiro sign-in, never a kiro-cli command (test_kas_messages_*).
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO])
 def test_doctor_prints_the_bundled_sign_in_command_on_one_line(
     backend: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

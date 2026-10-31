@@ -10414,6 +10414,13 @@
       "read_failed_title": "এই আপডেটের পরে তোমার রিমোট ক্রুদের সংস্করণ যাচাই করা যায়নি",
       "unread": "{{names}} থেকে এখনও কোনো সংস্করণ পাওয়া যায়নি, তাই এগুলোও পিছিয়ে থাকতে পারে।"
     },
+    "kasEngineNotice": {
+      "downloading": "{{productName}}-এর KAS ইঞ্জিন ডাউনলোড হচ্ছে। শেষ হলে তোমার চ্যাট শুরু হবে।",
+      "downloading_progress": "{{productName}}-এর KAS ইঞ্জিন ডাউনলোড হচ্ছে ({{percent}})। শেষ হলে তোমার চ্যাট শুরু হবে।",
+      "failed_title": "{{productName}}-এর KAS ইঞ্জিন ইনস্টল করা যায়নি",
+      "retry": "আবার চেষ্টা করো",
+      "retry_failed": "আবার চেষ্টা শুরু হয়নি ({{reason}})।"
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro সাইন-ইনের মেয়াদ শেষ",
       "open_sign_in": "সাইন-ইন সেটিংস খোলো",
@@ -14046,7 +14053,9 @@
         "installing_progress": "KAS {{version}} ইনস্টল হচ্ছে: {{percent}} ({{total}}-এর মধ্যে {{done}})",
         "install_failed": "KAS ইঞ্জিনের ইনস্টল শুরু করা যায়নি।",
         "save_failed": "KAS ইঞ্জিনের সেটিং সেভ করা যায়নি।",
-        "status_unavailable": "KAS ইঞ্জিনের অবস্থা পড়া যায়নি।"
+        "status_unavailable": "KAS ইঞ্জিনের অবস্থা পড়া যায়নি।",
+        "route_auto_no_kiro_cli": "Kiro CLI ইনস্টল করা নেই, তাই KAS {{productName}}-এর নিজস্ব ইঞ্জিনে চলে।",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI-তে সাইন ইন করা নেই, তাই KAS {{productName}}-এর নিজস্ব ইঞ্জিনে চলে।"
       },
       "kiroSignInCard": {
         "title": "Kiro সাইন-ইন",

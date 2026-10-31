@@ -105,8 +105,11 @@ def _kiro_pick_runs_on_kas() -> bool:
     return offers_kas is True
 
 
-def _report_kas_bundle(issues: list[str]) -> None:
+def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
     """The bundle route: Crew's own installed engine, no kiro-cli row at all.
+
+    *automatic* is whether the route was chosen because kiro-cli's relay cannot
+    run here; the missing-engine row then names no ``agent.kas_bundle`` switch.
 
     The route never runs kiro-cli, so a missing kiro-cli is not a problem here,
     and reporting one would send the operator to install a binary nothing will
@@ -118,9 +121,16 @@ def _report_kas_bundle(issues: list[str]) -> None:
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
-        print(f"  bundle:      ❌ nothing installed under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
-        print("               Fix: kirocrew kas install   (or set agent.kas_bundle false)")
-        issues.append("agent.kas_bundle is on but no KAS engine bundle is installed")
+        # Not a failure on its own: the gateway installs the pinned engine at the
+        # first chat. Still a ⚠ with an issue, because an offline host fails then.
+        print(f"  bundle:      ⚠  not installed yet under {kas_bundle.kas_engines_root()}")  # type: ignore[misc]
+        print("               The gateway downloads it at the first chat. To do it now:")
+        print("               kirocrew kas install")
+        issues.append(
+            "Kiro Crew's KAS engine is not installed yet (the first chat downloads it)"
+            if automatic
+            else "agent.kas_bundle is on but no KAS engine bundle is installed"
+        )
         _report_kas_bundle_spec_permissions(None, issues)
         return
     where = " (built into the app)" if installed.bundled else ""
@@ -257,8 +267,14 @@ def _report_kas_backend(issues: list[str]) -> None:
     positive ``== ACP_BACKEND_KAS`` rather than an early-return on inequality.
     """
     print("\nKAS backend")
-    if KiroCrewConfig.load().agent.kas_bundle:
-        _report_kas_bundle(issues)
+    from kiro_crew.agent_sdk import kas_bundle
+
+    route = kas_bundle.kas_route()
+    # The route first, and why: the bundle route can be chosen automatically when
+    # kiro-cli's relay cannot run, and that switch must be visible here.
+    print(f"  route:       {route.name} -- {route.describe()}")
+    if route.bundle:
+        _report_kas_bundle(issues, automatic=route.automatic)
         return
     binary = resolve_kiro_cli()
     if not binary:

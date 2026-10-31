@@ -10414,6 +10414,13 @@
       "read_failed_title": "Die Versionen deiner Remote-Crews konnten nach diesem Update nicht geprüft werden",
       "unread": "Von {{names}} liegt noch keine Version vor, sie könnten also ebenfalls veraltet sein."
     },
+    "kasEngineNotice": {
+      "downloading": "Die KAS-Engine von {{productName}} wird heruntergeladen. Der Chat startet, sobald der Download fertig ist.",
+      "downloading_progress": "Die KAS-Engine von {{productName}} wird heruntergeladen ({{percent}}). Der Chat startet, sobald der Download fertig ist.",
+      "failed_title": "Die KAS-Engine von {{productName}} konnte nicht installiert werden",
+      "retry": "Erneut versuchen",
+      "retry_failed": "Der erneute Versuch wurde nicht gestartet ({{reason}})."
+    },
     "kiroSignInNotice": {
       "sign_in_expired": "Kiro-Anmeldung abgelaufen",
       "open_sign_in": "Anmeldeeinstellungen öffnen",
@@ -14046,7 +14053,9 @@
         "installing_progress": "KAS {{version}} wird installiert: {{percent}} ({{done}} von {{total}})",
         "install_failed": "Die Installation der KAS-Engine konnte nicht gestartet werden.",
         "save_failed": "Die Einstellung für die KAS-Engine konnte nicht gespeichert werden.",
-        "status_unavailable": "Der Status der KAS-Engine konnte nicht gelesen werden."
+        "status_unavailable": "Der Status der KAS-Engine konnte nicht gelesen werden.",
+        "route_auto_no_kiro_cli": "Kiro CLI ist nicht installiert, daher läuft KAS auf der eigenen Engine von {{productName}}.",
+        "route_auto_kiro_cli_signed_out": "Kiro CLI ist nicht angemeldet, daher läuft KAS auf der eigenen Engine von {{productName}}."
       },
       "kiroSignInCard": {
         "title": "Kiro-Anmeldung",

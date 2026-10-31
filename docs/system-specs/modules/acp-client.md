@@ -3890,10 +3890,12 @@ nodejs.org verified against that release's `SHASUMS256.txt`, manifest out,
 optional `aws s3 cp`. The installer still accepts a `.tar.zst` manifest entry
 (stdlib on 3.14+, the `zstandard` package, or a `zstd` executable) for a
 locally built bundle handed to `--from`. The harness reads the flag off the loop and, when
-on, resolves `kas_bundle.installed_bundle()`; nothing installed is an
-`AcpRuntimeError` naming `kirocrew kas install`, never a fallback to the relay —
-the operator chose the route, and a silent relay spawn would make a kiro-cli
-problem look like a bundle problem. The argv is `build_kas_bundle_argv`:
+on (or when the route below is chosen automatically), resolves
+`kas_bundle.installed_bundle()`; nothing installed is installed by the spawn
+itself, in the gateway (`acp/kas_engine_install.install_pinned_engine`, below),
+and a failed install is an `AcpRuntimeError` naming the route, the cause and
+`kirocrew kas install` -- never a fallback to the relay, because a relay spawn
+after a bundle failure would make a bundle problem look like a kiro-cli one. The argv is `build_kas_bundle_argv`:
 `node --experimental-wasm-modules <acp-server.js> --transport=stdio
 --auth=acp-callback`, byte-for-byte what kiro-cli's relay builds for the engine
 minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
@@ -3913,8 +3915,9 @@ installed version against the release pin, the `install.json` path and its two
 entry points, the exact spawn argv, the vault as the only owner with Crew's own
 sign-in remedy) and asks nothing of kiro-cli there; `kirocrew kas status` is the
 same facts alone. The one predicate every kiro-cli-facing diagnostic shares is
-`agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND `agent.kas_bundle`
-on, positive on both halves, read from config at call time -- so doctor's
+`agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND the bundle route
+(`agent.kas_bundle` on, or the automatic switch below), positive on both
+halves, computed at call time -- so doctor's
 Dependencies and Connectivity rows, its per-harness `kas auth:` row, the
 diagnostics bundle's `versions.txt` (`kiro_cli_version:` says the binary is not
 used; `kas_engine:` names the installed engine and the pin), `kirocrew update`'s
@@ -3924,6 +3927,46 @@ install the engine either -- a changed pin needs `kirocrew kas install`, which
 the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
+
+**Choosing KAS takes Crew's own engine when kiro-cli cannot run** (decision
+[2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
+Choosing KAS means Kiro Crew's own engine and Kiro Crew's own sign-in. The
+route is `acp/kas_route.py`, one rule read by the harness and, through
+`agent_sdk.kas_bundle.kas_route()`, by every reader that describes a spawn:
+(1) `agent.kas_bundle` on is the bundle route; (2) a stored Kiro CLI pick
+(`agent.acp_backend == "kiro"`, `acp_backend_stored_as_kiro`) is the relay,
+because it runs on KAS only where kiro-cli itself offers v3
+([2026-10-28](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md));
+(3) no kiro-cli resolves: the bundle route; (4) kiro-cli resolves, its own
+sign-in is PROVEN absent (`kiro_cli_signed_out`: no `KIRO_API_KEY` inherited or
+in the data home's `.env`, and `identity_fingerprint` read kiro-cli's store
+definitively empty), and Crew's sign-in cannot stand in for it (no vault
+identity, or no `kiro-cli-chat` entry that skips the launcher's own sign-in
+check, `crew_entry_skips_launcher`): the bundle route; (5) otherwise the relay.
+Every unknown -- an unreadable store, a relocated store, a login the reader cannot
+identify, a kiro-cli lookup that raised -- keeps the relay, whose own error names
+the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed. A kiro-cli
+that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
+Kiro CLI selected), and rule 2 reads only the installation's `agent.acp_backend`,
+not a mate's own pin; both are tracked in issue 26629.
+The decision is per spawn, so a later kiro-cli install or sign-in moves the next
+process back. It is never silent: `kas_route.note_spawn_route` logs each change
+of route (WARNING when automatic) and keeps the last spawn's route in a process
+slot that `GET /api/kas-bundle` returns as `route` (the Agent Harness engine card
+says why Crew's engine runs) and that leads the KAS sign-in messages
+(`host_auth._with_kas_route`); `kirocrew doctor` prints a `route:` row computed
+fresh. **The gateway installs a missing engine.** `acp/kas_engine_install.install_pinned_engine`
+runs in the gateway process, one install at a time (a process lock; a second
+caller waits and reads what the first laid down), for both callers: a KAS spawn
+on the bundle route and `POST /api/kas-bundle/install`. Inside an agent sandbox
+(`KIROCREW_SANDBOX_ACTIVE`) it refuses with the command, because the `engines`
+leaf is read-only there. Its state (running, bytes, the last error) is what
+`GET /api/kas-bundle` reports whichever caller started it, and the dashboard's
+app-level `KasEngineNotice` shows a running download and a failed one, with the
+gateway's error text (cause, "if this host is offline, connect it first", and
+`kirocrew kas install`) and a Retry button. The install probe and first-run
+setup treat a missing engine on a host that can run it as installable, not
+missing, so the setup gate lets KAS through without kiro-cli.
 
 **The model picker follows the route.** `GET /api/models` dispatches on the
 positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route` (`acp_backend ==
@@ -3959,7 +4002,7 @@ it reads the newest live provider in the shared `acp` namespace, which after a
 hot switch of `agent.acp_backend` can be a retained kiro-cli session whose own
 list (`auto` alone, say) would hide models the bundle account has.
 
-**Setup and the install probe follow the route.** With `agent.kas_bundle` on, KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the installed engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) when it does not, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same reader, deciding the route through the shared `agent_sdk.kas_bundle.kas_bundle_route()` (its callers pass the configured backend, so the predicate's backend half is already settled there), spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup once the engine is installed, which is what the switch's help text promises. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
+**Setup and the install probe follow the route.** On the bundle route (`agent.kas_bundle` on, or the automatic switch above), KAS never runs kiro-cli, so the two places that decide "is KAS usable on this host" ask the engine instead of the binary: `agent_sdk.backend_install._probe_kas` answers `installed` when `installed_bundle()` finds the pinned engine or when this host can run the engine the first spawn will install (`_engine_installable_here`: the platform keys and the glibc floor, no network), and `missing` with the one component `COMPONENT_KAS_BUNDLE` (and `kirocrew kas install` as the install command) only on a host that cannot run it, consulting kiro's resolver on neither path; and `KiroPrerequisiteService.record_independent_backend_setup("kas")` records first-run completion on the same rule, deciding the route through the shared `agent_sdk.kas_bundle.kas_bundle_route()` (its callers pass the configured backend, so the predicate's backend half is already settled there), spawning no `--version` / `acp --help` probe. A host with no kiro-cli at all therefore completes setup and gets its engine at the first chat. The dashboard's install handler evicts the KAS probe (`forget_probe`) when an install lands, so the Agent Harness row flips without waiting out the probe TTL. With the switch off both checks are unchanged: KAS is kiro-cli's relay and its verdict is a copy of kiro's. **The spec `permissions` block follows the route too.** Crew's auto-approve list reaches KAS's policy engine as the spec's `permissions` block, and the one writer (`agent_materialization/auto_approve._write_derived_permissions`, gate `_spec_permissions_accepted`) writes it only when every program that may read the spec accepts it. With the switch off that is the installed kiro-cli alone (`kiro_cli.spec_permissions_supported(installed_kiro_cli_version())`, floor 2.23.0). With `agent.kas_bundle` on it is the installed engine bundle (`installed_bundle().version` through `kas_pin.engine_spec_permissions_supported`, floor `KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION` (0.66.33, the pinned release the block was measured against; `test_kas_pin` keeps the floor at or below the pin so a stock install always passes)), and also kiro-cli whenever one is installed (`kiro_cli.kiro_cli_installed`: a `resolve_kiro_cli` stat, never a spawn; a lookup that raises counts as installed; the doctor row reads the same predicate): the switch changes only the kas backend, and kiro-cli reads the same `~/.kiro/agents` files for a native Kiro session, a member on kiro, or a hand-run `kiro-cli`, where a release below its floor refuses the whole spec. A kiro-cli-free host is never version-probed and gets the block from the engine alone. The gate fails closed the way kiro-cli's does: no engine installed, or an engine below the floor (one selected through `KIROCREW_KAS_VERSION`), is an unknown reader and the block is withheld (an inherited block is removed, as on the relay route). `kirocrew doctor`'s bundle branch (`_report_kas_bundle_spec_permissions`) prints the `auto-approve:` row from the same predicates — written when the engine accepts and no installed kiro-cli refuses, withheld with the floor and the remedy when the engine is below it, withheld without a second issue when nothing is installed, and withheld naming kiro-cli and its update when an installed kiro-cli is old or unprobeable. The switch is read on every spec write through the install probe's own reader (`agent_sdk.backend_install._kas_bundle_route`) and never cached by the writer; a config that cannot be loaded selects the relay gate.
 
 **Hooks on the bundle route: the same events, in the same shapes (#20729).** Kiro Crew's PreToolUse gate (`HookManager.on_tool_call`, reached through `hook_gate_kwargs`) and its SEL tool records are fed by three engine frames -- the `tool_call` update, the `session/request_permission` request and the `tool_call_update` frames through `completed` -- not by the `_kiro/hooks/*` surface, which the handshake announces on neither route: `KasHarness.client_capabilities` is the one `KAS_CLIENT_CAPABILITIES` constant with no route branch, so the engine asks for no hook on either and `kas_wire.hooks_announced()` is false for both. Measured live (2026-10-17) on the pinned 0.66.33 engine spawned by the bundle argv through a gateway with `agent.kas_bundle = true` and `KIROCREW_ACP_RECORD_FRAMES` set, one shell call (`run_command`) produced: a `tool_call` with `kind: execute`, `rawInput.command` and `_meta.kiro.toolOrigin: default`; a `session/request_permission` whose `_meta.kiro` carries `toolId: run_command`, `command`, `consent {capability: shell, resource, askType: implicit, triggeringResource, workspaceRoot}` and `consentRound`, with the four options `accept` / `always-accept` / `reject` / `always-reject`; and `tool_call_update` frames `in_progress`, `in_progress`, `completed` with `rawOutput {output, exitCode, message}`. Key path by key path those are the relay capture's shapes (`test/fixtures/acp_frames/kas/session.jsonl`, 0.63.3 through `kiro-cli acp --agent-engine v3`). Replayed through the same dispatch, both routes hand the gate the same permission event (`harness_tool_id` and trusted `mcp_tool_name` `run_command`, `is_shell`, `shell_classified`, `raw_params_trusted`, the same option ids) and the gate reaches the same decision; on the live run the SEL recorded the call through the dashboard dispatcher as `tool_invocation` `invoked`, `auto_approved`, then `refined` for each update, and the engine ran the command only after Crew answered the request. Nothing was adapted: the bundle route reaches the existing seam unchanged. The capture is `test/fixtures/acp_frames/kas/bundle-tool-path.jsonl` (its `_meta` names the spawn and the id reduction) and `test/test_kas_bundle_hooks_parity.py` pins the parity frame class by frame class, through `hook_gate_kwargs`, and through the gate's decision. Two differences from the 0.63.3 capture are engine-version, not route -- the relay forwards session frames byte for byte, so neither can be the relay's doing: 0.66.33 emits an engine-internal `tool_call` of `kind: other` with `_meta.kiro.toolId: fetch_cloud_config` before the first prompt, and the completed update's `content[].text` is the `rawOutput.message` text rather than the JSON rendering of `rawOutput`; the parsed `tool_result` event has the same fields either way. The agent-spec `postToolUse` matcher is compared with the call's title on both routes, because the finished call names no tool (the same `spec_hooks` warning the relay logs).
 
