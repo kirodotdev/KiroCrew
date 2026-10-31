@@ -678,6 +678,17 @@ def update(
                 self._snapshot_version(slug, art.version, prev)
                 # Record the render kind for this version so a later revert
                 # restores the correct render-mode (widget vs html).
+                #
+                # A ``reverted`` save sends only content + ``from_version`` (no
+                # ``kind``), so ``art.kind`` is still the CURRENT kind (e.g.
+                # ``html`` after an upstream pull). Restore the kind recorded
+                # for the version being reverted to, so the line above holds:
+                # a pre-pull widget snapshot comes back as a widget, not raw
+                # inner HTML, and the new version records that kind too.
+                if event_type == "reverted" and from_version is not None:
+                    _reverted_kind = art.version_kinds.get(str(from_version))
+                    if _reverted_kind is not None:
+                        art.kind = _reverted_kind
                 art.version_kinds[str(art.version)] = art.kind
                 # Lifecycle event. Caller-specified event_type wins
                 # (revert flow uses 'reverted'); otherwise actor-based
