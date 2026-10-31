@@ -362,6 +362,25 @@ class TestAppCli:
         out = capsys.readouterr().out
         assert "one" in out and "enabled" in out and "two" in out and "disabled" in out
 
+    def test_list_prints_each_row_on_one_line(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        apps = [
+            {
+                "name": "one\ntwo",
+                "version": "1.0\n",
+                "enabled": True,
+                "displayName": "One\x07\nApp",
+            },
+        ]
+        with patch("kiro_crew.cli_commands.list_apps", return_value=apps):
+            cc._handle_app(_ns(app_action="list"))
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line for the app: the newlines did not split the row.
+        assert len(lines) == 2
+        assert lines[1].startswith("one\\x0atwo ")
+        assert "1.0\\x0a" in lines[1]
+        assert lines[1].endswith("One\\x0aApp")
+
     def test_enable_success_counts_registrations(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
             patch("kiro_crew.cli_commands.enable_app", return_value=_result(True, message="on")),

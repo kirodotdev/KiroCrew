@@ -339,19 +339,30 @@ def _policy(args: argparse.Namespace) -> None:
                     "(enabled true or false) if you meant to decide it."
                 )
         # Force-load every profile; the store records invalid ones as deny-all.
-        from kiro_crew.platform.governance_profiles import _profiles_dir
+        from kiro_crew.platform.governance_profiles import _profiles_dir, fallback_profile_names
 
         pdir = _profiles_dir()
         if pdir.is_dir():
             for f in sorted(pdir.glob("*.json")):
                 prof = get_store_profile(f.stem)
-                status = "OK" if prof and not prof.name.startswith("_deny") else "INVALID→deny-all"
+                # The store keeps the file stem as a fallback's name, so the name alone
+                # cannot tell a broken file apart; the store's own fallback set can.
+                failed = (
+                    prof is None
+                    or prof.name.startswith("_deny")
+                    or f.stem in fallback_profile_names()
+                )
+                status = "INVALID→deny-all" if failed else "OK"
                 if status != "OK":
                     ok = False
                 print(f"   profile {f.name}: {status}")
         else:
             print("   (no profiles directory)")
-        print("✅ valid" if ok else "⚠️  some profiles failed validation (fell back to deny-all)")
+        if not ok:
+            # Exit non-zero so a config-management run can gate on it, like `policy fetch`.
+            print("⚠️  some profiles failed validation (fell back to deny-all)", file=sys.stderr)
+            raise SystemExit(1)
+        print("✅ valid")
 
     elif action == "explain":
         scope = args.scope
@@ -376,8 +387,8 @@ def _policy(args: argparse.Namespace) -> None:
     elif action == "profile":
         prof = get_store_profile(args.name)
         if prof is None:
-            print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.")
-            return
+            print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.", file=sys.stderr)
+            raise SystemExit(1)
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
         print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
         if not prof.controls:
@@ -416,9 +427,10 @@ def _print_policy_source() -> None:
     if posture.get("error_code"):
         print(
             "⚠️  Central policy distribution is misconfigured; see the gateway log "
-            "for the reason and check the 'distribution' block in your policy."
+            "for the reason and check the 'distribution' block in your policy.",
+            file=sys.stderr,
         )
-        return
+        raise SystemExit(1)
     if not posture.get("configured"):
         print("Central policy distribution: not configured (this host uses a local policy).")
         print(

@@ -190,11 +190,15 @@ def _handle_agent(args: argparse.Namespace) -> None:
             memory_store = agent.memory_store
             if not isinstance(memory_store, str):
                 memory_store = f"(invalid: {type(memory_store).__name__})"
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
             print(
-                f"{name + marker:<20} {agent.kiro_agent:<20} "
-                f"{agent.workspace:<15} {memory_store:<15} "
+                f"{safe_terminal_line(name) + marker:<20} "
+                f"{safe_terminal_line(str(agent.kiro_agent)):<20} "
+                f"{safe_terminal_line(str(agent.workspace)):<15} "
+                f"{safe_terminal_line(memory_store):<15} "
                 f"{_agent_list_model(agent.model):<20} "
-                f"{getattr(agent, 'source', 'kirocrew'):<12} "
+                f"{safe_terminal_line(str(getattr(agent, 'source', 'kirocrew'))):<12} "
                 f"{_agent_list_label(agent.display_name)}".rstrip()
             )
 

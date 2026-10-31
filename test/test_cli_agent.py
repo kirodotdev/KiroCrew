@@ -86,6 +86,34 @@ class TestAgentList:
         assert "oncall" in out
         assert "oncall-agent" in out
 
+    def test_list_prints_each_row_on_one_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        data = _base_config()
+        data["agents"]["oncall"] = {
+            "kiro_agent": "oncall\nagent",
+            "workspace": "on\x07call-ws",
+            "memory_store": "oncall-mem",
+            "source": "kiro\ncrew",
+        }
+        cfg_path = _write_config(tmp_path, data)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "list"]),
+        ):
+            main()
+
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line per agent: the newlines did not split a row.
+        assert len(lines) == 3
+        row = next(line for line in lines if line.startswith("oncall "))
+        assert "oncall\\x0aagent" in row
+        assert "oncall-ws" in row
+        assert "kiro\\x0acrew" in row
+        assert "\x07" not in row
+
 
 class TestAgentCreate:
     """Test ``kirocrew agent create``."""

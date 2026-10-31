@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from auto_research_handlers_coverage_helpers import _isolate_fixture  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_autonudge  # noqa: F401
 from auto_research_handlers_coverage_helpers import _no_stray_sse_queues  # noqa: F401
@@ -35,6 +36,7 @@ from auto_research_handlers_coverage_helpers import (
     _status,
     _write_finding,
 )
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME
@@ -160,6 +162,35 @@ class TestReportAndNudge:
             )
         )
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", [7, ["q"], {"q": 1}, True], ids=repr)
+    async def test_add_question_with_non_string_text_is_a_coded_400(
+        self, _isolate: Path, text: object
+    ):
+        cid = _campaign()
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/campaigns/{id}/questions", h._handle_add_question)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(f"/campaigns/{cid}/questions", json={"text": text})
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "text must be a string",
+                "code": "invalid_field_type",
+            }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{}, {"text": None}])
+    async def test_add_question_with_null_or_missing_text_is_still_text_required(
+        self, _isolate: Path, body: dict
+    ):
+        cid = _campaign()
+        resp = await h._handle_add_question(
+            _mk("POST", f"campaigns/{cid}/questions", app=_app(), match={"id": cid}, body=body)
+        )
+        assert resp.status == 400
+        assert _body(resp)["error"] == "text required"
 
     @pytest.mark.asyncio
     async def test_add_question_of_a_missing_campaign_is_a_404(self, _isolate: Path):

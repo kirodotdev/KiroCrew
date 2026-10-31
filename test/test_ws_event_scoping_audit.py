@@ -407,19 +407,31 @@ class TestDirectSendGrantsAreAudited:
         events = [c.args[1] for c in audit.call_args_list]
         assert "subscribe_logs" in events, "a granted log subscription must leave an SEL record"
 
-    def test_audit_helper_records_the_grant(self):
+    def test_audit_helper_records_the_grant(self, monkeypatch):
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
 
-        with patch.object(dashboard_ws, "_audit_allow") as allow:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(dashboard_ws, "_audit_allow", wraps=dashboard_ws._audit_allow) as allow,
+            patch("kiro_crew.sel.sel"),
+        ):
             dashboard_ws._audit_grant_quietly("mochi-pet", "dashboard")
         allow.assert_called_once_with("mochi-pet", "dashboard")
+        assert list(_wes._sel_last_audit) == [("mochi-pet", "dashboard", "granted")]
 
-    def test_audit_helper_names_an_unknown_app_rather_than_sending_empty(self):
+    def test_audit_helper_names_an_unknown_app_rather_than_sending_empty(self, monkeypatch):
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
 
-        with patch.object(dashboard_ws, "_audit_allow") as allow:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(dashboard_ws, "_audit_allow", wraps=dashboard_ws._audit_allow) as allow,
+            patch("kiro_crew.sel.sel"),
+        ):
             dashboard_ws._audit_grant_quietly("", "dashboard")
         allow.assert_called_once_with("<unknown>", "dashboard")
+        assert list(_wes._sel_last_audit) == [("<unknown>", "dashboard", "granted")]
 
     def test_a_failing_audit_sink_never_breaks_delivery(self):
         """The swallow is the load-bearing part of the helper.
@@ -676,16 +688,24 @@ class TestDashboardUserGrantsAreAudited:
         grant that admits the owner to it was gated out of the record.
         """
         from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard import ws_event_scope as _wes
         from kiro_crew.dashboard.ws_event_scope import DASHBOARD_USER_AUDITEE
 
         state = self._dashboard_state()
-        with patch.object(dashboard_ws, "_audit_grant_quietly") as audit:
+        monkeypatch.setattr(_wes, "_sel_last_audit", {})
+        with (
+            patch.object(
+                dashboard_ws, "_audit_grant_quietly", wraps=dashboard_ws._audit_grant_quietly
+            ) as audit,
+            patch("kiro_crew.sel.sel"),
+        ):
             fake_ws = self._drive_one_message(monkeypatch, state, {"type": "subscribe_logs"})
 
         state.subscribe_logs.assert_called_once_with(fake_ws)
         assert (DASHBOARD_USER_AUDITEE, "subscribe_logs") in [
             tuple(c.args) for c in audit.call_args_list
         ]
+        assert (DASHBOARD_USER_AUDITEE, "subscribe_logs", "granted") in _wes._sel_last_audit
 
     def test_reconnect_replay_to_the_dashboard_user_takes_the_chokepoint(self, monkeypatch):
         """The subagent reconnect replay writes to the socket directly but

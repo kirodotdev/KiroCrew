@@ -484,7 +484,13 @@ async def _handle_grill_expand(request: web.Request) -> web.Response:
     body = await _read_json_body(request)
     if isinstance(body, web.Response):
         return body
-    question = (body.get("question") or "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    # A truthy non-string (`{"question": 1}`) would crash `.strip()` into a 500.
+    question = body.get("question") or ""
+    if (not_string := string_field_error("question", question)) is not None:
+        return not_string
+    question = question.strip()
     if len(question) < 20:
         return web.json_response({"error": "Question too short"}, status=400)
     tree = body.get("tree") or []
@@ -953,7 +959,13 @@ async def _handle_add_question(request: web.Request) -> web.Response:
     body = await _read_json_body(request)
     if isinstance(body, web.Response):
         return body
-    text = (body.get("text") or "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    # A truthy non-string (`{"text": 1}`) would crash `.strip()` into a 500.
+    text = body.get("text") or ""
+    if (not_string := string_field_error("text", text)) is not None:
+        return not_string
+    text = text.strip()
     if not text:
         return web.json_response({"error": "text required"}, status=400)
 
