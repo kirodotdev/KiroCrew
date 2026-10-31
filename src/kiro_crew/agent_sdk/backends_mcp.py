@@ -519,6 +519,35 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # whose wrong grant leaves a server unmounted with nothing red to say why.
 ACP_BACKENDS_MCP_WIRE_REINJECT = frozenset({ACP_BACKEND_KAS})
 
+# Backends whose RUNNING session takes a changed MCP server set by Crew RELAUNCHING
+# its process with the new launch-time MCP config and ``session/load``-ing the same
+# session id, with the conversation kept. The third way a live session applies a
+# config change without a reset, beside the file watcher
+# (``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD``) and the re-sent projection
+# (``ACP_BACKENDS_MCP_WIRE_REINJECT``); the dashboard's MCP writers skip their
+# all-sessions reset when every live provider answers one of the three.
+#
+# Membership is a MEASURED relaunch, not a reading of the CLI's flags. The Strands
+# CLI reads its MCP servers once, from ``--mcp-config`` at launch, and refuses a
+# non-empty ``session/new`` array in project mode, so nothing reaches a running
+# process. A SECOND process launched with a changed ``--mcp-config`` and sent
+# ``session/load`` of the same id (empty array) replays the saved conversation,
+# answers ``{}``, and its next turn sees the new set with the earlier turns kept.
+# Captured live on Strands CLI 0.2.3:
+# ``test/fixtures/acp_frames/strands/mcp-relaunch-add-live.jsonl`` (a server
+# added: its tool is offered and completes) and ``mcp-relaunch-remove-live.jsonl``
+# (a server withdrawn: its tool is absent from the offer). Crew performs the relaunch
+# on a client marked by a dashboard MCP write, at that session's next turn
+# boundary and never mid-turn (``acp/relaunch_reload.py``): the stalled-child
+# replacement ``ensure_ready`` already runs for a disposed session
+# (``ACP_BACKENDS_RELOAD_DISPOSED_SESSION``), and the replacement's spawn re-reads
+# the agent spec into a fresh ``--mcp-config`` file.
+#
+# Disjoint from both sets above: the process does not watch a file and takes no
+# projection on a live session; the relaunch is the mechanism, with its own
+# failure mode (a load that falls back to a fresh session).
+ACP_BACKENDS_MCP_RELAUNCH_RELOAD = frozenset({ACP_BACKEND_STRANDS})
+
 # Backends on which a per-template MCP addition reaches a session of a template
 # Crew does NOT own (a third-party or other custom agent) without Crew writing into
 # that template's spec file (``template_mcp_additions.merge_at_spawn``). The
