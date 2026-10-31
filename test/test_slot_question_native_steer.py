@@ -278,7 +278,7 @@ async def test_a_grant_removed_during_the_body_read_refuses_the_steer(state, sel
     client = _steer_capable(state, "mine")
     grant_reads = {"n": 0}
 
-    def _grant(_app):
+    def _grant(_app, **_kw):
         grant_reads["n"] += 1
         return grant_reads["n"] == 1  # granted on the first read, removed on the re-read
 

@@ -1946,6 +1946,7 @@
         "capability_note": "Trusting the app grants all three, whether or not it uses them all. {{productName}} cannot limit it to less.",
         "session_approval_heading": "This app also asks to control your chats",
         "session_approval_desc": "Sending messages or choosing response options in your chats, approving or denying tool prompts, and switching a chat's approval mode.",
+        "session_approval_crewmates": "This includes your crewmates' own chats.",
         "session_approval_modes": "Chat approval modes it can set",
         "revocable": "You can take this back at any time in Settings → Security → Third-party apps. The app stops working when you do.",
         "source": "Published at",

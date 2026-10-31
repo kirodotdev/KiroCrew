@@ -1,6 +1,8 @@
 """Fixtures and helpers the slot-ownership checkpoint test files share.
 
-``APP``, the app the tests call as, ``_GRANT``, the session-grant check they patch, and
+``APP``, the app the tests call as, ``_GRANT``, the session-grant check they patch,
+``_MANIFEST``, the manifest read that grant and its crewmate-thread scope share, with
+``_scoped``, a grant-holding manifest with or without the scope, and
 ``_NOT_FOUND``, the uniform refusal body; the ``state`` fixture, a dashboard state built
 under the test's ``tmp_path``, and the ``sel_spy`` fixture with the security-event-log
 spy behind it; ``_as``, the token-auth stand-in, and ``_client``, which serves the real
@@ -15,6 +17,7 @@ name.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,12 +26,22 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state, close_before_resume
 
+from kiro_crew.apps.manifest_sections import Permissions
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.state import _ChatSlot
 
 APP = "crew-keyboard"
 _GRANT = "kiro_crew.apps.permissions.app_can_manage_session_approvals"
+_MANIFEST = "kiro_crew.apps.permissions.get_app_manifest"
 _NOT_FOUND = {"error": "not found", "code": "slot_not_found"}
+
+
+def _scoped(scope: bool) -> SimpleNamespace:
+    """The grant-holding manifest the one grant read judges, with or without the
+    crewmate-thread scope -- the scope is that manifest's flag, not a second read."""
+    return SimpleNamespace(
+        permissions=Permissions.from_dict({"sessionApproval": True, "crewmateThreads": scope})
+    )
 
 
 class _SelSpy:

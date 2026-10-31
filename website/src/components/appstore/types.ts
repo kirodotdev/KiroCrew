@@ -67,7 +67,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean }
+    permissions?: { sessionApproval?: boolean; crewmateThreads?: boolean }
     platform?: { requiresDesktopApp?: boolean }
   }
 }
@@ -142,6 +142,7 @@ export type InstalledApp = {
       cron?: boolean
       network?: boolean
       sessionApproval?: boolean
+      crewmateThreads?: boolean
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

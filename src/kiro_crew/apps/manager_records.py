@@ -23,9 +23,9 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
@@ -806,6 +806,64 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
 
         permissions[family] = staged_app_grants(name, family, _read)
     return permissions
+
+
+class SessionControlWidening(NamedTuple):
+    """What a manifest newly asks of the owner's user-session consent.
+
+    ``keys`` names the manifest keys added, for the SEL row; ``words`` says the
+    same in plain words, for the operator-facing message. Both say exactly what
+    the owner has not consented to yet, so a row never reports the grant itself
+    as added when it was already held and only its crewmate-thread scope is new.
+    """
+
+    keys: str
+    words: str
+
+
+_GRANT_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval",
+    words="session approval control",
+)
+_GRANT_AND_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval and permissions.crewmateThreads",
+    words="session approval control, crewmate threads included",
+)
+_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.crewmateThreads",
+    words="session approval control over crewmate threads",
+)
+
+
+def _session_control_widening(
+    prior: Permissions | None, requested: Permissions
+) -> SessionControlWidening | None:
+    """What user-session control *requested* adds that the owner has not consented to.
+
+    Consent is captured when the owner enables the app, against the manifest of
+    that moment, so any later manifest that reaches further must go back through
+    it: the grant itself (``sessionApproval``) newly declared, or its
+    crewmate-thread scope (``crewmateThreads``) newly declared on a held grant.
+    *prior* is the manifest consented to, ``None`` for a first install or
+    registration. A scope flag without the grant widens nothing, because it
+    grants nothing; the grant arriving later is judged then, scope included.
+    ``None`` when nothing is added.
+    """
+    if not requested.sessionApproval:
+        return None
+    if prior is None or not prior.sessionApproval:
+        return _GRANT_AND_SCOPE_WIDENING if requested.crewmateThreads else _GRANT_WIDENING
+    if requested.crewmateThreads and not prior.crewmateThreads:
+        return _SCOPE_WIDENING
+    return None
+
+
+def _session_control_widened(prior: Permissions | None, requested: Permissions) -> bool:
+    """Whether *requested* asks for user-session control the owner has not consented to.
+
+    The boolean of :func:`_session_control_widening`, for callers that only decide.
+    """
+    return _session_control_widening(prior, requested) is not None
 
 
 def _pending_session_approval_after_manifest_change(

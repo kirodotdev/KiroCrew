@@ -167,7 +167,7 @@ _BASE_NAMES = frozenset("""
         persist_deferred_notes_sync person_priority pick_epoch_host pin_private_agent_store
         provider_model_pin_refused published_autocompact_pct queue_entry_is_user_origin
         queue_entry_view queue_for_next_turn queued_text_for_display quote_meta
-        read_bounded_json read_cached_intent_summary read_session_grant
+        read_bounded_json read_cached_intent_summary read_session_control_grant
         record_agent_selection record_trust_grant redact_credentials
         redact_exfiltration_urls register_reasoning_effort_values relay_archive_refusal
         release_prewarmed_session reload_slot_session remember_unknown_row_fields
@@ -827,7 +827,7 @@ chat_send | decided_message_handling | async function | (slot: 'Any', message: '
 chat_send | api_chat | async function | (request: 'web.Request') -> 'web.StreamResponse'
 chat_send | write_sse_or_abort | async function | (request: 'web.Request', resp: 'web.StreamResponse', data: 'bytes') -> 'None'
 app_admission | _app_slot_acquisition_denial | async function | (request: 'web.Request', state: "'DashboardState'", request_app: 'str', slot_name: 'str', operation: 'str', *, session_grant_route: 'bool') -> 'tuple[web.Response | None, Any]'
-app_admission | _app_slot_acquisition_recheck | async function | (state: "'DashboardState'", request_app: 'str', key: 'str', judged: 'Any', operation: 'str') -> 'web.Response | None'
+app_admission | _app_slot_acquisition_recheck | async function | (state: "'DashboardState'", request_app: 'str', key: 'str', judged: 'Any', operation: 'str', *, session_grant_route: 'bool' = False) -> 'web.Response | None'
 app_admission | _acquired_slot_was_judged | function | (state: "'DashboardState'", key: 'str', judged: 'Any') -> 'bool'
 app_admission | _app_acquisition_conflict | function | (state: "'DashboardState'", request_app: 'str', key: 'str', judged: 'Any', exc: 'ValueError') -> 'web.Response'
 app_admission | _deny_app_yolo | function | (request_app: 'str', operation: 'str') -> 'web.Response'

@@ -34,6 +34,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _session_control_widening,
     _tree_swap,
     _update_retired_tree_prefix,
     _UpdateMarker,
@@ -536,10 +537,10 @@ def update_app(
 
     old_version = existing.version
     requested_session_approval = bool(manifest.permissions.sessionApproval)
-    widened_session_approval = bool(
-        requested_session_approval
-        and not (old_manifest and old_manifest.permissions.sessionApproval)
+    session_control_widening = _session_control_widening(
+        old_manifest.permissions if old_manifest else None, manifest.permissions
     )
+    widened_session_approval = session_control_widening is not None
     # ``permissions.api`` / ``permissions.events`` are read live too. An added
     # entry is held back instead of disabling the app: it keeps running on the
     # set the owner approved until they approve the new one.
@@ -720,21 +721,21 @@ def update_app(
         manifest.version,
         source,
     )
-    if widened_session_approval:
+    if session_control_widening is not None:
         sel().log_api_access(
             caller="app_update",
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="update added permissions.sessionApproval; re-enable to consent",
+            error=f"update added {session_control_widening.keys}; re-enable to consent",
         )
         return AppResult(
             ok=True,
             name=name,
             message=(
                 f"updated {name} v{old_version} -> v{manifest.version}; "
-                "disabled because this version newly requests session approval "
-                "control -- review it on the app page and enable again"
+                f"disabled because this version newly requests {session_control_widening.words}"
+                " -- review it on the app page and enable again"
             ),
             notice="session_approval_reconsent",
         )

@@ -31,6 +31,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _session_control_widening,
     _write_approved_grants,
     _write_installed,
     app_data_dir,
@@ -43,6 +44,7 @@ from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.manifest import (
     RESERVED_APP_NAME_CODE,
     AppManifest,
+    Permissions,
     app_name_error,
     cron_permission_error,
     is_reserved_app_name,
@@ -252,17 +254,20 @@ def register_external_app(
     # session-approval grant without any user moment -- the same gap
     # ``update_app`` closes with ``widened_session_approval``. Compare against the
     # manifest that was consented to (the persisted one; none for a first
-    # registration) and, if the grant is new, register the app DISABLED so the
-    # user sees it on the detail page and enables it deliberately.
-    requested_session_approval = bool(
-        isinstance(manifest_data, dict)
-        and isinstance(manifest_data.get("permissions"), dict)
-        and manifest_data["permissions"].get("sessionApproval") is True
+    # registration) and, if the grant or its crewmate-thread scope is new,
+    # register the app DISABLED so the user sees it on the detail page and
+    # enables it deliberately.
+    requested_permissions = Permissions.from_dict(
+        manifest_data["permissions"]
+        if isinstance(manifest_data, dict) and isinstance(manifest_data.get("permissions"), dict)
+        else {}
     )
+    requested_session_approval = requested_permissions.sessionApproval
     prior_manifest = get_app_manifest(name) if existing else None
-    widened_session_approval = requested_session_approval and not (
-        prior_manifest and prior_manifest.permissions.sessionApproval
+    session_control_widening = _session_control_widening(
+        prior_manifest.permissions if prior_manifest else None, requested_permissions
     )
+    widened_session_approval = session_control_widening is not None
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to
     # widen, as with an install.
@@ -421,21 +426,21 @@ def register_external_app(
         resources,
         lifecycle,
     )
-    if widened_session_approval:
+    if session_control_widening is not None:
         sel().log_api_access(
             caller="app_register",
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="registration added permissions.sessionApproval; re-enable to consent",
+            error=f"registration added {session_control_widening.keys}; re-enable to consent",
         )
         return AppResult(
             ok=True,
             name=name,
             message=(
                 f"{action} {name} v{version}; disabled because this manifest newly "
-                "requests session approval control -- review it on the app page and "
-                "enable it"
+                f"requests {session_control_widening.words} -- review it on the app page "
+                "and enable it"
             ),
             secret=secret if is_new_secret else "",
             notice="session_approval_reconsent",

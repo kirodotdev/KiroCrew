@@ -18,6 +18,7 @@ import pytest
 from aiohttp import web
 from chat_test_helpers import _make_state
 
+from kiro_crew.apps.permissions import SessionControlGrant
 from kiro_crew.dashboard import chat_slack
 from kiro_crew.dashboard.chat_slack import (
     SlackLinkError,
@@ -908,8 +909,8 @@ class TestSendHandlerHook:
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
         # The app reaches this user session through its sessionApproval grant.
         monkeypatch.setattr(
-            "kiro_crew.dashboard.slot_ownership.read_session_grant",
-            AsyncMock(return_value=True),
+            "kiro_crew.dashboard.slot_ownership.read_session_control_grant",
+            AsyncMock(return_value=SessionControlGrant(granted=True, crewmate_threads=False)),
         )
         app = _make_app(state)
 

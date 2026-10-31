@@ -103,7 +103,7 @@ async def test_a_slot_replaced_during_the_grant_read_is_not_read(state, sel_spy)
     """A close and same-name user slot inside the caller check's await: no cards leak."""
     _seed(state)
 
-    def replace(_app: str) -> bool:
+    def replace(_app: str, **_kw: object) -> bool:
         state._slots.pop("mine")
         state.get_or_create_slot("mine", origin=SlotOrigin.USER)
         return True
@@ -233,7 +233,7 @@ async def test_a_grant_removed_during_the_body_read_refuses_the_write(state, sel
     _seed(state)
     task = await _ask(state, "mine", _ask_id(6))
     reads = iter([True, False])
-    with patch(_GRANT, side_effect=lambda _app: next(reads)):
+    with patch(_GRANT, side_effect=lambda _app, **_kw: next(reads)):
         async with _client(state, APP) as client:
             resp = await client.post(
                 "/api/chat/slots/mine/question/answer",

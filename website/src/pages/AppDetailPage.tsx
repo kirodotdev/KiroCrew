@@ -598,6 +598,7 @@ export default function AppDetailPage() {
         trustRepository: app.trustRepository,
         origin: app.origin,
         sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+        crewmateThreads: app.manifest?.permissions?.crewmateThreads === true,
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -651,9 +652,22 @@ export default function AppDetailPage() {
         // that names the grant, then enable (the trust modal may still follow
         // for an untrusted repository).
         if (app.sessionApprovalConsentPending) {
+          // The dialog is the consent moment, and for a trusted repository the
+          // only one (no trust modal follows), so it must name everything the
+          // grant reaches: when the manifest widens it to crewmate threads --
+          // which may be the very reason re-consent is pending -- say so here,
+          // in the same words as the Permissions box and the trust modal.
+          const crewmateThreads = app.manifest?.permissions?.crewmateThreads === true
           const ok = await confirmConsent({
             title: i18nT('pages.appDetailPage.session_approval_confirm_title', { name: appDisplayName(app) }),
-            body: i18nT('pages.appDetailPage.session_approval_desc'),
+            body: crewmateThreads
+              ? (
+                <>
+                  <p className="m-0">{i18nT('pages.appDetailPage.session_approval_desc')}</p>
+                  <p className="m-0 mt-1">{i18nT('pages.appDetailPage.session_approval_crewmates')}</p>
+                </>
+              )
+              : i18nT('pages.appDetailPage.session_approval_desc'),
             confirmLabel: i18nT('pages.appDetailPage.enable_and_allow_chat_control'),
             danger: false,
           })
@@ -699,6 +713,7 @@ export default function AppDetailPage() {
           trustRepository: app.trustRepository,
           origin: app.origin,
           sessionApproval: app.manifest?.permissions?.sessionApproval === true,
+          crewmateThreads: app.manifest?.permissions?.crewmateThreads === true,
         })
       } else {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
@@ -1446,12 +1461,18 @@ export default function AppDetailPage() {
                       <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
                       <span>{i18nT('pages.appDetailPage.session_approval_desc')}</span>
                     </div>
+                    {app.manifest.permissions.crewmateThreads && (
+                      <div className="mt-1 text-text">
+                        {i18nT('pages.appDetailPage.session_approval_crewmates')}
+                      </div>
+                    )}
                     <SessionApprovalModes
                       className="mt-1.5 text-[12px]"
                       label={i18nT('pages.appDetailPage.session_approval_modes')}
                     />
                     <div className="mt-1.5 text-[11px] text-muted">
                       {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
+                      {app.manifest.permissions.crewmateThreads && <>, <code>crewmateThreads</code></>}
                     </div>
                   </div>
                 )}
