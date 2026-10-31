@@ -629,6 +629,13 @@ The shared schedule formatter receives the saved job timezone at every display b
 
 The same zone reads a one-shot's clock time. `parse_time_string(s, tz_name)` resolves a wall clock (`"9am"`, `"tomorrow 17:30"`, `"2026-03-28 14:00"`) in `tz_name` when the caller passes the job's timezone and in the published config timezone otherwise. A relative second, minute or hour count (`"in 90 mins"`, `"in 2 hrs"`) is zone-free; a relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is calendar days in that same zone, so it keeps the clock time across a DST change the way `"tomorrow"` does, and a count past the calendar is refused. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. All three create doors pass the job's validated timezone: the `cron_add` tool (validated before `at_time` is parsed), `POST /api/crons` (`_resolve_one_shot_at(body, timezone)`, same order) and `kirocrew cron add --at ... --timezone`, which refuses `--timezone` only beside `--every`. A past-time refusal renders the resolved instant in that same zone for `cron_add` and `kirocrew cron add --at`; `POST /api/crons` answers "requested time is in the past" without the instant.
 
+Cron-expression next-run timestamps and timer boundaries retain an existing
+local wall time across timezone offset changes. The iterator corrects an extra
+offset adjustment using the expression's wall-clock occurrence, including when
+skip dates advance the search across a transition. An earlier valid occurrence
+in a repeated hour still wins; nonexistent wall times retain the cron parser's
+existing resolution. Execution admission and the polling cap are unchanged.
+
 ### Skip Dates
 
 Jobs can define `skip_dates` — a list of dates (YYYY-MM-DD) on which the job should not fire. The executor already skipped these at runtime; `compute_next_run_ts` now also advances past skip_dates when computing the display/preview "next run" time. The advance is bounded by a **wall-clock horizon** (~2 years, `_MAX_SKIP_DATE_HORIZON_SECS`) rather than a fixed iteration count, so the bound does not couple to schedule granularity — a daily and a `*/5` cron both simply look ~2 years ahead for the next non-skipped fire (an earlier fixed iteration cap sized for one granularity silently returned `None` — the job never firing again — for finer-grained schedules with long skip ranges). A large absolute iteration ceiling (`_MAX_SKIP_DATE_LOOKAHEAD`) remains only as an anti-infinite-loop safety net for a pathological all-skipped sub-minute config. The `/api/crons` response includes `skip_dates` per job.
