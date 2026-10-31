@@ -1812,6 +1812,12 @@ DENY_CAUSE_SURFACE_POLICY = "surface_policy"
 DENY_CAUSE_INVALID_NAME = "invalid_name"
 DENY_CAUSE_HOOK_ERROR = "hook_error"
 DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
+#: The batch write guard (``acp.batch_guard``) refused a write-class call sent in
+#: the same parallel tool batch as a read-class call. Distinct from
+#: ``DENY_CAUSE_POLICY``: the action itself is allowed, only its timing is not,
+#: so the model re-issues the same call next step instead of looking for an
+#: alternative.
+DENY_CAUSE_BATCH_READ_WRITE = "batch_read_write"
 DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 DENY_CAUSE_APPROVAL_NO_BUDGET = "approval_no_budget"
 DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"

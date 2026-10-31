@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew._facade_bindings import own_methods
-from kiro_crew.acp import kas_wire
+from kiro_crew.acp import batch_guard, kas_wire
 from kiro_crew.acp import session_handle_compaction as _sh_compaction
 from kiro_crew.acp import session_handle_dispatch as _sh_dispatch
 from kiro_crew.acp import session_handle_elicitation as _sh_elicitation
@@ -358,6 +358,9 @@ class AcpSessionHandle:
         # kept, so the oracle keeps reporting the tool actually in flight rather
         # than failing permissive on stall detection.
         self._tool_tracker = InFlightToolTracker(max_calls=MAX_ACTIVE_TOOL_CALLS)
+        # The current parallel tool batch, for the opt-in batch write guard
+        # that ``approve_tool`` consults (``acp.batch_guard``).
+        self._batch_window = batch_guard.BatchWindow()
         # toolCallIds that streamed output (a non-final tool_call_update with
         # content) this turn. A command that already produced output may have
         # already acted, so a non-interactive retry of it is never ``safe_retry``.
