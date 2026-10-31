@@ -21,7 +21,7 @@ const TYPE_COLORS: Record<string, string> = {
   sim: 'bg-yellow-500/15 text-yellow-400',
   cr: 'bg-cyan-500/15 text-cyan-400',
   issue: 'bg-ok/15 text-ok-text',
-  other: 'bg-muted/15 text-muted',
+  other: 'bg-bg-hover text-muted',
 }
 
 const TYPE_LABELS: Record<string, string> = {

@@ -10,9 +10,15 @@
  * credits line (`data-testid="turn-stats"`, #26268) and every other muted
  * caption, label and placeholder that used it (#26283).
  *
+ * Muted text also sits on the raised and hovered panels: menus, popovers and
+ * dialogs on `--bg-elevated`, a hovered row or tab on `--bg-hover`. Those are
+ * lighter than `--card` in a dark palette and darker in a light one, so a
+ * `--muted` tuned on `--card` and `--bg` read 2.67 to 4.40:1 there in 33 of the
+ * 42 palettes (#26598).
+ *
  * This file measures the token itself and the colour muted text actually gets,
- * alpha included, on `--card` and `--bg` in every palette, and keeps the 60%
- * shade off text.
+ * alpha included, on `--card`, `--bg`, `--bg-elevated` and `--bg-hover` in
+ * every palette, and keeps the 60% shade off text.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -21,7 +27,7 @@ import { contrastRatio } from '../lib/iconContrast'
 import { THEMES, resolveVar } from './themePalette'
 import { LINES, MIN_TEXT, lum, mix, tokenRgb } from './statusTextTint'
 
-const SURFACES = ['--card', '--bg'] as const
+const SURFACES = ['--card', '--bg', '--bg-elevated', '--bg-hover'] as const
 
 const SOURCE = readFileSync(resolve(__dirname, '../pages/chat/AssistantMessage.tsx'), 'utf8')
 
@@ -42,6 +48,9 @@ function mutedRatio(theme: string, surface: string, alpha: number): number {
 
 /** `text-muted/60`, with any variant prefix (`placeholder:`, `hover:`). */
 const MUTED_60 = /(?<![\w-])(?:[\w-]+:)*text-muted\/60(?![\w-])/
+/** A translucent `--muted` fill (`bg-muted/15`) and bare `text-muted`. */
+const MUTED_TINT = /(?<![\w-])bg-muted\/\d+(?![\w-])/
+const TEXT_MUTED = /(?<![\w-])text-muted(?![\w/-])/
 /** A lucide icon element (`<Search size={13} …`): a glyph, not text. */
 const ICON_LINE = /^\s*<[A-Z]\w*\s+size=\{/
 
@@ -66,15 +75,10 @@ describe('muted text contrast in every built-in palette', () => {
   }
 
   // `--muted` is also a FILL: the active Debug filter in LogsPage paints
-  // `bg-muted text-muted-fg`. Lifting `--muted` darkens a white label on it, so
-  // every palette #26283 lifted pairs the lighter fill with a black
-  // `--muted-fg`, and its Debug label clears 4.5:1.
-  const LIFTED = [
-    'amoled-dark', 'amoled-grey-calm-dark', 'amoled-midnight-dark', 'catppuccin-dark', 'dracula-dark',
-    'everforest-dark', 'gruvbox-dark', 'ice-dark', 'intellij-dark', 'monokai-dark', 'nord-dark',
-    'rosepine-dark', 'tokyonight-dark',
-  ]
-  for (const t of LIFTED) {
+  // `bg-muted text-muted-fg`. Lifting a dark `--muted` darkens a white label on
+  // it, and darkening a light one does the same to a black label, so every
+  // palette pairs its fill with the `--muted-fg` that clears 4.5:1 on it.
+  for (const t of THEMES) {
     it(`${t}: --muted-fg on a --muted fill reaches ${MIN_TEXT}:1`, () => {
       const ratio = contrastRatio(lum(tokenRgb(t, '--muted-fg')), lum(tokenRgb(t, '--muted')))
       expect(ratio, `${t} --muted-fg on --muted = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(MIN_TEXT)
@@ -91,5 +95,14 @@ describe('muted text contrast in every built-in palette', () => {
     expect(LINES.length).toBeGreaterThan(1000)
     const offenders = LINES.filter((l) => MUTED_60.test(l.text) && !ICON_LINE.test(l.text)).map((l) => `${l.file}:${l.line}`)
     expect(offenders, 'text-muted/60 text reads ~2.4:1; use text-muted').toEqual([])
+  })
+
+  // A `bg-muted/N` pill lays `--muted` over whatever is under it, so muted text
+  // on it reads against a colour this file never measures, under 4.5:1 for the
+  // default-dark source badge in a hovered row. Badges take the opaque
+  // `bg-bg-hover` fill instead, which the loop above measures.
+  it('paints no text-muted on a translucent bg-muted fill', () => {
+    const offenders = LINES.filter((l) => MUTED_TINT.test(l.text) && TEXT_MUTED.test(l.text)).map((l) => `${l.file}:${l.line}`)
+    expect(offenders, 'text-muted on bg-muted/N reads under 4.5:1; use bg-bg-hover').toEqual([])
   })
 })

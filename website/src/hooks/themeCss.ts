@@ -154,7 +154,7 @@ function mixHex(a: string, b: string, pct: number): string | null {
  * — there is no light counterpart. A pack with a light `--bg` therefore renders
  * dark-mode surfaces and secondary text under its own light palette: `--card`
  * inherits `#181b22`, so its own dark `--text` lands on a dark card at 1.22:1,
- * and `--muted-fg` inherits `#fff`.
+ * and `--muted-fg` inherits the dark palette's `#000`.
  *
  * So fill the gaps HERE, where the pack's own palette is known, rather than
  * leaving a mode-blind inherit. Only tokens the pack omitted are emitted, so a
