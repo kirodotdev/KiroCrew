@@ -116,7 +116,7 @@ export const createSlot = createAsyncThunk<
       try {
         await api.setSlotColorHex(slot.key, explicitHex)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     } else {
@@ -127,7 +127,7 @@ export const createSlot = createAsyncThunk<
           try {
             await api.setSlotColor(slot.key, ci)
           } catch (err) {
-            await api.deleteChatSlot(slot.key).catch(() => {})
+            await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
             throw err
           }
         } else {
@@ -162,7 +162,7 @@ export const createSlot = createAsyncThunk<
       try {
         await api.chatSlotProject(slot.key, project)
       } catch (err) {
-        await api.deleteChatSlot(slot.key).catch(() => {})
+        await api.deleteChatSlot(slot.key, slot.incarnation).catch(() => {})
         throw err
       }
     }

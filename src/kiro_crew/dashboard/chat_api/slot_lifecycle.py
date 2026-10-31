@@ -1026,7 +1026,9 @@ async def _close_slot(
             pre_pop_check()
         except SlotCloseError:
             await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
-            if slot._app:
+            # Ownership, not `_app` alone: after a handover the resumed crew's watchdog
+            # aims its auto-approve grant through a bare `state.get_slot(name)`.
+            if slot._app and state._slots.get(name) is slot:
                 from kiro_crew.apps.teardown import (
                     notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
                 )
@@ -1310,6 +1312,11 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     session-control's ``close_target``; this handler adds only the
     DELETE-endpoint's App Kit ownership check and maps the outcome to a
     response.
+
+    ONE exception to :class:`SlotCloseError`'s all-500 mapping: ``target_replaced``
+    answers **409**. It is raised by the pre-pop re-check, not by a failed teardown
+    step, so the slot is untouched and the caller's request never applied — a
+    conflict with the key's current holder rather than a server fault.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -1324,15 +1331,30 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
+    expected = request.query.get("incarnation", "")
+
+    def _reassert_same_incarnation() -> None:
+        # An ABSENT key is the ordinary post-pop state, not a replacement: an overlapping
+        # close popped it and succeeded, and the client reads only 404 as "already gone".
+        live = state._slots.get(name)
+        replaced = live is not None and live is not slot
+        if replaced or (expected and getattr(slot, "incarnation", "") != expected):
+            raise SlotCloseError(
+                "the target session was replaced during the close",
+                code="target_replaced",
+                status=409,
+            )
+
     try:
-        await close_slot(state, slot, name)
+        _reassert_same_incarnation()
+        await close_slot(state, slot, name, pre_pop_check=_reassert_same_incarnation)
     except SlotCloseError as exc:
-        # Every failure `close_slot` raises is a server-side 500 (history write
+        # Every teardown failure `close_slot` raises is a server-side 500 (history write
         # running / nudge retire / app hook / history save); a literal status keeps
         # the error-code contract gate able to verify the `code` statically (a
         # `status=<expr>` would read as an un-verifiable dynamic-status response).
-        # The pre-pop re-check that raises other statuses is session-control's
-        # path, not this handler's.
+        if exc.code == "target_replaced":
+            return web.json_response({"error": exc.message, "code": exc.code}, status=409)
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
     return web.json_response({"ok": True})
 
