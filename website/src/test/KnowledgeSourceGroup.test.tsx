@@ -9,6 +9,7 @@ vi.mock('../pages/knowledge/api', () => ({
 }))
 
 const { SourceGroup, NO_SOURCE, GROUP_PAGE_SIZE } = await import('../pages/knowledge/SourceGroup')
+const { i18next } = await import('../i18n/all')
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -97,6 +98,14 @@ describe('SourceGroup', () => {
     expect(await screen.findByText('Page 2 of 4')).toBeInTheDocument()
     // Every request stayed scoped to this source.
     expect(calls.every(c => c.includes('source_id=s1'))).toBe(true)
+  })
+
+  it('renders the page indicator as one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so "Page" + n + "of" + m reads `[Page] 1 [of] 4`.
+    await i18next.changeLanguage('en-XA')
+    renderGroup()
+    await userEvent.click(screen.getByText('PersonalKnowledgeBase'))
+    expect(await screen.findByText(/^\[[^[\]]* 1 [^[\]]* 4[^[\]]*\]$/)).toBeInTheDocument()
   })
 
   it('hides the pager when the source fits on one page', async () => {

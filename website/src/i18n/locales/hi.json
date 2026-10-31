@@ -2669,9 +2669,6 @@
             "no_members_found_for_this_repo": "इस रिपो के लिए कोई सदस्य नहीं मिला।",
             "notifications": "सूचनाएँ",
             "notify_me_when_a": "मुझे सूचित करें जब कोई",
-            "of": "में से",
-            "open_issues_are_marked_first_issue_friendly": "खुले इश्यू फ़र्स्ट-इश्यू-फ़्रेंडली के रूप में चिह्नित हैं",
-            "open_issues_currently_need_triage": "खुले इश्यू को अभी ट्राइएज की ज़रूरत है",
             "open_on": "यहाँ खोलें:",
             "open_tagging": "टैगिंग खोलें",
             "organises_its_issues_and_are_never_written_back": "अपने इश्यू व्यवस्थित करता है, और इन्हें कभी वापस नहीं लिखा जाता",
@@ -2700,7 +2697,10 @@
             "without_push_access_to": "इसमें पुश एक्सेस के बिना:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "आपके संपादन यहाँ रखे जाते हैं लेकिन बने नहीं रहेंगे। यदि आपने Issue Radar अभी अपडेट किया है, तो बैकएंड को पुनः आरंभ करें ताकि सेटिंग API उपलब्ध हो।",
             "notify_me_when_ci_fails_on_my_pull_request": "जब {{repo}} में मेरे किसी pull request पर CI विफल हो, तो मुझे सूचित करो",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "तुम्हारे gh साइन-इन से केवल तुम्हारे अपने खुले pull requests पर GitHub Actions रन पढ़ता है। इसे सेटिंग्स → सूचनाएँ में म्यूट करो या इसकी प्राथमिकता बदलो।"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "तुम्हारे gh साइन-इन से केवल तुम्हारे अपने खुले pull requests पर GitHub Actions रन पढ़ता है। इसे सेटिंग्स → सूचनाएँ में म्यूट करो या इसकी प्राथमिकता बदलो।",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> खुला इश्यू फ़र्स्ट-इश्यू-फ़्रेंडली के रूप में चिह्नित है",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> खुले इश्यू फ़र्स्ट-इश्यू-फ़्रेंडली के रूप में चिह्नित हैं",
+            "triage_needed_of_open": "ट्राइएज की ज़रूरत वाले खुले इश्यू: {{n}} में से <strong>{{triage}}</strong>"
           }
         },
         "tagging": {
@@ -5990,7 +5990,8 @@
       "some_setup_could_not_be_read": "{{productName}} {{sources}} को पढ़ नहीं सका — नीचे सूचीबद्ध नहीं।",
       "files_could_not_be_read": "फ़ाइलें पढ़ी नहीं जा सकीं",
       "your_existing_kirocrew_setup_will_not_be_affecte": "आपके मौजूदा {{productName}} सेटअप पर कोई असर नहीं पड़ेगा।",
-      "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।"
+      "your_selected_setup_is_ready_in_kiro_crew": "चुना हुआ सेटअप {{productName}} में तैयार है।",
+      "import_setup_stage": "सेटअप इंपोर्ट करो · {{stages}} में से {{stage}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "सहेजा गया, लेकिन यह {{productName}} एजेंट कॉन्फ़िगरेशन अपडेट नहीं कर सका, इसलिए नई चैट पुरानी सेटिंग ही रखेंगी। कारण जानने के लिए 'लॉग' पेज खोलें।"
@@ -6907,7 +6908,7 @@
       "next": "आगे",
       "no_execution_history_yet": "अभी तक कोई निष्पादन इतिहास नहीं",
       "ok": "OK",
-      "page": "पृष्ठ",
+      "page_n": "पृष्ठ {{page}}",
       "prev": "पिछला",
       "status": "स्थिति",
       "summary": "सारांश",
@@ -8508,11 +8509,10 @@
     },
     "searchResultsList": {
       "assistant": "असिस्टेंट",
-      "matches_around_the_current_result_narrow_your_se": "मिलान, वर्तमान परिणाम के आसपास — सभी देखने के लिए अपनी खोज सीमित करें।",
-      "of": "में से",
       "search_results": "खोज परिणाम",
       "selected": "चुने गए",
-      "showing": "दिखा रहे हैं",
+      "showing_matches_one": "वर्तमान परिणाम के आसपास {{n}} मिलान में से {{shown}} दिखा रहे हैं — सभी देखने के लिए अपनी खोज सीमित करो।",
+      "showing_matches_other": "वर्तमान परिणाम के आसपास {{n}} मिलानों में से {{shown}} दिखा रहे हैं — सभी देखने के लिए अपनी खोज सीमित करो।",
       "you": "तुम"
     },
     "multiSelect": {
@@ -12034,7 +12034,6 @@
         "aria_expand_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची विस्तृत करें",
         "current_task": "मौजूदा टास्क",
         "more": "और…",
-        "of": "में से",
         "task_completion": "कार्य पूर्णता",
         "aria_mark_done": "पूर्ण चिह्नित करो: {{task}}। एजेंट इसे दोबारा नहीं करेगा। पलटने के लिए फिर क्लिक करो।",
         "aria_mark_not_done": "अपूर्ण चिह्नित करो: {{task}}। एजेंट इसे अभी बाकी मानेगा। पलटने के लिए फिर क्लिक करो।",
@@ -12047,7 +12046,8 @@
         "fail_remote": "यह चेकलिस्ट इस सत्र की दूरस्थ मशीन संभालती है, इसलिए इसे यहाँ नहीं बदला जा सकता।",
         "set_by_you_done": "तुमने इसे हो गया चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
         "set_by_you_open": "तुमने इसे नहीं हुआ चिह्नित किया; एजेंट ने अभी पुष्टि नहीं की।",
-        "sending": "भेजा जा रहा है"
+        "sending": "भेजा जा रहा है",
+        "done_of_total": "{{total}} में से {{done}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "मॉडल की रीज़निंग समेटें",
@@ -14396,8 +14396,6 @@
         "no_items_found": "कोई आइटम नहीं मिला",
         "no_items_match_your_filters": "आपके फ़िल्टर से कोई आइटम मेल नहीं खाता",
         "no_items_match_your_search": "आपकी खोज से कोई आइटम मेल नहीं खाता",
-        "of": "में से",
-        "page": "पेज",
         "prev": "← पिछला",
         "prev_next_page": "पिछला/अगला पेज",
         "search_explore_and_manage_your_knowledge_base": "अपने ज्ञान आधार को खोजें, देखें और प्रबंधित करें",
@@ -14418,7 +14416,8 @@
         "stats_relations_one": "{{count}} संबंध",
         "stats_relations_other": "{{count}} संबंध",
         "stats_sources_one": "{{count}} स्रोत",
-        "stats_sources_other": "{{count}} स्रोत"
+        "stats_sources_other": "{{count}} स्रोत",
+        "page_of": "{{pages}} में से पेज {{page}}"
       },
       "itemCard": {
         "copied": "कॉपी हो गया!",
@@ -14445,8 +14444,7 @@
         "items_count": "({{count}} आइटम)",
         "next": "आगे →",
         "no_source": "कोई स्रोत नहीं",
-        "of": "में से",
-        "page": "पेज",
+        "page_of": "{{pages}} में से पेज {{page}}",
         "prev": "← पिछला",
         "unknown_source": "अज्ञात स्रोत"
       },
@@ -15626,10 +15624,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · स्थानीय रूप से इन-प्रोसेस में चलता है",
         "embedding_status": "एम्बेडिंग स्थिति",
-        "entries": "एंट्री",
         "episodic_context_injected_per_message": "एपिसोडिक कॉन्टेक्स्ट (प्रति संदेश इंजेक्ट)",
         "episodic_memory": "एपिसोडिक मेमोरी",
-        "events": "इवेंट",
         "every_memory_create_update_delete_conflict_and_i": "हर मेमोरी क्रिएट, अपडेट, डिलीट, कॉन्फ़्लिक्ट और इंजेक्शन ब्लॉक यहाँ लॉग होता है।",
         "filter_by_key_or_value": "कुंजी या मान से फ़िल्टर करें…",
         "filter_by_tag": "टैग से फ़िल्टर करें:",
@@ -15646,7 +15642,6 @@
         "no_matching_entries": "कोई मेल खाती एंट्री नहीं",
         "no_semantic_entries": "कोई सिमेंटिक एंट्री नहीं",
         "not_active": "सक्रिय नहीं",
-        "of": "में से",
         "open_embedding_model_settings": "एम्बेडिंग मॉडल सेटिंग खोलें",
         "preview": "पूर्वावलोकन",
         "preview_what_gets_injected_into_prompts_enter_a": "प्रॉम्प्ट में क्या डाला जाता है, उसका प्रीव्यू देखें। एपिसोडिक रिट्रीवल के नतीजे देखने के लिए क्वेरी दर्ज करें।",
@@ -15660,7 +15655,6 @@
         "semantic_memory": "सिमैंटिक मेमोरी",
         "set": "सेट करें",
         "setup_failed": "सेटअप विफल",
-        "showing": "दिखा रहे हैं",
         "status_unknown": "अज्ञात",
         "structured_key_value_facts_about_you_confidence": "तुम्हारे बारे में संरचित की-वैल्यू तथ्य। कॉन्फ़िडेंस: सिस्टम कितना निश्चित है (1.0 = तुमने सेट किया, 0.85 = चैट से निकाला गया)। स्रोत: किसने लिखा (user_explicit = तुम, consolidation = अपने-आप निकाला गया)।",
         "structured_semantic_key_value_episodic_conversat": "वेक्टर सर्च के साथ संरचित सिमेंटिक (की-वैल्यू) + एपिसोडिक (बातचीत के अंश) मेमोरी। एम्बेडिंग हमेशा चालू रहती हैं — मॉडल बैकग्राउंड में अपने-आप डाउनलोड हो जाता है।",
@@ -15672,7 +15666,17 @@
         "verifying_model_integrity": "मॉडल की अखंडता जाँची जा रही है…",
         "enable_err_config_unreadable": "config.json पढ़ा नहीं जा सका, इसलिए वेक्टर मेमोरी सहेजी नहीं जा सकी। फ़ाइल ठीक करो, फिर दोबारा कोशिश करो।",
         "enable_err_dim_unreadable": "एम्बेडिंग मॉडल की वेक्टर चौड़ाई पढ़ी नहीं जा सकी, इसलिए वेक्टर मेमोरी चालू नहीं हुई। दोबारा कोशिश करो, या बार-बार विफल हो तो 'kirocrew doctor' चलाओ।",
-        "enable_err_owner_only": "केवल डैशबोर्ड का मालिक वेक्टर मेमोरी सेट कर सकता है।"
+        "enable_err_owner_only": "केवल डैशबोर्ड का मालिक वेक्टर मेमोरी सेट कर सकता है।",
+        "showing_entries_one": "{{n}} एंट्री दिखा रहे हैं",
+        "showing_entries_other": "{{n}} एंट्री दिखा रहे हैं",
+        "showing_events_one": "{{n}} इवेंट दिखा रहे हैं",
+        "showing_events_other": "{{n}} इवेंट दिखा रहे हैं",
+        "showing_events_filtered_one": "{{n}} इवेंट दिखा रहे हैं (कुल {{total}})",
+        "showing_events_filtered_other": "{{n}} इवेंट दिखा रहे हैं (कुल {{total}})",
+        "showing_semantic_one": "{{total}} में से {{shown}} दिखा रहे हैं",
+        "showing_semantic_other": "{{total}} में से {{shown}} दिखा रहे हैं",
+        "showing_semantic_filtered_one": "{{matched}} में से {{shown}} दिखा रहे हैं ({{total}} में से फ़िल्टर किए गए)",
+        "showing_semantic_filtered_other": "{{matched}} में से {{shown}} दिखा रहे हैं ({{total}} में से फ़िल्टर किए गए)"
       },
       "wakatimeTab": {
         "active_projects": "जिन परियोजनाओं पर तुमने काम किया",

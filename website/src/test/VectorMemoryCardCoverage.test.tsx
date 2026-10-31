@@ -447,7 +447,7 @@ describe('VectorMemoryCard — Audit tab', () => {
 
     // One filter button per distinct event_type, plus All.
     await user.click(screen.getByRole('button', { name: 'injection_block' }))
-    await waitFor(() => expect(screen.getByText(footer(/Showing 1 events \(4 total\)/))).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(footer(/Showing 1 event \(4 total\)/))).toBeInTheDocument())
     expect(screen.queryByText('terse')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'All' }))
@@ -463,7 +463,7 @@ describe('VectorMemoryCard — Audit tab', () => {
     await waitFor(() => expect(screen.getByText(footer(/Showing 4 events$/))).toBeInTheDocument())
 
     await user.click(screen.getByRole('button', { name: 'consolidation_skip' }))
-    await waitFor(() => expect(screen.getByText(footer(/Showing 1 events/))).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(footer(/Showing 1 event\b/))).toBeInTheDocument())
 
     vi.mocked(api.vectorEvents).mockResolvedValue({ events: [AUDIT_ROWS[0]] } as never)
     await user.click(tab(/^Semantic$/))

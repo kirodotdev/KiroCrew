@@ -2866,9 +2866,6 @@
             "no_members_found_for_this_repo": "이 저장소의 멤버를 찾지 못했습니다.",
             "notifications": "알림",
             "notify_me_when_a": "다음일 때 알림 받기:",
-            "of": "중",
-            "open_issues_are_marked_first_issue_friendly": "열린 이슈가 입문자용으로 표시되어 있습니다",
-            "open_issues_currently_need_triage": "열린 이슈가 현재 트리아지가 필요합니다",
             "open_on": "다음에서 열기:",
             "open_tagging": "태그 지정 열기",
             "organises_its_issues_and_are_never_written_back": "이슈를 정리하는 방식이며, 다음에는 절대 기록되지 않습니다:",
@@ -2897,7 +2894,9 @@
             "without_push_access_to": "다음에 대한 푸시 권한이 없으면:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "편집 내용은 여기에 유지되지만 영구 저장되지는 않습니다. 방금 Issue Radar를 업데이트했다면 백엔드를 다시 시작해 설정 API를 사용할 수 있게 하세요.",
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 풀 리퀘스트에서 CI가 실패하면 알림 받기",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh 로그인으로 내가 연 열린 풀 리퀘스트의 GitHub Actions 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh 로그인으로 내가 연 열린 풀 리퀘스트의 GitHub Actions 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다.",
+            "first_issue_friendly_count_other": "열린 이슈 <strong>{{n}}</strong>개가 입문자용으로 표시되어 있습니다",
+            "triage_needed_of_open": "트리아지가 필요한 열린 이슈: {{n}}개 중 <strong>{{triage}}</strong>개"
           }
         },
         "tagging": {
@@ -5857,7 +5856,8 @@
       "some_setup_could_not_be_read": "{{productName}}이(가) {{sources}}을(를) 읽을 수 없습니다 — 아래에 표시되지 않습니다.",
       "files_could_not_be_read": "파일을 읽을 수 없습니다",
       "your_existing_kirocrew_setup_will_not_be_affecte": "기존 {{productName}} 설정은 영향을 받지 않습니다.",
-      "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다."
+      "your_selected_setup_is_ready_in_kiro_crew": "선택한 설정이 {{productName}}에 준비되었습니다.",
+      "import_setup_stage": "설정 가져오기 · {{stages}}단계 중 {{stage}}단계"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "저장했지만 이 {{productName}}에서 에이전트 구성을 업데이트하지 못해 새 채팅은 이전 설정을 사용합니다. 이유는 '로그' 페이지에서 확인하세요."
@@ -6789,7 +6789,7 @@
       "next": "다음",
       "no_execution_history_yet": "아직 실행 기록이 없습니다",
       "ok": "성공",
-      "page": "페이지",
+      "page_n": "{{page}}페이지",
       "prev": "이전",
       "status": "상태",
       "summary": "요약",
@@ -8371,11 +8371,9 @@
     },
     "searchResultsList": {
       "assistant": "어시스턴트",
-      "matches_around_the_current_result_narrow_your_se": "개가 현재 결과 주변에서 일치합니다 — 모두 보려면 검색 범위를 좁히세요.",
-      "of": "/",
       "search_results": "검색 결과",
       "selected": "선택됨",
-      "showing": "표시 중",
+      "showing_matches_other": "현재 결과 주변의 일치 항목 {{n}}개 중 {{shown}}개 표시 중 — 모두 보려면 검색 범위를 좁히세요.",
       "you": "나"
     },
     "multiSelect": {
@@ -11848,7 +11846,6 @@
         "aria_expand_task_list": "{{total}}개 중 {{done}}개 작업 완료. 작업 목록 펼치기",
         "current_task": "현재 작업",
         "more": "개 더…",
-        "of": "/",
         "task_completion": "작업 완료 현황",
         "aria_mark_done": "완료로 표시: {{task}}. 에이전트는 다시 하지 않습니다. 다시 클릭하면 되돌립니다.",
         "aria_mark_not_done": "미완료로 표시: {{task}}. 에이전트는 아직 남은 일로 봅니다. 다시 클릭하면 되돌립니다.",
@@ -11861,7 +11858,8 @@
         "fail_remote": "이 체크리스트는 이 세션의 원격 컴퓨터가 관리하므로 여기서 바꿀 수 없습니다.",
         "set_by_you_done": "당신이 완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
         "set_by_you_open": "당신이 미완료로 표시했습니다. 에이전트는 아직 확인하지 않았습니다.",
-        "sending": "전송 중"
+        "sending": "전송 중",
+        "done_of_total": "{{done}} / {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "모델 추론 접기",
@@ -14161,8 +14159,6 @@
         "no_items_found": "항목을 찾을 수 없습니다",
         "no_items_match_your_filters": "필터와 일치하는 항목이 없습니다",
         "no_items_match_your_search": "검색과 일치하는 항목이 없습니다",
-        "of": "/",
-        "page": "페이지",
         "prev": "← 이전",
         "prev_next_page": "이전/다음 페이지",
         "search_explore_and_manage_your_knowledge_base": "지식 베이스를 검색하고 탐색하고 관리하세요",
@@ -14179,7 +14175,8 @@
         "stats_items_other": "항목 {{count}}개",
         "stats_entities_other": "엔터티 {{count}}개",
         "stats_relations_other": "관계 {{count}}개",
-        "stats_sources_other": "소스 {{count}}개"
+        "stats_sources_other": "소스 {{count}}개",
+        "page_of": "{{pages}}페이지 중 {{page}}페이지"
       },
       "itemCard": {
         "copied": "복사했습니다!",
@@ -14206,8 +14203,7 @@
         "items_count": "({{count}}개 항목)",
         "next": "다음 →",
         "no_source": "소스 없음",
-        "of": "/",
-        "page": "페이지",
+        "page_of": "{{pages}}페이지 중 {{page}}페이지",
         "prev": "← 이전",
         "unknown_source": "알 수 없는 소스"
       },
@@ -15359,10 +15355,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · 로컬 프로세스에서 실행",
         "embedding_status": "임베딩 상태",
-        "entries": "항목",
         "episodic_context_injected_per_message": "일화 기억 컨텍스트 (메시지마다 주입)",
         "episodic_memory": "일화 기억",
-        "events": "이벤트",
         "every_memory_create_update_delete_conflict_and_i": "모든 메모리 생성·업데이트·삭제·충돌·주입 블록이 여기에 기록됩니다.",
         "filter_by_key_or_value": "키 또는 값으로 필터…",
         "filter_by_tag": "태그로 필터:",
@@ -15379,7 +15373,6 @@
         "no_matching_entries": "일치하는 항목 없음",
         "no_semantic_entries": "의미 기억 항목 없음",
         "not_active": "비활성",
-        "of": "중",
         "open_embedding_model_settings": "임베딩 모델 설정 열기",
         "preview": "미리 보기",
         "preview_what_gets_injected_into_prompts_enter_a": "프롬프트에 주입되는 내용을 미리 봅니다. 검색어를 입력하면 일화 기억 검색 결과를 확인할 수 있습니다.",
@@ -15393,7 +15386,6 @@
         "semantic_memory": "의미 기억",
         "set": "설정",
         "setup_failed": "설정에 실패했습니다",
-        "showing": "표시 중",
         "status_unknown": "알 수 없음",
         "structured_key_value_facts_about_you_confidence": "사용자에 대한 구조화된 키-값 사실입니다. 신뢰도: 시스템이 얼마나 확신하는지 (1.0 = 직접 설정, 0.85 = 채팅에서 추출). 출처: 누가 작성했는지 (user_explicit = 사용자, consolidation = 자동 추출).",
         "structured_semantic_key_value_episodic_conversat": "벡터 검색을 지원하는 구조화된 의미 기억 (키-값) 및 일화 기억 (대화 조각)입니다. 임베딩은 항상 켜져 있으며, 모델은 백그라운드에서 자동으로 다운로드됩니다.",
@@ -15405,7 +15397,12 @@
         "verifying_model_integrity": "모델 무결성을 확인하는 중…",
         "enable_err_config_unreadable": "config.json을 읽을 수 없어 벡터 메모리를 저장하지 못했습니다. 파일을 수정한 후 다시 시도하세요.",
         "enable_err_dim_unreadable": "임베딩 모델의 벡터 너비를 읽을 수 없어 벡터 메모리를 켜지 못했습니다. 다시 시도하고, 계속 실패하면 'kirocrew doctor'를 실행하세요.",
-        "enable_err_owner_only": "대시보드 소유자만 벡터 메모리를 설정할 수 있습니다."
+        "enable_err_owner_only": "대시보드 소유자만 벡터 메모리를 설정할 수 있습니다.",
+        "showing_entries_other": "{{n}}개 항목 표시 중",
+        "showing_events_other": "{{n}}개 이벤트 표시 중",
+        "showing_events_filtered_other": "{{n}}개 이벤트 표시 중(총 {{total}}개)",
+        "showing_semantic_other": "{{total}}개 중 {{shown}}개 표시 중",
+        "showing_semantic_filtered_other": "{{matched}}개 중 {{shown}}개 표시 중({{total}}개에서 필터링됨)"
       },
       "wakatimeTab": {
         "active_projects": "작업한 프로젝트",

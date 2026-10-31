@@ -11,7 +11,7 @@ import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, em
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtDateNumeric, fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
 
 /** Whether an element with `id` is in the document, read when `watch` turns on.
  *
@@ -644,7 +644,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </div>
         {filteredSemantic.length > 0 && (
           <p className="text-muted text-[12px] mt-2">
-            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
+            {filteredSemantic.length !== semantic.length
+              ? i18nT('pages.overview.vectorMemoryCard.showing_semantic_filtered', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), matched: fmtNumber(filteredSemantic.length), total: fmtNumber(semantic.length) })
+              : i18nT('pages.overview.vectorMemoryCard.showing_semantic', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), total: fmtNumber(filteredSemantic.length) })}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
           </p>
         )}
       </Card>
@@ -707,7 +709,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {episodicRead.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={episodicRead.isFetching} onClick={() => loadEpisodic(undefined, true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {episodic.length} {i18nT('pages.overview.vectorMemoryCard.entries')}</p>}
+        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing_entries', { count: episodic.length, n: fmtNumber(episodic.length) })}</p>}
       </Card>
     )}
 
@@ -740,7 +742,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {audit.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={audit.isFetching} onClick={() => void audit.fetchNextPage()}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {filteredEvents.length} {i18nT('pages.overview.vectorMemoryCard.events')}{eventFilter !== 'all' ? ` (${events.length} total)` : ''}</p>}
+        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{eventFilter !== 'all'
+          ? i18nT('pages.overview.vectorMemoryCard.showing_events_filtered', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length), total: fmtNumber(events.length) })
+          : i18nT('pages.overview.vectorMemoryCard.showing_events', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length) })}</p>}
       </Card>
     )}
 

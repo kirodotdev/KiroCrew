@@ -2866,9 +2866,6 @@
             "no_members_found_for_this_repo": "このリポジトリのメンバーが見つかりません。",
             "notifications": "通知",
             "notify_me_when_a": "通知を受け取る:",
-            "of": "の",
-            "open_issues_are_marked_first_issue_friendly": "オープンな Issue が first-issue-friendly とマークされている",
-            "open_issues_currently_need_triage": "オープンな Issue が現在トリアージが必要",
             "open_on": "以下で開く:",
             "open_tagging": "タグ付けを開く",
             "organises_its_issues_and_are_never_written_back": "その Issue を整理しており、以下に書き込まれることはありません:",
@@ -2897,7 +2894,9 @@
             "without_push_access_to": "へのプッシュアクセス権がない場合:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "編集内容はここに保持されていますが、永続化されません。Issue Radar を更新した場合は、バックエンドを再起動して、設定 API を利用できるようにしてください。",
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}} の自分のプルリクエストで CI が失敗したら通知する",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh のサインインを使い、自分のオープンなプルリクエストの GitHub Actions 実行だけを読み取ります。設定 → 通知 でミュートや優先度の変更ができます。",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> 件のオープンな Issue が first-issue-friendly とマークされています",
+            "triage_needed_of_open": "トリアージが必要なオープンな Issue：{{n}} 件中 <strong>{{triage}}</strong> 件"
           }
         },
         "tagging": {
@@ -5857,7 +5856,8 @@
       "some_setup_could_not_be_read": "{{productName}} は {{sources}} を読み取れませんでした（以下には表示されません）。",
       "files_could_not_be_read": "ファイルを読み取れませんでした",
       "your_existing_kirocrew_setup_will_not_be_affecte": "既存の {{productName}} セットアップは影響を受けません。",
-      "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。"
+      "your_selected_setup_is_ready_in_kiro_crew": "選択されたセットアップは {{productName}} で準備ができています。",
+      "import_setup_stage": "セットアップをインポート · {{stages}} 中 {{stage}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "保存しましたが、この {{productName}} ではエージェント設定を更新できなかったため、新しいチャットでは以前の設定が使われます。理由は「ログ」ページで確認してください。"
@@ -6789,7 +6789,7 @@
       "next": "次へ",
       "no_execution_history_yet": "実行履歴はまだありません",
       "ok": "OK",
-      "page": "ページ",
+      "page_n": "{{page}} ページ",
       "prev": "前へ",
       "status": "ステータス",
       "summary": "概要",
@@ -8371,11 +8371,9 @@
     },
     "searchResultsList": {
       "assistant": "アシスタント",
-      "matches_around_the_current_result_narrow_your_se": "現在の結果周辺の一致 — 検索を絞り込んですべてを表示します。",
-      "of": "の",
       "search_results": "検索結果",
       "selected": "選択済み",
-      "showing": "表示中",
+      "showing_matches_other": "現在の結果周辺の {{n}} 件の一致のうち {{shown}} 件を表示中 — すべて表示するには検索を絞り込んでください。",
       "you": "あなた"
     },
     "multiSelect": {
@@ -11848,7 +11846,6 @@
         "aria_expand_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を展開",
         "current_task": "現在のタスク",
         "more": "ほか…",
-        "of": "／",
         "task_completion": "タスクの完了状況",
         "aria_mark_done": "完了にする: {{task}}。エージェントはやり直しません。もう一度クリックで元に戻せます。",
         "aria_mark_not_done": "未完了にする: {{task}}。エージェントは未着手として扱います。もう一度クリックで元に戻せます。",
@@ -11861,7 +11858,8 @@
         "fail_remote": "このチェックリストはこのセッションのリモートのマシンが管理しているため、ここでは変更できません。",
         "set_by_you_done": "あなたが完了にしました。エージェントはまだ確認していません。",
         "set_by_you_open": "あなたが未完了にしました。エージェントはまだ確認していません。",
-        "sending": "送信中"
+        "sending": "送信中",
+        "done_of_total": "{{done}} ／ {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "モデルの推論を折りたたむ",
@@ -14161,8 +14159,6 @@
         "no_items_found": "アイテムが見つかりません",
         "no_items_match_your_filters": "フィルタに一致するアイテムはありません",
         "no_items_match_your_search": "検索に一致するアイテムはありません",
-        "of": "の",
-        "page": "ページ",
         "prev": "← 前へ",
         "prev_next_page": "前/次ページ",
         "search_explore_and_manage_your_knowledge_base": "ナレッジベースを検索・探索・管理する",
@@ -14179,7 +14175,8 @@
         "stats_items_other": "{{count}} 件の項目",
         "stats_entities_other": "{{count}} 件のエンティティ",
         "stats_relations_other": "{{count}} 件の関連",
-        "stats_sources_other": "{{count}} 件のソース"
+        "stats_sources_other": "{{count}} 件のソース",
+        "page_of": "{{pages}} ページ中 {{page}} ページ"
       },
       "itemCard": {
         "copied": "コピーしました！",
@@ -14206,8 +14203,7 @@
         "items_count": "({{count}} アイテム)",
         "next": "次へ →",
         "no_source": "ソースなし",
-        "of": "の",
-        "page": "ページ",
+        "page_of": "{{pages}} ページ中 {{page}} ページ",
         "prev": "← 前へ",
         "unknown_source": "不明なソース"
       },
@@ -15359,10 +15355,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · ローカルでインプロセス実行",
         "embedding_status": "埋め込みの状態",
-        "entries": "エントリ",
         "episodic_context_injected_per_message": "エピソード的コンテキスト（メッセージごとに注入）",
         "episodic_memory": "エピソード的メモリ",
-        "events": "イベント",
         "every_memory_create_update_delete_conflict_and_i": "すべてのメモリの作成、更新、削除、競合、注入ブロックがここに記録されます。",
         "filter_by_key_or_value": "キーまたは値でフィルタ…",
         "filter_by_tag": "タグでフィルタ:",
@@ -15379,7 +15373,6 @@
         "no_matching_entries": "一致するエントリなし",
         "no_semantic_entries": "意味的エントリなし",
         "not_active": "非アクティブ",
-        "of": "の",
         "open_embedding_model_settings": "埋め込みモデルの設定を開く",
         "preview": "プレビュー",
         "preview_what_gets_injected_into_prompts_enter_a": "プロンプトに注入される内容をプレビューします。クエリを入力してエピソード的検索結果を確認します。",
@@ -15393,7 +15386,6 @@
         "semantic_memory": "意味的メモリ",
         "set": "設定",
         "setup_failed": "セットアップ失敗",
-        "showing": "表示中",
         "status_unknown": "不明",
         "structured_key_value_facts_about_you_confidence": "構造化されたキー-バリューペアのあなたに関する事実。信頼度：システムがどの程度確実か（1.0 =設定済み、0.85 =チャットから抽出）。ソース：誰が書いたか（user_explicit =ユーザー、consolidation =自動抽出）。",
         "structured_semantic_key_value_episodic_conversat": "構造化された意味的（キー-バリューペア）およびエピソード的（会話フラグメント）なメモリとベクトル検索。埋め込みは常時オン — モデルはバックグラウンドで自動的にダウンロードされます。",
@@ -15405,7 +15397,12 @@
         "verifying_model_integrity": "モデルの整合性を確認中…",
         "enable_err_config_unreadable": "config.json を読み込めないため、ベクトルメモリを保存できませんでした。ファイルを修正してから、再試行してください。",
         "enable_err_dim_unreadable": "埋め込みモデルのベクトル幅を読み込めないため、ベクトルメモリを有効にできませんでした。再試行してください。失敗が続く場合は 'kirocrew doctor' を実行してください。",
-        "enable_err_owner_only": "ベクトルメモリを設定できるのはダッシュボードの所有者だけです。"
+        "enable_err_owner_only": "ベクトルメモリを設定できるのはダッシュボードの所有者だけです。",
+        "showing_entries_other": "{{n}} 件のエントリを表示中",
+        "showing_events_other": "{{n}} 件のイベントを表示中",
+        "showing_events_filtered_other": "{{n}} 件のイベントを表示中（全 {{total}} 件）",
+        "showing_semantic_other": "{{total}} 件中 {{shown}} 件を表示中",
+        "showing_semantic_filtered_other": "{{matched}} 件中 {{shown}} 件を表示中（{{total}} 件から絞り込み）"
       },
       "wakatimeTab": {
         "active_projects": "取り組んだプロジェクト",

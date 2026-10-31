@@ -4,6 +4,8 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import VectorMemoryCard, { SEMANTIC_RENDER_CAP } from '../pages/overview/VectorMemoryCard'
 import { renderWithProviders } from './helpers'
+import { i18next } from '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 // The Semantic Memory table caps the rendered rows at SEMANTIC_RENDER_CAP and
 // relies on the filter (key OR value) to reach entries past the cap. Rendering
@@ -65,6 +67,33 @@ describe('VectorMemoryCard — Semantic Memory render cap', () => {
     await user.clear(input)
     await waitFor(() => expect(screen.getByText('alpha.0')).toBeInTheDocument())
     expect(screen.getByText(footerMatcher(new RegExp(`Showing ${SEMANTIC_RENDER_CAP} of ${N}`)))).toBeInTheDocument()
+  })
+
+  it('renders the semantic footer, filtered count included, as one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so a footer glued from fragments reads
+    // `[Showing] 100 [of] 111 (filtered from 250)` with the last part in plain English.
+    // The refine hint after it is its own sentence, so the match is anchored at the start only.
+    await i18next.changeLanguage('en-XA')
+    const user = userEvent.setup()
+    renderWithProviders(<VectorMemoryCard />)
+    await waitFor(() => expect(screen.getByText('alpha.0')).toBeInTheDocument())
+    expect(screen.getByText(footerMatcher(new RegExp(`^\\[[^[\\]]*${SEMANTIC_RENDER_CAP}[^[\\]]*${N}[^[\\]]*\\]`)))).toBeInTheDocument()
+
+    // alpha.1, alpha.10-19 and alpha.100-199: 111 of the N keys.
+    await user.type(screen.getByPlaceholderText(i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')), 'alpha.1')
+    await waitFor(() => expect(screen.queryByText('alpha.0')).not.toBeInTheDocument())
+    expect(screen.getByText(footerMatcher(new RegExp(`^\\[[^[\\]]*${SEMANTIC_RENDER_CAP}[^[\\]]*111[^[\\]]*${N}[^[\\]]*\\]`)))).toBeInTheDocument()
+  })
+
+  it('picks the footer plural form from the shown count', async () => {
+    // Italian agrees the participle with the count: one shown row is "Visualizzato", not "Visualizzati".
+    await i18next.changeLanguage('it')
+    const user = userEvent.setup()
+    renderWithProviders(<VectorMemoryCard />)
+    await waitFor(() => expect(screen.getByText('alpha.0')).toBeInTheDocument())
+    await user.type(screen.getByPlaceholderText(i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')), `alpha.${N - 1}`)
+    await waitFor(() => expect(screen.queryByText('alpha.0')).not.toBeInTheDocument())
+    expect(screen.getByText(footerMatcher(new RegExp(`^Visualizzato 1 di 1 \\(filtrato da ${N}\\)$`)))).toBeInTheDocument()
   })
 
   it('filters by value content, including object values past the cap', async () => {
