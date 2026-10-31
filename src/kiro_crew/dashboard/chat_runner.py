@@ -32,6 +32,7 @@ from kiro_crew import (  # noqa: F401
     injection_receipts,
     mcp_apps_render,
     model_registry,
+    prompt_segments,
     resource_status,
     runtime_death,
     session_directive,
@@ -641,6 +642,31 @@ _PARKED_FOR_MEMORY: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = weakref.
 _P = ParamSpec("_P")
 
 
+def _segment_user_span(turn: Any, full_message: str) -> str:
+    """*full_message* as a :class:`~kiro_crew.prompt_segments.SegmentedPrompt`.
+
+    ``build_message`` marked its prompt's provenance (``turn._prompt_segments``)
+    and every later step is a pure prepend, so the new prefix is injected and the
+    marked segments follow it unchanged. A prompt that no context builder
+    assembled is the user's own message and goes out as it is.
+
+    Never a plain string once segments exist: a plain string reads as all user,
+    which would upgrade every injected path. If the sent tail differs from what
+    was assembled, the whole prompt is marked injected and nothing is upgraded.
+    """
+    segments = getattr(turn, "_prompt_segments", ())
+    if not segments:
+        return full_message
+    assembled = "".join(text for _, text in segments)
+    if full_message.endswith(assembled):
+        prefix = full_message[: len(full_message) - len(assembled)]
+        return prompt_segments.SegmentedPrompt(
+            [(prompt_segments.SOURCE_INJECTED, prefix), *segments]
+        )
+    logger.warning("prompt segments: the assembled prompt is not the sent tail; upgrading nothing")
+    return prompt_segments.SegmentedPrompt([(prompt_segments.SOURCE_INJECTED, full_message)])
+
+
 def _hands_off_queue_on_exit(
     fn: "Callable[Concatenate[DashboardState, _ChatSlot, _TurnExit, _P], Coroutine[Any, Any, None]]",
 ) -> "Callable[Concatenate[DashboardState, _ChatSlot, _P], Coroutine[Any, Any, None]]":
@@ -927,7 +953,13 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
-        event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
+        # The prefixes added after assembly made the prompt a plain string again;
+        # re-apply build_message's provenance so only the user's text is upgraded.
+        event_stream = (
+            client.stream_command(message)
+            if is_slash
+            else client.stream(_segment_user_span(turn, full_message))
+        )
         async for event in event_stream:
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS

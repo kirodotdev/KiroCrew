@@ -112,8 +112,10 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     void switchAgent(crewModeAgent(), 'template').finally(() => setTurningOn(set => withoutKey(set, key)))
     // the side panel opens on its own with the Crew tab in front
     // (SidePanel pins it first). Remember whether it was closed, so turning
-    // Ultra Mode off again before the first message puts it back.
-    if (taskBoardOffered) {
+    // Ultra Mode off again before the first message puts it back. Not on a
+    // phone: there the panel is a sheet over the chat, so the chat stays in
+    // front and the Board is one press away on the panel button.
+    if (taskBoardOffered && !isMobile) {
       if (activityOpen) panelWasClosed.current.delete(currentSlot.key)
       else panelWasClosed.current.add(currentSlot.key)
       dispatch(openActivityPanel())
@@ -121,7 +123,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
       openView('command-center')
       openView('workers')
     }
-  }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, dispatch, openView, activityOpen])
+  }, [crewModeOn, currentSlot, switchAgent, taskBoardOffered, dispatch, openView, activityOpen, isMobile])
   const crewModeLeaving = !!currentSlot && turningOff.has(currentSlot.key)
   const crewModeArriving = !!currentSlot && turningOn.has(currentSlot.key)
   /** Crew Mode is on, or being turned on, for this chat: the composer then shows

@@ -22,6 +22,10 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     parse_workflow_command,
 )
+from kiro_crew.dashboard.kas_local_commands import (
+    KAS_LOCAL_INSPECT_COMMANDS,
+    answer_kas_inspect_command,
+)
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -101,7 +105,7 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
 
 
 async def _answer_slash_without_channel(
-    state: DashboardState, slot: _ChatSlot, session_key: str, command: str
+    state: DashboardState, slot: _ChatSlot, session_key: str, command: str, message: str = ""
 ) -> str:
     """Answer a harness command the backend cannot run, as a local command.
 
@@ -111,10 +115,18 @@ async def _answer_slash_without_channel(
     refuses the discard (busy, sub-agents attached) keeps it queued for a later
     turn boundary.
 
-    Returns the outcome it records: ``discarded``, ``queued`` or
-    ``unsupported_backend``.
+    ``/model``, ``/tools`` and ``/mcp`` are answered from the dashboard's own state
+    (``kas_local_commands``); *message* is the whole command line, for
+    ``/model <id>``.
+
+    Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
+    ``switched``, ``error``, ``no_session`` or ``unsupported_backend``.
     """
-    if command.lower() == "/clear":
+    if command.lower() in KAS_LOCAL_INSPECT_COMMANDS:
+        text, outcome = await answer_kas_inspect_command(
+            state, slot, session_key, message or command
+        )
+    elif command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
         torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
         # The consumer's True also covers a queued project reset; only a spent
@@ -730,8 +742,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # model reads "/clear" as a request and the conversation stays. KAS also
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
-    # reset_conversation queues, and every other command gets a notice rather
-    # than reaching the model. /compact passes through: on KAS the session handle
+    # reset_conversation queues, /model, /tools and /mcp are read from the
+    # dashboard's own state, and every other command gets a notice rather than
+    # reaching the model. /compact passes through: on KAS the session handle
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
@@ -748,7 +761,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
         ):
             turn_exit.local_command = first_word
-            await _answer_slash_without_channel(state, slot, session_key, first_word)
+            await _answer_slash_without_channel(state, slot, session_key, first_word, message)
             return _Flow.END
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)

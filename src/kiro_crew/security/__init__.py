@@ -66,6 +66,7 @@ from . import (
     perm_verb_mention,
     redaction,
     rm_floor,
+    s3_direction,
     shell_normalizer,
     stream_aws_anchor,
     vocabulary,

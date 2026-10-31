@@ -202,9 +202,19 @@ default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS): the list keeps only the commands
-the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/prompts`,
-`/side`, `/workflow`), because the slash gate reads the same set and answers
-every other harness command with a notice.
+the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
+`/model`, `/prompts`, `/side`, `/tools`, `/workflow`), because the slash gate reads
+the same set and answers every other harness command with a notice. `/model`,
+`/tools` and `/mcp` are answered by `dashboard/kas_local_commands.py` from state
+the dashboard already holds, never by the model and without a turn: `/model`
+shows the slot's pin and the session's advertised list (else the recorded KAS
+catalog), and `/model <id>` runs the picker's own transaction
+(`slot_model.switch_slot_model`, as the slot's own turn, so a busy session defers
+the pick exactly as the picker does); `/tools` reads the agent entry the session
+registered with KAS (`kas_registered_agents`: `tools`, `excludedTools`, the
+`allow` rules still in force, the built-ins Crew answers); `/mcp` reads the slot's
+MCP session report. Only names are shown: a server's `env`, `headers`, `command`
+and `args` are never read, and the reply is redacted.
 
 A **route** is not a harness, and is not expressed as one. KAS runs either
 through kiro-cli's relay or from Crew's own engine bundle (`agent.kas_bundle`),

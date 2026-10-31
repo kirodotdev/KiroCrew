@@ -296,6 +296,7 @@ from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     _wire_model_id,
     api_chat_slot_model,
     api_chat_slots_model,
+    switch_slot_model,
 )
 from kiro_crew.dashboard.chat_api.slot_note import (  # noqa: F401
     _discard_held_note,

@@ -20,6 +20,7 @@ from kiro_crew.agent_sdk import (
     CONTEXT_EVENT_COMPACTION,
     ContextStreamEvent,
 )
+from kiro_crew.prompt_segments import replace_in_injected
 
 EventT = TypeVar("EventT", bound=ContextStreamEvent)
 
@@ -141,7 +142,8 @@ class EssentialDelivery:
                 replacement = candidate.native_envelope
             else:
                 replacement = candidate.envelope
-            message = message.replace(candidate.envelope, replacement, 1)
+            # Provenance survives the rewrite: the envelope is injected context.
+            message = replace_in_injected(message, candidate.envelope, replacement)
         productive = False
         completed = False
         try:

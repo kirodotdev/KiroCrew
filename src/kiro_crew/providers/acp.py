@@ -554,6 +554,18 @@ class AcpProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_registered_agents(self) -> list[dict[str, Any]] | None:
+        """The agent batch this session registered with KAS, or ``None`` with no batch."""
+        value = getattr(self._client, "kas_registered_agents", None)
+        return value if isinstance(value, list) else None
+
+    @property
+    def kas_active_mode_id(self) -> str:
+        """The last mode id KAS reported for this session, or ``""``."""
+        value = getattr(self._client, "kas_active_mode_id", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def is_codex_backend(self) -> bool:
         """True when this ACP provider talks to codex-acp (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_CODEX

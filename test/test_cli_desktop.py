@@ -443,6 +443,23 @@ class TestParserWiring:
         args = parser.parse_args(["desktop", "metrics", "--json", "--top", "3"])
         assert args.json is True and args.top == 3
 
+    @pytest.mark.parametrize("raw", ["0", "-1"])
+    def test_top_below_one_is_refused(self, raw, capsys):
+        """``--top -1`` would slice off the last process and print "top -1"."""
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        cli_desktop.register_desktop_parser(sub)
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(["desktop", "metrics", "--top", raw])
+        assert exc.value.code == 2
+        assert "must be 1 or more" in capsys.readouterr().err
+
+    def test_top_of_one_is_kept(self):
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers(dest="command")
+        cli_desktop.register_desktop_parser(sub)
+        assert parser.parse_args(["desktop", "metrics", "--top", "1"]).top == 1
+
     def test_metrics_subcommand_is_required(self):
         parser = argparse.ArgumentParser()
         sub = parser.add_subparsers(dest="command")

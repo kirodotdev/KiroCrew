@@ -1,9 +1,11 @@
 /* ── Ultra Mode surfaces (code name: Crew Mode) ──
-   No gradients. One solid accent from the theme,
-   `--ultra-accent`, is the ghost's colour and the eyebrow's text colour. It is
-   the theme's `--aim` pulled 30% toward the strongest text colour so it holds
-   contrast on idle, hover and selected rows in light and dark. Nothing here
-   covers other UI: each rule colours the element it is set on. */
+   One solid accent from the theme, `--ultra-accent`, is the ghost's colour and
+   every icon's. It is the theme's `--aim` pulled toward the strongest text
+   colour so it holds contrast on idle, hover and selected rows in light and
+   dark. The words "Ultra Mode" alone (the sidebar eyebrow, the composer chip
+   while on, the welcome title) wear a purple-to-blue text gradient, from the
+   theme's `--aim` to its `--info`. Nothing here covers other UI: each rule
+   colours the element it is set on. */
 
 :root {
   --ultra-accent: color-mix(in srgb, var(--aim) 72%, var(--text-strong, var(--text)));
@@ -15,10 +17,39 @@
   color: var(--aim-fg);
 }
 
-.crew-grad-text,
-.crew-eyebrow-text,
 .crew-chip-text {
   color: var(--ultra-accent);
+}
+
+/* The "Ultra Mode" words. The purple stop is the theme's `--aim` and the blue
+   stop its `--info`, pulled 15% and 40% toward the strongest text colour, so
+   the two ends stay far apart in hue. Measured >= 4.5:1 for each stop on the
+   page and on idle, hover and selected rows in the light, dark, kiro-light and
+   kiro-dark themes, and >= 5.2:1 on the pressed chip, whose tint is kept light
+   (12%, 16% on hover or press) for it. */
+.crew-grad-text,
+.crew-eyebrow-text,
+.ultra-title-text,
+html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--aim) 85%, var(--text-strong, var(--text))),
+    color-mix(in srgb, var(--info) 60%, var(--text-strong, var(--text)))
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Forced colours drop background images: fall back to the solid text colour. */
+@media (forced-colors: active) {
+  .crew-grad-text,
+  .crew-eyebrow-text,
+  .ultra-title-text,
+  html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
+    background-image: none;
+    color: CanvasText;
+  }
 }
 
 .ultra-accent {
@@ -33,7 +64,8 @@
 }
 
 /* The composer's Ultra Mode chip. Off: a quiet glass chip with accent text.
-   Pressed (`aria-pressed="true"`): a solid accent tint and an accent border.
+   Pressed (`aria-pressed="true"`): a light accent tint, a solid accent border
+   and the gradient label.
    Panes are solid by default (liquid-glass.css forces fill and outline with
    `!important`), so the fill and edge here are too; the keyboard ring is left
    alone. */
@@ -46,7 +78,7 @@ html:root .liquid-glass.crew-chip {
 }
 
 html:root .liquid-glass.crew-chip[aria-pressed="true"] {
-  --crew-chip-mix: 24%;
+  --crew-chip-mix: 12%;
   border-color: var(--aim);
 }
 
@@ -73,12 +105,15 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):hov
   border-color: var(--aim);
 }
 
-html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):hover {
-  --crew-chip-mix: 30%;
-}
-
 html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):active {
   --crew-chip-mix: 34%;
+}
+
+/* Pressed stays light on hover and press too, so its gradient label keeps
+   its contrast (see the "Ultra Mode" words above). */
+html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):hover,
+html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):active {
+  --crew-chip-mix: 16%;
 }
 
 /* Status text on a card or row: the state's hue mixed toward the theme's
@@ -125,4 +160,43 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):act
 .ultra-fill-running {
   background-color: color-mix(in srgb, var(--aim) 40%, transparent);
   height: 100%;
+}
+
+/* The Ultra Mode turn-on effect (components/crew/UltraModeEffect.tsx): a
+   transient, pointer-events-none overlay. The band of light that sweeps the
+   chat, the flash at the switch, the Board tab's one glow, and the
+   reduced-motion tint. */
+.ultra-fx-band {
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--aim) 32%, transparent),
+    color-mix(in srgb, var(--info) 28%, transparent),
+    transparent
+  );
+}
+
+.ultra-fx-flash {
+  background-image: radial-gradient(
+    circle,
+    var(--aim) 0%,
+    color-mix(in srgb, var(--aim) 70%, transparent) 20%,
+    color-mix(in srgb, var(--info) 45%, transparent) 42%,
+    transparent 70%
+  );
+}
+
+/* The flash's bolt: the solid accent with a light halo, so it reads on any chat. */
+.ultra-fx-bolt {
+  color: var(--aim);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--aim) 80%, transparent))
+    drop-shadow(0 0 2px var(--bg));
+}
+
+.ultra-fx-glow {
+  box-shadow: 0 0 0 2px var(--aim), 0 0 14px 2px color-mix(in srgb, var(--info) 70%, transparent);
+}
+
+.ultra-fx-fade {
+  background-color: color-mix(in srgb, var(--aim) 10%, transparent);
 }

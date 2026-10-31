@@ -495,7 +495,8 @@ class TestAPersonsPickWins(_Isolated):
 #: gateway's own write, which must stamp ``_model_runtime_pick_gen`` so the crew
 #: does not read it as a pick. "crew": the crew's own switch.
 PICK_GEN_WRITERS: dict[tuple[str, str], tuple[str, int]] = {
-    ("dashboard/chat_api/slot_model.py", "api_chat_slot_model"): ("pick", 3),
+    # The model route's transaction; the in-turn /model <id> on KAS shares it.
+    ("dashboard/chat_api/slot_model.py", "switch_slot_model"): ("pick", 3),
     ("dashboard/chat_api/slot_model.py", "api_chat_slots_model"): ("pick", 1),
     # Settings' "follow the default" press: a person's choice for their own chats.
     # A crew's slot is app-owned, so the press never counts or clears it.

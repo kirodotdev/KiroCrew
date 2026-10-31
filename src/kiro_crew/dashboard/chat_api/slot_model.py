@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         LLMProvider,
+        SlotAgentSwitchCaller,
         _app_cancel_denied,
         _append_session_switch_notice,
         _ChatSlot,
@@ -39,7 +40,6 @@ if TYPE_CHECKING:
         capabilities_of,
         deny_app_slot_access,
         effective_session_key,
-        is_owner_dashboard_request,
         logger,
         model_registry,
         pick_epoch_host,
@@ -378,13 +378,32 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    return await switch_slot_model(
+        state, slot, name, body.get("model", ""), SlotAgentSwitchCaller.for_request(request)
+    )
+
+
+async def switch_slot_model(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    raw_model: Any,
+    caller: SlotAgentSwitchCaller,
+) -> web.Response:
+    """The model picker's transaction, for the HTTP route and the in-turn ``/model <id>``.
+
+    *caller* says who asked (see :class:`SlotAgentSwitchCaller`): the route passes
+    its request, the chat runner's command passes ``for_turn``, so the busy rules,
+    the deferral and the owner gate are the same for both. A turn caller is never
+    the owner, so it cannot arm "Auto (Jev)".
+    """
     # The "Auto (Jev)" entry is resolved HERE and nowhere else: every reader below
     # -- the guard, the live switch, the reset, the session allocation, the
     # composer chip -- takes the id it produces, which is the plain ``auto`` the
     # session actually runs on until a tier is answered. The choice itself
     # survives as ``slot.jev_route`` alone.
-    jev_route = _is_jev_route_pick(body.get("model", ""))
-    if jev_route and not is_owner_dashboard_request(request):
+    jev_route = _is_jev_route_pick(raw_model)
+    if jev_route and not caller.owner:
         # Arming routing is an OWNER action: it hands the per-turn model choice to
         # the oracle, and a dear tier spends the owner's credential on a model the
         # caller never named. The cross-app gate above cannot carry that decision --
@@ -399,8 +418,12 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             resources=f"slot={name}",
             error="non-owner identity rejected",
         )
-        return _owner_denial_response(request, "arming Jev routing is owner-only")
-    model_name = "auto" if jev_route else _normalize_model(body.get("model", ""))
+        if caller.request is not None:
+            return _owner_denial_response(caller.request, "arming Jev routing is owner-only")
+        return web.json_response(
+            {"error": "arming Jev routing is owner-only", "code": "owner_only"}, status=403
+        )
+    model_name = "auto" if jev_route else _normalize_model(raw_model)
     # Judged on THIS slot's harness: a member DM runs on agent.member_acp_backend.
     reason = _model_rejected_reason(model_name, session_keys=(effective_session_key(slot),))
     if reason:
@@ -444,7 +467,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # Re-authorize after the await above (see _slot_replaced_while_queued):
         # ``name`` can be recreated for a different app while this request
         # queued, and every read of ``slot`` below would be of the stale one.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_model"):
             return slot_not_found()
         # The session the switch will probe and, on the reset path, tear
         # down. ``effective_session_key``, never ``_history_key_for`` (the
@@ -467,13 +490,13 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         await _stack.enter_async_context(slot._model_pick_lock)
         # Two more lock-acquisition awaits, one re-check: nothing reads
         # ``slot`` between them, so a check after the last one covers both.
-        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_model"):
+        if _slot_replaced_while_queued(state, slot, name, caller.scope, "chat.slot_model"):
             return slot_not_found()
         # App isolation on the SESSION, not just the slot (the cancel
         # routes' policy): slot ownership does not imply ownership of a
         # linked channel session, so an app caller may not switch the model
         # a channel thread runs on. Denied as an indistinguishable 404.
-        denied = _app_cancel_denied(request, slot, "chat.slot_model", session_key)
+        denied = _app_cancel_denied(caller.scope, slot, "chat.slot_model", session_key)
         if denied is not None:
             return denied
         # The routing flag is committed on each SUCCESS path and nowhere else -- see
@@ -529,7 +552,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             state.push_slots_update()
             return web.json_response({"ok": True, "model": model_name, "jev_route": jev_route})
         provider = state.sessions.get_provider(session_key)
-        _busy = _switch_target_busy(state, slot, session_key, provider)
+        _busy = _switch_target_busy(state, slot, session_key, provider, own_turn=caller.own_turn)
         if _busy:
             # Never tear down an in-flight turn: _try_live_model_switch
             # declines a mid-turn live switch (awaiting the backend's answer
@@ -755,7 +778,7 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # (_switch_target_busy), so a sibling alias that began
             # cold-starting during either await is refused here too.
             recheck = state.sessions.get_provider(session_key)
-            if _switch_target_busy(state, slot, session_key, recheck):
+            if _switch_target_busy(state, slot, session_key, recheck, own_turn=caller.own_turn):
                 if _live_serves_target(recheck):
                     # The turn that slipped in runs on a session that already
                     # serves the target (set_model landed before the effort

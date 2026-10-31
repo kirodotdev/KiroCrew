@@ -46,6 +46,7 @@ from kiro_crew.messaging.dispatch import (
     rearm_reinjection,
     rollback_skill_bodies,
 )
+from kiro_crew.prompt_segments import segments_of
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -1033,6 +1034,10 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             turn._span_probe = _span_probe
             _span_base_len = len(full_message)
             turn._span_base_len = _span_base_len
+        # The prompt's provenance as build_message marked it; the runner
+        # re-applies it under the prefixes added below (chat_runner).
+        _prompt_segments = segments_of(full_message)
+        turn._prompt_segments = _prompt_segments
         full_message = _apply_incognito_prefix(slot, full_message)
         turn.full_message = full_message
         _trusted_prompt_tail = full_message

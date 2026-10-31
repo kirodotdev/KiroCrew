@@ -197,6 +197,10 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     turn._span_probe = _span_probe
     _span_base_len = -1
     turn._span_base_len = _span_base_len
+    # build_message's provenance segments for the prompt it returned, before
+    # the dashboard's own prefixes; empty when no context builder ran.
+    _prompt_segments: tuple = ()
+    turn._prompt_segments = _prompt_segments
     # Snapshot the ContextBuilder output before any dashboard-only prefixes
     # are added. Final prefix scrubbing can then preserve this trusted tail
     # (including its sole minted reply-format marker) byte-for-byte.

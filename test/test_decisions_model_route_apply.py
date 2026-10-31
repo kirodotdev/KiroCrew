@@ -600,7 +600,7 @@ class TestTheRoutingFlag:
         source = (Path(handlers.__file__).parent / "chat_api" / "slot_model.py").read_text(
             encoding="utf-8"
         )
-        body = source[source.index("async def api_chat_slot_model(") :]
+        body = source[source.index("async def switch_slot_model(") :]
         body = body[: body.index("\nasync def ")]
         writes = [m.start() for m in re.finditer(r"slot\.jev_route = jev_route", body)]
         assert len(writes) == 3, "the flag should be committed on exactly the three success paths"

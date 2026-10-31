@@ -263,13 +263,13 @@ _BLOCKED_SLASH_COMMANDS = (
 )
 
 # Commands the dashboard serves without the harness: the composer opens /side
-# itself, and the slash gate answers /agent <name>, /clear, /goal, /prompts and
-# /workflow before any session work. On a harness in
+# itself, and the slash gate answers /agent <name>, /clear, /goal, /mcp, /model,
+# /prompts, /tools and /workflow before any session work. On a harness in
 # ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` every other harness command only gets a
 # notice, so GET /api/slash-commands lists these (plus /compact, which has a gate
 # of its own) and nothing else there.
 _DASHBOARD_SERVED_SLASH_COMMANDS = frozenset(
-    {"/agent", "/clear", "/goal", "/prompts", "/side", "/workflow"}
+    {"/agent", "/clear", "/goal", "/mcp", "/model", "/prompts", "/side", "/tools", "/workflow"}
 )
 
 # Slash-command descriptions surfaced by the dashboard API

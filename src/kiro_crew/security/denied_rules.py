@@ -214,6 +214,20 @@ def pinned_builtin_command_ids_for_snapshot() -> set[str]:
     return ids
 
 
+class EffectiveDenied(list[str]):
+    """The effective regex-tier deny list, plus which entries are shipped.
+
+    ``shipped`` holds the patterns present only because a shipped rule is enabled
+    or pinned, never one the operator also authored. Pattern text is not
+    provenance: an operator rule typed identical to a shipped one gets no
+    shipped-only narrowing. A plain list records nothing, so it narrows nothing.
+    """
+
+    def __init__(self, patterns: "Iterable[str]", shipped: "Iterable[str]") -> None:
+        super().__init__(patterns)
+        self.shipped: frozenset[str] = frozenset(shipped)
+
+
 def compute_effective_denied(
     rules: "list[DeniedCommandRule]",
     disabled_ids: "Iterable[str]",
@@ -233,18 +247,22 @@ def compute_effective_denied(
     2. Append every entry of ``user_added`` verbatim (the user's own regexes).
     3. De-duplicate preserving first-seen order.
 
+    The result is an :class:`EffectiveDenied` recording which entries came only
+    from step 1, so a caller that passes it on passes their provenance too.
+
     No I/O, no config reads, no globals mutated — callers (the hooks gate) own
     where ``disabled_ids`` / ``disable_all`` / ``user_added`` / ``governance_pins``
     come from.
     """
     disabled = set(disabled_ids)
     pins = set(governance_pins)
-    out: list[str] = []
+    shipped: list[str] = []
     for rule in rules:
         if (not disable_all and rule.id not in disabled) or rule.id in pins:
-            out.append(rule.pattern)
-    out.extend(user_added)
-    return list(dict.fromkeys(out))
+            shipped.append(rule.pattern)
+    authored = list(user_added)
+    own = set(authored)
+    return EffectiveDenied(dict.fromkeys(shipped + authored), (p for p in shipped if p not in own))
 
 
 def enabled_rule_ids(denied_regexes: "list[str] | None") -> "frozenset[str] | None":

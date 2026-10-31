@@ -1810,7 +1810,9 @@ specified compatibility change.
     explicit agent-selection record;
   - `agent_switch` — the agent route, its request-free core `switch_slot_agent`, and
     the model-binding reset a switch runs;
-  - `slot_model` — the per-slot and bulk model routes and the live model switch;
+  - `slot_model` — the per-slot and bulk model routes, the per-slot route's
+    request-free core `switch_slot_model` (also run by the in-turn `/model <id>`
+    on KAS), and the live model switch;
   - `slot_effort` — the selection capabilities and the reasoning-effort route;
   - `slot_settings` — the auto-compact threshold, the turn timeout and the tab
     colour;
