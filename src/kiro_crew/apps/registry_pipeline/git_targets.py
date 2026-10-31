@@ -545,19 +545,11 @@ def _same_git_target(a: str, b: str) -> bool:
 # must live inside the registry repo") only fires when withheld credentials
 # are a plausible cause — an owner who hits a typo'd branch or a DNS blip must
 # NOT be told to restructure their repositories. Matched case-insensitively.
+#
+# The SSH credential refusal is matched separately by
+# :data:`_SSH_AUTH_REFUSAL_RE`, because its method list varies in content and
+# order.
 _GIT_AUTH_FAILURE_MARKERS = (
-    # SSH credential refusal ONLY. The bare token "permission denied" also
-    # appears in a LOCAL filesystem error — an unwritable clone destination
-    # emits `fatal: could not create work tree dir '…': Permission denied` —
-    # so matching it mislabels a disk-permission failure as withheld remote
-    # credentials and shows the "move the repo inside the registry" hint on an
-    # error that has nothing to do with credentials. SSH's real auth-refusal
-    # wording always carries the method parenthetical (`git@host: Permission
-    # denied (publickey).`, also `(publickey,password)` /
-    # `(publickey,keyboard-interactive)`), which a local errno `Permission
-    # denied` never has — so anchor on `permission denied (publickey` (open
-    # paren, no close, to catch every comma-separated method list).
-    "permission denied (publickey",
     "authentication failed",
     "could not read username",
     "could not read password",
@@ -565,6 +557,23 @@ _GIT_AUTH_FAILURE_MARKERS = (
     "fatal: authentication",
     "terminal prompts disabled",
     "invalid username or password",
+)
+
+# SSH credential refusal ONLY. The bare token "permission denied" also appears
+# in a LOCAL filesystem error — an unwritable clone destination emits
+# `fatal: could not create work tree dir '…': Permission denied` — so matching
+# it would mislabel a disk-permission failure as withheld remote credentials
+# and show the "move the repo inside the registry" hint on an error that has
+# nothing to do with credentials. SSH's auth-refusal wording always carries a
+# parenthesized, comma-separated list of the server's auth methods, in the
+# server's own order: `git@host: Permission denied (publickey).`,
+# `(publickey,password)`, `(publickey,keyboard-interactive)` and
+# `(keyboard-interactive,publickey)` all occur. A local errno `Permission
+# denied` never has that list, so the pattern requires one: method names that
+# start with a letter and contain no spaces, comma-separated, closed by `)`.
+# Matched against lowercased text.
+_SSH_AUTH_REFUSAL_RE = re.compile(
+    r"permission denied \([a-z][a-z0-9@._+-]*(?:,[a-z][a-z0-9@._+-]*)*\)"
 )
 
 
@@ -621,10 +630,12 @@ _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
 def _git_output_is_auth_shaped(text: str) -> bool:
     """Whether *text* matches a known auth/permission failure class.
 
-    Strict allowlist — see :data:`_GIT_AUTH_FAILURE_MARKERS`. Never echoes
-    *text*; returns only a boolean.
+    Strict allowlist — see :data:`_GIT_AUTH_FAILURE_MARKERS` and
+    :data:`_SSH_AUTH_REFUSAL_RE`. Never echoes *text*; returns only a boolean.
     """
     low = text.lower()
+    if _SSH_AUTH_REFUSAL_RE.search(low):
+        return True
     return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
 
 
