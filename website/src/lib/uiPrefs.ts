@@ -391,7 +391,8 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // a JSON PanelToggleOverrides holding overrides only
   // (lib/panelToggleShortcuts.ts). The push-to-talk key is a JSON PttConfig
   // (lib/pushToTalk.ts). Its header states what a client inherits from another
-  // machine's binding.
+  // machine's binding. The app editor bindings are a JSON EditorBindingOverrides
+  // holding overrides only (apps/editorBindingOverrides.ts).
   //
   // NOT here: 'mc-mic-device-id' (hooks/mic.ts). The browser issues a
   // microphone id for the devices on that machine, so a restored one names no
@@ -402,6 +403,7 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-mac-ctrl-digits',
   'mc-quicksearch-shortcut',
   'mc-panel-toggle-shortcuts',
+  'mc-editor-binding-overrides',
   'mc-ptt-config',
   // Cloud launch defaults.
   'mc-cloud-profile',

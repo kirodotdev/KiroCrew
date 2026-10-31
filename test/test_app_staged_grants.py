@@ -102,7 +102,11 @@ def _widen(tmp_path, sub="v2", version="2.0.0"):
 
 def test_install_stores_the_declared_set_as_approved(tmp_path, app_home):
     _installed_v1(tmp_path)
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API,)
 
 
@@ -118,7 +122,7 @@ def test_update_adding_api_and_event_entries_stays_enabled_on_old_grants(tmp_pat
     info = get_app(APP)
     assert info["enabled"] is True
     assert info["version"] == "2.0.0"
-    assert info["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert info["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"], "editor": []}
     assert _allowlist() == (OLD_API,)
     assert _events() == (True, ws_event_scope.build_allowed_event_set(["slots:own"]))
     assert approved_manifest_permissions(info)["events"] == ["slots:own"]
@@ -135,7 +139,11 @@ def test_grants_consent_approves_the_held_back_entries(tmp_path, app_home):
 
     result = enable_app(APP, grants_consent={"api": [NEW_API], "events": []})
     assert result.ok
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API, NEW_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API, NEW_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API, NEW_API)
 
 
@@ -162,7 +170,11 @@ def test_a_stale_pre_set_record_does_not_write_the_approved_set_away(tmp_path, a
 
     manager_mod._write_installed(APP, stale)
 
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API,)
 
 
@@ -194,7 +206,7 @@ def test_a_stale_save_cannot_restore_an_entry_a_re_registration_dropped(app_home
     manager_mod._write_installed(name, stale)
 
     assert _allowed() == (a,)
-    assert get_app(name)["approvedGrants"] == {"api": [a], "events": []}
+    assert get_app(name)["approvedGrants"] == {"api": [a], "events": [], "editor": []}
 
 
 def test_an_app_source_cannot_ship_its_own_approved_set(tmp_path, app_home):
@@ -205,14 +217,14 @@ def test_an_app_source_cannot_ship_its_own_approved_set(tmp_path, app_home):
         json.dumps({"api": [OLD_API, NEW_API], "events": []}), encoding="utf-8"
     )
     assert install_app(v1).ok
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": []}
+    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": [], "editor": []}
 
     v2 = _source(tmp_path, "v2", "2.0.0", api=[OLD_API, NEW_API])
     (v2 / manager_mod.APPROVED_GRANTS_FILENAME).write_text(
         json.dumps({"api": [OLD_API, NEW_API], "events": []}), encoding="utf-8"
     )
     assert update_app(v2).ok
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": []}
+    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": [], "editor": []}
     assert _allowlist() == (OLD_API,)
 
 
@@ -226,7 +238,11 @@ def test_pre_field_record_approves_what_its_manifest_declares(tmp_path, app_home
     # Its first widening update holds back only what the update adds.
     result = _widen(tmp_path)
     assert "requests new permissions" in result.message
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API,)
 
 
@@ -298,7 +314,11 @@ def test_failed_widening_update_restores_the_old_record(tmp_path, app_home, monk
 
     monkeypatch.setattr(manager_mod, "_copy_app_tree", _fail)
     assert not _widen(tmp_path).ok
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API,)
 
 
@@ -307,7 +327,7 @@ def test_update_within_the_approved_set_holds_nothing_back(tmp_path, app_home):
     result = update_app(_source(tmp_path, "v2", "2.0.0", api=[]))
     assert result.ok
     assert "requests new permissions" not in result.message
-    assert get_app(APP)["approvedGrants"] == {"api": [], "events": []}
+    assert get_app(APP)["approvedGrants"] == {"api": [], "events": [], "editor": []}
 
 
 def test_a_dropped_entry_must_be_approved_again(tmp_path, app_home):
@@ -330,7 +350,7 @@ def test_unreadable_old_manifest_on_a_pre_field_record_fails_closed(tmp_path, ap
 
     assert update_app(_source(tmp_path, "v2", "2.0.0", api=[OLD_API])).ok
 
-    assert get_app(APP)["approvedGrants"] == {"api": [], "events": []}
+    assert get_app(APP)["approvedGrants"] == {"api": [], "events": [], "editor": []}
     assert _allowlist() == ()
 
 
@@ -365,7 +385,7 @@ def test_self_registration_adding_events_is_held_back(app_home):
         return {"name": name, "version": "1.0.0", "permissions": {"events": events}}
 
     assert register_external_app(name, "1.0.0", "Keypad", manifest_data=_manifest(["log"])).ok
-    assert get_app(name)["approvedGrants"] == {"api": [], "events": ["log"]}
+    assert get_app(name)["approvedGrants"] == {"api": [], "events": ["log"], "editor": []}
     result = register_external_app(
         name, "1.1.0", "Keypad", manifest_data=_manifest(["log", "slots:all"])
     )
@@ -373,13 +393,17 @@ def test_self_registration_adding_events_is_held_back(app_home):
     assert result.ok, result.error
     info = get_app(name)
     assert info["enabled"] is True
-    assert info["approvedGrants"] == {"api": [], "events": ["log"]}
+    assert info["approvedGrants"] == {"api": [], "events": ["log"], "editor": []}
     assert ws_event_scope._read_declared_events(name) == (
         True,
         ws_event_scope.build_allowed_event_set(["log"]),
     )
     assert enable_app(name, grants_consent={"api": [], "events": ["slots:all"]}).ok
-    assert get_app(name)["approvedGrants"] == {"api": [], "events": ["log", "slots:all"]}
+    assert get_app(name)["approvedGrants"] == {
+        "api": [],
+        "events": ["log", "slots:all"],
+        "editor": [],
+    }
 
 
 def test_detail_read_does_not_write_back_over_an_approval(tmp_path, app_home, monkeypatch):
@@ -491,12 +515,16 @@ def test_a_lost_file_shows_nothing_approved_and_can_be_approved_again(tmp_path, 
     _installed_v1(tmp_path)
     _grants_path().unlink()
 
-    assert get_app(APP)["approvedGrants"] == {"api": [], "events": []}
+    assert get_app(APP)["approvedGrants"] == {"api": [], "events": [], "editor": []}
     assert _allowlist() == ()
 
     result = enable_app(APP, grants_consent={"api": [OLD_API], "events": ["slots:own"]})
     assert result.ok
-    assert get_app(APP)["approvedGrants"] == {"api": [OLD_API], "events": ["slots:own"]}
+    assert get_app(APP)["approvedGrants"] == {
+        "api": [OLD_API],
+        "events": ["slots:own"],
+        "editor": [],
+    }
     assert _allowlist() == (OLD_API,)
 
 

@@ -780,6 +780,19 @@
         "configuration_1": "Activa la app oculta con kirocrew app enable channels, crea un canal desde una plantilla o con Custom, asigna agentes y modos de escucha y usa @menciones para transferir el trabajo."
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "Inteligencia de código",
+        "description": "Ir a la definición, buscar referencias, información al pasar el cursor y el esquema del archivo en el editor de código del panel lateral, respondidos por servidores de lenguaje que el gateway ejecuta para el proyecto: uno por lenguaje y raíz de proyecto, iniciados desde la pestaña Servidores de lenguaje y detenidos con el gateway. No instala nada por ti: encuentra los servidores ya presentes en la máquina (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) e indica qué comando añadiría uno que falte.",
+        "highlight_1": "F12 va a la definición de un símbolo, Shift+F12 lista sus referencias, Alt+F12 muestra su documentación, Cmd/Ctrl+Shift+O esquematiza el archivo; Cmd/Ctrl+clic es ir a la definición",
+        "highlight_2": "Las respuestas siguen las ediciones sin guardar: el texto del editor se envía solo cuando la copia del servidor está desactualizada, y solo porque esta app tiene el permiso de texto del editor",
+        "highlight_3": "La pestaña Servidores de lenguaje muestra cada servidor que ejecuta el gateway, los inicia o detiene, busca símbolos en todos ellos y esquematiza los archivos del proyecto",
+        "highlight_4": "Fuentes de bibliotecas: una definición Java dentro de un jar se extrae del servidor y se abre como cualquier archivo",
+        "highlight_5": "Ejecuta solo los servidores ya instalados en esta máquina, bajo el envoltorio de sandbox del gateway; no se descarga nada",
+        "use_case_1": "Leer una base de código en el panel lateral como la muestra un IDE: saltar a donde se define un nombre, ver cada lugar donde se usa y leer la documentación de un símbolo sin salir del chat.",
+        "configuration_1": "Desactivada hasta que la actives en esta página. Después abre la pestaña Servidores de lenguaje desde el menú + del panel lateral para iniciar un servidor para el proyecto; los atajos funcionan cuando hay uno en ejecución para el lenguaje del archivo. Cámbialos en Ajustes → Atajos → Atajos del editor."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PR abiertos",
@@ -5798,6 +5811,15 @@
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },
+    "editorBindings": {
+      "failed": "{{app}}: {{action}} falló. {{reason}}",
+      "not_served": "Este gateway no tiene ninguna ruta en {{endpoint}}, así que el backend de la app no está cargado. Reinicia el gateway.",
+      "close": "Cerrar",
+      "filter": "Filtrar",
+      "nothing_here": "No se encontró nada",
+      "save_first": "Este archivo tiene cambios sin guardar. Guárdalo para que {{app}} vea el texto que tú ves.",
+      "waiting": "Esperando a {{app}}…"
+    },
     "warmBriefCard": {
       "asked": "Pediste",
       "done": "Hecho",
@@ -8826,6 +8848,7 @@
       "increase": "Aumentar"
     },
     "shortcutsModal": {
+      "code_editor": "Editor de código",
       "always_works": "siempre funciona",
       "close": "Cerrar",
       "desktop_app": "Aplicación de escritorio",
@@ -11008,6 +11031,9 @@
       "grant_not_approved": "sin aprobar",
       "grants_reconsent_api": "Acceso a la API: permite que la app llame a estas rutas de la API de {{productName}} con su propio token.",
       "grants_reconsent_events": "Eventos de WebSocket: permite que la app reciba o envíe estos eventos del panel en tiempo real.",
+      "editor_access": "Texto del editor",
+      "editor_content_desc": "Cuando uno de sus atajos del editor se activa en un archivo con cambios sin guardar, la app puede recibir el texto tal como lo ves, una vez por atajo, en lugar de solo la ruta del archivo y la posición del cursor.",
+      "grants_reconsent_editor_content": "Texto del editor: permite a la app recibir el texto sin guardar de un archivo cuando uno de sus atajos del editor se activa en él.",
       "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
     },
     "appPage": {
@@ -18312,6 +18338,13 @@
         "redaction_revoke": "Revocar"
       },
       "shortcutsPanel": {
+        "editor_bindings": "Atajos del editor",
+        "editor_bindings_hint": "Atajos que las apps activadas añaden al editor de código del panel lateral. Graba una combinación de teclas o mantén pulsado un modificador y haz clic.",
+        "unbound": "Sin asignar",
+        "reset_shortcut": "Restablecer",
+        "chord_reserved": "{{chord}} está reservado para Guardar y Buscar.",
+        "chord_in_use": "{{label}} ya usa {{chord}}.",
+        "click_cap": "Clic",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Asignar el cambio de pestaña de chat a Ctrl+dígito en lugar de Option+dígito. Option+dígito no cambia de chat mientras un campo de texto tiene el foco.",
         "custom_hint": "Usa al menos una tecla modificadora.",
         "enable_shortcuts": "Activar atajos",

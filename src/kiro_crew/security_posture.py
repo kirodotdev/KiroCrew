@@ -307,6 +307,14 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # posture row.
         "apps/builtins/aws_control/backend/routes_parts/common.py",
         "apps/builtins/aws_control/backend/routes_parts/drive.py",
+        # Internal parts behind the single registered
+        # ``apps/builtins/code_intel/backend/routes.py`` boundary, the code-intel
+        # HTTP surface that serves every response. ``client.py`` redacts a language
+        # server's stderr tail for a failed start's message and ``manager.py`` a
+        # detect row's error and the server notices it hands the routes. Neither
+        # reaches the dashboard by any other path, so they add no posture row.
+        "apps/builtins/code_intel/client.py",
+        "apps/builtins/code_intel/manager.py",
         # Beside the registered browser_cli/install.py sink: install_runner.py defines its redactor;
         # the launcher and seams owners apply it to refusal and seam text. No new egress path.
         "browser_cli/install_launcher.py",

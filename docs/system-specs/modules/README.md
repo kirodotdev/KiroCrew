@@ -30,6 +30,7 @@ agent loads only the one it needs.
 | [crew-log-emitter.md](crew-log-emitter.md) | The flag-gated writer that turns the ACP turn lifecycle into an append-only per-session `log.jsonl`: which facts are recorded, from which call site, and which are deliberately not. |
 | [crew-log-projection.md](crew-log-projection.md) | The six session folds (`status`, `usage`, `timeline`, `tools`, `approvals`, `subagents`), their resumable checkpoints, the paged `crew-log` reads with refs resolved, and the `session_projection` push. |
 | [file-search.md](file-search.md) | The `@`-mention file/folder search: index, ranking, `kinds` filter, and the sensitive-path symmetry. |
+| [code-intel.md](code-intel.md) | The builtin `code-intel` app: language servers for the side panel editor, its `editorBindings` shortcuts, the Language servers tab, and the app routes. |
 | [session-storage.md](session-storage.md) | What sessions cost on disk, and the user-initiated trash that reclaims it. |
 | [session-control.md](session-control.md) | One chat session opening, stopping, and reading another. |
 | [config.md](config.md) | The config schema, defaults, loading, and live reload. |

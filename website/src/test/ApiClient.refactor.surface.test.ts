@@ -195,7 +195,7 @@ const API_KEY_ORDER = [
   'researchCampaigns', 'researchCampaign', 'researchCreate', 'researchAction',
   'researchGrillTree', 'researchNudge', 'researchAddQuestion', 'researchToKnowledge',
   'researchKnowledgeStatus', 'researchToArtifact', 'researchReportStatus', 'researchReport',
-  'researchDelete', 'invokeFileMenuItem', 'artifactTeardown', 'publishProviders',
+  'researchDelete', 'invokeFileMenuItem', 'invokeEditorBinding', 'artifactTeardown', 'publishProviders',
   'publishArtifactToCoreProvider', 'publishToProvider', 'deploySites', 'tipsNext', 'tipsStatus',
   'tipsFeedback',
 ]

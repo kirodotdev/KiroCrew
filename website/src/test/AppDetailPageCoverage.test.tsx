@@ -656,9 +656,9 @@ describe('AppDetailPage — uncovered surfaces', () => {
     getApp.mockResolvedValue(installedApp({
       manifest: {
         displayName: 'Ledger Lens',
-        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'], editor: ['content'] },
       },
-      approvedGrants: { api: ['/api/sessions'], events: ['slots:own'] },
+      approvedGrants: { api: ['/api/sessions'], events: ['slots:own'], editor: [] },
     }))
     renderDetail()
     await loaded()
@@ -669,23 +669,27 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(within(notice).getByText('/api/memory')).toBeInTheDocument()
     expect(within(notice).getByText(/WebSocket events: lets the app receive or send/)).toBeInTheDocument()
     expect(within(notice).getByText('log')).toBeInTheDocument()
+    // The editor grant is explained in words: the key alone says nothing about the reader's text.
+    expect(within(notice).getByText(/Editor text: lets the app receive the unsaved text/)).toBeInTheDocument()
     expect(within(notice).queryByText('/api/sessions')).not.toBeInTheDocument()
     expect(notice.textContent).toContain('Ignore this to keep Ledger Lens on the permissions you already approved.')
     // The disable note follows the lists rather than closing the lead sentence.
     expect(notice.textContent!.indexOf('/api/memory')).toBeLessThan(notice.textContent!.indexOf('you can stop Ledger Lens using them by disabling it'))
     // The Permissions card marks the held-back entries, and only those.
-    expect(screen.getAllByText(/not approved/)).toHaveLength(2)
+    expect(screen.getAllByText(/not approved/)).toHaveLength(3)
+    expect(screen.getByText(/may receive the text as you see it/)).toBeInTheDocument()
     getApp.mockResolvedValue(installedApp({
       manifest: {
         displayName: 'Ledger Lens',
-        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'], editor: ['content'] },
       },
-      approvedGrants: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+      approvedGrants: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'], editor: ['content'] },
     }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
-    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, { api: ['/api/memory'], events: ['log'] }))
-    expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, { api: ['/api/memory'], events: ['log'], editor: ['content'] }))
+    expect(await screen.findByText('Approved: /api/memory, log, content. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
+    expect(screen.queryAllByText(/not approved/)).toHaveLength(0)
   })
 
   it('offers no approval on a disabled app, whose enable would switch it on', async () => {

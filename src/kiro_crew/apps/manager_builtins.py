@@ -499,6 +499,41 @@ def _app_declares_backend(app_data: dict[str, Any]) -> bool:
     return resolve_mcp_backend_url(app_data.get("mcpServers")) is not None
 
 
+def _sync_builtin_ui(name: str, dest: Path) -> None:
+    """Copy the ``ui/`` tree a builtin ships into its install directory.
+
+    The static route (``/apps/<name>/ui/<entry>``) serves an app's bundle from
+    ``apps/<name>/ui`` in the data home and refuses anything outside the install
+    directory, so a builtin whose dashboard side is a bundle (a ``panelTabs``
+    body, a ``ui.entry``) has to have its files there, not in the package. Done on
+    every registration so an upgrade's bundle replaces the previous one; the copy
+    is a handful of small files. A ``ui`` that is a link is left alone: that is
+    the documented dev-mode setup, pointing at a developer's source tree.
+    """
+    import shutil
+
+    from kiro_crew.apps.execution import shipped_builtin_app_root
+
+    shipped = shipped_builtin_app_root(name)
+    source = shipped / "ui" if shipped else None
+    if source is None or not source.is_dir():
+        return
+    target = dest / "ui"
+    if is_link_or_junction(target):
+        return
+    staging = dest / ".ui-incoming"
+    try:
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(source, staging, symlinks=False)
+        if target.exists():
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    except OSError as exc:
+        logger.warning("Builtin app %r: could not install its ui bundle: %s", name, exc)
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 @holds_app_record_locks
 def register_builtin_apps() -> int:
     """Register built-in dashboard features as app entries.
@@ -810,6 +845,8 @@ def register_builtin_apps() -> int:
             dest / APP_MANIFEST_FILENAME,
             json.dumps(app_data, indent=2) + "\n",
         )
+
+        _sync_builtin_ui(name, dest)
 
         # Built-in apps with a backend need an app secret so the gateway
         # proxy can authenticate requests to them.  Generate once; preserve

@@ -9,6 +9,7 @@ import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL, TERMINAL_PANEL_TOGGLE_I
 import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { EditorBindingsConfig } from './EditorBindingsConfig'
 
 import { i18nT } from '../../i18n/t'
 /**
@@ -184,6 +185,7 @@ export function ShortcutsPanel() {
       <SettingsCard index={SHORTCUT_GROUPS.length + 2}>
         <PanelToggleConfig />
       </SettingsCard>
+      <EditorBindingsConfig index={SHORTCUT_GROUPS.length + 3} />
       {globalHotkey && (
         <div>
           <SettingsSection title={i18nT('components.shortcutsModal.desktop_app')} />

@@ -3844,6 +3844,7 @@
       "trace_load_failed": "Couldn’t load this run’s trace."
     },
     "shortcutsModal": {
+      "code_editor": "Code editor",
       "browser_reserved_hint": "In a browser tab the browser takes these shortcuts before the page sees them — the alternatives work everywhere; the desktop app honours both.",
       "desktop_app_only": "Desktop app only",
       "panel_toggles": "Panel toggles",
@@ -4801,6 +4802,9 @@
       "grant_not_approved": "not approved",
       "grants_reconsent_api": "API access: lets the app call these {{productName}} API paths with its own token.",
       "grants_reconsent_events": "WebSocket events: lets the app receive or send these real-time dashboard events.",
+      "editor_access": "Editor text",
+      "editor_content_desc": "When one of its editor shortcuts fires on a file with unsaved changes, the app may receive the text as you see it, once per shortcut, instead of only the file's path and your cursor position.",
+      "grants_reconsent_editor_content": "Editor text: lets the app receive the unsaved text of a file when one of its editor shortcuts fires on it.",
       "grants_approved": "Approved: {{entries}}. The app can use them now."
     },
     "appsPage": {
@@ -9015,6 +9019,13 @@
         "open_developer_console": "Open Feishu developer console"
       },
       "shortcutsPanel": {
+        "editor_bindings": "Editor shortcuts",
+        "editor_bindings_hint": "Shortcuts enabled apps add to the side panel's code editor. Record a key chord, or hold a modifier and click.",
+        "unbound": "Not set",
+        "reset_shortcut": "Reset",
+        "chord_reserved": "{{chord}} is kept for Save and Search.",
+        "chord_in_use": "{{chord}} is already used by {{label}}.",
+        "click_cap": "Click",
         "preset_double_shift": "Double Shift",
         "preset_mod_k": "⌘K / Ctrl+K",
         "preset_custom": "Custom",

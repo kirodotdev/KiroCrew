@@ -42,13 +42,17 @@ const sdk = vi.hoisted(() => ({
   throwNext: false,
 }))
 
-vi.mock('../app-sdk', () => ({
-  AppApiProvider: (props: Record<string, unknown>) => {
-    sdk.props = props
-    if (sdk.throwNext) throw new Error('the app blew up during render')
-    return <div data-testid="sdk-provider">{props.children as ReactNode}</div>
-  },
-}))
+vi.mock('../app-sdk', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../app-sdk')>()
+  return {
+    SidePanelHostContext: real.SidePanelHostContext,
+    AppApiProvider: (props: Record<string, unknown>) => {
+      sdk.props = props
+      if (sdk.throwNext) throw new Error('the app blew up during render')
+      return <div data-testid="sdk-provider">{props.children as ReactNode}</div>
+    },
+  }
+})
 
 import AppHost from '../components/AppHost'
 

@@ -3,12 +3,15 @@
  * editing surface for every code-editing view. Lives beside `PierreImpl` in
  * the same lazy chunk; reach it through `../pierre` only.
  */
-import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
 import { useIsDark } from '../hooks/useIsDark'
 import ErrorNotice from '../components/ErrorNotice'
+import { EditorBindingsContext } from '../apps/editorBindingsContext'
+import { triggerOfEvent } from '../apps/editorBindingTriggers'
+import { isMac } from '../utils/platform'
 import { i18nT } from '../i18n/t'
 import {
   PIERRE_EDIT_CARET_ALIGN_CSS,
@@ -84,6 +87,9 @@ function dominantLineEnding(text: string): '\n' | '\r\n' | '\r' {
   if (cr > lf && cr > crlf) return '\r'
   return '\n'
 }
+
+/** A primary-modifier press that moves further than this before release is a drag, not a click. */
+const CLICK_DRAG_PX = 4
 
 function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undefined): void {
   if (markers == null) return
@@ -294,6 +300,56 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     }
   }, [pierreActive, poolState.generation])
 
+  // Bindings installed apps contributed for this file (see EditorBindingsContext).
+  // The host's own chord (save) runs first; an app's fires for an event it left.
+  const appBindings = useContext(EditorBindingsContext)
+  const appBindingsRef = useRef(appBindings)
+  appBindingsRef.current = appBindings
+  /** Selections before a modifier click: Pierre turns that click into an extra
+   *  caret, and the caret that is new afterwards is where the user clicked. */
+  const clickSelectionsRef = useRef<{ line: number; character: number }[] | null>(null)
+  /** Where the modifier click went down: a drag from there is a selection, not a click. */
+  const clickDownRef = useRef<{ x: number; y: number } | null>(null)
+  /** The app trigger the armed click belongs to. */
+  const clickOwnerRef = useRef<string>('')
+  const fireAppBinding = (trigger: string, at?: { line: number; character: number }): boolean => {
+    const dispatcher = appBindingsRef.current
+    const pos = at ?? editorRef.current?.getState()?.selections?.[0]?.end
+    if (!dispatcher || !pos) return false
+    return dispatcher.fire(trigger, { line: pos.line, character: pos.character })
+  }
+  /** Arm a modifier click when an app bound its trigger for this file; else nobody owns it. */
+  const armModifierClick = (e: { button: number; clientX: number; clientY: number; shiftKey: boolean; altKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
+    const trigger = triggerOfEvent({ ...e, key: undefined }, isMac)
+    const owner = trigger && appBindingsRef.current?.bound(trigger) ? trigger : null
+    clickOwnerRef.current = owner ?? ''
+    clickSelectionsRef.current = owner ? (editorRef.current?.getState()?.selections ?? []).map(sel => sel.end) : null
+    clickDownRef.current = owner ? { x: e.clientX, y: e.clientY } : null
+  }
+  const finishModifierClick = (up: { clientX: number; clientY: number }) => {
+    const before = clickSelectionsRef.current
+    const down = clickDownRef.current
+    const owner = clickOwnerRef.current
+    clickSelectionsRef.current = null
+    clickDownRef.current = null
+    if (before === null) return
+    // A modifier+drag adds a selection range; only a click goes somewhere.
+    if (down && Math.hypot(up.clientX - down.x, up.clientY - down.y) > CLICK_DRAG_PX) return
+    // Pierre places the caret in its own pointer handlers; read it next frame.
+    requestAnimationFrame(() => {
+      const editor = editorRef.current
+      const selections = editor?.getState()?.selections ?? []
+      const isOld = (p: { line: number; character: number }) => before.some(b => b.line === p.line && b.character === p.character)
+      const added = selections.find(sel => !isOld(sel.end))
+      // The new selection is a range: the user selected text, not a symbol.
+      if (added && (added.start.line !== added.end.line || added.start.character !== added.end.character)) return
+      const clicked = added?.end ?? selections[selections.length - 1]?.end
+      if (!editor || !clicked) return
+      editor.setSelections([{ start: clicked, end: clicked, direction: 'none' }])
+      if (owner) fireAppBinding(owner, clicked)
+    })
+  }
+
   const reportCursor = () => {
     const sel = editorRef.current?.getState()?.selections?.[0]
     if (sel) onCursorRef.current?.(sel.end.line + 1, sel.end.character + 1)
@@ -397,10 +453,18 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
         if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
           e.preventDefault()
           onSaveRef.current?.()
+          return
+        }
+        // The host's own chord above is the only one it keeps: an app may have bound this one.
+        const trigger = appBindingsRef.current ? triggerOfEvent(e, isMac) : null
+        if (trigger && fireAppBinding(trigger)) {
+          e.preventDefault()
+          e.stopPropagation()
         }
       }}
+      onPointerDownCapture={armModifierClick}
       onKeyUp={reportCursor}
-      onMouseUp={reportCursor}
+      onMouseUp={e => { reportCursor(); finishModifierClick(e) }}
     >
       {activePool !== undefined ? (
         <PierreShell pool={activePool} generation={poolState.generation}>

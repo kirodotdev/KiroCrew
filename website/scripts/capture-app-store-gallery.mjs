@@ -35,11 +35,18 @@ const SEEDED_CAPTURES = {
   mochi: fileURLToPath(new URL('../public/app-assets/mochi/shot-1-gallery.png', import.meta.url)),
 }
 
+// Apps whose surface needs a scene the generic route visit cannot reach. Each
+// has its own capture script, which writes the same screenshot-main.png.
+const CAPTURED_BY_OWN_SCRIPT = {
+  'code-intel': 'scripts/capture-code-intel-panel.mjs',
+}
+
 const APPS = [
   ['agent-worlds', 'agent_worlds', 'worlds', '/worlds'],
   ['auto-improvement', 'auto_improvement', 'auto-improvement', '/auto-improvement'],
   ['auto-research', 'auto_research', 'auto-research', '/auto-research'],
   ['channels', 'channels', 'channels', '/channels'],
+  ['code-intel', 'code_intel', 'code-intel', '/chat'],
   ['code-review-sage', 'code_review_sage', 'code-review-sage', '/code-review-sage'],
   ['command-bar', 'command_bar', 'command-bar', '/chat'],
   ['crew-companion', 'crew_companion', 'crew-companion', '/crew-companion'],
@@ -196,6 +203,10 @@ async function main() {
     const outputDir = join(OUTPUT_ROOT, assetDir)
     mkdirSync(outputDir, { recursive: true })
     const output = join(outputDir, screenshotName)
+    if (CAPTURED_BY_OWN_SCRIPT[name]) {
+      console.log(`skipped ${name}: captured by ${CAPTURED_BY_OWN_SCRIPT[name]}`)
+      continue
+    }
     const seeded = SEEDED_CAPTURES[name]
     if (seeded && existsSync(seeded)) {
       if (seeded !== output) copyFileSync(seeded, output)

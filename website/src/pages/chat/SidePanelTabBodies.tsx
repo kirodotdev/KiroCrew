@@ -9,7 +9,8 @@
  * at panel level. `SidePanel.tsx` decides which tabs mount and which one shows,
  * and renders the category views itself; this module never imports it.
  */
-import { useState, useRef, useEffect, Suspense, lazy } from 'react'
+import { useState, useRef, useEffect, useMemo, Suspense, lazy } from 'react'
+import type { SidePanelHost } from '../../app-sdk'
 import { Hash, Pen, Columns2 } from 'lucide-react'
 import DiffPanel from '../../components/DiffPanel'
 import DetailPanel from '../../components/DetailPanel'
@@ -51,17 +52,29 @@ const DashboardPreviewPanel = lazy(() => import('./DashboardPreviewPanel'))
  *  same in-process host `ui.pages` use, so no app code crosses the boundary and
  *  no iframe is involved. Renders nothing while the app is absent (disabled /
  *  uninstalled); `active` is forwarded so a hidden body can pause work. */
-function AppPanelTabBody({ kind, active, slot }: { kind: string; active: boolean; slot: string }) {
+function AppPanelTabBody({ kind, active, slot, projectDir, onFileOpen }: {
+  kind: string
+  active: boolean
+  slot: string
+  projectDir?: string
+  onFileOpen?: (path: string, opts?: { line?: number }) => void
+}) {
   const descriptors = usePanelTabDescriptors()
   // The shared, guarded `['apps']` observer rather than a second inline `useQuery`:
   // see `useInstalledApps` for why a hand-rolled copy breaks an unrelated consumer.
   const { apps } = useInstalledApps()
   const d = panelTabDescriptor(kind, descriptors)
   const app = d ? apps.find(a => a.name === d.appName) : undefined
+  // What the bundle reads as `useSidePanelHost()`. Memoised on its inputs so the
+  // context value does not change on every render of the tab strip.
+  const sidePanel = useMemo<SidePanelHost | undefined>(
+    () => onFileOpen ? { projectDir, openFile: (path, opts) => onFileOpen(path, { line: opts?.line }) } : undefined,
+    [projectDir, onFileOpen],
+  )
   if (!d || !app) return null
   // The OWNING slot, not the active one: with cross-slot hosting this body may belong
   // to another chat, and the identity its requests carry has to be that chat's.
-  return <AppHost app={app} entry={d.entry} active={active} sessionKey={`dashboard:${slot}`} />
+  return <AppHost app={app} entry={d.entry} active={active} sessionKey={`dashboard:${slot}`} sidePanel={sidePanel} />
 }
 
 /**
@@ -186,6 +199,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       revealLine={tab.revealLine}
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
+      onFileOpen={onFileOpen}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (

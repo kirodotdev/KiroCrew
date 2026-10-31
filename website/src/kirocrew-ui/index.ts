@@ -37,4 +37,8 @@ export { default as MarkdownRenderer } from '../components/MarkdownRenderer'
 export { default as Clickable } from '../components/Clickable'
 export { default as Modal } from '../components/Modal'
 export { default as ErrorNotice } from '../components/ErrorNotice'
+// The host's own select: a native <select> is refused by the restyle rules, so an
+// app with a picker needs this one.
+export { default as SimpleSelect } from '../components/SimpleSelect'
+export type { SimpleSelectProps } from '../components/SimpleSelect'
 export { SettingsSection, SettingsCard, SettingsInput, SettingsToggle, SettingsSelect } from '../components/settings'

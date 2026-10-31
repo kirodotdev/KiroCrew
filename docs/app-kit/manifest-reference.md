@@ -593,6 +593,111 @@ a signed app the rows are covered by the signature, because `endpoint` is where
 core sends the reader's chosen path. A stock build with no app declaring these
 renders nothing.
 
+### `contributes.editorBindings` — Key Chords and Modifier-Clicks in the Code Editor
+
+Declares key chords and modifier-clicks an app binds in the chat side panel's code
+editor. Like `contributes.fileMenuItems`, it is **declarative and host-dispatched**:
+core owns the listener and the caret, matches the event against the declared
+trigger, and POSTs to the app's own `endpoint` when it fires. It never imports app
+code and holds no live callback, so an app installed at runtime can bind a chord.
+
+```json
+{
+  "contributes": {
+    "editorBindings": [
+      {
+        "id": "goto-definition",
+        "label": "Go to definition",
+        "trigger": { "key": "F12" },
+        "endpoint": "/api/apps/code-nav/definition"
+      },
+      {
+        "id": "run-cell",
+        "label": "Run this cell",
+        "trigger": { "click": true, "modifiers": ["alt"] },
+        "endpoint": "/api/apps/code-nav/run",
+        "when": { "extensions": ["ipynb", "md"] }
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | string | Stable, app-owned id (lowercase kebab slug), unique within the app |
+| `label` | string | What the binding does, max 120 characters (an app-owned literal) |
+| `trigger.key` | string | `F1`…`F12`, a letter or a digit. A letter or digit needs at least one modifier: a bare one is typing |
+| `trigger.click` | boolean | `true` for a click trigger (left button). Needs at least one modifier: a bare click places the caret. Exactly one of `key` and `click` |
+| `trigger.modifiers` | string[] | Any of `primary` (Cmd on macOS, Ctrl elsewhere, never both), `shift`, `alt`. Every named modifier must be down and every other one up |
+| `endpoint` | string | App route core POSTs to; same namespace rule and same redirect refusal as `fileMenuItems` |
+| `when.extensions` | string[] | Fire only in files with these extensions (lowercase, no dot; empty = any). `when.kinds` may only name `file` |
+
+At most **12** bindings per app, and one binding per chord within an app. Modifiers
+are sorted alphabetically in the chord's canonical spelling (`alt+primary+g`,
+`shift+f12`, `click:alt`), which is the `trigger` value the POST carries.
+
+**The host's own bindings run first.** `primary+s` (save) and `primary+k` (quick
+search) are refused at install; the save chord is handled before any app is asked.
+So is a chord one of the dashboard's keyboard shortcuts uses, such as `alt+k` (the
+shortcuts reference), `primary+n` (new chat) or the `alt+shift` cycling chords: the
+editor sees a key first, so a binding on one would take that shortcut away while
+the editor has focus. Install refuses the chords those shortcuts use on every
+platform; the dashboard also skips, with a console warning, a binding on a chord a
+shortcut uses only on the reader's platform (off macOS, `alt` with a letter or
+digit jumps to a chat) or that the reader has moved a shortcut to. Settings refuses
+recording one, naming the shortcut. Across apps, when two enabled apps bind one
+chord the one first by app name fires and the other is skipped with a console
+warning, so the outcome is the same on every machine. Any other chord is free: the
+dashboard's own code navigation is shipped the same way, as a builtin app's
+bindings, so disabling it frees them.
+
+**The reader can rebind them.** Settings → Shortcuts → Editor shortcuts lists every
+enabled app's bindings under the app's name, by `label`, with the chord in force;
+the keyboard-shortcuts reference (⌘/ or Ctrl+/) shows them under Code editor.
+The reader records a new key chord or modifier-click, clears a binding, or resets
+it to your `trigger`. A recorded trigger meets the same rules as yours, and one
+another binding already holds for the same files is refused. Overrides are the
+reader's, stored with their other shortcut preferences and keyed `<app>:<id>`, so
+keep a binding's `id` stable across versions: renaming it drops the reader's chord
+back to your default. The `trigger` your endpoint receives is the one the reader
+pressed, so route on `item_id`, not on `trigger`.
+
+On activation core shows a loading card over the editor and POSTs
+`{ item_id, path, line, character, dirty, sha256, trigger, lang }`: `line` and
+`character` are 0-based, `character` in UTF-16 units (the editor's own indexing);
+`dirty` says the buffer differs from the file on disk; `sha256` is the lowercase hex
+SHA-256 of the buffer's UTF-8 bytes, so an app that reads the file can tell whether
+its copy is the text the reader sees. `lang` is the dashboard's resolved UI language
+(`en`, `de`, `zh-CN`, ...): a backend that writes the answer's words writes them in
+it, from its own catalogs. Validate it before use; in a Python backend
+`kiro_crew.context.normalize_ui_language_tag` returns `""` for anything the
+dashboard does not ship. A successful JSON response may carry any of:
+
+| Field | Purpose |
+|-------|---------|
+| `message`, `url` | A host toast, like a file-menu row's |
+| `open` | One `{ path, line, character?, label?, detail? }` (1-based line) is followed at once: a jump inside the same file, or opening the other file at that line. A **list** is offered in a searchable picker over the editor, each row labelled `label` (default `file:line`) with `detail` beside it; arrow keys move, Enter opens the pick, Escape closes |
+| `markdown` | Shown in that same card (a hover's text, a diagnostic) |
+| `title` | The card's heading; defaults to the binding's `label` |
+| `stale` | `true` means the hash did not match the app's copy. For an app granted `permissions.editor: ["content"]` core re-posts **once** with `text`, the buffer itself; otherwise it tells the reader to save the file first |
+
+An empty object does nothing. The card is the host's: an app supplies rows or
+markdown, never a component.
+
+**The file's PATH, the caret and a HASH of the buffer are sent; the text only on
+the one retry an app granted `permissions.editor: ["content"]` asked for**, for the
+reason `fileMenuItems` gives: a binding needs no permission to exist, so shipping the
+text with every keystroke would hand it to any app that declares one. The grant is a
+permission like `api`: the app page shows it in words, and a version that newly asks
+for it runs without it until the owner approves. Core never saves on an app's behalf.
+A keystroke in a read-only view, or in a panel that cannot open another file, reaches
+no app.
+
+A signed app's bindings are covered by the signature, because `endpoint` is where
+a chord the reader pressed is sent. A stock build with no app declaring these binds
+nothing.
+
 ## Store artwork
 
 ### App Icon
@@ -692,6 +797,12 @@ Labels are the app's own literals (the core has no i18n catalog key for a tab it
 does not know), so they render as declared. The tab body is a normal app UI
 bundle: it runs in-process behind the same permission-scoped API provider as an
 app page.
+
+A tab body sits in a chat's side panel, and `useSidePanelHost()` from
+`@kirocrew/app-sdk` is how it reaches it: `{ projectDir?, openFile(path, { line? }) }`.
+`openFile` opens the path as a tab in that panel, at a 1-based line, under the
+host's own reachability rules; `projectDir` is the chat's project when it has one.
+The hook returns `null` on a routed app page, so one bundle can render on both.
 
 `icon` accepts one of the following names. The set is fixed rather than the whole
 Lucide catalog, because resolving an arbitrary name would mean bundling every
@@ -948,6 +1059,7 @@ packages at all.
 |-------|------|-------------|
 | `permissions.api` | string[] | Allowed API path prefixes. `/api/member-records/*` is the one that lets the app put a value on a Dashboard page of ANY crewmate it names by slug; there is no per-crewmate form of the grant ([api-reference](api-reference.md#member-records)) |
 | `permissions.events` | string[] | Allowed WebSocket event types |
+| `permissions.editor` | string[] | What of the side panel's code editor the app may be sent. `content`: when one of its `contributes.editorBindings` answers `stale`, core sends the buffer's unsaved text once. Without it a binding gets the file's path, the caret and a hash. Staged on a widening update like `api` and `events`: held back until the owner approves it on the app page |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |
 | `permissions.cron` | boolean | Can create cron jobs at runtime (`ctx.cron`). Required when `crons` is non-empty |

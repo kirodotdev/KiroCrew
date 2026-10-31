@@ -572,6 +572,13 @@ class Permissions:
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
     exposeToApps: list[str] = field(default_factory=list)  # noqa: N815
+    #: What of the side panel's code editor the app may be sent. The one entry
+    #: today is ``content``: a ``contributes.editorBindings`` answer of
+    #: ``{"stale": true}`` is then followed by the buffer's text, once. Without
+    #: it a binding gets the path, the caret and a hash, and the reader is told
+    #: to save. A grant family like ``api``: staged on a widening update and held
+    #: back until the owner approves it on the app page.
+    editor: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -579,6 +586,8 @@ class Permissions:
             d["api"] = self.api
         if self.events:
             d["events"] = self.events
+        if self.editor:
+            d["editor"] = self.editor
         if self.mcpTools:
             d["mcpTools"] = self.mcpTools
         if self.storage:
@@ -627,6 +636,7 @@ class Permissions:
             jobs=data.get("jobs") is True,
             proposeCrewmate=data.get("proposeCrewmate") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
+            editor=_granted_list(data.get("editor")),
         )
 
 

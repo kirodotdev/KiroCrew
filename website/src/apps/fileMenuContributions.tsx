@@ -187,8 +187,12 @@ function warnAttributionClipped(appName: string, id: unknown, reason: string): v
  * the one in this list and a manifest that reached the dashboard through `extra` never
  * met the install check. The trailing slash on the prefix is what stops a sibling app
  * (`/api/apps/foobar/x`) from passing `foo`'s allowlist.
+ *
+ * Exported for `editorBindingContributions.ts`, whose declarations POST the same way:
+ * one dispatch-time check for every contribution that names an endpoint, so a second
+ * contribution point cannot drift to a looser copy.
  */
-function endpointAllowed(appName: string, endpoint: string): boolean {
+export function endpointAllowed(appName: string, endpoint: string): boolean {
   if (!appName || !endpoint) return false
   // A reserved segment is never an app's own namespace, whatever the app is called:
   // `/api/apps/registry/install` is a shared literal route mounted before the

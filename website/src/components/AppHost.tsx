@@ -14,7 +14,7 @@ import { Suspense, lazy, useMemo, useState, useCallback, useEffect } from 'react
 import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, PowerOff, AlertTriangle, Package, Bot } from 'lucide-react'
-import { AppApiProvider, type AppUpdate } from '../app-sdk'
+import { AppApiProvider, SidePanelHostContext, type AppUpdate, type SidePanelHost } from '../app-sdk'
 import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
@@ -80,6 +80,10 @@ export interface AppHostProps {
   /** The name the route asked for, shown when `app` is absent. The not-found
    *  title is "<name> isn't installed", so it needs the requested name. */
   requestedName?: string
+  /** The side panel a panel-tab body is mounted in, published to the bundle as
+   *  `useSidePanelHost()`: how it opens a file next to itself and learns the
+   *  chat's project directory. Absent on a routed page, where the hook is null. */
+  sidePanel?: SidePanelHost
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +222,7 @@ function AppNoUI({ app }: { app: AppHostProps['app'] }) {
 // AppHost
 // ---------------------------------------------------------------------------
 
-function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: AppHostProps) {
+function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, sidePanel }: AppHostProps) {
   const navigate = useNavigate()
   const [resetKey, setResetKey] = useState(0)
 
@@ -319,20 +323,22 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
         sessionKey={sessionKey}
         slotPush={slotPush}
       >
-        {/* Delayed and shaped: nothing for the first 300 ms, then the layout the
-            manifest declares in `ui.loading` (default "page"). See AppLoadingFallback. */}
-        {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
-            its own bundle (`entry` override) in a narrow panel, so it keeps the
-            default shape rather than borrowing the page's rail or split. */}
-        <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
-          <LazyApp />
-        </Suspense>
+        <SidePanelHostContext.Provider value={sidePanel ?? null}>
+          {/* Delayed and shaped: nothing for the first 300 ms, then the layout the
+              manifest declares in `ui.loading` (default "page"). See AppLoadingFallback. */}
+          {/* `ui.loading` describes the app's routed page. A side-panel tab mounts
+              its own bundle (`entry` override) in a narrow panel, so it keeps the
+              default shape rather than borrowing the page's rail or split. */}
+          <Suspense fallback={<AppLoadingFallback appName={appDisplayName(app)} loading={entryOverride ? undefined : app.manifest?.ui?.loading} />}>
+            <LazyApp />
+          </Suspense>
+        </SidePanelHostContext.Provider>
       </AppApiProvider>
     </AppErrorBoundary>
   )
 }
 
-export default function AppHost({ app, entry, active, sessionKey, requestedName }: AppHostProps) {
+export default function AppHost({ app, entry, active, sessionKey, requestedName, sidePanel }: AppHostProps) {
   // Guard: not installed
   if (!app) return <AppNotFound name={requestedName || 'unknown'} />
   // Guard: disabled
@@ -341,5 +347,5 @@ export default function AppHost({ app, entry, active, sessionKey, requestedName 
   // bundle, so it does not require the app to also declare a routed `ui.entry`.
   if (!entry && !app.manifest?.ui?.entry) return <AppNoUI app={app} />
 
-  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />
+  return <AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} sidePanel={sidePanel} />
 }

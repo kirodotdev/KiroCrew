@@ -18,10 +18,12 @@ import { createTestStore } from './helpers'
 // Heavy bodies are not what this drives. `ActivityViewer` and `AppHost` render
 // distinguishable markers so a test can say WHICH branch took the kind.
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => <div data-testid="activity-viewer" /> }))
+const hostSidePanel: { current?: { projectDir?: string; openFile: (path: string, opts?: { line?: number }) => void } } = {}
 vi.mock('../components/AppHost', () => ({
-  default: ({ entry, active }: { entry?: string; active?: boolean }) => (
-    <div data-testid="app-host" data-entry={entry} data-active={String(active)} />
-  ),
+  default: ({ entry, active, sidePanel }: { entry?: string; active?: boolean; sidePanel?: typeof hostSidePanel.current }) => {
+    hostSidePanel.current = sidePanel
+    return <div data-testid="app-host" data-entry={entry} data-active={String(active)} />
+  },
 }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
@@ -75,6 +77,8 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 import SidePanel from '../pages/chat/SidePanel'
 import { usePanelTabs, __resetPanelTabs } from '../hooks/usePanelTabs'
 
+const onFileOpen = vi.fn()
+
 function Harness({ emptyStrip = false }: { emptyStrip?: boolean } = {}) {
   const real = usePanelTabs('slot-a')
   // The empty-panel launcher only renders while the strip holds no tab, and
@@ -85,11 +89,14 @@ function Harness({ emptyStrip = false }: { emptyStrip?: boolean } = {}) {
   const tabsCtl = emptyStrip
     ? { ...real, syncPinned: (() => {}) as typeof real.syncPinned }
     : real
+
   return (
     <SidePanel
       tabsCtl={tabsCtl}
       slot="slot-a"
       pins={[]}
+      projectDir="/work/proj"
+      onFileOpen={onFileOpen}
       onFileSave={async () => {}}
       onClose={() => {}}
     />
@@ -145,6 +152,11 @@ describe('a contributed side-panel tab', () => {
     expect(host.getAttribute('data-entry')).toBe('panel.mjs')
     expect(host.getAttribute('data-active')).toBe('true')
     expect(screen.queryByTestId('activity-viewer')).toBeNull()
+    // The panel lends the bundle its project and a way to open a file beside itself
+    // (`useSidePanelHost()`), with the 1-based line passed through.
+    expect(hostSidePanel.current?.projectDir).toBe('/work/proj')
+    hostSidePanel.current?.openFile('/work/proj/a.py', { line: 12 })
+    expect(onFileOpen).toHaveBeenCalledWith('/work/proj/a.py', { line: 12 })
   })
 
   it('opens from the empty-panel launcher, which also renders its description', () => {

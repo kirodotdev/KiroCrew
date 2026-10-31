@@ -583,6 +583,11 @@ describe('every api method issues one well-formed /api request', () => {
       { id: 'send', app: 'doc-store', endpoint: '/api/apps/doc-store/send' },
       { surface: 'file-overflow', path: '/tmp/a.txt', kind: 'file' },
     ],
+    // `invokeEditorBinding(binding, ctx)`: the URL is `binding.endpoint`.
+    invokeEditorBinding: [
+      { id: 'definition', endpoint: '/api/apps/code-nav/binding' },
+      { path: '/tmp/a.py', line: 1, character: 0, dirty: false, trigger: 'f12', sha256: '0'.repeat(64) },
+    ],
     // `importSessionFromFile(file)` posts the file's BYTES as the request body,
     // deliberately un-wrapped. The generic `'sw-1'` would arrive as a STRING
     // body, which `call()` then tries to JSON-parse -- a harness artifact,

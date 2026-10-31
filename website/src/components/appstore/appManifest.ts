@@ -139,6 +139,20 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.channels.manifest.use_case_1'],
     configuration: ['apps.channels.manifest.configuration_1'],
   },
+  // Bindings and a side-panel tab only: no `pageLabel`, because this app contributes no page.
+  'code-intel': {
+    displayName: 'apps.codeIntel.manifest.display_name',
+    description: 'apps.codeIntel.manifest.description',
+    highlights: [
+      'apps.codeIntel.manifest.highlight_1',
+      'apps.codeIntel.manifest.highlight_2',
+      'apps.codeIntel.manifest.highlight_3',
+      'apps.codeIntel.manifest.highlight_4',
+      'apps.codeIntel.manifest.highlight_5',
+    ],
+    useCases: ['apps.codeIntel.manifest.use_case_1'],
+    configuration: ['apps.codeIntel.manifest.configuration_1'],
+  },
   'code-review-sage': {
     displayName: 'apps.codeReviewSage.manifest.display_name',
     description: 'apps.codeReviewSage.manifest.description',

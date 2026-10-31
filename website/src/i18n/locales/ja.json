@@ -742,6 +742,19 @@
         "page_label": "チャネル"
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "コードインテリジェンス",
+        "description": "サイドパネルのコードエディターでの定義へ移動、参照の検索、ホバー、ファイルのアウトラインを、ゲートウェイがプロジェクト用に実行する言語サーバーが提供します。言語とプロジェクトルートごとに1つで、「言語サーバー」タブから起動し、ゲートウェイと共に停止します。何もインストールしません。マシンに既にあるサーバー（pyright、typescript-language-server、gopls、rust-analyzer、jdtls、clangd、solargraph）を見つけ、不足しているものを追加するコマンドを示します。",
+        "highlight_1": "F12 でシンボルの定義へ移動、Shift+F12 で参照を一覧、Alt+F12 でドキュメントを表示、Cmd/Ctrl+Shift+O でファイルのアウトライン、Cmd/Ctrl+クリックで定義へ移動",
+        "highlight_2": "回答は未保存の編集に従います。エディターのテキストはサーバーのコピーが古いときだけ送られ、それもこのアプリがエディターテキストの権限を持つからです",
+        "highlight_3": "「言語サーバー」タブはゲートウェイが実行する各サーバーを表示し、起動・停止し、横断してシンボルを検索し、プロジェクトのファイルをアウトライン表示します",
+        "highlight_4": "ライブラリのソース: jar 内の Java の定義はサーバーから書き出され、通常のファイルのように開けます",
+        "highlight_5": "このマシンに既にインストールされたサーバーだけを、ゲートウェイ自身のサンドボックス内で実行します。何もダウンロードしません",
+        "use_case_1": "IDE が見せるのと同じようにサイドパネルでコードベースを読む: 名前が定義された場所へ移動し、使われている場所をすべて確認し、チャットを離れずにシンボルのドキュメントを読みます。",
+        "configuration_1": "このページで有効にするまでオフです。その後、サイドパネルの + メニューから「言語サーバー」タブを開き、プロジェクト用のサーバーを起動してください。ファイルの言語のサーバーが起動するとショートカットが使えます。ショートカットは 設定 → ショートカット → エディターのショートカット で変更できます。"
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "{{count}}個のOpen PR",
@@ -5592,6 +5605,15 @@
     "agentLabel": {
       "builtin_conductor": "コンダクター"
     },
+    "editorBindings": {
+      "failed": "{{app}}: {{action}} に失敗しました。{{reason}}",
+      "not_served": "このゲートウェイには {{endpoint}} のルートがないため、アプリのバックエンドが読み込まれていません。ゲートウェイを再起動してください。",
+      "close": "閉じる",
+      "filter": "絞り込み",
+      "nothing_here": "見つかりませんでした",
+      "save_first": "このファイルには未保存の変更があります。{{app}} に表示中のテキストが見えるよう、保存してください。",
+      "waiting": "{{app}} を待っています…"
+    },
     "warmBriefCard": {
       "asked": "ご依頼",
       "done": "済んだこと",
@@ -8552,6 +8574,7 @@
       "increase": "増加"
     },
     "shortcutsModal": {
+      "code_editor": "コードエディター",
       "always_works": "いつでも機能する",
       "close": "閉じる",
       "desktop_app": "デスクトップアプリ",
@@ -10698,6 +10721,9 @@
       "grant_not_approved": "未承認",
       "grants_reconsent_api": "API アクセス: アプリが自身のトークンでこれらの {{productName}} API パスを呼び出せるようにします。",
       "grants_reconsent_events": "WebSocket イベント: アプリがこれらのダッシュボードのリアルタイムイベントを受信または送信できるようにします。",
+      "editor_access": "エディターのテキスト",
+      "editor_content_desc": "未保存の変更があるファイルでこのアプリのエディターショートカットが実行されたとき、ファイルのパスとカーソル位置だけでなく、表示中のテキストをショートカットごとに一度受け取ることができます。",
+      "grants_reconsent_editor_content": "エディターのテキスト: エディターショートカットが実行されたファイルの未保存テキストをアプリが受け取れるようにします。",
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
     },
     "appPage": {
@@ -17700,6 +17726,13 @@
         "redaction_revoke": "取り消す"
       },
       "shortcutsPanel": {
+        "editor_bindings": "エディターのショートカット",
+        "editor_bindings_hint": "有効なアプリがサイドパネルのコードエディターに追加するショートカットです。キーの組み合わせを記録するか、修飾キーを押したままクリックしてください。",
+        "unbound": "未設定",
+        "reset_shortcut": "リセット",
+        "chord_reserved": "{{chord}} は保存と検索用に予約されています。",
+        "chord_in_use": "{{chord}} は {{label}} で使用中です。",
+        "click_cap": "クリック",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "チャットタブの切り替えを Option+digit ではなく Ctrl+digit にバインドします。テキストフィールドにフォーカスがある間、Option+digit ではチャットは切り替わりません。",
         "custom_hint": "少なくとも1つの修飾キーを使用してください。",
         "enable_shortcuts": "ショートカットを有効にする",

@@ -787,9 +787,16 @@ export default defineConfig({
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      // Builtin app bundles (`src/apps/<app>/`, built by vite.app-bundles.config.ts)
+      // import the SDK by the bare names the host's import map resolves at runtime.
+      // Typecheck and tests run them in this tree, so the same names resolve to the
+      // host's own modules here. Exact matches: the plain '@kirocrew/app-sdk' key
+      // would otherwise also rewrite the '/ui' subpath to a path inside index.ts.
+      { find: /^@kirocrew\/app-sdk\/ui$/, replacement: path.resolve(__dirname, './src/kirocrew-ui/index.ts') },
+      { find: /^@kirocrew\/app-sdk$/, replacement: path.resolve(__dirname, './src/app-sdk/index.ts') },
+    ],
     dedupe: CONTEXT_SINGLETON_DEDUPE,
   },
   define: {

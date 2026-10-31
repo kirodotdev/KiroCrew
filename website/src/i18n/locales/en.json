@@ -438,6 +438,19 @@
         "configuration_1": "Enable the hidden app with kirocrew app enable channels, create a channel from a preset or Custom, assign agents and listen modes, then use @mentions to hand off work."
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "Code Intelligence",
+        "description": "Go-to-definition, find-references, hover and the file outline in the side panel's code editor, answered by language servers the gateway runs for the project: one per language and project root, started from the Language servers tab and stopped with the gateway. Nothing is installed for you: it finds the servers already on the machine (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) and says which command would add a missing one.",
+        "highlight_1": "F12 goes to a symbol's definition, Shift+F12 lists its references, Alt+F12 shows its documentation, Cmd/Ctrl+Shift+O outlines the file; Cmd/Ctrl+click is go-to-definition",
+        "highlight_2": "Answers follow unsaved edits: the editor's text is sent only when the server's copy is behind, and only because this app holds the editor-text permission",
+        "highlight_3": "The Language servers tab shows every server the gateway runs, starts or stops them, searches symbols across them and outlines the project's files",
+        "highlight_4": "Library sources: a Java definition inside a jar is written out from the server and opened like any file",
+        "highlight_5": "Runs only the servers already installed on this machine, under the gateway's own sandbox wrapper; nothing is downloaded",
+        "use_case_1": "Read a codebase in the side panel the way an IDE shows it: jump to where a name is defined, see every place it is used, and read a symbol's documentation without leaving the chat.",
+        "configuration_1": "Off until you enable it on this page. Then open the Language servers tab from the side panel's + menu to start a server for the project; the shortcuts work once one is running for the file's language. Change them in Settings → Shortcuts → Editor shortcuts."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} open PR",
@@ -4183,6 +4196,15 @@
     }
   },
   "components": {
+    "editorBindings": {
+      "failed": "{{app}}: {{action}} failed. {{reason}}",
+      "not_served": "This gateway has no route at {{endpoint}}, so the app's backend is not loaded. Restart the gateway.",
+      "close": "Close",
+      "filter": "Filter",
+      "nothing_here": "Nothing found",
+      "save_first": "This file has unsaved changes. Save it so {{app}} sees the text you see.",
+      "waiting": "Waiting for {{app}}…"
+    },
     "crewWakeSection": {
       "cancel_new_schedule": "Cancel new schedule",
       "could_not_load_this_crew_s_schedules_so_what_wak": "Could not load this agent's schedules, so what wakes it is unknown.",

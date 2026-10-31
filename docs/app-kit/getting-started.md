@@ -300,10 +300,14 @@ Available in `@kirocrew/app-sdk/ui`:
 `Card`, `CardTitle`, `Btn`, `SendBtn`, `Input`, `SearchInput`, `Badge`,
 `SourceBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`,
 `PageHeader`, `Toggle`, `InfoTip`, `SegmentedControl`, `MarkdownRenderer`,
-`Clickable`, `Modal`, `ErrorNotice`, `SettingsSection`, `SettingsCard`,
+`Clickable`, `Modal`, `ErrorNotice`, `SimpleSelect`, `SettingsSection`, `SettingsCard`,
 `SettingsInput`, `SettingsToggle`, `SettingsSelect`
 
 ## Shared interaction and locale helpers
+
+A `contributes.panelTabs` body gets `useSidePanelHost()`: `{ projectDir?, openFile(path, { line? }) }`
+for the chat's side panel it sits in, `null` on a routed page (see the manifest
+reference).
 
 The main SDK exports `useImeGuard` so app-owned inputs reuse the host's IME
 Enter protection. It also exports `activeLocale`, `fmtNumber`, `fmtDate`,

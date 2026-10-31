@@ -30,6 +30,9 @@ import { FileHeaderBreadcrumb, OverflowMenu, FileArtifactActionButton, Knowledge
 import { useFileKnowledgeState, useFileArtifactState, type ReportError } from './useMarkdownPanelFileState'
 import { useCommentHint } from './useCommentHint'
 import { CommentHint, MissingFileBanner, ZeroDiffNotice, DiffViewBlock, CommentOverlayBlock, MarkdownPanelFindBar } from './MarkdownPanelBody'
+import { EditorBindingsContext } from '../apps/editorBindingsContext'
+import { useEditorBindings } from '../apps/useEditorBindings'
+import EditorBindingCard from './editorBindings/EditorBindingCard'
 import { findCoords, findUniqueCoords, resolveSourcePos } from './markdownPanelSourcePos'
 import { FindHighlightCtor, cssHighlights, FIND_HL_SUPPORTED, useMarkdownPanelFind } from './useMarkdownPanelFind'
 import { useMarkdownPanelDisk, useMarkdownPanelDiff } from './useMarkdownPanelDisk'
@@ -156,6 +159,10 @@ interface Props {
    *  header path's right-click menu offers "Show folder in side panel", an
    *  in-app action that works whichever machine the browser is on. */
   onFolderOpen?: (path: string) => void
+  /** Open another file at a line in the host's side panel. When passed, the
+   *  editor dispatches installed apps' `contributes.editorBindings` (a chord or
+   *  modifier-click that may answer with a location in another file). */
+  onFileOpen?: (path: string, opts?: { line?: number }) => void
 }
 
 import { type PierreEditorHandle, type RevealTarget } from '../pierre'
@@ -217,7 +224,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, binary, partial, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, connected = true, onRefresh, reserveWidth, initialDiffMode, readOnly = false, onDiffModeChange, embedded, active = true, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey, onFolderOpen, onFileOpen }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const ime = useImeGuard()
   const qc = useQueryClient()
@@ -870,6 +877,30 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     setDiffMode(false)
   }, [revealLine, revealTargetsSource, readOnly])
 
+  // Bindings installed apps declared for this file (contributes.editorBindings):
+  // only in a live editor the host can navigate from, since a definition in
+  // another file is the common answer.
+  // The binding whose card is up, named in the save-first notice; a ref because the
+  // notice fires from a request that outlives the render that showed the card.
+  const appBindingCardTitle = useRef('')
+  const appBindings = useEditorBindings({
+    filePath,
+    dirty,
+    text: () => content,
+    open: (loc, sameFile) => {
+      appBindings.closeCard()
+      if (sameFile) revealEditor?.jumpToLine(loc.line)
+      else onFileOpen?.(loc.path, { line: loc.line })
+    },
+    onStale: () => reportActionError(i18nT('components.editorBindings.save_first', { app: appBindingCardTitle.current })),
+    onError: reportActionError,
+  })
+  const editorBindings = onFileOpen && !readOnly ? appBindings.dispatcher : null
+  if (appBindings.card) appBindingCardTitle.current = appBindings.card.title
+  const bindingCard = editorBindings && appBindings.card
+    ? <EditorBindingCard view={appBindings.card} onOpen={(loc, sameFile) => { appBindings.closeCard(); if (sameFile) revealEditor?.jumpToLine(loc.line); else onFileOpen?.(loc.path, { line: loc.line }) }} onClose={() => { appBindings.closeCard(); revealEditor?.focus() }} />
+    : null
+
   useLayoutEffect(() => {
     const HL = 'mc-comment'
     const clear = () => { try { cssHighlights?.delete(HL) } catch { /* */ } }
@@ -1385,6 +1416,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       <div ref={splitRowRef} className={`relative flex-1 overflow-hidden -mx-5 -my-4 flex ${isMarkdown && !editing && !diffMode ? 'pl-4 pr-0' : ''}`}>
         {!fullscreen && <div data-mc-mdpanel className="relative flex-1 min-w-0 min-h-0 flex flex-col">
           {findBar}
+          {bindingCard}
           {/* Unsaved-changes banner: slides in from the top of the PREVIEW
               column only (the header keeps its height and the browser rail
               never moves). 40px + the negative right margin over the grip
@@ -1415,9 +1447,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
             )}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><EditorBindingsContext.Provider value={editorBindings}><ContentRenderer flush isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={previewRef} displayContent={displayContent} isMarkdown={isMarkdown} markdownClassName="msg-content text-sm leading-relaxed" editorRef={setRevealEditor} /></EditorBindingsContext.Provider></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={sidePanelScrollRef} />}
         </div>}
@@ -1502,6 +1534,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         {/* Body */}
         <div data-mc-mdpanel className="relative flex-1 overflow-hidden min-h-0">
           {findBar}
+          {bindingCard}
           <div ref={fullscreenBodyRef} className="h-full overflow-auto px-16 py-4">
             {showBinaryCard && <BinaryFileCard filePath={filePath} />}
             {!showBinaryCard && zeroDiff && <ZeroDiffNotice message={zeroDiffText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
@@ -1510,9 +1543,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
             )}
             {!showBinaryCard && diffNoBaselineText && !editing && <ZeroDiffNotice message={diffNoBaselineText} onExitDiff={readOnly ? undefined : toggleDiffMode} />}
             {!showBinaryCard && !zeroDiff && !diffUnavailable && !(diffChecking && diffData == null) && canTextDiff && <DiffViewBlock sideBySide={diffSplit} diffMode={diffViewShown} fileName={fileName} originalContent={originalContent} content={comparedContent} gitPatch={gitPatch} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />}
-            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
+            {!showBinaryCard && !zeroDiff && (!diffUnavailable || editing) && !diffViewShown && <ImageCommentCtx.Provider value={imageCommentHost}><EditorBindingsContext.Provider value={editorBindings}><ContentRenderer isRichType={isRichType} fileType={fileType} filePath={filePath} content={content} editing={editing} lang={lang} lineNums={lineNums} wordWrap={wordWrap} onChange={handleChange} onSave={handleSave}
               diffBase={diffMode && editing ? (originalContent || null) : undefined} diffSplit={diffSplit} diffExpandUnchanged={!collapseUnchanged}
-              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></ImageCommentCtx.Provider>}
+              previewRef={fullscreenPreviewRef} displayContent={displayContent} isMarkdown={isMarkdown} previewStyle={mdPreviewStyle} editorRef={setRevealEditor} /></EditorBindingsContext.Provider></ImageCommentCtx.Provider>}
           </div>
           {isMarkdown && !editing && <MarkdownOutlineRail containerRef={fullscreenBodyRef} />}
         </div>

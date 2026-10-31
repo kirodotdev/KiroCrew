@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-four apps ship inside the Kiro Crew package — Meetings,
+backend process. Twenty-five apps ship inside the Kiro Crew package — Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest — and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -89,6 +89,7 @@ Each line below is drawn from the app's own manifest description.
 | **Files** (`file-explorer`) | Browse and read files on the machine running Kiro Crew, in tabs, with git status and folder search. Read-only by design. |
 | **AWS Control** (`aws-control`) | Your cloud accounts in plain language, plus an S3-backed cloud drive with time-boxed share links. |
 | **Command Bar** (`command-bar`) | Replaces quick-search (`Cmd+K` / `Ctrl+K`) with a launcher: type a command, not a query. |
+| **Code Intelligence** (`code-intel`) | Go to definition, references, hover and the file outline in the side panel's code editor, from language servers already on the machine; the Language servers tab starts and stops them. |
 
 ### Company while you work
 

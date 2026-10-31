@@ -6,6 +6,8 @@ import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../hooks/useGlobalHotkey'
 import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
+import { editorBindingCaps, useEffectiveEditorBindings } from '../apps/useEffectiveEditorBindings'
+import type { ContributedEditorBinding } from '../apps/editorBindingContributions'
 import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
@@ -302,6 +304,26 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
 }
 
 /**
+ * Reference rows for the bindings enabled apps add to the side panel's code
+ * editor, with the chord in force (the reader may have changed it in Settings).
+ */
+export function EditorBindingRows({ bindings, appTitle }: { bindings: readonly ContributedEditorBinding[]; appTitle: (app: string) => string }) {
+  return (
+    <>
+      {bindings.map(binding => (
+        <div key={`${binding.app}:${binding.id}`} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
+          <div className="min-w-0">
+            <div className="text-[13px] text-text">{binding.label}</div>
+            <div className="text-[11px] text-muted">{appTitle(binding.app)}</div>
+          </div>
+          <span className="flex items-center gap-1 shrink-0"><KeyCapSequence caps={editorBindingCaps(binding.trigger)} plus /></span>
+        </div>
+      ))}
+    </>
+  )
+}
+
+/**
  * Desktop-only reference row for the system-wide summon hotkey. Lives outside
  * DEFAULT_SHORTCUTS because it is not a renderer chord at all: the desktop
  * shell's main process registers it OS-wide (electron/global-hotkey.js) and it
@@ -344,6 +366,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
   const { bindings: panelBindings } = usePanelToggleShortcuts()
   const terminalEnabled = useTerminalEnabled()
   const globalHotkey = useGlobalHotkey()
+  const { effective: editorBindings, appTitle } = useEffectiveEditorBindings()
   const [searchQuery, setSearchQuery] = useState('')
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const queryWithoutPlus = normalizedQuery.replace(/\+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -428,10 +451,21 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     )
   }, [globalHotkey, normalizedQuery, queryWithoutPlus])
 
+  const matchingEditorBindings = useMemo(() => {
+    if (!normalizedQuery) return editorBindings
+    const sectionName = i18nT('components.shortcutsModal.code_editor').toLowerCase()
+    if (matchesQuery(sectionName, normalizedQuery, queryWithoutPlus)) return editorBindings
+    return editorBindings.filter(b =>
+      matchesQuery(b.label.toLowerCase(), normalizedQuery, queryWithoutPlus)
+      || matchesQuery(appTitle(b.app).toLowerCase(), normalizedQuery, queryWithoutPlus)
+      || matchesQuery(editorBindingCaps(b.trigger).join(' ').toLowerCase(), normalizedQuery, queryWithoutPlus))
+  }, [appTitle, editorBindings, normalizedQuery, queryWithoutPlus])
+
   const hasAnyResults =
     filteredGroups.length > 0 ||
     showSearchEverywhere ||
     matchingPanelToggleIds.length > 0 ||
+    matchingEditorBindings.length > 0 ||
     showGlobalHotkey
 
   return (
@@ -496,6 +530,14 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
                 <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.panel_toggles')}</div>
                 <div className="grid gap-1">
                   <PanelToggleRows ids={matchingPanelToggleIds} />
+                </div>
+              </div>
+            )}
+            {matchingEditorBindings.length > 0 && (
+              <div className="mb-5 last:mb-0">
+                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.code_editor')}</div>
+                <div className="grid gap-1">
+                  <EditorBindingRows bindings={matchingEditorBindings} appTitle={appTitle} />
                 </div>
               </div>
             )}

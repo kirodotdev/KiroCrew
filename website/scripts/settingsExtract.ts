@@ -140,6 +140,7 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecretsPanel.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
+  'EditorBindingsConfig.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
   // settings were absent from command-palette search. Registered while
   // converting this file for i18n.

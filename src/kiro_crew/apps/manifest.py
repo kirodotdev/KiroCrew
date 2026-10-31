@@ -44,6 +44,7 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
     _MAX_COMMANDS_PER_APP,
+    _MAX_EDITOR_BINDINGS_PER_APP,
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
@@ -54,11 +55,17 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
     ARGUMENT_TOKEN,
+    EDITOR_BINDING_MODIFIERS,
+    EDITOR_PERMISSION_CONTENT,
+    EDITOR_PERMISSION_ENTRIES,
     FILE_MENU_SURFACES,
     MAX_SESSION_CONTROLS_PER_APP,
+    RESERVED_EDITOR_CHORDS,
     CommandArgument,
     CommandContribution,
     Contributes,
+    EditorBindingConfig,
+    EditorBindingTrigger,
     FileMenuItemConfig,
     FileMenuWhen,
     PanelTabConfig,
@@ -562,9 +569,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -695,6 +700,27 @@ class AppManifest:
                     f"or /apps/{self.name}/api/ "
                     "(no traversal, no other app's namespace, no core route)"
                 )
+        # Same check, same reason, for a binding: a chord the reader presses POSTs
+        # with their session to whatever the declaration names.
+        for binding in self.contributes.editorBindings:
+            if binding.endpoint and not app_endpoint_allowed(
+                self.name, binding.endpoint, allow_proxy_namespace=True
+            ):
+                errors.append(
+                    f"contributes.editorBindings[{binding.id or '?'}]: endpoint "
+                    f"{binding.endpoint!r} must route under /api/apps/{self.name}/ "
+                    f"or /apps/{self.name}/api/ "
+                    "(no traversal, no other app's namespace, no core route)"
+                )
+        # A typo must not pass as a grant of nothing: the host would then withhold
+        # the text the app was written to receive, and only on an unsaved file,
+        # far from the manifest line that caused it.
+        for entry in self.permissions.editor:
+            if entry not in EDITOR_PERMISSION_ENTRIES:
+                errors.append(
+                    f"permissions.editor: unknown entry {entry!r} "
+                    f"(allowed: {', '.join(sorted(EDITOR_PERMISSION_ENTRIES))})"
+                )
 
         return errors
 
@@ -734,6 +760,7 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            or self.contributes.editorBindings
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -1183,9 +1210,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges_mcp.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

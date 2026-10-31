@@ -761,6 +761,19 @@
         "configuration_1": "Aktiviere die ausgeblendete App mit kirocrew app enable channels, erstelle einen Kanal aus einer Vorlage oder mit Custom, weise Agenten und Zuhörmodi zu und übergib Arbeit per @-Erwähnung."
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "Code-Intelligenz",
+        "description": "Gehe-zu-Definition, Referenzen finden, Hover und die Dateigliederung im Code-Editor des Seitenbereichs, beantwortet von Language-Servern, die das Gateway für das Projekt ausführt: einer pro Sprache und Projektwurzel, gestartet aus dem Tab „Language-Server“ und mit dem Gateway beendet. Es wird nichts für Sie installiert: es findet die bereits auf dem Rechner vorhandenen Server (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) und nennt den Befehl, der einen fehlenden hinzufügen würde.",
+        "highlight_1": "F12 springt zur Definition eines Symbols, Shift+F12 listet seine Referenzen, Alt+F12 zeigt seine Dokumentation, Cmd/Ctrl+Shift+O gliedert die Datei; Cmd/Ctrl+Klick ist Gehe-zu-Definition",
+        "highlight_2": "Antworten folgen ungespeicherten Änderungen: der Editortext wird nur gesendet, wenn die Kopie des Servers veraltet ist, und nur weil diese App die Editortext-Berechtigung hat",
+        "highlight_3": "Der Tab „Language-Server“ zeigt jeden Server, den das Gateway ausführt, startet oder stoppt ihn, durchsucht Symbole über alle hinweg und gliedert die Dateien des Projekts",
+        "highlight_4": "Bibliotheksquellen: eine Java-Definition in einem Jar wird vom Server ausgeschrieben und wie jede Datei geöffnet",
+        "highlight_5": "Führt nur die auf diesem Rechner bereits installierten Server aus, im Sandbox-Wrapper des Gateways; nichts wird heruntergeladen",
+        "use_case_1": "Eine Codebasis im Seitenbereich so lesen, wie eine IDE sie zeigt: zu der Stelle springen, an der ein Name definiert ist, jede Verwendung sehen und die Dokumentation eines Symbols lesen, ohne den Chat zu verlassen.",
+        "configuration_1": "Aus, bis Sie es auf dieser Seite aktivieren. Öffnen Sie dann den Tab „Language-Server“ über das +-Menü des Seitenbereichs, um einen Server für das Projekt zu starten; die Tastenkürzel funktionieren, sobald einer für die Sprache der Datei läuft. Ändern Sie sie unter Einstellungen → Tastenkürzel → Editor-Tastenkürzel."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_one": "{{count}} offener PR",
@@ -5695,6 +5708,15 @@
     "agentLabel": {
       "builtin_conductor": "Conductor"
     },
+    "editorBindings": {
+      "failed": "{{app}}: {{action}} ist fehlgeschlagen. {{reason}}",
+      "not_served": "Dieses Gateway hat keine Route unter {{endpoint}}, das Backend der App ist also nicht geladen. Starten Sie das Gateway neu.",
+      "close": "Schließen",
+      "filter": "Filtern",
+      "nothing_here": "Nichts gefunden",
+      "save_first": "Diese Datei hat ungespeicherte Änderungen. Speichern Sie sie, damit {{app}} den Text sieht, den Sie sehen.",
+      "waiting": "Warten auf {{app}}…"
+    },
     "warmBriefCard": {
       "asked": "Deine Anfrage",
       "done": "Erledigt",
@@ -8689,6 +8711,7 @@
       "increase": "Vergrößern"
     },
     "shortcutsModal": {
+      "code_editor": "Code-Editor",
       "always_works": "funktioniert immer",
       "close": "Schließen",
       "desktop_app": "Desktop-App",
@@ -10853,6 +10876,9 @@
       "grant_not_approved": "nicht genehmigt",
       "grants_reconsent_api": "API-Zugriff: erlaubt der App, diese {{productName}}-API-Pfade mit ihrem eigenen Token aufzurufen.",
       "grants_reconsent_events": "WebSocket-Ereignisse: erlaubt der App, diese Echtzeit-Ereignisse des Dashboards zu empfangen oder zu senden.",
+      "editor_access": "Editortext",
+      "editor_content_desc": "Wenn eines ihrer Editor-Tastenkürzel in einer Datei mit ungespeicherten Änderungen ausgelöst wird, darf die App den Text so erhalten, wie Sie ihn sehen, einmal pro Tastenkürzel, statt nur den Pfad der Datei und Ihre Cursorposition.",
+      "grants_reconsent_editor_content": "Editortext: erlaubt der App, den ungespeicherten Text einer Datei zu erhalten, wenn eines ihrer Editor-Tastenkürzel darin ausgelöst wird.",
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
     },
     "appPage": {
@@ -18006,6 +18032,13 @@
         "redaction_revoke": "Widerrufen"
       },
       "shortcutsPanel": {
+        "editor_bindings": "Editor-Tastenkürzel",
+        "editor_bindings_hint": "Tastenkürzel, die aktivierte Apps dem Code-Editor im Seitenbereich hinzufügen. Nimm eine Tastenkombination auf oder halte eine Zusatztaste gedrückt und klicke.",
+        "unbound": "Nicht festgelegt",
+        "reset_shortcut": "Zurücksetzen",
+        "chord_reserved": "{{chord}} ist für Speichern und Suchen reserviert.",
+        "chord_in_use": "{{chord}} wird bereits von {{label}} verwendet.",
+        "click_cap": "Klick",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Wechsel zwischen Chat-Tabs an Strg+Zahl statt Option+Zahl binden. Option+Zahl wechselt den Chat nicht, solange ein Textfeld den Fokus hat.",
         "custom_hint": "Mindestens eine Modifikatortaste verwenden.",
         "enable_shortcuts": "Tastenkürzel aktivieren",

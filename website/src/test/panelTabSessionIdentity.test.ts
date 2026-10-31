@@ -65,7 +65,7 @@ describe('AppHost session key plumbing', () => {
     // Three hops, and dropping any one of them fails open silently.
     expect(host).toMatch(/function AppHostInner\(\{[^}]*sessionKey[^}]*\}: AppHostProps\)/)
     expect(host).toMatch(/function AppHost\(\{[^}]*sessionKey[^}]*\}: AppHostProps\)/)
-    expect(host).toContain('<AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} />')
+    expect(host).toContain('<AppHostInner app={app} entry={entry} active={active} sessionKey={sessionKey} sidePanel={sidePanel} />')
     expect(host).toContain('sessionKey={sessionKey}')
   })
 })

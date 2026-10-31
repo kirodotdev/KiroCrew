@@ -780,6 +780,19 @@
         "configuration_1": "Active l'app masquée avec kirocrew app enable channels, crée un canal depuis un modèle ou avec Custom, attribue les agents et leurs modes d'écoute, puis utilise les @mentions pour transmettre le travail."
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "Intelligence du code",
+        "description": "Aller à la définition, rechercher les références, survol et plan du fichier dans l'éditeur de code du panneau latéral, fournis par des serveurs de langage que la passerelle exécute pour le projet : un par langage et racine de projet, démarrés depuis l'onglet Serveurs de langage et arrêtés avec la passerelle. Rien n'est installé pour vous : elle trouve les serveurs déjà présents sur la machine (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) et indique la commande qui en ajouterait un manquant.",
+        "highlight_1": "F12 va à la définition d'un symbole, Maj+F12 liste ses références, Alt+F12 affiche sa documentation, Cmd/Ctrl+Maj+O donne le plan du fichier ; Cmd/Ctrl+clic est aller à la définition",
+        "highlight_2": "Les réponses suivent les modifications non enregistrées : le texte de l'éditeur n'est envoyé que lorsque la copie du serveur est en retard, et seulement parce que cette app détient la permission texte de l'éditeur",
+        "highlight_3": "L'onglet Serveurs de langage affiche chaque serveur que la passerelle exécute, les démarre ou les arrête, recherche des symboles dans tous et donne le plan des fichiers du projet",
+        "highlight_4": "Sources des bibliothèques : une définition Java dans un jar est extraite du serveur et ouverte comme n'importe quel fichier",
+        "highlight_5": "N'exécute que les serveurs déjà installés sur cette machine, dans l'enveloppe sandbox de la passerelle ; rien n'est téléchargé",
+        "use_case_1": "Lire une base de code dans le panneau latéral comme un IDE la montre : aller là où un nom est défini, voir chaque endroit où il est utilisé et lire la documentation d'un symbole sans quitter la conversation.",
+        "configuration_1": "Désactivée tant que vous ne l'activez pas sur cette page. Ouvrez ensuite l'onglet Serveurs de langage depuis le menu + du panneau latéral pour démarrer un serveur pour le projet ; les raccourcis fonctionnent dès qu'un serveur tourne pour le langage du fichier. Modifiez-les dans Paramètres → Raccourcis → Raccourcis de l'éditeur."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PR ouvertes",
@@ -5798,6 +5811,15 @@
     "agentLabel": {
       "builtin_conductor": "Conducteur"
     },
+    "editorBindings": {
+      "failed": "{{app}} : échec de {{action}}. {{reason}}",
+      "not_served": "Ce gateway n'a aucune route à {{endpoint}} : le backend de l'app n'est pas chargé. Redémarrez le gateway.",
+      "close": "Fermer",
+      "filter": "Filtrer",
+      "nothing_here": "Rien trouvé",
+      "save_first": "Ce fichier a des modifications non enregistrées. Enregistrez-le pour que {{app}} voie le texte que vous voyez.",
+      "waiting": "En attente de {{app}}…"
+    },
     "warmBriefCard": {
       "asked": "Ta demande",
       "done": "Déjà fait",
@@ -8826,6 +8848,7 @@
       "increase": "Augmenter"
     },
     "shortcutsModal": {
+      "code_editor": "Éditeur de code",
       "always_works": "fonctionne toujours",
       "close": "Fermer",
       "desktop_app": "Application de bureau",
@@ -11008,6 +11031,9 @@
       "grant_not_approved": "non approuvée",
       "grants_reconsent_api": "Accès à l’API : permet à l’app d’appeler ces chemins de l’API {{productName}} avec son propre jeton.",
       "grants_reconsent_events": "Événements WebSocket : permet à l’app de recevoir ou d’envoyer ces événements du tableau de bord en temps réel.",
+      "editor_access": "Texte de l'éditeur",
+      "editor_content_desc": "Quand l'un de ses raccourcis d'éditeur se déclenche dans un fichier aux modifications non enregistrées, l'app peut recevoir le texte tel que vous le voyez, une fois par raccourci, au lieu du seul chemin du fichier et de la position du curseur.",
+      "grants_reconsent_editor_content": "Texte de l'éditeur : permet à l'app de recevoir le texte non enregistré d'un fichier quand l'un de ses raccourcis d'éditeur s'y déclenche.",
       "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
     },
     "appPage": {
@@ -18312,6 +18338,13 @@
         "redaction_revoke": "Révoquer"
       },
       "shortcutsPanel": {
+        "editor_bindings": "Raccourcis de l'éditeur",
+        "editor_bindings_hint": "Raccourcis que les apps activées ajoutent à l'éditeur de code du panneau latéral. Enregistrez une combinaison de touches, ou maintenez une touche de modification et cliquez.",
+        "unbound": "Non défini",
+        "reset_shortcut": "Réinitialiser",
+        "chord_reserved": "{{chord}} est réservé à Enregistrer et Rechercher.",
+        "chord_in_use": "{{chord}} est déjà utilisé par {{label}}.",
+        "click_cap": "Clic",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Associer le changement d'onglet de chat à Ctrl+chiffre au lieu de Option+chiffre. Option+chiffre ne change pas de chat tant qu'un champ de texte a le focus.",
         "custom_hint": "Utilisez au moins une touche de modification.",
         "enable_shortcuts": "Activer les raccourcis",

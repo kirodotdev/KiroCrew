@@ -479,8 +479,10 @@ def _write_installed(
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
-# with its own disable-until-consent path below; these two are entry lists.
-STAGED_GRANT_FAMILIES = ("api", "events")
+# with its own disable-until-consent path below; these are entry lists. ``editor``
+# (``content``) decides whether an editor binding may be sent the reader's
+# unsaved text, so an update that adds it waits for the owner like a new route.
+STAGED_GRANT_FAMILIES = ("api", "events", "editor")
 
 
 def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:

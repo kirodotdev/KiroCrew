@@ -742,6 +742,19 @@
         "page_label": "채널"
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "코드 인텔리전스",
+        "description": "사이드 패널 코드 편집기에서 정의로 이동, 참조 찾기, 호버, 파일 개요를 게이트웨이가 프로젝트용으로 실행하는 언어 서버가 제공합니다. 언어와 프로젝트 루트마다 하나씩, 언어 서버 탭에서 시작하고 게이트웨이와 함께 중지됩니다. 아무것도 설치하지 않습니다. 머신에 이미 있는 서버(pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph)를 찾고, 없는 서버를 추가할 명령을 알려 줍니다.",
+        "highlight_1": "F12는 심볼 정의로 이동, Shift+F12는 참조 목록, Alt+F12는 문서 표시, Cmd/Ctrl+Shift+O는 파일 개요, Cmd/Ctrl+클릭은 정의로 이동",
+        "highlight_2": "답은 저장되지 않은 편집을 따릅니다. 편집기 텍스트는 서버 사본이 뒤처졌을 때만, 그리고 이 앱이 편집기 텍스트 권한을 가졌기 때문에만 전송됩니다",
+        "highlight_3": "언어 서버 탭은 게이트웨이가 실행하는 모든 서버를 보여 주고, 시작하거나 중지하며, 전체에서 심볼을 검색하고 프로젝트 파일의 개요를 보여 줍니다",
+        "highlight_4": "라이브러리 소스: jar 안의 Java 정의를 서버에서 기록해 일반 파일처럼 엽니다",
+        "highlight_5": "이 머신에 이미 설치된 서버만 게이트웨이의 샌드박스 래퍼 안에서 실행합니다. 아무것도 다운로드하지 않습니다",
+        "use_case_1": "IDE가 보여 주듯 사이드 패널에서 코드베이스를 읽기: 이름이 정의된 곳으로 이동하고, 사용된 모든 곳을 보고, 채팅을 떠나지 않고 심볼의 문서를 읽습니다.",
+        "configuration_1": "이 페이지에서 켜기 전까지는 꺼져 있습니다. 그런 다음 사이드 패널의 + 메뉴에서 언어 서버 탭을 열어 프로젝트용 서버를 시작하세요. 파일 언어의 서버가 실행 중이면 단축키가 작동합니다. 단축키는 설정 → 단축키 → 편집기 단축키에서 바꿀 수 있습니다."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "열린 PR {{count}}개",
@@ -5592,6 +5605,15 @@
     "agentLabel": {
       "builtin_conductor": "지휘자"
     },
+    "editorBindings": {
+      "failed": "{{app}}: {{action}}에 실패했습니다. {{reason}}",
+      "not_served": "이 게이트웨이에 {{endpoint}} 경로가 없어 앱의 백엔드가 로드되지 않았습니다. 게이트웨이를 다시 시작하세요.",
+      "close": "닫기",
+      "filter": "필터",
+      "nothing_here": "찾은 항목 없음",
+      "save_first": "이 파일에 저장되지 않은 변경 사항이 있습니다. {{app}}이(가) 현재 텍스트를 볼 수 있도록 저장하세요.",
+      "waiting": "{{app}} 응답 대기 중…"
+    },
     "warmBriefCard": {
       "asked": "요청하신 일",
       "done": "한 일",
@@ -8552,6 +8574,7 @@
       "increase": "증가"
     },
     "shortcutsModal": {
+      "code_editor": "코드 편집기",
       "always_works": "항상 작동",
       "close": "닫기",
       "desktop_app": "데스크톱 앱",
@@ -10698,6 +10721,9 @@
       "grant_not_approved": "승인되지 않음",
       "grants_reconsent_api": "API 액세스: 앱이 자체 토큰으로 이 {{productName}} API 경로를 호출할 수 있게 합니다.",
       "grants_reconsent_events": "WebSocket 이벤트: 앱이 이 대시보드 실시간 이벤트를 받거나 보낼 수 있게 합니다.",
+      "editor_access": "편집기 텍스트",
+      "editor_content_desc": "저장되지 않은 변경 사항이 있는 파일에서 이 앱의 편집기 바로 가기가 실행되면, 앱은 파일 경로와 커서 위치만이 아니라 현재 보이는 텍스트를 바로 가기마다 한 번 받을 수 있습니다.",
+      "grants_reconsent_editor_content": "편집기 텍스트: 편집기 바로 가기가 실행된 파일의 저장되지 않은 텍스트를 앱이 받을 수 있게 합니다.",
       "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
     },
     "appPage": {
@@ -17700,6 +17726,13 @@
         "redaction_revoke": "취소"
       },
       "shortcutsPanel": {
+        "editor_bindings": "편집기 단축키",
+        "editor_bindings_hint": "활성화된 앱이 사이드 패널의 코드 편집기에 추가하는 단축키입니다. 키 조합을 기록하거나 보조 키를 누른 채 클릭하세요.",
+        "unbound": "설정 안 됨",
+        "reset_shortcut": "재설정",
+        "chord_reserved": "{{chord}}은(는) 저장과 검색용으로 예약되어 있습니다.",
+        "chord_in_use": "{{chord}}은(는) 이미 {{label}}에서 사용 중입니다.",
+        "click_cap": "클릭",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "채팅 탭 전환을 Option+숫자 대신 Ctrl+숫자에 할당합니다. 텍스트 필드에 포커스가 있으면 Option+숫자로 채팅이 전환되지 않습니다.",
         "custom_hint": "수정자 키를 하나 이상 사용하세요.",
         "enable_shortcuts": "단축키 사용",

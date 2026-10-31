@@ -42,6 +42,10 @@ const pierre = vi.hoisted(() => {
       this.calls.push({ method: 'setSelections', args: [selections] })
     }
 
+    getText() {
+      return 'the buffer'
+    }
+
     setMarkers(markers: unknown) {
       this.calls.push({ method: 'setMarkers', args: [markers] })
     }
@@ -129,6 +133,7 @@ vi.mock('../pierre/PierreImpl', async () => {
 })
 
 import { PierreEditorImpl, type EditorMarker, type PierreEditorHandle } from '../pierre/PierreEditorImpl'
+import { EditorBindingsContext } from '../apps/editorBindingsContext'
 import { contentCacheKey } from '../pierre/PierreImpl'
 
 const FILE: FileContents = {
@@ -1191,5 +1196,94 @@ describe('PierreEditorImpl live-diff baseline line ending', () => {
 
     expect(baseline()).toBe(before)
     expect(before.contents).toBe('a\r\nb\r\n')
+  })
+})
+
+describe('PierreEditorImpl app bindings', () => {
+  const primary = /Mac|iPhone|iPad/.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true }
+  function mountWith(bound: string[]) {
+    const fire = vi.fn((trigger: string) => bound.includes(trigger))
+    const dispatcher = { bound: (t: string) => bound.includes(t), fire }
+    const view = render(
+      <EditorBindingsContext.Provider value={dispatcher}>
+        <PierreEditorImpl file={FILE} onChange={vi.fn()} />
+      </EditorBindingsContext.Provider>,
+    )
+    return { view, editor: attachEditor(), fire }
+  }
+
+  it('fires a bound chord at the caret and swallows the key; an unbound one passes through', () => {
+    const { view, editor, fire } = mountWith(['shift+f12', 'alt+primary+g'])
+    editor.state = oneSelection(3, 7)
+    expect(fireEvent.keyDown(scrollerOf(view), { key: 'F12', shiftKey: true })).toBe(false)
+    expect(fire).toHaveBeenCalledWith('shift+f12', { line: 3, character: 7 })
+    expect(fireEvent.keyDown(scrollerOf(view), { key: 'g', altKey: true, ...primary })).toBe(false)
+    expect(fire).toHaveBeenCalledWith('alt+primary+g', { line: 3, character: 7 })
+    expect(fireEvent.keyDown(scrollerOf(view), { key: 'F11' })).toBe(true)
+    expect(fireEvent.keyDown(scrollerOf(view), { key: 'g' })).toBe(true) // typing
+    expect(fire).toHaveBeenCalledTimes(3) // F11 was asked and declined; `g` was not a chord
+  })
+
+  it('keeps the save chord for the host even when an app binds it', () => {
+    const onSave = vi.fn()
+    const fire = vi.fn(() => true)
+    const view = render(
+      <EditorBindingsContext.Provider value={{ bound: () => true, fire }}>
+        <PierreEditorImpl file={FILE} onChange={vi.fn()} onSave={onSave} />
+      </EditorBindingsContext.Provider>,
+    )
+    attachEditor()
+    fireEvent.keyDown(scrollerOf(view), { key: 's', ...primary })
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(fire).not.toHaveBeenCalled()
+  })
+
+  it('arms a bound modifier click and fires it at the clicked caret, collapsed to one selection', async () => {
+    const { view, editor, fire } = mountWith(['click:primary'])
+    editor.state = oneSelection(0, 0)
+    fireEvent.pointerDown(scrollerOf(view), { button: 0, clientX: 10, clientY: 10, ...primary })
+    editor.state = { selections: [oneSelection(0, 0).selections[0], oneSelection(2, 4).selections[0]] }
+    fireEvent.mouseUp(scrollerOf(view), { clientX: 10, clientY: 10 })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(editor.of('setSelections').at(-1)?.args[0]).toEqual([
+      { start: { line: 2, character: 4 }, end: { line: 2, character: 4 }, direction: 'none' },
+    ])
+    expect(fire).toHaveBeenCalledWith('click:primary', { line: 2, character: 4 })
+    // A click nothing bound arms nothing.
+    fire.mockClear()
+    fireEvent.pointerDown(scrollerOf(view), { button: 0, shiftKey: true, clientX: 10, clientY: 10 })
+    fireEvent.mouseUp(scrollerOf(view), { clientX: 10, clientY: 10 })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(fire).not.toHaveBeenCalled()
+  })
+
+  it('keeps a modifier drag or range selection, firing nothing', async () => {
+    const { view, editor, fire } = mountWith(['click:primary'])
+    // The pointer moved: a multi-caret drag, however the selection ends up.
+    editor.state = oneSelection(0, 0)
+    fireEvent.pointerDown(scrollerOf(view), { button: 0, clientX: 10, clientY: 10, ...primary })
+    editor.state = { selections: [oneSelection(0, 0).selections[0], oneSelection(2, 4).selections[0]] }
+    fireEvent.mouseUp(scrollerOf(view), { clientX: 40, clientY: 10 })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(editor.of('setSelections')).toEqual([])
+    // The new selection is a range: text was selected, not a symbol clicked.
+    editor.state = oneSelection(0, 0)
+    fireEvent.pointerDown(scrollerOf(view), { button: 0, clientX: 10, clientY: 10, ...primary })
+    editor.state = { selections: [oneSelection(0, 0).selections[0], { start: { line: 2, character: 1 }, end: { line: 2, character: 4 }, direction: 'forward' }] }
+    fireEvent.mouseUp(scrollerOf(view), { clientX: 10, clientY: 10 })
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(editor.of('setSelections')).toEqual([])
+    expect(fire).not.toHaveBeenCalled()
+  })
+
+  it('leaves chords and modifier clicks alone without a dispatcher', async () => {
+    const { view } = mount()
+    const editor = attachEditor()
+    editor.state = oneSelection(1, 1)
+    expect(fireEvent.keyDown(scrollerOf(view), { key: 'F12' })).toBe(true)
+    fireEvent.pointerDown(scrollerOf(view), { button: 0, metaKey: true, ctrlKey: false })
+    fireEvent.mouseUp(scrollerOf(view))
+    await act(async () => { await new Promise(r => requestAnimationFrame(() => r(null))) })
+    expect(editor.of('setSelections')).toEqual([])
   })
 })

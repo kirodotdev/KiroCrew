@@ -742,6 +742,19 @@
         "page_label": "频道"
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "代码智能",
+        "description": "在侧边栏代码编辑器中提供转到定义、查找引用、悬停和文件大纲，由网关为项目运行的语言服务器回答：每种语言和项目根目录一个，从“语言服务器”标签页启动，随网关停止。不会为你安装任何东西：它会找到机器上已有的服务器（pyright、typescript-language-server、gopls、rust-analyzer、jdtls、clangd、solargraph），并告知添加缺失服务器的命令。",
+        "highlight_1": "F12 转到符号定义，Shift+F12 列出引用，Alt+F12 显示文档，Cmd/Ctrl+Shift+O 显示文件大纲；Cmd/Ctrl+点击即转到定义",
+        "highlight_2": "回答跟随未保存的编辑：仅当服务器副本落后时才发送编辑器文本，且仅因为此应用持有编辑器文本权限",
+        "highlight_3": "“语言服务器”标签页显示网关运行的每个服务器，可启动或停止它们，跨服务器搜索符号，并显示项目文件的大纲",
+        "highlight_4": "库源码：jar 中的 Java 定义会从服务器写出，并像普通文件一样打开",
+        "highlight_5": "仅运行此机器上已安装的服务器，并置于网关自身的沙箱封装中；不下载任何内容",
+        "use_case_1": "像 IDE 那样在侧边栏阅读代码库：跳到名称定义处，查看它的每个使用位置，并在不离开聊天的情况下阅读符号文档。",
+        "configuration_1": "在此页面启用前处于关闭状态。启用后，从侧边栏的 + 菜单打开“语言服务器”标签页，为项目启动服务器；文件所用语言的服务器运行后，快捷键即可使用。可在 设置 → 快捷键 → 编辑器快捷键 中更改。"
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_other": "{{count}} 个待处理 PR",
@@ -5592,6 +5605,15 @@
     "agentLabel": {
       "builtin_conductor": "调度者"
     },
+    "editorBindings": {
+      "failed": "{{app}}：{{action}} 失败。{{reason}}",
+      "not_served": "此网关在 {{endpoint}} 没有路由，因此应用的后端未加载。请重启网关。",
+      "close": "关闭",
+      "filter": "筛选",
+      "nothing_here": "未找到任何内容",
+      "save_first": "此文件有未保存的更改。请保存，以便 {{app}} 看到你所看到的文本。",
+      "waiting": "正在等待 {{app}}…"
+    },
     "warmBriefCard": {
       "asked": "你让我做的",
       "done": "已做完",
@@ -8552,6 +8574,7 @@
       "increase": "增加"
     },
     "shortcutsModal": {
+      "code_editor": "代码编辑器",
       "always_works": "始终可用",
       "close": "关闭",
       "desktop_app": "桌面应用",
@@ -10698,6 +10721,9 @@
       "grant_not_approved": "未批准",
       "grants_reconsent_api": "API 访问：允许应用用自己的令牌调用这些 {{productName}} API 路径。",
       "grants_reconsent_events": "WebSocket 事件：允许应用接收或发送这些仪表板实时事件。",
+      "editor_access": "编辑器文本",
+      "editor_content_desc": "当其某个编辑器快捷键在有未保存更改的文件中触发时，该应用可以收到你看到的文本（每次快捷键一次），而不只是文件路径和光标位置。",
+      "grants_reconsent_editor_content": "编辑器文本：允许该应用在其编辑器快捷键于某文件中触发时收到该文件的未保存文本。",
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
     },
     "appPage": {
@@ -17700,6 +17726,13 @@
         "redaction_revoke": "撤销"
       },
       "shortcutsPanel": {
+        "editor_bindings": "编辑器快捷键",
+        "editor_bindings_hint": "已启用的应用为侧边栏代码编辑器添加的快捷键。录制一个组合键，或按住修饰键并点击。",
+        "unbound": "未设置",
+        "reset_shortcut": "重置",
+        "chord_reserved": "{{chord}} 保留给保存和搜索。",
+        "chord_in_use": "{{chord}} 已被 {{label}} 使用。",
+        "click_cap": "点击",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "将聊天标签切换绑定到 Ctrl+数字，而不是 Option+数字。文本框获得焦点时，Option+数字不会切换聊天。",
         "custom_hint": "请至少使用一个修饰键。",
         "enable_shortcuts": "启用快捷键",

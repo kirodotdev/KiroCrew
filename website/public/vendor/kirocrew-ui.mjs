@@ -5,6 +5,6 @@ export const {
   Card, CardTitle, Btn, SendBtn, Input, SearchInput,
   Badge, SourceBadge, StatCard, Skeleton, ContentSkeleton,
   EmptyState, PageHeader, Toggle, InfoTip, SegmentedControl,
-  MarkdownRenderer, Clickable, Modal, ErrorNotice,
+  MarkdownRenderer, Clickable, Modal, ErrorNotice, SimpleSelect,
   SettingsSection, SettingsCard, SettingsInput, SettingsToggle, SettingsSelect,
 } = m

@@ -66,3 +66,22 @@ describe('invokeFileMenuItem transport', () => {
     expect(init.redirect).toBeUndefined()
   })
 })
+
+describe('invokeEditorBinding transport', () => {
+  it("carries the dashboard's resolved UI language, so a backend answers in it", async () => {
+    const { api } = await import('../api/client')
+    const { activeLocale } = await import('../i18n/format')
+    await api.invokeEditorBinding(
+      { id: 'definition', endpoint: '/api/apps/code-nav/binding' },
+      { path: '/p/a.py', line: 2, character: 4, dirty: false, sha256: '0'.repeat(64), trigger: 'f12' },
+      'dashboard:slot-1',
+    )
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/apps/code-nav/binding')
+    expect(init.redirect).toBe('error')
+    expect(JSON.parse(init.body as string)).toEqual({
+      item_id: 'definition', path: '/p/a.py', line: 2, character: 4, dirty: false,
+      sha256: '0'.repeat(64), trigger: 'f12', lang: activeLocale(),
+    })
+  })
+})

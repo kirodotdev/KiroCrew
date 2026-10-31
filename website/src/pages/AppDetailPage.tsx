@@ -86,7 +86,10 @@ export default function AppDetailPage() {
   const stagedEvents = app?.approvedGrants
     ? (app.manifest?.permissions?.events || []).filter(e => !(app.approvedGrants?.events || []).includes(e))
     : []
-  const hasStagedGrants = stagedApi.length + stagedEvents.length > 0
+  const stagedEditor = app?.approvedGrants
+    ? (app.manifest?.permissions?.editor || []).filter(e => !(app.approvedGrants?.editor || []).includes(e))
+    : []
+  const hasStagedGrants = stagedApi.length + stagedEvents.length + stagedEditor.length > 0
   // Shown where the notice was once the owner approves, so the moment is confirmed.
   const [grantsApprovedMsg, setGrantsApprovedMsg] = useState('')
   const enableLabel = app?.sessionApprovalConsentPending
@@ -951,6 +954,9 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedEditor.includes('content') && (
+                <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_editor_content')}</div>
+              )}
               {app.enabled && (
                 <span className="text-[13px] text-muted">{i18nT('pages.appDetailPage.grants_reconsent_undo', { name: appDisplayName(app) })}</span>
               )}
@@ -963,9 +969,9 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 setActionLoading('approve_grants')
-                const approved = [...stagedApi, ...stagedEvents].join(', ')
+                const approved = [...stagedApi, ...stagedEvents, ...stagedEditor].join(', ')
                 try {
-                  await api.enableApp(app.name, false, { api: stagedApi, events: stagedEvents })
+                  await api.enableApp(app.name, false, { api: stagedApi, events: stagedEvents, editor: stagedEditor })
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load()
                   window.dispatchEvent(new Event('mc:apps-changed'))
@@ -1424,6 +1430,20 @@ export default function AppDetailPage() {
                           {stagedEvents.includes(e) && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
                         </code>
                       ))}
+                    </div>
+                  </div>
+                )}
+                {(app.manifest.permissions.editor || []).includes('content') && (
+                  <div>
+                    <div className="text-muted text-[11px] uppercase tracking-wider mb-1">{i18nT('pages.appDetailPage.editor_access')}</div>
+                    {/* Plain words first, as for sessionApproval: the key alone says
+                        nothing about what the app receives of the reader's file. */}
+                    <div className="text-text">
+                      {i18nT('pages.appDetailPage.editor_content_desc')}
+                      {stagedEditor.includes('content') && <span className="ml-1 text-warn">· {i18nT('pages.appDetailPage.grant_not_approved')}</span>}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted">
+                      {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>editor: [&quot;content&quot;]</code>
                     </div>
                   </div>
                 )}

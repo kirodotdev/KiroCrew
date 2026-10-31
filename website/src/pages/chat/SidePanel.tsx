@@ -1216,7 +1216,7 @@ export default function SidePanel({
                    holding global handlers. `display` stays on `shown` alone -- the body
                    must keep its box when the panel is merely collapsed, or it would
                    remount. */
-                : <AppPanelTabBody kind={t.kind} active={shown && !panelHidden} slot={tabSlot} />}
+                : <AppPanelTabBody kind={t.kind} active={shown && !panelHidden} slot={tabSlot} projectDir={projectDir} onFileOpen={onFileOpen} />}
             </div>
           )
         })}

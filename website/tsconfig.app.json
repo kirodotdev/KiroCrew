@@ -42,7 +42,9 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@kirocrew/app-sdk": ["./src/app-sdk/index.ts"],
+      "@kirocrew/app-sdk/ui": ["./src/kirocrew-ui/index.ts"]
     }
   },
   "include": ["src"],

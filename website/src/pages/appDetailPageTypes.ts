@@ -59,7 +59,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   installedVersion?: string
   enabled?: boolean
   sessionApprovalConsentPending?: boolean
-  approvedGrants?: { api?: string[]; events?: string[] }
+  approvedGrants?: { api?: string[]; events?: string[]; editor?: string[] }
   managed?: string
   source?: string
   installedAt?: string
@@ -87,6 +87,8 @@ interface McpServerConfig {
 interface AppPermissions {
   api?: string[]
   events?: string[]
+  /** `content`: an editor binding's `stale` answer may be followed by the buffer's text. */
+  editor?: string[]
   mcpTools?: string[]
   storage?: boolean
   cron?: boolean

@@ -221,6 +221,9 @@ export type {
   ExternalRegistryRow,
   FileMenuSurface,
   FileMenuContext,
+  EditorBindingContext,
+  EditorBindingLocation,
+  EditorBindingResult,
 } from './client/apps'
 export type { AppPublishProvider, DeploySitesResponse } from './client/artifacts'
 export { browserInstallConflictJob } from './client/browserAndComputerUse'

@@ -1,0 +1,105 @@
+{
+  "name": "code-intel",
+  "version": "1.0.0",
+  "displayName": "Code Intelligence",
+  "iconUrl": "/app-assets/code-intel/icon.svg",
+  "screenshots": [
+    "/app-assets/code-intel/screenshot-main.png"
+  ],
+  "description": "Go-to-definition, find-references, hover and the file outline in the side panel's code editor, answered by language servers the gateway runs for the project: one per language and project root, started from the Language servers tab and stopped with the gateway. Nothing is installed for you: it finds the servers already on the machine (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) and says which command would add a missing one.",
+  "author": "kirocrew",
+  "license": "MIT",
+  "tags": [
+    "code",
+    "editor",
+    "language-server",
+    "navigation"
+  ],
+  "highlights": [
+    "F12 goes to a symbol's definition, Shift+F12 lists its references, Alt+F12 shows its documentation, Cmd/Ctrl+Shift+O outlines the file; Cmd/Ctrl+click is go-to-definition",
+    "Answers follow unsaved edits: the editor's text is sent only when the server's copy is behind, and only because this app holds the editor-text permission",
+    "The Language servers tab shows every server the gateway runs, starts or stops them, searches symbols across them and outlines the project's files",
+    "Library sources: a Java definition inside a jar is written out from the server and opened like any file",
+    "Runs only the servers already installed on this machine, under the gateway's own sandbox wrapper; nothing is downloaded"
+  ],
+  "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
+  "minKiroCrewVersion": "0.1.0",
+  "permissions": {
+    "api": [
+      "/api/apps/code-intel",
+      "/api/apps/code-intel/*",
+      "/api/browse-files"
+    ],
+    "editor": [
+      "content"
+    ]
+  },
+  "backend": {
+    "routes": "backend.routes:register_routes",
+    "hooks": {
+      "on_shutdown": "hooks:on_shutdown"
+    }
+  },
+  "contributes": {
+    "editorBindings": [
+      {
+        "id": "definition",
+        "label": "Go to definition",
+        "trigger": { "key": "F12" },
+        "endpoint": "/api/apps/code-intel/binding",
+        "when": { "extensions": ["py", "pyi", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "rb"] }
+      },
+      {
+        "id": "definition-click",
+        "label": "Go to definition",
+        "trigger": { "click": true, "modifiers": ["primary"] },
+        "endpoint": "/api/apps/code-intel/binding",
+        "when": { "extensions": ["py", "pyi", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "rb"] }
+      },
+      {
+        "id": "references",
+        "label": "Find references",
+        "trigger": { "key": "F12", "modifiers": ["shift"] },
+        "endpoint": "/api/apps/code-intel/binding",
+        "when": { "extensions": ["py", "pyi", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "rb"] }
+      },
+      {
+        "id": "hover",
+        "label": "Symbol info",
+        "trigger": { "key": "F12", "modifiers": ["alt"] },
+        "endpoint": "/api/apps/code-intel/binding",
+        "when": { "extensions": ["py", "pyi", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "rb"] }
+      },
+      {
+        "id": "symbols",
+        "label": "Go to symbol in file",
+        "trigger": { "key": "o", "modifiers": ["primary", "shift"] },
+        "endpoint": "/api/apps/code-intel/binding",
+        "when": { "extensions": ["py", "pyi", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "kt", "kts", "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "rb"] }
+      }
+    ],
+    "panelTabs": [
+      {
+        "id": "lsp",
+        "title": "Language servers",
+        "menuLabel": "Language servers",
+        "menuDescription": "The language servers running for this project, symbol search across them, and the files' outlines.",
+        "icon": "Code",
+        "entry": "dist/panel.mjs"
+      }
+    ]
+  },
+  "useCases": [
+    "Read a codebase in the side panel the way an IDE shows it: jump to where a name is defined, see every place it is used, and read a symbol's documentation without leaving the chat."
+  ],
+  "configuration": [
+    "Off until you enable it on this page. Then open the Language servers tab from the side panel's + menu to start a server for the project; the shortcuts work once one is running for the file's language. Change them in Settings → Shortcuts → Editor shortcuts."
+  ]
+}

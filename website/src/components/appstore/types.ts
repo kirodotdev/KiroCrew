@@ -80,7 +80,7 @@ export type InstalledApp = {
   enabled: boolean
   sessionApprovalConsentPending?: boolean
   /** Approved api/events entries, present only while an update's new ones await approval. */
-  approvedGrants?: { api?: string[]; events?: string[] }
+  approvedGrants?: { api?: string[]; events?: string[]; editor?: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -137,6 +137,8 @@ export type InstalledApp = {
     permissions?: {
       api?: string[]
       events?: string[]
+      /** `content`: an editor binding's `stale` answer may be followed by the buffer's text. */
+      editor?: string[]
       mcpTools?: string[]
       storage?: boolean
       cron?: boolean

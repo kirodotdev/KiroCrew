@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <rect x="2" y="3" width="20" height="18" rx="3.5" fill="var(--ico-a, currentColor)" fill-opacity="0.16" stroke="var(--ico-a, currentColor)" stroke-width="1.5"/>
+  <rect x="5.5" y="7" width="6" height="1.8" rx="0.9" fill="var(--ico-a, currentColor)" fill-opacity="0.7"/>
+  <rect x="5.5" y="15.2" width="9" height="1.8" rx="0.9" fill="var(--ico-b, currentColor)"/>
+  <path d="M13.5 7.9 C18.5 7.9 19 12 17 14.3" stroke="var(--ico-b, currentColor)" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M15.2 13.6 L17 14.6 L17.7 12.6" stroke="var(--ico-b, currentColor)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

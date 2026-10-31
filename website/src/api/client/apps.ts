@@ -6,6 +6,7 @@
  */
 
 import { normalizeInstalledApps, normalizeInstalledApp } from '../../components/appstore/types'
+import { activeLocale } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../../lib/sessionControlStatusPath'
 import { ApiError, toApiError } from '../apiError'
@@ -67,6 +68,61 @@ export interface FileMenuContext {
   root?: string
 }
 
+/**
+ * What core POSTs to a binding's endpoint when its chord or modifier-click fires in
+ * the code editor. The file's PATH and the caret, for the reason `FileMenuContext`
+ * gives, plus a SHA-256 of the buffer so the app can tell whether its on-disk copy
+ * is the text the reader sees. `line` and `character` are 0-based, `character` a
+ * UTF-16 index (the editor's own string indexing). `dirty` says the buffer differs
+ * from the file on disk.
+ *
+ * `text` is the buffer itself, present only on the one retry core makes after an
+ * app granted `permissions.editor: ["content"]` answered `{ stale: true }`.
+ *
+ * Core adds `lang` to every request: the dashboard's resolved UI language, so a
+ * backend that writes the answer's words writes them in the language around it.
+ */
+export interface EditorBindingContext {
+  path: string
+  line: number
+  character: number
+  dirty: boolean
+  /** Lowercase hex SHA-256 of the buffer's UTF-8 bytes. */
+  sha256: string
+  /** The trigger that fired, in its canonical spelling: `shift+f12`, `click:primary`. */
+  trigger: string
+  text?: string
+}
+
+/** One place a binding's answer points at. `label` and `detail` are the row the picker shows. */
+export interface EditorBindingLocation {
+  path: string
+  /** 1-based. */
+  line: number
+  character?: number
+  label?: string
+  detail?: string
+}
+
+/**
+ * What a binding's endpoint may answer. `message` (with an optional `url`) shows as
+ * a host toast, as a file-menu row's does. `open` moves the editor: one location is
+ * opened at once, several are offered in a searchable picker over the editor.
+ * `markdown` is shown in that same card (a hover's text, a diagnostic). `stale`
+ * says the hash did not match the app's copy and asks for the text; core sends it
+ * once when the app holds `permissions.editor: ["content"]`, else tells the reader to
+ * save. Any combination; an empty object does nothing.
+ */
+export interface EditorBindingResult {
+  message?: string
+  url?: string
+  open?: EditorBindingLocation | EditorBindingLocation[]
+  /** Heading for the picker or the markdown card; defaults to the binding's label. */
+  title?: string
+  markdown?: string
+  stale?: boolean
+}
+
 export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
   const platform = {
     // --- Apps ---
@@ -80,7 +136,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; editor: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
@@ -243,6 +299,19 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
       sessionKey?: string,
     ) => {
       const r = await post(item.endpoint, { item_id: item.id, ...ctx }, sessionKey, undefined, 'error')
+      checkSessionExpired(r)
+      if (r.ok) { removeAuthBanner(); return r.json() }
+      throw await toApiError(r)
+    },
+    // Fire a code-editor binding an installed app contributed. Same dispatch as a
+    // file-menu row: the owning slot in the session header, and no redirect followed,
+    // for the reasons above. The body is `EditorBindingContext` plus the binding's id.
+    invokeEditorBinding: async (
+      binding: { id: string; endpoint: string },
+      ctx: EditorBindingContext,
+      sessionKey?: string,
+    ): Promise<EditorBindingResult> => {
+      const r = await post(binding.endpoint, { item_id: binding.id, ...ctx, lang: activeLocale() }, sessionKey, undefined, 'error')
       checkSessionExpired(r)
       if (r.ok) { removeAuthBanner(); return r.json() }
       throw await toApiError(r)

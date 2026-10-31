@@ -780,6 +780,19 @@
         "configuration_1": "Ative o app oculto com kirocrew app enable channels, crie um canal a partir de um modelo ou com Custom, atribua agentes e modos de escuta e use @menções para repassar o trabalho."
       }
     },
+    "codeIntel": {
+      "manifest": {
+        "display_name": "Inteligência de código",
+        "description": "Ir para a definição, localizar referências, hover e a estrutura do arquivo no editor de código do painel lateral, respondidos por servidores de linguagem que o gateway executa para o projeto: um por linguagem e raiz do projeto, iniciados na aba Servidores de linguagem e encerrados com o gateway. Nada é instalado por você: ele encontra os servidores já presentes na máquina (pyright, typescript-language-server, gopls, rust-analyzer, jdtls, clangd, solargraph) e informa qual comando adicionaria um que falta.",
+        "highlight_1": "F12 vai para a definição de um símbolo, Shift+F12 lista suas referências, Alt+F12 mostra sua documentação, Cmd/Ctrl+Shift+O estrutura o arquivo; Cmd/Ctrl+clique é ir para a definição",
+        "highlight_2": "As respostas acompanham edições não salvas: o texto do editor é enviado apenas quando a cópia do servidor está atrasada, e apenas porque este app tem a permissão de texto do editor",
+        "highlight_3": "A aba Servidores de linguagem mostra cada servidor que o gateway executa, inicia ou para cada um, pesquisa símbolos em todos e estrutura os arquivos do projeto",
+        "highlight_4": "Fontes de bibliotecas: uma definição Java dentro de um jar é extraída do servidor e aberta como qualquer arquivo",
+        "highlight_5": "Executa apenas os servidores já instalados nesta máquina, sob o wrapper de sandbox do gateway; nada é baixado",
+        "use_case_1": "Ler uma base de código no painel lateral como um IDE a mostra: pular para onde um nome é definido, ver cada lugar em que é usado e ler a documentação de um símbolo sem sair do chat.",
+        "configuration_1": "Desativado até você ativá-lo nesta página. Depois abra a aba Servidores de linguagem no menu + do painel lateral para iniciar um servidor para o projeto; os atalhos funcionam quando há um em execução para a linguagem do arquivo. Altere-os em Configurações → Atalhos → Atalhos do editor."
+      }
+    },
     "codeReviewSage": {
       "codeReviewSagePage": {
         "open_pr_many": "{{count}} PRs abertos",
@@ -5798,6 +5811,15 @@
     "agentLabel": {
       "builtin_conductor": "Maestro"
     },
+    "editorBindings": {
+      "failed": "{{app}}: {{action}} falhou. {{reason}}",
+      "not_served": "Este gateway não tem rota em {{endpoint}}, então o backend do app não está carregado. Reinicie o gateway.",
+      "close": "Fechar",
+      "filter": "Filtrar",
+      "nothing_here": "Nada encontrado",
+      "save_first": "Este arquivo tem alterações não salvas. Salve-o para que {{app}} veja o texto que você vê.",
+      "waiting": "Aguardando {{app}}…"
+    },
     "warmBriefCard": {
       "asked": "Você pediu",
       "done": "Feito",
@@ -8826,6 +8848,7 @@
       "increase": "Aumentar"
     },
     "shortcutsModal": {
+      "code_editor": "Editor de código",
       "always_works": "sempre funciona",
       "close": "Fechar",
       "desktop_app": "Aplicativo para desktop",
@@ -11008,6 +11031,9 @@
       "grant_not_approved": "não aprovada",
       "grants_reconsent_api": "Acesso à API: permite que o app chame estes caminhos da API do {{productName}} com o próprio token.",
       "grants_reconsent_events": "Eventos WebSocket: permite que o app receba ou envie estes eventos do painel em tempo real.",
+      "editor_access": "Texto do editor",
+      "editor_content_desc": "Quando um de seus atalhos do editor é acionado em um arquivo com alterações não salvas, o app pode receber o texto como você o vê, uma vez por atalho, em vez de apenas o caminho do arquivo e a posição do cursor.",
+      "grants_reconsent_editor_content": "Texto do editor: permite que o app receba o texto não salvo de um arquivo quando um de seus atalhos do editor é acionado nele.",
       "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
     },
     "appPage": {
@@ -18312,6 +18338,13 @@
         "redaction_revoke": "Revogar"
       },
       "shortcutsPanel": {
+        "editor_bindings": "Atalhos do editor",
+        "editor_bindings_hint": "Atalhos que os apps ativados adicionam ao editor de código do painel lateral. Grave uma combinação de teclas ou mantenha um modificador pressionado e clique.",
+        "unbound": "Não definido",
+        "reset_shortcut": "Redefinir",
+        "chord_reserved": "{{chord}} está reservado para Salvar e Pesquisar.",
+        "chord_in_use": "{{chord}} já é usado por {{label}}.",
+        "click_cap": "Clique",
         "bind_chat_tab_switching_to_ctrl_digit_instead_of": "Vincular a alternância de abas de chat a Ctrl+dígito em vez de Option+dígito. Option+dígito não troca de chat enquanto um campo de texto estiver em foco.",
         "custom_hint": "Use pelo menos uma tecla modificadora.",
         "enable_shortcuts": "Ativar atalhos",

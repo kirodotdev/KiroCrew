@@ -13,7 +13,8 @@ import { renderWithProviders } from './helpers'
 import type { AppHostProps } from '../components/AppHost'
 import { APP_LOADING_DELAY_MS } from '../components/AppLoadingFallback'
 
-vi.mock('../app-sdk', () => ({
+vi.mock('../app-sdk', async (importOriginal) => ({
+  SidePanelHostContext: (await importOriginal<typeof import('../app-sdk')>()).SidePanelHostContext,
   AppApiProvider: (props: { children: ReactNode }) => <div data-testid="sdk-provider">{props.children}</div>,
 }))
 

@@ -30,7 +30,7 @@ const SERVER_ROUTED = {
 }
 
 export const MIME = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
   '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
 }

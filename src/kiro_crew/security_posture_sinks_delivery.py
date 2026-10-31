@@ -750,6 +750,19 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "exfiltration-URL chain before the text reaches the dashboard.",
     ),
     (
+        "Code intel error responses",
+        "apps/builtins/code_intel/backend/routes.py",
+        "Error text returned by the code-intel builtin's HTTP surface. The app "
+        "runs local language servers, and a server's own error message or its "
+        "stderr tail can quote back a command line, a path or an environment "
+        "value. Every message the routes return that the app's catalogs do not "
+        "name -- the binding's fallback sentence, the pool error `detail`, a "
+        "failed start's stderr tail, a detect row's error -- goes through "
+        "`redact_credentials` before it reaches the dashboard. It runs only the "
+        "credential scanner: the text is shown as plain text to the dashboard "
+        "owner on an owner-only route, never rendered as a link or sent on.",
+    ),
+    (
         "Job runtime error responses",
         "apps/job_routes.py",
         "Error text returned by the shared `_jobs/*` HTTP surface that every app's "

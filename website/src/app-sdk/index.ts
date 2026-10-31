@@ -513,6 +513,10 @@ export type { MessageRenderer, MessageRenderContext } from './messageRenderers'
 
 // Shared interaction and locale contracts; apps reuse the host implementations.
 export { useImeGuard } from '../hooks/useImeGuard'
+// The side panel a `contributes.panelTabs` body is mounted in: open a file there,
+// learn the chat's project directory. `null` on a routed page.
+export { useSidePanelHost, SidePanelHostContext } from './sidePanelHost'
+export type { SidePanelHost } from './sidePanelHost'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'

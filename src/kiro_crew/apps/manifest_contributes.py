@@ -183,6 +183,69 @@ FILE_MENU_SURFACES = frozenset({"file-overflow", "tree-context", "folder-row"})
 #: The node kinds a `when.kinds` filter may name.
 _FILE_MENU_KINDS = frozenset({"file", "dir"})
 
+#: Most editor bindings one app may bind, mirroring `MAX_EDITOR_BINDINGS_PER_APP` in
+#: `editorBindingContributions.ts`. Each one is a key chord or a modifier-click the
+#: reader has to remember: a dozen per app is already more than a reader will.
+_MAX_EDITOR_BINDINGS_PER_APP = 12
+
+#: The modifiers a binding trigger may name. `primary` is Cmd on macOS and Ctrl
+#: elsewhere, the same rule the editor applies to its own multi-cursor click, so an
+#: app's chord lands on the key its readers expect on their platform.
+EDITOR_BINDING_MODIFIERS = frozenset({"primary", "shift", "alt"})
+
+#: Keys a binding trigger may name: the function keys, letters and digits. Letters
+#: and digits need at least one modifier (`validate` checks), since a bare one is
+#: typing. Everything else -- Enter, Escape, arrows, Tab, Backspace -- is the
+#: editor's, and a chord on them would take an editing key away from the reader.
+_EDITOR_BINDING_KEY_RE = re.compile(r"^(f([1-9]|1[0-2])|[a-z0-9])$")
+
+#: Chords the host owns whatever the file: the save key, the dashboard's quick
+#: search, and the dashboard shortcuts that have the same chord on every platform
+#: (the editor sees a key before the dashboard does, so a binding on one would take
+#: that shortcut away while the editor has focus). The dashboard refuses the rest
+#: of its shortcuts per platform, with the reader's own changes applied; its drift
+#: test (`editorBindingDashboardChords.test.ts`) keeps this set equal to the shared
+#: part. Every other chord is an app's to bind; two apps binding one chord for the
+#: same file are resolved by the dispatch order, not refused here.
+RESERVED_EDITOR_CHORDS = frozenset(
+    {
+        "primary+s",
+        "primary+k",
+        # Panel navigation, the shortcuts reference, new and close chat.
+        "alt+c",
+        "alt+n",
+        "alt+p",
+        "alt+s",
+        "alt+k",
+        "primary+n",
+        "primary+w",
+        "alt+shift+n",
+        "alt+shift+w",
+        # Cycling the agent, reasoning, approval mode and model; focus mode.
+        "alt+shift+a",
+        "alt+shift+z",
+        "alt+shift+d",
+        "alt+shift+c",
+        "alt+shift+f",
+        "alt+shift+v",
+        "alt+shift+s",
+        "alt+shift+x",
+        "alt+shift+m",
+        # Switching between the local gateway and remote crews.
+        "primary+1",
+        "primary+2",
+        "primary+3",
+        "primary+4",
+        "primary+5",
+        "primary+6",
+    }
+)
+
+#: Entries ``permissions.editor`` may name. ``content``: a binding's answer of
+#: ``{"stale": true}`` may be followed by the buffer's text, once.
+EDITOR_PERMISSION_CONTENT = "content"
+EDITOR_PERMISSION_ENTRIES = frozenset({EDITOR_PERMISSION_CONTENT})
+
 
 def _mirrored_len(text: str) -> int:
     """Length in UTF-16 code units -- what JavaScript's ``.length`` counts.
@@ -806,6 +869,180 @@ class FileMenuItemConfig:
 
 
 @dataclass
+class EditorBindingTrigger:
+    """What fires a contributed editor binding: a key chord or a modifier-click.
+
+    Exactly one of ``key`` and ``click`` is set. ``modifiers`` is the set of
+    :data:`EDITOR_BINDING_MODIFIERS` that must be held, every other modifier up, so
+    ``F12`` and ``Shift+F12`` are two triggers and a Cmd+Shift+click never fires a
+    Cmd+click binding. ``canonical()`` is the spelling both sides compare by.
+    """
+
+    key: str = ""
+    click: bool = False
+    modifiers: list[str] = field(default_factory=list)
+    #: ``modifiers`` present but not a list, or ``click`` present but not a boolean:
+    #: an erased restriction, refused rather than coerced. Not serialized.
+    bad_fields: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.key:
+            d["key"] = self.key
+        if self.click:
+            d["click"] = True
+        if self.modifiers:
+            d["modifiers"] = self.modifiers
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EditorBindingTrigger:
+        mods_raw = data.get("modifiers", [])
+        click_raw = data.get("click", False)
+        return cls(
+            # Case-folded here so the dispatch side can compare literally.
+            key=str(data.get("key", "")).lower(),
+            click=click_raw is True,
+            modifiers=sorted(
+                {str(m).lower() for m in (mods_raw if isinstance(mods_raw, list) else []) if m}
+            ),
+            bad_fields=("modifiers" in data and not isinstance(mods_raw, list))
+            or ("click" in data and not isinstance(click_raw, bool)),
+        )
+
+    def canonical(self) -> str:
+        """``primary+shift+f12`` or ``click:primary``: the trigger as one comparable string."""
+        mods = "+".join(sorted(self.modifiers))
+        if self.click:
+            return f"click:{mods}"
+        return f"{mods}+{self.key}" if mods else self.key
+
+    def validate(self, where: str) -> list[str]:
+        errors: list[str] = []
+        if self.bad_fields:
+            errors.append(
+                f"{where}: trigger.modifiers must be an array and trigger.click a boolean -- "
+                "a value of another type passes as absent, and the binding then fires on "
+                "a plainer input than its author bound"
+            )
+        if bool(self.key) == self.click:
+            errors.append(f"{where}: trigger must name exactly one of key or click")
+            return errors
+        for mod in self.modifiers:
+            if mod not in EDITOR_BINDING_MODIFIERS:
+                errors.append(
+                    f"{where}: unknown modifier {mod!r} "
+                    f"(expected one of {sorted(EDITOR_BINDING_MODIFIERS)})"
+                )
+        if self.click:
+            if not self.modifiers:
+                # A plain click is how the reader places the caret.
+                errors.append(f"{where}: a click trigger needs at least one modifier")
+            return errors
+        if not _EDITOR_BINDING_KEY_RE.fullmatch(self.key):
+            errors.append(f"{where}: trigger.key {self.key!r} must be F1-F12, a letter or a digit")
+        elif not self.key.startswith("f") and not self.modifiers:
+            errors.append(f"{where}: a letter or digit trigger needs at least one modifier")
+        if self.canonical() in RESERVED_EDITOR_CHORDS:
+            errors.append(f"{where}: {self.canonical()} is the host's own chord")
+        return errors
+
+
+@dataclass
+class EditorBindingConfig:
+    """One key chord or modifier-click an app binds in the side panel's code editor.
+
+    The host owns the listener, the caret and the response: it matches the event
+    against the declared trigger and POSTs the file's PATH and the position to
+    ``endpoint``; the app answers with a message to show or a location to open. It
+    never imports app code and holds no live callback, the same seam as
+    :class:`FileMenuItemConfig`, and by default the same rule about content: only a
+    SHA-256 of the buffer crosses with the binding, so the app can tell whether its
+    on-disk copy is the text the reader sees. An app granted
+    ``permissions.editor: ["content"]`` may answer ``{"stale": true}`` to that hash
+    and is then sent the buffer once; the grant is shown and approved on the app
+    page like a route, so a reader knows which apps can read what they typed.
+    """
+
+    id: str = ""
+    #: What the binding does, for the reader: a screen reader announces it, and any
+    #: listing of an app's bindings shows it. App-owned literal.
+    label: str = ""
+    trigger: EditorBindingTrigger = field(default_factory=EditorBindingTrigger)
+    endpoint: str = ""
+    when: FileMenuWhen = field(default_factory=FileMenuWhen)
+    #: ``trigger`` present but not an object. Not serialized.
+    bad_trigger: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.label:
+            d["label"] = self.label
+        trigger = self.trigger.to_dict()
+        if trigger:
+            d["trigger"] = trigger
+        if self.endpoint:
+            d["endpoint"] = self.endpoint
+        when_d = self.when.to_dict()
+        if when_d:
+            d["when"] = when_d
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EditorBindingConfig:
+        trigger_raw = data.get("trigger", {})
+        when_raw = data.get("when", {})
+        return cls(
+            id=str(data.get("id", "")),
+            label=str(data.get("label", "")),
+            trigger=(
+                EditorBindingTrigger.from_dict(trigger_raw)
+                if isinstance(trigger_raw, dict)
+                else EditorBindingTrigger()
+            ),
+            endpoint=str(data.get("endpoint", "")),
+            when=(
+                FileMenuWhen.from_dict(when_raw)
+                if isinstance(when_raw, dict)
+                else FileMenuWhen(bad_fields=True)
+            ),
+            bad_trigger="trigger" in data and not isinstance(trigger_raw, dict),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.editorBindings[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.editorBindings: entry missing id")
+        elif not _COMMAND_SLUG_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a lowercase kebab slug")
+        if not self.label:
+            errors.append(f"{where}: missing label")
+        elif _mirrored_len(self.label) > _MAX_TITLE:
+            errors.append(
+                f"{where}: label exceeds {_MAX_TITLE} characters ({_mirrored_len(self.label)})"
+            )
+        if not self.endpoint:
+            errors.append(f"{where}: missing endpoint")
+        if self.bad_trigger:
+            errors.append(f"{where}: trigger must be an object")
+        else:
+            errors.extend(self.trigger.validate(where))
+        if self.when.bad_fields:
+            errors.append(
+                f"{where}: when.extensions and when.kinds must be arrays -- a non-array "
+                "value passes as unfiltered, so the binding would fire in every file the "
+                "author meant to restrict it to"
+            )
+        if self.when.kinds and self.when.kinds != ["file"]:
+            # The editor shows files; a binding over a directory has nowhere to fire.
+            errors.append(f"{where}: when.kinds may only name 'file'")
+        return errors
+
+
+@dataclass
 class Contributes:
     """What an app adds to host surfaces it does not own.
 
@@ -826,6 +1063,14 @@ class Contributes:
     #: dispatched to the app's own endpoint -- so it carries the same malformed-input
     #: flags rather than coercing quietly.
     fileMenuItems: list[FileMenuItemConfig] = field(default_factory=list)  # noqa: N815
+    #: Key chords and modifier-clicks an app binds in the code editor. Same contract
+    #: as ``fileMenuItems``: declared, host-dispatched to the app's endpoint with the
+    #: file's path, never its content.
+    editorBindings: list[EditorBindingConfig] = field(default_factory=list)  # noqa: N815
+    #: ``editorBindings`` present but not a list, and how many entries of a well-formed
+    #: array were not objects. Not serialized.
+    bad_editor_bindings: bool = False
+    dropped_editor_bindings: int = 0
     #: Whether the source manifest's ``commands`` was present but not a list. Same reason
     #: as ``CommandArgument.bad_hosts``: coercing to ``[]`` is indistinguishable from a
     #: deliberate empty list, so the declaration would pass validation and then vanish
@@ -878,6 +1123,10 @@ class Contributes:
         kept_items = [i for i in items if i]
         if kept_items:
             d["fileMenuItems"] = kept_items
+        bindings = [g.to_dict() for g in self.editorBindings]
+        kept_bindings = [g for g in bindings if g]
+        if kept_bindings:
+            d["editorBindings"] = kept_bindings
         return d
 
     @classmethod
@@ -909,7 +1158,14 @@ class Contributes:
         tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
         items_raw = data.get("fileMenuItems", [])
         item_entries = items_raw if isinstance(items_raw, list) else []
+        bindings_raw = data.get("editorBindings", [])
+        binding_entries = bindings_raw if isinstance(bindings_raw, list) else []
         return cls(
+            editorBindings=[
+                EditorBindingConfig.from_dict(g) for g in binding_entries if isinstance(g, dict)
+            ],
+            bad_editor_bindings="editorBindings" in data and not isinstance(bindings_raw, list),
+            dropped_editor_bindings=sum(1 for g in binding_entries if not isinstance(g, dict)),
             commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
             panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
             fileMenuItems=[
@@ -1031,4 +1287,41 @@ class Contributes:
                     # row's activation would target the first row's endpoint.
                     errors.append(f"contributes.fileMenuItems: duplicate id {item.id!r}")
                 seen_items.add(item.id)
+        if self.bad_editor_bindings:
+            errors.append(
+                "contributes.editorBindings must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor a binding"
+            )
+        if self.dropped_editor_bindings:
+            errors.append(
+                f"contributes.editorBindings: {self.dropped_editor_bindings} entr"
+                f"{'y' if self.dropped_editor_bindings == 1 else 'ies'} "
+                "must be an object -- a non-object entry is filtered out before "
+                "validation, so the app installs with the remaining bindings and its "
+                "author is never told one was dropped"
+            )
+        if len(self.editorBindings) > _MAX_EDITOR_BINDINGS_PER_APP:
+            errors.append(
+                f"contributes.editorBindings: {len(self.editorBindings)} bindings exceeds "
+                f"the limit of {_MAX_EDITOR_BINDINGS_PER_APP}"
+            )
+        seen_bindings: set[str] = set()
+        seen_triggers: dict[str, str] = {}
+        for binding in self.editorBindings:
+            errors.extend(binding.validate())
+            if binding.id:
+                if binding.id in seen_bindings:
+                    errors.append(f"contributes.editorBindings: duplicate id {binding.id!r}")
+                seen_bindings.add(binding.id)
+            chord = binding.trigger.canonical()
+            if chord and not binding.bad_trigger:
+                # Two bindings on one chord within an app: only one could fire, and
+                # which one would be the array's order rather than the author's intent.
+                if chord in seen_triggers and binding.id != seen_triggers[chord]:
+                    errors.append(
+                        f"contributes.editorBindings: {binding.id!r} and "
+                        f"{seen_triggers[chord]!r} both bind {chord}"
+                    )
+                seen_triggers.setdefault(chord, binding.id)
         return errors
