@@ -65,6 +65,7 @@ vi.mock('../pages/knowledge/SourcesList', () => ({
 }))
 
 const { default: KnowledgePage } = await import('../pages/knowledge/index')
+const { i18next } = await import('../i18n/all')
 
 function makeClient() {
   return new QueryClient({
@@ -281,6 +282,18 @@ describe('KnowledgePage — keyboard shortcuts', () => {
     // Past the last page there is nothing to advance to.
     fireEvent.keyDown(document.body, { key: 'ArrowLeft' })
     expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
+  })
+
+  it('renders the flat-results page indicator as one catalog sentence', async () => {
+    flatTotal = 60
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await searchFor('ledger')
+    expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
+    // en-XA brackets every catalog value, so "Page" + n + "of" + m reads `[Page] 1 [of] 3`.
+    // The page reads the language at render, so page forward to re-render it.
+    await act(async () => { await i18next.changeLanguage('en-XA') })
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' })
+    expect(await screen.findByText(/^\[[^[\]]* 2 [^[\]]* 3[^[\]]*\]$/)).toBeInTheDocument()
   })
 
   it('Escape closes an open item before it clears the selection', async () => {

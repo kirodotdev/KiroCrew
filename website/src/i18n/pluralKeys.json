@@ -328,5 +328,12 @@
   "pages.settings.postureDisclosure.count_exfil_heuristics",
   "pages.settings.postureDisclosure.count_audit_surfaces",
   "pages.settings.postureDisclosure.count_token_auth",
-  "pages.schedulePage.delete_n_selected_jobs"
+  "pages.schedulePage.delete_n_selected_jobs",
+  "pages.overview.vectorMemoryCard.showing_entries",
+  "pages.overview.vectorMemoryCard.showing_events",
+  "pages.overview.vectorMemoryCard.showing_events_filtered",
+  "components.searchResultsList.showing_matches",
+  "apps.issueRadar.views.settings.repoSettings.first_issue_friendly_count",
+  "pages.overview.vectorMemoryCard.showing_semantic",
+  "pages.overview.vectorMemoryCard.showing_semantic_filtered"
 ]

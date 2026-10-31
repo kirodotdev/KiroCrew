@@ -2906,9 +2906,6 @@
             "no_members_found_for_this_repo": "Nenhum membro encontrado para este repositório.",
             "notifications": "Notificações",
             "notify_me_when_a": "Avise-me quando uma",
-            "of": "de",
-            "open_issues_are_marked_first_issue_friendly": "issues abertas estão marcadas como adequadas para iniciantes",
-            "open_issues_currently_need_triage": "issues abertas precisam de triagem no momento",
             "open_on": "Abrir no",
             "open_tagging": "Abrir Etiquetagem",
             "organises_its_issues_and_are_never_written_back": "organiza suas issues e nunca são gravadas de volta no",
@@ -2937,7 +2934,11 @@
             "without_push_access_to": "Sem acesso de push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Suas edições são mantidas aqui, mas não serão salvas. Se você acabou de atualizar o Issue Radar, reinicie o backend para que a API de configurações fique disponível.",
             "notify_me_when_ci_fails_on_my_pull_request": "Avisar-me quando a CI falhar em um dos meus pull requests em {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lê apenas as execuções do GitHub Actions nos seus próprios pull requests abertos, pelo seu login do gh. Silencie ou mude a prioridade em Configurações → Notificações."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lê apenas as execuções do GitHub Actions nos seus próprios pull requests abertos, pelo seu login do gh. Silencie ou mude a prioridade em Configurações → Notificações.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> issue aberta está marcada como adequada para iniciantes",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> issues abertas estão marcadas como adequadas para iniciantes",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> issues abertas estão marcadas como adequadas para iniciantes",
+            "triage_needed_of_open": "Issues abertas que precisam de triagem: <strong>{{triage}}</strong> de {{n}}"
           }
         },
         "tagging": {
@@ -6093,7 +6094,8 @@
       "some_setup_could_not_be_read": "O {{productName}} não conseguiu ler {{sources}} — não listado abaixo.",
       "files_could_not_be_read": "Não foi possível ler os arquivos",
       "your_existing_kirocrew_setup_will_not_be_affecte": "A sua configuração existente do {{productName}} não será afetada.",
-      "your_selected_setup_is_ready_in_kiro_crew": "A configuração selecionada está pronta no {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "A configuração selecionada está pronta no {{productName}}.",
+      "import_setup_stage": "Importar configuração · {{stage}} de {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvo, mas esta cópia do {{productName}} não conseguiu atualizar a configuração do agente, então os novos chats mantêm a configuração anterior. Abra a página “Logs” para ver o motivo."
@@ -7025,7 +7027,7 @@
       "next": "Próxima",
       "no_execution_history_yet": "Ainda não há histórico de execuções",
       "ok": "OK",
-      "page": "Página",
+      "page_n": "Página {{page}}",
       "prev": "Anterior",
       "status": "Status",
       "summary": "Resumo",
@@ -8641,11 +8643,11 @@
     },
     "searchResultsList": {
       "assistant": "Assistente",
-      "matches_around_the_current_result_narrow_your_se": "ocorrências em torno do resultado atual — refine sua pesquisa para ver todas.",
-      "of": "de",
       "search_results": "Resultados da pesquisa",
       "selected": "selecionado",
-      "showing": "Exibindo",
+      "showing_matches_many": "Exibindo {{shown}} de {{n}} ocorrências em torno do resultado atual — refine sua pesquisa para ver todas.",
+      "showing_matches_one": "Exibindo {{shown}} de {{n}} ocorrência em torno do resultado atual — refine sua pesquisa para ver todas.",
+      "showing_matches_other": "Exibindo {{shown}} de {{n}} ocorrências em torno do resultado atual — refine sua pesquisa para ver todas.",
       "you": "Você"
     },
     "multiSelect": {
@@ -12212,7 +12214,6 @@
         "aria_expand_task_list": "{{done}} de {{total}} tarefas concluídas. Expandir a lista de tarefas",
         "current_task": "Tarefa atual",
         "more": "mais…",
-        "of": "de",
         "task_completion": "Conclusão das tarefas",
         "aria_mark_done": "Marcar como concluída: {{task}}. O agente não a refará. Clique de novo para desfazer.",
         "aria_mark_not_done": "Marcar como não concluída: {{task}}. O agente a trata como pendente. Clique de novo para desfazer.",
@@ -12225,7 +12226,8 @@
         "fail_remote": "Esta lista é gerenciada pela máquina remota desta sessão, então não pode ser alterada aqui.",
         "set_by_you_done": "Você marcou isto como feito; o agente ainda não confirmou.",
         "set_by_you_open": "Você marcou isto como não feito; o agente ainda não confirmou.",
-        "sending": "Enviando"
+        "sending": "Enviando",
+        "done_of_total": "{{done}} de {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Recolher o raciocínio do modelo",
@@ -14623,8 +14625,6 @@
         "no_items_found": "Nenhum item encontrado",
         "no_items_match_your_filters": "Nenhum item corresponde aos seus filtros",
         "no_items_match_your_search": "Nenhum item corresponde à sua busca",
-        "of": "de",
-        "page": "Página",
         "prev": "← Anterior",
         "prev_next_page": "Página anterior/próxima",
         "search_explore_and_manage_your_knowledge_base": "Busque, explore e gerencie sua base de conhecimento",
@@ -14649,7 +14649,8 @@
         "stats_relations_many": "{{count}} relações",
         "stats_sources_one": "{{count}} fonte",
         "stats_sources_other": "{{count}} fontes",
-        "stats_sources_many": "{{count}} fontes"
+        "stats_sources_many": "{{count}} fontes",
+        "page_of": "Página {{page}} de {{pages}}"
       },
       "itemCard": {
         "copied": "Copiado!",
@@ -14676,8 +14677,7 @@
         "items_count": "({{count}} itens)",
         "next": "Próxima →",
         "no_source": "Sem fonte",
-        "of": "de",
-        "page": "Página",
+        "page_of": "Página {{page}} de {{pages}}",
         "prev": "← Anterior",
         "unknown_source": "Fonte desconhecida"
       },
@@ -15885,10 +15885,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · é executado localmente no processo",
         "embedding_status": "Estado dos embeddings",
-        "entries": "entradas",
         "episodic_context_injected_per_message": "Contexto episódico (injetado por mensagem)",
         "episodic_memory": "Memória episódica",
-        "events": "eventos",
         "every_memory_create_update_delete_conflict_and_i": "Toda criação, atualização, exclusão, conflito e bloco de injeção de memória é registrado aqui.",
         "filter_by_key_or_value": "Filtrar por chave ou valor…",
         "filter_by_tag": "Filtrar por tag:",
@@ -15905,7 +15903,6 @@
         "no_matching_entries": "Nenhuma entrada correspondente",
         "no_semantic_entries": "Nenhuma entrada semântica",
         "not_active": "não ativo",
-        "of": "de",
         "open_embedding_model_settings": "Abrir as configurações do modelo de embeddings",
         "preview": "Visualizar",
         "preview_what_gets_injected_into_prompts_enter_a": "Visualize o que é injetado nos prompts. Digite uma consulta para ver os resultados da recuperação episódica.",
@@ -15919,7 +15916,6 @@
         "semantic_memory": "Memória semântica",
         "set": "Definir",
         "setup_failed": "Falha na configuração",
-        "showing": "Exibindo",
         "status_unknown": "desconhecido",
         "structured_key_value_facts_about_you_confidence": "Fatos estruturados de chave-valor sobre você. Confiança: o quanto o sistema tem certeza (1.0 = você definiu, 0.85 = extraído do chat). Origem: quem escreveu (user_explicit = você, consolidation = extraído automaticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memória semântica estruturada (chave-valor) + episódica (fragmentos de conversa) com busca vetorial. Os embeddings estão sempre ativos — o modelo é baixado automaticamente em segundo plano.",
@@ -15931,7 +15927,22 @@
         "verifying_model_integrity": "Verificando a integridade do modelo…",
         "enable_err_config_unreadable": "Não foi possível salvar a memória vetorial porque o config.json não pôde ser lido. Corrija o arquivo e tente novamente.",
         "enable_err_dim_unreadable": "Não foi possível ler a largura dos vetores do modelo de embeddings, então a memória vetorial não foi ativada. Tente novamente, ou execute 'kirocrew doctor' se continuar falhando.",
-        "enable_err_owner_only": "Somente o proprietário do painel pode configurar a memória vetorial."
+        "enable_err_owner_only": "Somente o proprietário do painel pode configurar a memória vetorial.",
+        "showing_entries_one": "Exibindo {{n}} entrada",
+        "showing_entries_many": "Exibindo {{n}} entradas",
+        "showing_entries_other": "Exibindo {{n}} entradas",
+        "showing_events_one": "Exibindo {{n}} evento",
+        "showing_events_many": "Exibindo {{n}} eventos",
+        "showing_events_other": "Exibindo {{n}} eventos",
+        "showing_events_filtered_one": "Exibindo {{n}} evento ({{total}} no total)",
+        "showing_events_filtered_many": "Exibindo {{n}} eventos ({{total}} no total)",
+        "showing_events_filtered_other": "Exibindo {{n}} eventos ({{total}} no total)",
+        "showing_semantic_one": "Exibindo {{shown}} de {{total}}",
+        "showing_semantic_many": "Exibindo {{shown}} de {{total}}",
+        "showing_semantic_other": "Exibindo {{shown}} de {{total}}",
+        "showing_semantic_filtered_one": "Exibindo {{shown}} de {{matched}} (filtrados de {{total}})",
+        "showing_semantic_filtered_many": "Exibindo {{shown}} de {{matched}} (filtrados de {{total}})",
+        "showing_semantic_filtered_other": "Exibindo {{shown}} de {{matched}} (filtrados de {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Projetos em que você trabalhou",

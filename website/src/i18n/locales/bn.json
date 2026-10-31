@@ -2842,9 +2842,6 @@
             "no_members_found_for_this_repo": "এই রিপোর জন্য কোনো মেম্বার পাওয়া যায়নি।",
             "notifications": "বিজ্ঞপ্তি",
             "notify_me_when_a": "আমাকে জানান যখন একটি",
-            "of": "মোট",
-            "open_issues_are_marked_first_issue_friendly": "খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
-            "open_issues_currently_need_triage": "খোলা ইস্যুর বর্তমানে ট্রায়াজ প্রয়োজন",
             "open_on": "এখানে খুলুন:",
             "open_tagging": "ট্যাগিং খুলুন",
             "organises_its_issues_and_are_never_written_back": "নিজের ইস্যু সাজায়, এবং এগুলো কখনোই ফেরত লেখা হয় না এখানে:",
@@ -2873,7 +2870,10 @@
             "without_push_access_to": "পুশ অ্যাক্সেস না থাকলে এখানে:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "আপনার সম্পাদনাগুলো এখানে রাখা হচ্ছে, কিন্তু স্থায়ী হবে না। আপনি যদি সদ্য Issue Radar আপডেট করে থাকেন, তবে ব্যাকএন্ড পুনরায় চালু করুন যাতে সেটিংস API পাওয়া যায়।",
             "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}-এ আমার কোনো pull request-এ CI ব্যর্থ হলে আমাকে জানান",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "তোমার gh সাইন-ইন দিয়ে শুধু তোমার নিজের খোলা pull request-এর GitHub Actions রান পড়ে। সেটিংস → বিজ্ঞপ্তি থেকে এটি মিউট করো বা এর অগ্রাধিকার বদলাও।",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong>টি খোলা ইস্যু নতুনদের উপযোগী হিসেবে চিহ্নিত",
+            "triage_needed_of_open": "ট্রায়াজ দরকার এমন খোলা ইস্যু: {{n}}টির মধ্যে <strong>{{triage}}</strong>টি"
           }
         },
         "tagging": {
@@ -5990,7 +5990,8 @@
       "some_setup_could_not_be_read": "{{productName}} {{sources}} পড়তে পারেনি — নিচে তালিকাভুক্ত নয়।",
       "files_could_not_be_read": "ফাইলগুলি পড়া যায়নি",
       "your_existing_kirocrew_setup_will_not_be_affecte": "আপনার বিদ্যমান {{productName}} সেটআপ প্রভাবিত হবে না।",
-      "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।"
+      "your_selected_setup_is_ready_in_kiro_crew": "তোমার নির্বাচিত সেটআপ {{productName}}-এ তৈরি।",
+      "import_setup_stage": "সেটআপ ইমপোর্ট করো · {{stages}}টির মধ্যে {{stage}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "সংরক্ষিত হয়েছে, কিন্তু এই {{productName}} এজেন্ট কনফিগারেশন আপডেট করতে পারেনি, তাই নতুন চ্যাটগুলো আগের সেটআপ রাখবে। কারণ জানতে 'লগ' পেজ খোলো।"
@@ -6907,7 +6908,7 @@
       "next": "পরবর্তী",
       "no_execution_history_yet": "এখনও কোনো এক্সিকিউশন ইতিহাস নেই",
       "ok": "OK",
-      "page": "পৃষ্ঠা",
+      "page_n": "পৃষ্ঠা {{page}}",
       "prev": "পূর্ববর্তী",
       "status": "স্ট্যাটাস",
       "summary": "সারসংক্ষেপ",
@@ -8504,11 +8505,10 @@
     },
     "searchResultsList": {
       "assistant": "অ্যাসিস্ট্যান্ট",
-      "matches_around_the_current_result_narrow_your_se": "মিল বর্তমান ফলাফলের আশপাশে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করুন।",
-      "of": "মোট",
       "search_results": "সার্চ ফলাফল",
       "selected": "নির্বাচিত",
-      "showing": "দেখানো হচ্ছে",
+      "showing_matches_one": "বর্তমান ফলাফলের আশপাশে {{n}}টি মিলের মধ্যে {{shown}}টি দেখানো হচ্ছে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করো।",
+      "showing_matches_other": "বর্তমান ফলাফলের আশপাশে {{n}}টি মিলের মধ্যে {{shown}}টি দেখানো হচ্ছে — সবগুলো দেখতে সার্চ আরও নির্দিষ্ট করো।",
       "you": "তুমি"
     },
     "multiSelect": {
@@ -12026,7 +12026,6 @@
         "aria_expand_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা প্রসারিত করো",
         "current_task": "বর্তমান টাস্ক",
         "more": "আরও…",
-        "of": "/",
         "task_completion": "টাস্ক সম্পন্নতা",
         "aria_mark_done": "সম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি আবার করবে না। ফিরিয়ে নিতে আবার ক্লিক করো।",
         "aria_mark_not_done": "অসম্পন্ন চিহ্নিত করো: {{task}}। এজেন্ট এটি এখনো বাকি ধরবে। ফিরিয়ে নিতে আবার ক্লিক করো।",
@@ -12039,7 +12038,8 @@
         "fail_remote": "এই চেকলিস্ট এই সেশনের দূরবর্তী মেশিন পরিচালনা করে, তাই এখানে বদলানো যাবে না।",
         "set_by_you_done": "তুমি এটা সম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
         "set_by_you_open": "তুমি এটা অসম্পন্ন চিহ্নিত করেছ; এজেন্ট এখনও নিশ্চিত করেনি।",
-        "sending": "পাঠানো হচ্ছে"
+        "sending": "পাঠানো হচ্ছে",
+        "done_of_total": "{{done}} / {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "মডেলের রিজনিং সংকুচিত করো",
@@ -14388,8 +14388,6 @@
         "no_items_found": "কোনো আইটেম পাওয়া যায়নি",
         "no_items_match_your_filters": "আপনার ফিল্টারের সাথে কোনো আইটেম মেলেনি",
         "no_items_match_your_search": "আপনার সার্চের সাথে কোনো আইটেম মেলেনি",
-        "of": "মোট",
-        "page": "পৃষ্ঠা",
         "prev": "← পূর্ববর্তী",
         "prev_next_page": "পূর্ববর্তী/পরবর্তী পৃষ্ঠা",
         "search_explore_and_manage_your_knowledge_base": "আপনার নলেজ বেস সার্চ করুন, অন্বেষণ করুন এবং পরিচালনা করুন",
@@ -14410,7 +14408,8 @@
         "stats_relations_one": "{{count}}টি সম্পর্ক",
         "stats_relations_other": "{{count}}টি সম্পর্ক",
         "stats_sources_one": "{{count}}টি সোর্স",
-        "stats_sources_other": "{{count}}টি সোর্স"
+        "stats_sources_other": "{{count}}টি সোর্স",
+        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}"
       },
       "itemCard": {
         "copied": "কপি হয়েছে!",
@@ -14437,8 +14436,7 @@
         "items_count": "({{count}}টি আইটেম)",
         "next": "পরবর্তী →",
         "no_source": "কোনো সোর্স নেই",
-        "of": "মোট",
-        "page": "পৃষ্ঠা",
+        "page_of": "{{pages}}-এর মধ্যে পৃষ্ঠা {{page}}",
         "prev": "← পূর্ববর্তী",
         "unknown_source": "অজানা সোর্স"
       },
@@ -15618,10 +15616,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · স্থানীয়ভাবে ইন-প্রসেসে চলে",
         "embedding_status": "এমবেডিং স্থিতি",
-        "entries": "এন্ট্রি",
         "episodic_context_injected_per_message": "এপিসোডিক কনটেক্সট (প্রতি বার্তায় যোগ করা হয়)",
         "episodic_memory": "এপিসোডিক মেমরি",
-        "events": "ইভেন্ট",
         "every_memory_create_update_delete_conflict_and_i": "মেমরির প্রতিটি তৈরি, আপডেট, মুছে ফেলা, দ্বন্দ্ব ও ইনজেকশন ব্লক এখানে লেখা হয়।",
         "filter_by_key_or_value": "কী বা ভ্যালু দিয়ে ফিল্টার করুন…",
         "filter_by_tag": "ট্যাগ দিয়ে ফিল্টার:",
@@ -15638,7 +15634,6 @@
         "no_matching_entries": "মিলে যাওয়া কোনো এন্ট্রি নেই",
         "no_semantic_entries": "কোনো সিমান্টিক এন্ট্রি নেই",
         "not_active": "সক্রিয় নয়",
-        "of": "এর মধ্যে",
         "open_embedding_model_settings": "এমবেডিং মডেল সেটিংস খুলুন",
         "preview": "প্রিভিউ",
         "preview_what_gets_injected_into_prompts_enter_a": "প্রম্পটে কী ঢোকানো হয় তার প্রিভিউ দেখো। এপিসোডিক রিট্রিভালের ফলাফল দেখতে একটি কোয়েরি লেখো।",
@@ -15652,7 +15647,6 @@
         "semantic_memory": "সিমান্টিক মেমরি",
         "set": "সেট করুন",
         "setup_failed": "সেটআপ করা যায়নি",
-        "showing": "দেখানো হচ্ছে",
         "status_unknown": "অজানা",
         "structured_key_value_facts_about_you_confidence": "তোমার সম্পর্কে গঠিত কী-ভ্যালু তথ্য। Confidence: সিস্টেম কতটা নিশ্চিত (1.0 = তুমি নিজে দিয়েছ, 0.85 = চ্যাট থেকে নেওয়া)। Source: কে লিখেছে (user_explicit = তুমি, consolidation = স্বয়ংক্রিয়ভাবে নেওয়া)।",
         "structured_semantic_key_value_episodic_conversat": "গঠিত সিমান্টিক (কী-ভ্যালু) + এপিসোডিক (কথাবার্তার টুকরো) মেমরি, ভেক্টর সার্চসহ। এমবেডিং সব সময় চালু — মডেলটি পেছনে স্বয়ংক্রিয়ভাবে ডাউনলোড হয়।",
@@ -15664,7 +15658,17 @@
         "verifying_model_integrity": "মডেলের অখণ্ডতা যাচাই করা হচ্ছে…",
         "enable_err_config_unreadable": "config.json পড়া যায়নি, তাই ভেক্টর মেমরি সংরক্ষণ করা যায়নি। ফাইলটি ঠিক করো, তারপর আবার চেষ্টা করো।",
         "enable_err_dim_unreadable": "এমবেডিং মডেলের ভেক্টর প্রস্থ পড়া যায়নি, তাই ভেক্টর মেমরি চালু হয়নি। আবার চেষ্টা করো, বারবার ব্যর্থ হলে 'kirocrew doctor' চালাও।",
-        "enable_err_owner_only": "শুধু ড্যাশবোর্ডের মালিক ভেক্টর মেমরি সেট আপ করতে পারে।"
+        "enable_err_owner_only": "শুধু ড্যাশবোর্ডের মালিক ভেক্টর মেমরি সেট আপ করতে পারে।",
+        "showing_entries_one": "{{n}}টি এন্ট্রি দেখানো হচ্ছে",
+        "showing_entries_other": "{{n}}টি এন্ট্রি দেখানো হচ্ছে",
+        "showing_events_one": "{{n}}টি ইভেন্ট দেখানো হচ্ছে",
+        "showing_events_other": "{{n}}টি ইভেন্ট দেখানো হচ্ছে",
+        "showing_events_filtered_one": "{{n}}টি ইভেন্ট দেখানো হচ্ছে (মোট {{total}}টি)",
+        "showing_events_filtered_other": "{{n}}টি ইভেন্ট দেখানো হচ্ছে (মোট {{total}}টি)",
+        "showing_semantic_one": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
+        "showing_semantic_other": "{{total}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে",
+        "showing_semantic_filtered_one": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)",
+        "showing_semantic_filtered_other": "{{matched}}টির মধ্যে {{shown}}টি দেখানো হচ্ছে ({{total}}টি থেকে ফিল্টার করা)"
       },
       "wakatimeTab": {
         "active_projects": "আপনি যে প্রকল্পগুলোতে কাজ করেছেন",

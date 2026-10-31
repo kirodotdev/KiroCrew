@@ -11,6 +11,7 @@ import { useRowDisclosure } from './rowDisclosure'
 import { Glass } from '../../components/Glass'
 
 import { i18nT } from '../../i18n/t'
+import { fmtNumber } from '../../i18n/format'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 /** Rows rendered before the list scrolls internally — bounds DOM on long plans. */
 const MAX_VISIBLE_ROWS = 12
@@ -233,7 +234,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
             className={`shrink-0 tabular-nums font-medium ${allDone ? 'text-ok' : 'text-text-strong'}`}
             data-testid="todo-count"
           >
-            {done} {i18nT('pages.chat.taskProgressBar.of')} {total}
+            {i18nT('pages.chat.taskProgressBar.done_of_total', { done: fmtNumber(done), total: fmtNumber(total) })}
           </span>
           <span
             className={`truncate text-left text-muted ${expanded ? 'min-w-0 flex-1' : 'min-w-0 max-w-[42ch]'}`}

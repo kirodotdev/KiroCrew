@@ -2778,9 +2778,6 @@
             "no_members_found_for_this_repo": "未找到此仓库的成员。",
             "notifications": "通知",
             "notify_me_when_a": "当有以下情况时通知我：",
-            "of": "共",
-            "open_issues_are_marked_first_issue_friendly": "个待处理 issue 被标记为新手友好",
-            "open_issues_currently_need_triage": "个待处理 issue 当前需要分类",
             "open_on": "打开于",
             "open_tagging": "打开标记页",
             "organises_its_issues_and_are_never_written_back": "如何组织其 issue，且永不写回 GitHub",
@@ -2809,7 +2806,9 @@
             "without_push_access_to": "若没有对以下仓库的 push 权限：",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。",
             "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的拉取请求 CI 失败时通知我",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 gh 登录，读取你自己未关闭拉取请求上的 GitHub Actions 运行。可在 设置 → 通知 中将其静音或更改优先级。"
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 gh 登录，读取你自己未关闭拉取请求上的 GitHub Actions 运行。可在 设置 → 通知 中将其静音或更改优先级。",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> 个待处理 issue 被标记为新手友好",
+            "triage_needed_of_open": "需要分类的待处理 issue：<strong>{{triage}}</strong> / {{n}}"
           }
         },
         "tagging": {
@@ -5887,7 +5886,8 @@
       "some_setup_could_not_be_read": "{{productName}} 无法读取 {{sources}} —— 下方未列出。",
       "files_could_not_be_read": "无法读取文件",
       "your_existing_kirocrew_setup_will_not_be_affecte": "你已有的 {{productName}} 设置不会受到影响。",
-      "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。"
+      "your_selected_setup_is_ready_in_kiro_crew": "你所选的配置已在 {{productName}} 中就绪。",
+      "import_setup_stage": "导入配置 · 第 {{stage}} 步，共 {{stages}} 步"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "已保存，但此 {{productName}} 无法更新智能体配置，新聊天会继续使用之前的设置。请打开“日志”页面查看原因。"
@@ -6789,7 +6789,7 @@
       "next": "下一页",
       "no_execution_history_yet": "暂无执行历史",
       "ok": "成功",
-      "page": "页",
+      "page_n": "第 {{page}} 页",
       "prev": "上一页",
       "status": "状态",
       "summary": "摘要",
@@ -8367,11 +8367,9 @@
     },
     "searchResultsList": {
       "assistant": "助手",
-      "matches_around_the_current_result_narrow_your_se": "个当前结果附近的匹配 — 请缩小搜索范围以查看全部。",
-      "of": "共",
       "search_results": "搜索结果",
       "selected": "已选中",
-      "showing": "正在显示",
+      "showing_matches_other": "正在显示当前结果附近 {{n}} 个匹配中的 {{shown}} 个 — 请缩小搜索范围以查看全部。",
       "you": "你"
     },
     "multiSelect": {
@@ -11840,7 +11838,6 @@
         "aria_expand_task_list": "已完成 {{done}}/{{total}} 个任务。展开任务列表",
         "current_task": "当前任务",
         "more": "更多…",
-        "of": "/",
         "task_completion": "任务完成度",
         "aria_mark_done": "标记完成：{{task}}。agent 不会重做。再点一次可撤销。",
         "aria_mark_not_done": "标记未完成：{{task}}。agent 会当作还没做。再点一次可撤销。",
@@ -11853,7 +11850,8 @@
         "fail_remote": "这份清单由该 session 的远程机器管理，无法在这里修改。",
         "set_by_you_done": "你标成了完成，agent 还没确认。",
         "set_by_you_open": "你标成了未完成，agent 还没确认。",
-        "sending": "发送中"
+        "sending": "发送中",
+        "done_of_total": "{{done}} / {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "收起模型推理",
@@ -14153,8 +14151,6 @@
         "no_items_found": "未找到条目",
         "no_items_match_your_filters": "没有条目符合筛选条件",
         "no_items_match_your_search": "没有条目符合搜索条件",
-        "of": "/",
-        "page": "页",
         "prev": "← 上一页",
         "prev_next_page": "上一页/下一页",
         "search_explore_and_manage_your_knowledge_base": "搜索、浏览和管理你的知识库",
@@ -14171,7 +14167,8 @@
         "stats_items_other": "{{count}} 个条目",
         "stats_entities_other": "{{count}} 个实体",
         "stats_relations_other": "{{count}} 条关系",
-        "stats_sources_other": "{{count}} 个来源"
+        "stats_sources_other": "{{count}} 个来源",
+        "page_of": "第 {{page}} 页，共 {{pages}} 页"
       },
       "itemCard": {
         "copied": "已复制！",
@@ -14198,8 +14195,7 @@
         "items_count": "（{{count}} 个条目）",
         "next": "下一页 →",
         "no_source": "无来源",
-        "of": "/",
-        "page": "页",
+        "page_of": "第 {{page}} 页，共 {{pages}} 页",
         "prev": "← 上一页",
         "unknown_source": "未知来源"
       },
@@ -15351,10 +15347,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · 本地进程内运行",
         "embedding_status": "嵌入状态",
-        "entries": "条记录",
         "episodic_context_injected_per_message": "情景上下文（按消息注入）",
         "episodic_memory": "情景记忆",
-        "events": "个事件",
         "every_memory_create_update_delete_conflict_and_i": "每一次记忆的创建、更新、删除、冲突和注入块都会记录在此。",
         "filter_by_key_or_value": "按键或值筛选…",
         "filter_by_tag": "按标签筛选：",
@@ -15371,7 +15365,6 @@
         "no_matching_entries": "无匹配记录",
         "no_semantic_entries": "无语义记录",
         "not_active": "未启用",
-        "of": "/",
         "open_embedding_model_settings": "打开嵌入模型设置",
         "preview": "预览",
         "preview_what_gets_injected_into_prompts_enter_a": "预览会注入提示词的内容。输入查询即可查看情景检索结果。",
@@ -15385,7 +15378,6 @@
         "semantic_memory": "语义记忆",
         "set": "设定",
         "setup_failed": "设置失败",
-        "showing": "正在显示",
         "status_unknown": "未知",
         "structured_key_value_facts_about_you_confidence": "关于你的结构化键值事实。置信度：系统的确定程度（1.0 = 由你设定，0.85 = 从聊天中提取）。来源：由谁写入（user_explicit = 你，consolidation = 自动提取）。",
         "structured_semantic_key_value_episodic_conversat": "带向量搜索的结构化语义（键值）+ 情景（对话片段）记忆。嵌入始终开启 — 模型会在后台自动下载。",
@@ -15397,7 +15389,12 @@
         "verifying_model_integrity": "正在校验模型完整性…",
         "enable_err_config_unreadable": "无法读取 config.json，因此无法保存向量记忆。请修复该文件后重试。",
         "enable_err_dim_unreadable": "无法读取嵌入模型的向量宽度，因此未开启向量记忆。请重试；如果仍然失败，请运行 'kirocrew doctor'。",
-        "enable_err_owner_only": "只有仪表板的所有者才能设置向量记忆。"
+        "enable_err_owner_only": "只有仪表板的所有者才能设置向量记忆。",
+        "showing_entries_other": "正在显示 {{n}} 条记录",
+        "showing_events_other": "正在显示 {{n}} 个事件",
+        "showing_events_filtered_other": "正在显示 {{n}} 个事件（共 {{total}} 个）",
+        "showing_semantic_other": "正在显示 {{total}} 条中的 {{shown}} 条",
+        "showing_semantic_filtered_other": "正在显示 {{matched}} 条中的 {{shown}} 条（从 {{total}} 条中筛选）"
       },
       "wakatimeTab": {
         "active_projects": "你参与的项目",

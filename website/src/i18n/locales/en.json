@@ -1637,9 +1637,6 @@
             "no_labels": "no labels",
             "notifications": "Notifications",
             "notify_me_when_a": "Notify me when a",
-            "of": "of",
-            "open_issues_are_marked_first_issue_friendly": "open issues are marked first-issue-friendly",
-            "open_issues_currently_need_triage": "open issues currently need triage",
             "open_on": "Open on",
             "open_tagging": "Open Tagging",
             "organises_its_issues_and_are_never_written_back": "organises its issues and are never written back to",
@@ -4258,7 +4255,8 @@
       "found_setup_but_could_not_read_it": "{{productName}} found {{sources}} but could not read the files, so nothing was imported.",
       "some_setup_could_not_be_read": "{{productName}} could not read {{sources}} — not listed below.",
       "files_could_not_be_read": "Files could not be read",
-      "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected."
+      "your_existing_kirocrew_setup_will_not_be_affecte": "Your existing {{productName}} setup will not be affected.",
+      "import_setup_stage": "Import setup · {{stage}} of {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Saved, but this copy of {{productName}} could not update the agent config, so new chats keep the old setup. Open the Logs page to see why."
@@ -4661,7 +4659,7 @@
       "next": "Next",
       "no_execution_history_yet": "No execution history yet",
       "ok": "OK",
-      "page": "Page",
+      "page_n": "Page {{page}}",
       "prev": "Prev",
       "status": "Status",
       "summary": "Summary",
@@ -5370,10 +5368,9 @@
       "previous_match": "Previous match"
     },
     "searchResultsList": {
-      "matches_around_the_current_result_narrow_your_se": "matches around the current result — narrow your search to see all.",
-      "of": "of",
       "search_results": "Search results",
-      "showing": "Showing"
+      "showing_matches_one": "Showing {{shown}} of {{n}} match around the current result — narrow your search to see all.",
+      "showing_matches_other": "Showing {{shown}} of {{n}} matches around the current result — narrow your search to see all."
     },
     "secretField": {
       "cancel": "Cancel",
@@ -6922,8 +6919,8 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "taskProgressBar": {
+        "done_of_total": "{{done}} of {{total}}",
         "more": "more…",
-        "of": "of",
         "task_completion": "Task completion"
       },
       "thinkingBlock": {
@@ -7879,8 +7876,7 @@
         "no_items_found": "No items found",
         "no_items_match_your_filters": "No items match your filters",
         "no_items_match_your_search": "No items match your search",
-        "of": "of",
-        "page": "Page",
+        "page_of": "Page {{page}} of {{pages}}",
         "prev": "← Prev",
         "prev_next_page": "Prev/Next page",
         "search_explore_and_manage_your_knowledge_base": "Search, explore, and manage your knowledge base",
@@ -7906,8 +7902,7 @@
       },
       "sourceGroup": {
         "next": "Next →",
-        "of": "of",
-        "page": "Page",
+        "page_of": "Page {{page}} of {{pages}}",
         "prev": "← Prev"
       },
       "sourcesList": {
@@ -8916,10 +8911,8 @@
         "delete": "Delete",
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · runs locally in-process",
-        "entries": "entries",
         "episodic_context_injected_per_message": "Episodic Context (injected per-message)",
         "episodic_memory": "Episodic Memory",
-        "events": "events",
         "filter_by_key_or_value": "Filter by key or value…",
         "filter_by_tag": "Filter by tag:",
         "inspector": "Inspector",
@@ -8932,7 +8925,6 @@
         "no_context_to_inject_add_some_memories_first": "No context to inject. Add some memories first.",
         "no_episodic_entries": "No episodic entries",
         "no_events": "No events",
-        "of": "of",
         "open_embedding_model_settings": "Open embedding model settings",
         "preview": "Preview",
         "ready": "Ready!",
@@ -8942,7 +8934,16 @@
         "semantic_context_injected_at_session_start": "Semantic Context (injected at session start)",
         "semantic_memory": "Semantic Memory",
         "set": "Set",
-        "showing": "Showing",
+        "showing_entries_one": "Showing {{n}} entry",
+        "showing_entries_other": "Showing {{n}} entries",
+        "showing_events_filtered_one": "Showing {{n}} event ({{total}} total)",
+        "showing_events_filtered_other": "Showing {{n}} events ({{total}} total)",
+        "showing_events_one": "Showing {{n}} event",
+        "showing_events_other": "Showing {{n}} events",
+        "showing_semantic_filtered_one": "Showing {{shown}} of {{matched}} (filtered from {{total}})",
+        "showing_semantic_filtered_other": "Showing {{shown}} of {{matched}} (filtered from {{total}})",
+        "showing_semantic_one": "Showing {{shown}} of {{total}}",
+        "showing_semantic_other": "Showing {{shown}} of {{total}}",
         "test_query_e_g_what_database_should_i_use": "Test query (e.g. 'what database should I use?')",
         "value": "Value",
         "vector_memory": "Vector Memory",

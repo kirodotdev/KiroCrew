@@ -23,7 +23,7 @@ import {
   type AgentImportSource,
 } from '../api/client'
 import { parseErrorCode } from '../utils/errorReport'
-import { fmtList } from '../i18n/format'
+import { fmtList, fmtNumber } from '../i18n/format'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useLocalCrewHidden } from './overlayRoot'
 import { Btn, SendBtn } from './ui'
@@ -972,8 +972,9 @@ export default function AgentImportFlow({
       {...setupChapterAside(i18nT('components.agentImportFlow.import_agent_setup'))}
       eyebrow={
         <>
-          {i18nT('components.agentImportFlow.import_setup')}
-          {showStepFooter && ` · ${stage} of ${STAGES.length}`}
+          {showStepFooter
+            ? i18nT('components.agentImportFlow.import_setup_stage', { stage: fmtNumber(stage), stages: fmtNumber(STAGES.length) })
+            : i18nT('components.agentImportFlow.import_setup')}
         </>
       }
       onSkipAll={skipAll}

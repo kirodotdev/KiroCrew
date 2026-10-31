@@ -2970,9 +2970,6 @@
             "no_members_found_for_this_repo": "Для этого репозитория участники не найдены.",
             "notifications": "Уведомления",
             "notify_me_when_a": "Уведомлять меня, когда",
-            "of": "из",
-            "open_issues_are_marked_first_issue_friendly": "открытых задач помечены как подходящие для первого вклада",
-            "open_issues_currently_need_triage": "открытых задач сейчас требуют разбора",
             "open_on": "Открыть на",
             "open_tagging": "Открыть разметку",
             "organises_its_issues_and_are_never_written_back": "организует свои задачи, и никогда не записываются обратно в",
@@ -3001,7 +2998,12 @@
             "without_push_access_to": "Без прав на запись в",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Ваши правки остаются здесь, но не сохранятся. Если вы только что обновили Issue Radar, перезапустите бэкенд, чтобы стал доступен API настроек.",
             "notify_me_when_ci_fails_on_my_pull_request": "Уведомлять, когда CI падает в одном из моих пул-реквестов в {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски GitHub Actions только в твоих собственных открытых пул-реквестах, через твой вход в gh. Отключи звук или измени приоритет в разделе Настройки → Уведомления."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски GitHub Actions только в твоих собственных открытых пул-реквестах, через твой вход в gh. Отключи звук или измени приоритет в разделе Настройки → Уведомления.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> открытая задача помечена как подходящая для первого вклада",
+            "first_issue_friendly_count_few": "<strong>{{n}}</strong> открытые задачи помечены как подходящие для первого вклада",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> открытых задач помечены как подходящие для первого вклада",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> открытой задачи помечены как подходящие для первого вклада",
+            "triage_needed_of_open": "Открытые задачи, требующие разбора: <strong>{{triage}}</strong> из {{n}}"
           }
         },
         "tagging": {
@@ -6196,7 +6198,8 @@
       "some_setup_could_not_be_read": "{{productName}} не смог прочитать {{sources}} — ниже не показано.",
       "files_could_not_be_read": "Не удалось прочитать файлы",
       "your_existing_kirocrew_setup_will_not_be_affecte": "Ваша существующая конфигурация {{productName}} не будет затронута.",
-      "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "Выбранная конфигурация готова в {{productName}}.",
+      "import_setup_stage": "Импортировать конфигурацию · {{stage}} из {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Сохранено, но эта копия {{productName}} не смогла обновить конфигурацию агента, поэтому новые чаты используют прежние настройки. Причину смотри на странице «Логи»."
@@ -7143,7 +7146,7 @@
       "next": "Далее",
       "no_execution_history_yet": "История запусков пока пуста",
       "ok": "OK",
-      "page": "Страница",
+      "page_n": "Страница {{page}}",
       "prev": "Назад",
       "status": "Статус",
       "summary": "Сводка",
@@ -8778,11 +8781,12 @@
     },
     "searchResultsList": {
       "assistant": "Ассистент",
-      "matches_around_the_current_result_narrow_your_se": "совпадений вокруг текущего результата — уточните запрос, чтобы увидеть все.",
-      "of": "из",
       "search_results": "Результаты поиска",
       "selected": "выбрано",
-      "showing": "Показано",
+      "showing_matches_few": "Показано {{shown}} из {{n}} совпадений вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_many": "Показано {{shown}} из {{n}} совпадений вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_one": "Показано {{shown}} из {{n}} совпадения вокруг текущего результата — уточни запрос, чтобы увидеть все.",
+      "showing_matches_other": "Показано {{shown}} из {{n}} совпадения вокруг текущего результата — уточни запрос, чтобы увидеть все.",
       "you": "Ты"
     },
     "multiSelect": {
@@ -12398,7 +12402,6 @@
         "aria_expand_task_list": "Выполнено задач: {{done}} из {{total}}. Развернуть список задач",
         "current_task": "Текущая задача",
         "more": "ещё…",
-        "of": "из",
         "task_completion": "Выполнение задачи",
         "aria_mark_done": "Отметить выполненной: {{task}}. Агент не будет её переделывать. Нажми ещё раз, чтобы отменить.",
         "aria_mark_not_done": "Отметить невыполненной: {{task}}. Агент будет считать её открытой. Нажми ещё раз, чтобы отменить.",
@@ -12411,7 +12414,8 @@
         "fail_remote": "Этим списком управляет удалённая машина этой сессии, поэтому изменить его здесь нельзя.",
         "set_by_you_done": "Ты отметил это как выполненное; агент ещё не подтвердил.",
         "set_by_you_open": "Ты отметил это как невыполненное; агент ещё не подтвердил.",
-        "sending": "Отправка"
+        "sending": "Отправка",
+        "done_of_total": "{{done}} из {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Свернуть рассуждения модели",
@@ -14858,8 +14862,6 @@
         "no_items_found": "Элементы не найдены",
         "no_items_match_your_filters": "Нет элементов, соответствующих фильтрам",
         "no_items_match_your_search": "Нет элементов, соответствующих запросу",
-        "of": "из",
-        "page": "Страница",
         "prev": "← Назад",
         "prev_next_page": "Пред./след. страница",
         "search_explore_and_manage_your_knowledge_base": "Поиск, изучение и управление базой знаний",
@@ -14888,7 +14890,8 @@
         "stats_sources_one": "{{count}} источник",
         "stats_sources_few": "{{count}} источника",
         "stats_sources_many": "{{count}} источников",
-        "stats_sources_other": "{{count}} источника"
+        "stats_sources_other": "{{count}} источника",
+        "page_of": "Страница {{page}} из {{pages}}"
       },
       "itemCard": {
         "copied": "Скопировано!",
@@ -14915,8 +14918,7 @@
         "items_count": "(элементов: {{count}})",
         "next": "Далее →",
         "no_source": "Без источника",
-        "of": "из",
-        "page": "Страница",
+        "page_of": "Страница {{page}} из {{pages}}",
         "prev": "← Назад",
         "unknown_source": "Неизвестный источник"
       },
@@ -16152,10 +16154,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · выполняется локально в процессе",
         "embedding_status": "Статус эмбеддингов",
-        "entries": "записей",
         "episodic_context_injected_per_message": "Эпизодический контекст (подставляется в каждое сообщение)",
         "episodic_memory": "Эпизодическая память",
-        "events": "событий",
         "every_memory_create_update_delete_conflict_and_i": "Здесь фиксируются все создания, обновления, удаления, конфликты и блоки внедрения памяти.",
         "filter_by_key_or_value": "Фильтр по ключу или значению…",
         "filter_by_tag": "Фильтр по тегу:",
@@ -16172,7 +16172,6 @@
         "no_matching_entries": "Нет подходящих записей",
         "no_semantic_entries": "Нет семантических записей",
         "not_active": "не активно",
-        "of": "из",
         "open_embedding_model_settings": "Открыть настройки модели эмбеддингов",
         "preview": "Предпросмотр",
         "preview_what_gets_injected_into_prompts_enter_a": "Посмотри, что попадает в промпты. Введи запрос, чтобы увидеть результаты эпизодического поиска.",
@@ -16186,7 +16185,6 @@
         "semantic_memory": "Семантическая память",
         "set": "Задать",
         "setup_failed": "Настройка не удалась",
-        "showing": "Показано",
         "status_unknown": "неизвестно",
         "structured_key_value_facts_about_you_confidence": "Структурированные факты о тебе в виде ключ-значение. Уверенность: насколько система уверена (1.0 = задано тобой, 0.85 = извлечено из чата). Источник: кто записал (user_explicit = ты, consolidation = извлечено автоматически).",
         "structured_semantic_key_value_episodic_conversat": "Структурированная семантическая (ключ-значение) и эпизодическая (фрагменты переписки) память с векторным поиском. Эмбеддинги всегда включены — модель скачивается автоматически в фоне.",
@@ -16198,7 +16196,27 @@
         "verifying_model_integrity": "Проверка целостности модели...",
         "enable_err_config_unreadable": "Не удалось сохранить векторную память: не удалось прочитать config.json. Исправь файл и попробуй ещё раз.",
         "enable_err_dim_unreadable": "Не удалось прочитать ширину векторов модели эмбеддингов, поэтому векторная память не включена. Попробуй ещё раз или запусти 'kirocrew doctor', если ошибка повторяется.",
-        "enable_err_owner_only": "Настроить векторную память может только владелец панели."
+        "enable_err_owner_only": "Настроить векторную память может только владелец панели.",
+        "showing_entries_one": "Показана {{n}} запись",
+        "showing_entries_few": "Показаны {{n}} записи",
+        "showing_entries_many": "Показано {{n}} записей",
+        "showing_entries_other": "Показано {{n}} записи",
+        "showing_events_one": "Показано {{n}} событие",
+        "showing_events_few": "Показаны {{n}} события",
+        "showing_events_many": "Показано {{n}} событий",
+        "showing_events_other": "Показано {{n}} события",
+        "showing_events_filtered_one": "Показано {{n}} событие (всего {{total}})",
+        "showing_events_filtered_few": "Показаны {{n}} события (всего {{total}})",
+        "showing_events_filtered_many": "Показано {{n}} событий (всего {{total}})",
+        "showing_events_filtered_other": "Показано {{n}} события (всего {{total}})",
+        "showing_semantic_one": "Показано {{shown}} из {{total}}",
+        "showing_semantic_few": "Показано {{shown}} из {{total}}",
+        "showing_semantic_many": "Показано {{shown}} из {{total}}",
+        "showing_semantic_other": "Показано {{shown}} из {{total}}",
+        "showing_semantic_filtered_one": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_few": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_many": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})",
+        "showing_semantic_filtered_other": "Показано {{shown}} из {{matched}} (отфильтровано из {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Проекты, над которыми вы работали",

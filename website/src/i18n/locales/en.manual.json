@@ -733,7 +733,10 @@
             "role_triage": "Triage",
             "role_write": "Write",
             "notify_me_when_ci_fails_on_my_pull_request": "Notify me when CI fails on one of my pull requests in {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Reads GitHub Actions runs only on your own open pull requests, through your gh sign-in. Mute it or change its priority under Settings → Notifications."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Reads GitHub Actions runs only on your own open pull requests, through your gh sign-in. Mute it or change its priority under Settings → Notifications.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> open issue is marked first-issue-friendly",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> open issues are marked first-issue-friendly",
+            "triage_needed_of_open": "Open issues needing triage: <strong>{{triage}}</strong> of {{n}}"
           },
           "generalSettings": {
             "always_refetch": "Always refetch",

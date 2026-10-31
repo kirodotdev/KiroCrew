@@ -2906,9 +2906,6 @@
             "no_members_found_for_this_repo": "Nessun membro trovato per questo repo.",
             "notifications": "Notifiche",
             "notify_me_when_a": "Avvisami quando un",
-            "of": "di",
-            "open_issues_are_marked_first_issue_friendly": "issue aperte sono contrassegnate come adatte ai nuovi arrivati",
-            "open_issues_currently_need_triage": "issue aperte necessitano attualmente di triage",
             "open_on": "Apri su",
             "open_tagging": "Apri l'assegnazione dei tag",
             "organises_its_issues_and_are_never_written_back": "organizza le sue issue e non vengono mai riscritte su",
@@ -2937,7 +2934,11 @@
             "without_push_access_to": "Senza accesso push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Le tue modifiche vengono mantenute qui ma non verranno salvate in modo permanente. Se hai appena aggiornato Issue Radar, riavvia il backend così l'API delle impostazioni diventa disponibile.",
             "notify_me_when_ci_fails_on_my_pull_request": "Avvisami quando la CI fallisce su una delle mie pull request in {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di GitHub Actions sulle tue pull request aperte, tramite il tuo accesso a gh. Silenzialo o cambiane la priorità in Impostazioni → Notifiche."
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Legge solo le esecuzioni di GitHub Actions sulle tue pull request aperte, tramite il tuo accesso a gh. Silenzialo o cambiane la priorità in Impostazioni → Notifiche.",
+            "first_issue_friendly_count_one": "<strong>{{n}}</strong> issue aperta è contrassegnata come adatta ai nuovi arrivati",
+            "first_issue_friendly_count_many": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
+            "first_issue_friendly_count_other": "<strong>{{n}}</strong> issue aperte sono contrassegnate come adatte ai nuovi arrivati",
+            "triage_needed_of_open": "Issue aperte da smistare: <strong>{{triage}}</strong> di {{n}}"
           }
         },
         "tagging": {
@@ -6093,7 +6094,8 @@
       "some_setup_could_not_be_read": "{{productName}} non è riuscito a leggere {{sources}} — non elencato di seguito.",
       "files_could_not_be_read": "Non è stato possibile leggere i file",
       "your_existing_kirocrew_setup_will_not_be_affecte": "La tua configurazione esistente di {{productName}} non verrà modificata.",
-      "your_selected_setup_is_ready_in_kiro_crew": "La configurazione selezionata è pronta in {{productName}}."
+      "your_selected_setup_is_ready_in_kiro_crew": "La configurazione selezionata è pronta in {{productName}}.",
+      "import_setup_stage": "Importa la configurazione · {{stage}} di {{stages}}"
     },
     "agentSpecNotRewrittenNotice": {
       "saved_but_not_applied": "Salvato, ma questa copia di {{productName}} non è riuscita ad aggiornare la configurazione dell’agente, quindi le nuove chat mantengono la configurazione precedente. Apri la pagina «Log» per vedere il motivo."
@@ -7025,7 +7027,7 @@
       "next": "Avanti",
       "no_execution_history_yet": "Ancora nessuna cronologia di esecuzione",
       "ok": "OK",
-      "page": "Pagina",
+      "page_n": "Pagina {{page}}",
       "prev": "Prec.",
       "status": "Stato",
       "summary": "Riepilogo",
@@ -8641,11 +8643,11 @@
     },
     "searchResultsList": {
       "assistant": "Assistente",
-      "matches_around_the_current_result_narrow_your_se": "corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
-      "of": "di",
       "search_results": "Risultati della ricerca",
       "selected": "selezionato",
-      "showing": "Visualizzati",
+      "showing_matches_many": "Visualizzate {{shown}} di {{n}} corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
+      "showing_matches_one": "Visualizzate {{shown}} di {{n}} corrispondenza intorno al risultato attuale — restringi la ricerca per vederle tutte.",
+      "showing_matches_other": "Visualizzate {{shown}} di {{n}} corrispondenze intorno al risultato attuale — restringi la ricerca per vederle tutte.",
       "you": "Tu"
     },
     "multiSelect": {
@@ -12212,7 +12214,6 @@
         "aria_expand_task_list": "{{done}} di {{total}} attività completate. Espandi l’elenco delle attività",
         "current_task": "Attività corrente",
         "more": "altri…",
-        "of": "di",
         "task_completion": "Completamento dell'attività",
         "aria_mark_done": "Segna come completata: {{task}}. L'agente non la rifarà. Clicca di nuovo per annullare.",
         "aria_mark_not_done": "Segna come non completata: {{task}}. L'agente la considera ancora aperta. Clicca di nuovo per annullare.",
@@ -12225,7 +12226,8 @@
         "fail_remote": "Questa lista è gestita dalla macchina remota di questa sessione, quindi non può essere modificata qui.",
         "set_by_you_done": "Hai segnato questa riga come fatta; l'agente non l'ha ancora confermato.",
         "set_by_you_open": "Hai segnato questa riga come non fatta; l'agente non l'ha ancora confermato.",
-        "sending": "Invio in corso"
+        "sending": "Invio in corso",
+        "done_of_total": "{{done}} di {{total}}"
       },
       "thinkingBlock": {
         "collapse_model_reasoning": "Comprimi il ragionamento del modello",
@@ -14623,8 +14625,6 @@
         "no_items_found": "Nessun elemento trovato",
         "no_items_match_your_filters": "Nessun elemento corrisponde ai tuoi filtri",
         "no_items_match_your_search": "Nessun elemento corrisponde alla tua ricerca",
-        "of": "di",
-        "page": "Pagina",
         "prev": "← Prec.",
         "prev_next_page": "Pagina prec./succ.",
         "search_explore_and_manage_your_knowledge_base": "Cerca, esplora e gestisci la tua base di conoscenze",
@@ -14649,7 +14649,8 @@
         "stats_relations_many": "{{count}} relazioni",
         "stats_sources_one": "{{count}} origine",
         "stats_sources_other": "{{count}} origini",
-        "stats_sources_many": "{{count}} origini"
+        "stats_sources_many": "{{count}} origini",
+        "page_of": "Pagina {{page}} di {{pages}}"
       },
       "itemCard": {
         "copied": "Copiato!",
@@ -14676,8 +14677,7 @@
         "items_count": "({{count}} elementi)",
         "next": "Avanti →",
         "no_source": "Nessuna origine",
-        "of": "di",
-        "page": "Pagina",
+        "page_of": "Pagina {{page}} di {{pages}}",
         "prev": "← Prec.",
         "unknown_source": "Origine sconosciuta"
       },
@@ -15885,10 +15885,8 @@
         "embed_model_label": "{{model}} · {{dim}}-dim",
         "embed_model_runs_locally": "{{model}} · {{dim}}-dim · viene eseguito localmente nel processo",
         "embedding_status": "Stato degli embedding",
-        "entries": "voci",
         "episodic_context_injected_per_message": "Contesto episodico (inserito per messaggio)",
         "episodic_memory": "Memoria episodica",
-        "events": "eventi",
         "every_memory_create_update_delete_conflict_and_i": "Ogni creazione, aggiornamento, eliminazione, conflitto e blocco di inserimento della memoria viene registrato qui.",
         "filter_by_key_or_value": "Filtra per chiave o valore…",
         "filter_by_tag": "Filtra per tag:",
@@ -15905,7 +15903,6 @@
         "no_matching_entries": "Nessuna voce corrispondente",
         "no_semantic_entries": "Nessuna voce semantica",
         "not_active": "non attivo",
-        "of": "di",
         "open_embedding_model_settings": "Apri le impostazioni del modello di embedding",
         "preview": "Anteprima",
         "preview_what_gets_injected_into_prompts_enter_a": "Anteprima di ciò che viene inserito nei prompt. Inserisci una query per vedere i risultati del recupero episodico.",
@@ -15919,7 +15916,6 @@
         "semantic_memory": "Memoria semantica",
         "set": "Imposta",
         "setup_failed": "Configurazione non riuscita",
-        "showing": "Visualizzati",
         "status_unknown": "sconosciuto",
         "structured_key_value_facts_about_you_confidence": "Fatti strutturati chiave-valore su di te. Confidenza: quanto è certo il sistema (1.0 = l’hai impostato tu, 0.85 = estratto dalla chat). Origine: chi l’ha scritto (user_explicit = tu, consolidation = estratto automaticamente).",
         "structured_semantic_key_value_episodic_conversat": "Memoria semantica strutturata (chiave-valore) + episodica (frammenti di conversazione) con ricerca vettoriale. Gli embedding sono sempre attivi — il modello viene scaricato automaticamente in background.",
@@ -15931,7 +15927,22 @@
         "verifying_model_integrity": "Verifica dell’integrità del modello…",
         "enable_err_config_unreadable": "Non è stato possibile salvare la memoria vettoriale perché config.json non è leggibile. Correggi il file, poi riprova.",
         "enable_err_dim_unreadable": "Non è stato possibile leggere la larghezza dei vettori del modello di embedding, quindi la memoria vettoriale non è stata attivata. Riprova, o esegui 'kirocrew doctor' se continua a non riuscire.",
-        "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale."
+        "enable_err_owner_only": "Solo il proprietario della dashboard può configurare la memoria vettoriale.",
+        "showing_entries_one": "Visualizzata {{n}} voce",
+        "showing_entries_many": "Visualizzate {{n}} voci",
+        "showing_entries_other": "Visualizzate {{n}} voci",
+        "showing_events_one": "Visualizzato {{n}} evento",
+        "showing_events_many": "Visualizzati {{n}} eventi",
+        "showing_events_other": "Visualizzati {{n}} eventi",
+        "showing_events_filtered_one": "Visualizzato {{n}} evento ({{total}} in totale)",
+        "showing_events_filtered_many": "Visualizzati {{n}} eventi ({{total}} in totale)",
+        "showing_events_filtered_other": "Visualizzati {{n}} eventi ({{total}} in totale)",
+        "showing_semantic_one": "Visualizzato {{shown}} di {{total}}",
+        "showing_semantic_many": "Visualizzati {{shown}} di {{total}}",
+        "showing_semantic_other": "Visualizzati {{shown}} di {{total}}",
+        "showing_semantic_filtered_one": "Visualizzato {{shown}} di {{matched}} (filtrato da {{total}})",
+        "showing_semantic_filtered_many": "Visualizzati {{shown}} di {{matched}} (filtrati da {{total}})",
+        "showing_semantic_filtered_other": "Visualizzati {{shown}} di {{matched}} (filtrati da {{total}})"
       },
       "wakatimeTab": {
         "active_projects": "Progetti su cui hai lavorato",

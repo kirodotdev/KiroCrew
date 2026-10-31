@@ -15,6 +15,7 @@ import { EmbeddingStatus } from './EmbeddingStatus'
 import { SettingsTab } from './SettingsTab'
 import { useIngestionJobs } from './useIngestionJobs'
 import type { KnowledgeItem, Entity, Source, NamespaceInfo, IngestionJob } from './types'
+import { fmtNumber } from '../../i18n/format'
 
 /**
  * Visible label per knowledge status. FULL literal keys, resolved at render —
@@ -658,7 +659,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
               {!sourceFirst && totalPages > 1 && (
                 <div className="flex items-center justify-center gap-3 mt-4 py-3 border-t border-border">
                   <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.index.prev')}</Btn>
-                  <span className="text-[13px] text-text font-medium">{i18nT('pages.knowledge.index.page')} {page} {i18nT('pages.knowledge.index.of')} {totalPages}</span>
+                  <span className="text-[13px] text-text font-medium">{i18nT('pages.knowledge.index.page_of', { page: fmtNumber(page), pages: fmtNumber(totalPages) })}</span>
                   <span className="text-[11px] text-muted">{i18nT('pages.knowledge.index.items_count', { count: total })}</span>
                   <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.index.next')}</Btn>
                 </div>
