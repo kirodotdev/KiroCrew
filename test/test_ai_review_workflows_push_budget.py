@@ -28,6 +28,7 @@ from ai_review_workflows_helpers import (
     _stub_path,
     _workflow,
 )
+from workflow_annotation_helpers import with_annotation_helpers
 from workflow_token_scopes import WORKFLOWS, load_workflow, missing_scopes
 
 PROMPT_NAME = "gpt-push-budget.md"
@@ -45,7 +46,7 @@ LANES = (
 
 def _budget_block() -> str:
     script = _step_script(_workflow("codex-review.yml"), STEP)
-    return script[script.index("PUSH_BUDGET_MIN=") :]
+    return with_annotation_helpers(script, script[script.index("PUSH_BUDGET_MIN=") :])
 
 
 class TestThePromptText:

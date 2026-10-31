@@ -27,6 +27,7 @@ from ai_review_workflows_helpers import (
     _write_stub,
 )
 from git_maintenance_helpers import git_maintenance_off_entries
+from workflow_annotation_helpers import with_annotation_helpers
 
 #: The two FORK advisory lanes whose verdict capture runs under ``set -uo pipefail``,
 #: with the header each one reads. The same-repo ``design-review.yml`` and
@@ -1533,7 +1534,7 @@ class TestForkGptRefusalTerminalState:
         assert bash is not None, "classification requires Bash"
         step = self._pass_step("GPT 6.1 review (discovery pass)")
         script = step["run"]
-        snippet = script[script.index('if [ "$rc" -ne 0 ]') :]
+        snippet = with_annotation_helpers(script, script[script.index('if [ "$rc" -ne 0 ]') :])
         runner_temp = tmp_path / "rt"
         runner_temp.mkdir()
         (runner_temp / "codex-pass-1-log.txt").write_text(log, encoding="utf-8")
@@ -1588,9 +1589,12 @@ class TestForkGptRefusalTerminalState:
         script = _step_script(
             _workflow("fork-gpt-review.yml"), "GPT 6.1 review (falsification pass)"
         )
-        snippet = script[
-            script.index("refused_passes=") : script.index("# Gate the adjudication pass below")
-        ]
+        snippet = with_annotation_helpers(
+            script,
+            script[
+                script.index("refused_passes=") : script.index("# Gate the adjudication pass below")
+            ],
+        )
         runner_temp = tmp_path / "rt"
         runner_temp.mkdir()
         gh_output = tmp_path / "gh-output"

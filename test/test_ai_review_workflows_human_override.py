@@ -24,6 +24,7 @@ from ai_review_workflows_helpers import (
     _write_stub,
 )
 from skill_script_helpers import load_skill_script
+from workflow_annotation_helpers import annotation_calls, with_annotation_helpers
 from workflow_token_scopes import WORKFLOWS, load_workflow
 
 RELEASE_RECORD_PATH = (
@@ -413,8 +414,8 @@ class TestHumanOverrideHandler:
         workflow = _workflow("ai-review-human-override.yml")
         script = _step_script(workflow, "Re-run line reviewers with the human decision")
 
-        assert "::error::" not in script
-        assert "::warning::" in script
+        assert not annotation_calls(script, "error")
+        assert annotation_calls(script, "warning")
         assert 'if [ -n "$failed_lanes" ]; then' in script
         assert "post_notice" in script
         assert "could not be re-run automatically" in script
@@ -711,7 +712,7 @@ class TestOverrideReadFailureFailsClosed:
         script = _step_script(_workflow(lane), "Resolve human override")
         start = script.index('exact="')
         end = script.index('actor="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_read(
         self,
@@ -852,7 +853,7 @@ class TestLedgerReadFailureFailsClosed:
         script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
         start = script.index('ledger_comments=""')
         end = script.index('disp_authors="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_read(self, tmp_path: Path, gh_status: int = 0, fail_first: int = 0):
         bash = _bash()
@@ -957,7 +958,7 @@ class TestLedgerWriterGateFailsClosed:
         script = _step_script(_workflow("codex-review.yml"), "Write review prompt")
         start = script.index('disp_authors="')
         end = script.index('ledger_full="')
-        return script[start:end]
+        return with_annotation_helpers(script, script[start:end])
 
     def _run_gate(self, tmp_path: Path, perm_mode: str):
         bash = _bash()

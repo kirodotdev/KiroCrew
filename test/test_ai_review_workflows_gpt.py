@@ -25,6 +25,7 @@ from ai_review_workflows_helpers import (
     _step_script,
     _workflow,
 )
+from workflow_annotation_helpers import with_annotation_helpers
 
 
 class TestGptVerdictVisibility:
@@ -157,7 +158,7 @@ class TestGptRefusalTerminalState:
             pytest.skip("classification requires Bash")
         step = self._pass_step("GPT 6.1 review (discovery pass)")
         script = step["run"]
-        snippet = script[script.index('if [ "$rc" -ne 0 ]') :]
+        snippet = with_annotation_helpers(script, script[script.index('if [ "$rc" -ne 0 ]') :])
         runner_temp = tmp_path / "rt"
         runner_temp.mkdir()
         (runner_temp / "codex-pass-1-log.txt").write_text(log, encoding="utf-8")

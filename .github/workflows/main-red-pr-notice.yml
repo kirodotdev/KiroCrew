@@ -99,6 +99,7 @@ jobs:
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           BASE_SHA: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           notice=.github/scripts/main_red_pr_notice.py
           nodeids=.github/scripts/main_red_nodeids.py
@@ -141,7 +142,7 @@ jobs:
             > "$work/timeline.ndjson" 2>/dev/null; then
             timeline_args=(--timeline "$work/timeline.ndjson")
           else
-            echo "::notice::Could not read the timeline of #$existing; the fix line says unknown."
+            notice "Could not read the timeline of #$existing; the fix line says unknown."
           fi
 
           # The failed jobs of this pull request run, newest cap 20 logs, as files.
@@ -152,12 +153,12 @@ jobs:
           while read -r job_id; do
             case "$job_id" in ''|*[!0-9]*) continue ;; esac
             if [ "$fetched" -ge 20 ]; then
-              echo "::notice::More than 20 failed jobs; reading the first 20 logs."
+              notice "More than 20 failed jobs; reading the first 20 logs."
               break
             fi
             fetched=$((fetched + 1))
             gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$work/logs/$job_id.log" 2>/dev/null \
-              || { echo "::notice::Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
+              || { notice "Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
           done < "$work/failed-jobs.txt"
           python3 "$nodeids" extract "$work/logs" > "$work/pr-failures.json"
           if [ "$(jq 'length' "$work/pr-failures.json")" = "0" ]; then

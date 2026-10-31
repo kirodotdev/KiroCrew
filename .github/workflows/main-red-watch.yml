@@ -123,6 +123,7 @@ jobs:
           PROOF_JOB_PREFIX: Backend Tests
           PROOF_STEP_NAME: Upload shard coverage
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           script=.github/scripts/main_red_nodeids.py
           work="$RUNNER_TEMP/main-red"
@@ -136,7 +137,7 @@ jobs:
             --description "Main's CI is red on a named test; filed by main-red-watch.yml" >/dev/null 2>&1; then
             have_label=1
           else
-            echo "::notice::Could not ensure the main-red label; looking up the issue by title prefix."
+            notice "Could not ensure the main-red label; looking up the issue by title prefix."
           fi
 
           # Sets `existing` (an issue number or empty) and writes its body to
@@ -193,12 +194,12 @@ jobs:
           while read -r job_id; do
             case "$job_id" in ''|*[!0-9]*) continue ;; esac
             if [ "$fetched" -ge 20 ]; then
-              echo "::notice::More than 20 failed jobs; reading the first 20 logs."
+              notice "More than 20 failed jobs; reading the first 20 logs."
               break
             fi
             fetched=$((fetched + 1))
             gh api "repos/$REPO/actions/jobs/$job_id/logs" > "$work/logs/$job_id.log" 2>/dev/null \
-              || { echo "::notice::Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
+              || { notice "Could not read the log of job $job_id; skipping it."; rm -f "$work/logs/$job_id.log"; }
           done < "$work/failed-jobs.txt"
 
           python3 "$script" extract "$work/logs" > "$work/failures.json"
@@ -228,7 +229,7 @@ jobs:
               > "$work/timeline.ndjson"; then
               render "$existing" "$work/timeline.ndjson"
             else
-              echo "::notice::Could not read the timeline of #$existing; the fix line shows none."
+              notice "Could not read the timeline of #$existing; the fix line shows none."
               render "$existing"
             fi
             gh issue edit "$existing" --repo "$REPO" --body-file "$work/body.md"
@@ -247,6 +248,6 @@ jobs:
             if [ -n "$new_number" ]; then
               render "$new_number"
               gh issue edit "$new_number" --repo "$REPO" --body-file "$work/body.md" >/dev/null \
-                || echo "::notice::Could not add the issue number to the body of #$new_number (continuing)."
+                || notice "Could not add the issue number to the body of #$new_number (continuing)."
             fi
           fi
