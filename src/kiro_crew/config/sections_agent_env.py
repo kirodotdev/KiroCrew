@@ -73,6 +73,63 @@ def coerce_deepseek_env(raw: object) -> dict[str, str]:
     }
 
 
+#: The environment-variable names the Strands CLI reads for its model providers
+#: (``@strands-agents/cli`` ``PROVIDER_ENVIRONMENT_KEYS``), and so the only names
+#: a dashboard write may map under ``agent.strands_env``. The file-path variables
+#: the CLI also reads (``AWS_CONFIG_FILE``, ``AWS_SHARED_CREDENTIALS_FILE``) and
+#: the raw key-pair ones (``AWS_ACCESS_KEY_ID`` and friends) are left out: the
+#: first would point the harness at a file of the writer's choosing, and the
+#: standard credential chain already covers the second. Equal to
+#: ``acp.harness.strands.STRANDS_ENV_NAMES``, the set the spawn checks; a test holds
+#: the two equal so this module imports no harness code.
+STRANDS_ENV_NAMES = frozenset(
+    {
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OLLAMA_HOST",
+        "OLLAMA_MODEL",
+        "LITELLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_MODEL",
+    }
+)
+
+
+def validate_strands_env_patch(value: object) -> dict[str, str]:
+    """Validate a whole ``agent.strands_env`` map written through the dashboard.
+
+    Stricter than :func:`coerce_deepseek_env` on purpose: a dashboard write is
+    refused, not repaired, so nothing a person did not see lands on disk. Every
+    key must be one of :data:`STRANDS_ENV_NAMES` and every value a
+    ``secret://<vault name>`` reference whose name can round-trip through the
+    vault (non-empty, no surrounding whitespace). The publish floor refuses a
+    plaintext value again at write time; this is the first line.
+
+    Raises ``ValueError`` naming the offending KEY only, never a value or a vault
+    name, because the message is returned to the client and logged.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("agent.strands_env must be an object")
+    out: dict[str, str] = {}
+    for key, ref in value.items():
+        if not isinstance(key, str) or key not in STRANDS_ENV_NAMES:
+            raise ValueError("agent.strands_env names a variable the Strands harness does not read")
+        if not isinstance(ref, str) or not ref.startswith(SECRET_URI_PREFIX):
+            raise ValueError(
+                f"agent.strands_env entry {key!r} must be a 'secret://<vault name>' reference"
+            )
+        name = ref[len(SECRET_URI_PREFIX) :]
+        if not name or name != name.strip():
+            raise ValueError(f"agent.strands_env entry {key!r} names no usable vault entry")
+        out[key] = ref
+    return out
+
+
 #: The only names ``agent.child_env_defaults`` accepts. An allowlist rather than a
 #: denylist: each name is a measured kiro-cli tuning knob (its tokio and rayon
 #: pools), and any other variable would reach every process the agent runs --
