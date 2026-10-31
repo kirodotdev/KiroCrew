@@ -3,7 +3,8 @@ import { describe, it, expect } from 'vitest'
 import {
   drawnRect, keyToEvent, mapPointToFrame, modifiersOf, pointerToEvent, wheelToEvent, isHandBackKey,
   diffToEvents, focusOfReply, isSwipe, swipeToWheel, TAP_SLOP_PX, keyboardHints, proxyKeyIsForwarded, textToEvents, TEXT_CHUNK,
-  MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT,
+  MOD_ALT, MOD_CTRL, MOD_META, MOD_SHIFT, nextClickCount, isImePlaceholderKey, MULTI_CLICK_MS, MULTI_CLICK_PX,
+  desktopProxyKeyIsForwarded, keyUpFor,
 } from '../hooks/useBrowserLive.input'
 
 const noMods = { altKey: false, ctrlKey: false, metaKey: false, shiftKey: false }
@@ -186,5 +187,48 @@ describe('touch gestures', () => {
   it('no movement, or no box, sends nothing', () => {
     expect(swipeToWheel({ x: 5, y: 5 }, { x: 5, y: 5 }, { x: 5, y: 5 }, box, frame)).toBeNull()
     expect(swipeToWheel({ x: 5, y: 5 }, { x: 5, y: 50 }, { x: 5, y: 5 }, { ...box, width: 0 }, frame)).toBeNull()
+  })
+})
+
+describe('nextClickCount', () => {
+  const press = (t: number, x = 10, y = 10, button = 0, count = 1) => ({ t, x, y, button, count })
+  it('a first press is one click', () => {
+    expect(nextClickCount(null, 1000, 10, 10, 0)).toBe(1)
+  })
+  it('a press soon after and near the last one counts up, capped at a triple', () => {
+    expect(nextClickCount(press(1000), 1100, 12, 12, 0)).toBe(2)
+    expect(nextClickCount(press(1000, 10, 10, 0, 2), 1100, 10, 10, 0)).toBe(3)
+    expect(nextClickCount(press(1000, 10, 10, 0, 3), 1100, 10, 10, 0)).toBe(3)
+    expect(nextClickCount(press(1000), 1000 + MULTI_CLICK_MS, 10 + MULTI_CLICK_PX, 10, 0)).toBe(2)
+  })
+  it('too late, too far or another button starts again at one', () => {
+    expect(nextClickCount(press(1000), 1000 + MULTI_CLICK_MS + 1, 10, 10, 0)).toBe(1)
+    expect(nextClickCount(press(1000), 1100, 10 + MULTI_CLICK_PX + 1, 10, 0)).toBe(1)
+    expect(nextClickCount(press(1000), 1100, 10, 10, 2)).toBe(1)
+    expect(nextClickCount(press(1000), 900, 10, 10, 0)).toBe(1)
+  })
+})
+
+describe('isImePlaceholderKey', () => {
+  it('an IME placeholder key is one; a real key is not', () => {
+    expect(isImePlaceholderKey({ ...noMods, key: 'Process', code: 'KeyN' })).toBe(true)
+    expect(isImePlaceholderKey({ ...noMods, key: 'n', code: 'KeyN', keyCode: 229 })).toBe(true)
+    expect(isImePlaceholderKey({ ...noMods, key: 'n', code: 'KeyN', isComposing: true })).toBe(true)
+    expect(isImePlaceholderKey({ ...noMods, key: 'Enter', code: 'Enter', keyCode: 13 })).toBe(false)
+  })
+})
+
+describe('desktop proxy keys', () => {
+  it('every real key is forwarded, printable ones and Backspace too; IME and dead keys are not', () => {
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'j', code: 'KeyJ', keyCode: 74 })).toBe(true)
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'Backspace', code: 'Backspace', keyCode: 8 })).toBe(true)
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'Enter', code: 'Enter', keyCode: 13 })).toBe(true)
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'Process', code: 'KeyN', keyCode: 229 })).toBe(false)
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'n', code: 'KeyN', isComposing: true })).toBe(false)
+    expect(desktopProxyKeyIsForwarded({ ...noMods, key: 'Dead', code: 'KeyE', altKey: true })).toBe(false)
+  })
+  it('a release repeats its press without the text', () => {
+    expect(keyUpFor({ type: 'key', action: 'down', key: 'a', code: 'KeyA', text: 'a', modifiers: 8 }))
+      .toEqual({ type: 'key', action: 'up', key: 'a', code: 'KeyA', modifiers: 8 })
   })
 })

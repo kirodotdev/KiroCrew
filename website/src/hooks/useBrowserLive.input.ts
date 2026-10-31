@@ -117,8 +117,8 @@ function heldButton(buttons: number | undefined): BrowserInputEvent['button'] {
 
 /**
  * A pointer down, up or move. `clicks` is the click count the browser should
- * see (1, or 2 for a double click), counted by the caller from the DOM
- * `detail`. Returns `null` for a DOWN in the letterbox; an UP, and a MOVE while
+ * see (1, 2 for a double click, 3 for a triple), counted by the caller with
+ * `nextClickCount`. Returns `null` for a DOWN in the letterbox; an UP, and a MOVE while
  * a button is held (a drag that left the frame), are clamped to the frame's
  * edge so the page always sees the release where the drag ended.
  */
@@ -136,6 +136,41 @@ export function pointerToEvent(action: 'down' | 'up' | 'move', e: PointerLike, b
     modifiers: modifiersOf(e),
     w: frame.w,
   }
+}
+
+// ---- click counting ------------------------------------------------------------
+//
+// A pointer event's `detail` is always 0, so the card counts clicks itself:
+// a press soon after the last one, near it and with the same button, is the
+// next click of a double or triple click.
+
+/** The longest gap (ms) between two presses of one multi-click. */
+export const MULTI_CLICK_MS = 500
+/** How far (CSS px) a press may land from the last one and still count. */
+export const MULTI_CLICK_PX = 4
+
+/** The last press, as the click counter remembers it. */
+export interface PressRecord { t: number; x: number; y: number; button: number; count: number }
+
+/**
+ * The click count of a press at time `t` (ms), at client point `x`,`y`: one
+ * more than the previous press when it was within `MULTI_CLICK_MS` and
+ * `MULTI_CLICK_PX` with the same button (capped at 3, a triple click), else 1.
+ */
+export function nextClickCount(prev: PressRecord | null, t: number, x: number, y: number, button: number): number {
+  if (!prev || prev.button !== button) return 1
+  const dt = t - prev.t
+  if (dt < 0 || dt > MULTI_CLICK_MS) return 1
+  if (Math.hypot(x - prev.x, y - prev.y) > MULTI_CLICK_PX) return 1
+  return Math.min(3, prev.count + 1)
+}
+
+/**
+ * An IME's placeholder key down (the key that starts or feeds a composition):
+ * never a key for the page, the composed text arrives as an edit instead.
+ */
+export function isImePlaceholderKey(e: ProxyKeyLike): boolean {
+  return !!e.isComposing || e.keyCode === 229 || e.key === 'Process'
 }
 
 export interface WheelLike extends ModifierSource {
@@ -315,10 +350,26 @@ export interface ProxyKeyLike extends KeyLike {
  * keys (Enter, Tab, Delete, arrows) and Ctrl/Meta chords do.
  */
 export function proxyKeyIsForwarded(e: ProxyKeyLike): boolean {
-  if (e.isComposing || e.keyCode === 229 || e.key === 'Unidentified' || e.key === 'Process' || e.key === 'Dead') return false
+  if (isImePlaceholderKey(e) || e.key === 'Unidentified' || e.key === 'Dead') return false
   const chord = !!(modifiersOf(e) & (MOD_CTRL | MOD_META))
   if ((printable(e.key) || e.key === BACKSPACE_KEY) && !chord) return false
   return true
+}
+
+/**
+ * Whether a key down on the proxy goes to the page as a KEY on a DESKTOP
+ * keyboard: every real key does, printable ones and Backspace included, so
+ * page shortcuts, games and key repeat see the key itself. Only an IME's
+ * placeholder key and a dead key (an accent being built) are left to edit the
+ * proxy, whose composed text is sent instead.
+ */
+export function desktopProxyKeyIsForwarded(e: ProxyKeyLike): boolean {
+  return !isImePlaceholderKey(e) && e.key !== 'Unidentified' && e.key !== 'Dead'
+}
+
+/** The release of a key the page saw pressed (no text: a release types nothing). */
+export function keyUpFor(down: BrowserInputEvent): BrowserInputEvent {
+  return { type: 'key', action: 'up', key: down.key, code: down.code, modifiers: down.modifiers }
 }
 
 /** Keys the card keeps for itself while the person is in control. */

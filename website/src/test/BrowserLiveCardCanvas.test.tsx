@@ -152,6 +152,7 @@ describe('takeover input', () => {
     fireEvent.pointerMove(canvas, { clientX: 30, clientY: 30, buttons: 0 })
     expect(writes.input).not.toHaveBeenCalled()
     act(() => { vi.advanceTimersByTime(16) })
+    await settle()
     expect(writes.input).toHaveBeenCalledTimes(1)
     expect(writes.input.mock.calls[0][1]).toMatchObject({ action: 'move', x: 60, y: 60 })
     fireEvent.pointerMove(canvas, { clientX: 40, clientY: 40, buttons: 0 })
@@ -211,18 +212,101 @@ describe('takeover input', () => {
     expect(actions.at(-1)).toMatchObject({ type: 'mouse', action: 'up', x: 639, y: 0, button: 'left' })
   })
 
-  it('a wheel tick is posted with the pointer position and the deltas', () => {
-    mount({ interactive: true })
-    act(() => browserLiveStore.applyFrame(frame(1)))
-    const canvas = screen.getByTestId('browser-live-canvas')
-    // happy-dom's WheelEvent drops the pointer fields, so the event is built by hand.
+  // happy-dom's WheelEvent drops the pointer fields, so the event is built by hand.
+  const wheel = (canvas: HTMLElement, deltaY: number) => {
     const ev = new Event('wheel', { cancelable: true, bubbles: true })
-    for (const [k, v] of Object.entries({ clientX: 160, clientY: 100, deltaX: 0, deltaY: 40, deltaMode: 0, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false })) {
+    for (const [k, v] of Object.entries({ clientX: 160, clientY: 100, deltaX: 0, deltaY, deltaMode: 0, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false })) {
       Object.defineProperty(ev, k, { value: v })
     }
     canvas.dispatchEvent(ev)
+    return ev
+  }
+
+  it('a wheel tick is posted with the pointer position and the deltas', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const ev = wheel(screen.getByTestId('browser-live-canvas'), 40)
     expect(ev.defaultPrevented).toBe(true)
+    await settle()
     expect(writes.input.mock.calls[0][1]).toMatchObject({ type: 'wheel', x: 320, y: 200, dx: 0, dy: 40 })
+  })
+
+  /** The first press's POST stays in flight until `release()`. */
+  const slowFirstDown = () => {
+    let release!: () => void
+    let held = false
+    writes.input.mockImplementation((_k: string, ev: { action?: string }) => {
+      if (ev.action === 'down' && !held) {
+        held = true
+        return new Promise(r => { release = () => r({ ok: true }) })
+      }
+      return Promise.resolve({ ok: true })
+    })
+    return () => release()
+  }
+
+  it('a drag keeps its order behind a slow press, and its moves coalesce to one', async () => {
+    vi.useFakeTimers()
+    const release = slowFirstDown()
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 10, clientY: 10, button: 0, buttons: 1, pointerId: 1 })
+    await settle()
+    for (const x of [20, 30, 40, 50, 60]) {
+      fireEvent.pointerMove(canvas, { clientX: x, clientY: 10, buttons: 1 })
+      act(() => { vi.advanceTimersByTime(16) })
+      await settle()
+    }
+    fireEvent.pointerUp(canvas, { clientX: 60, clientY: 10, button: 0, pointerId: 1 })
+    fireEvent.pointerMove(canvas, { clientX: 70, clientY: 10, buttons: 0 })
+    act(() => { vi.advanceTimersByTime(16) })
+    await settle()
+    // Only the press is out; nothing has overtaken it.
+    expect(writes.input.mock.calls.map(c => c[1].action)).toEqual(['down'])
+    release()
+    await settle()
+    expect(writes.input.mock.calls.map(c => [c[1].action, c[1].x])).toEqual([['down', 20], ['move', 120], ['up', 120], ['move', 140]])
+  })
+
+  it('desktop wheels keep their order behind a slow press and add up while it is out', async () => {
+    const release = slowFirstDown()
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1 })
+    await settle()
+    wheel(canvas, 10)
+    wheel(canvas, 20)
+    wheel(canvas, 30)
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1 })
+    await settle()
+    expect(writes.input).toHaveBeenCalledTimes(1)
+    release()
+    await settle()
+    expect(writes.input.mock.calls.map(c => [c[1].type, c[1].action, c[1].dy])).toEqual([
+      ['mouse', 'down', undefined], ['wheel', undefined, 60], ['mouse', 'up', undefined],
+    ])
+  })
+
+  it('counts clicks itself: a second press 100 ms later is a double click, 600 ms later a single', async () => {
+    vi.useFakeTimers()
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    const click = () => {
+      fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, detail: 0 })
+      fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, detail: 0 })
+    }
+    click()
+    act(() => { vi.advanceTimersByTime(100) })
+    click()
+    act(() => { vi.advanceTimersByTime(600) })
+    click()
+    await settle()
+    expect(writes.input.mock.calls.map(c => [c[1].action, c[1].clicks])).toEqual([
+      ['down', 1], ['up', 1], ['down', 2], ['up', 2], ['down', 1], ['up', 1],
+    ])
   })
 
   // happy-dom builds no TouchList, so touch events are built by hand.
@@ -316,13 +400,75 @@ describe('takeover input', () => {
     expect(writes.input).not.toHaveBeenCalled()
   })
 
-  it('a mouse click never focuses the keyboard proxy', () => {
+  it('a mouse press gives the typing proxy focus, at the pointer, and the canvas wears the focus ring', () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    const proxy = screen.getByTestId('browser-live-type-proxy') as HTMLInputElement
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    expect(document.activeElement).toBe(proxy)
+    expect(proxy.style.left).toBe('160px')
+    expect(proxy.style.top).toBe('100px')
+    // No phone keyboard handling on a desktop press.
+    expect(proxy.inputMode).toBe('')
+    expect(canvas.getAttribute('data-proxy-focus')).toBe('true')
+  })
+
+  it('keyboard focus on the canvas (Tab) moves to the typing proxy while in control', () => {
+    mount({ interactive: true })
+    const canvas = screen.getByTestId('browser-live-canvas')
+    act(() => canvas.focus())
+    expect(document.activeElement).toBe(screen.getByTestId('browser-live-type-proxy'))
+    expect(canvas.getAttribute('data-proxy-focus')).toBe('true')
+  })
+
+  it('desktop IME: a composition types its text into the page and no placeholder key goes out', async () => {
     mount({ interactive: true })
     act(() => browserLiveStore.applyFrame(frame(1)))
     const canvas = screen.getByTestId('browser-live-canvas')
     fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
     fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
-    expect(document.activeElement).toBe(canvas)
+    await settle()
+    writes.input.mockClear()
+    const proxy = screen.getByTestId('browser-live-type-proxy') as HTMLInputElement
+    const fill = proxy.value
+    fireEvent.keyDown(proxy, { key: 'Process', code: 'KeyN', keyCode: 229 })
+    proxy.dispatchEvent(new Event('compositionstart'))
+    fireEvent.keyDown(proxy, { key: 'Process', code: 'KeyI', keyCode: 229, isComposing: true })
+    edit(proxy, fill + '你')
+    proxy.dispatchEvent(new Event('compositionend'))
+    // The canvas fallback never forwards a placeholder key either.
+    fireEvent.keyDown(canvas, { key: 'Process', code: 'KeyN', keyCode: 229 })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    await settle()
+    expect(sent()).toEqual([text('你')])
+  })
+
+  it('desktop keys on the proxy: Enter and ArrowLeft go as keys in order, Esc hands back', async () => {
+    const onHandBack = vi.fn()
+    mount({ interactive: true, onHandBack })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    writes.input.mockClear()
+    const proxy = screen.getByTestId('browser-live-type-proxy')
+    expect(document.activeElement).toBe(proxy)
+    fireEvent.keyDown(proxy, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    fireEvent.keyUp(proxy, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    fireEvent.keyDown(proxy, { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 })
+    fireEvent.keyUp(proxy, { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 })
+    fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65, ctrlKey: true })
+    fireEvent.keyUp(proxy, { key: 'a', code: 'KeyA', keyCode: 65, ctrlKey: true })
+    fireEvent.keyDown(proxy, { key: 'Escape', code: 'Escape', keyCode: 27 })
+    await settle()
+    expect(writes.input.mock.calls.map(c => [c[1].action, c[1].key])).toEqual([
+      ['down', 'Enter'], ['up', 'Enter'], ['down', 'ArrowLeft'], ['up', 'ArrowLeft'], ['down', 'a'], ['up', 'a'],
+    ])
+    expect(onHandBack).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).not.toBe(proxy)
   })
 
   /** The keyboard edits the proxy; the browser then fires `input`. */
@@ -442,6 +588,267 @@ describe('takeover input', () => {
     fireEvent.keyDown(proxy, { key: 'Enter', code: 'Enter', keyCode: 13 })
     await settle()
     expect(writes.input).not.toHaveBeenCalled()
+  })
+
+  /** A desktop mouse click on the frame: the proxy now types for a desktop keyboard. */
+  const desktopClick = async (x = 160, y = 100) => {
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: x, clientY: y, button: 0, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(canvas, { clientX: x, clientY: y, button: 0, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    writes.input.mockClear()
+    return screen.getByTestId('browser-live-type-proxy') as HTMLInputElement
+  }
+
+  it('desktop: a printable key goes to the page as a real key and leaves the proxy alone', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    const fill = proxy.value
+    expect(fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65 })).toBe(false)
+    await settle()
+    // Key repeat: a repeated down goes out too once the one before it has.
+    fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65, repeat: true })
+    fireEvent.keyUp(proxy, { key: 'a', code: 'KeyA', keyCode: 65 })
+    expect(fireEvent.keyDown(proxy, { key: 'Backspace', code: 'Backspace', keyCode: 8 })).toBe(false)
+    fireEvent.keyUp(proxy, { key: 'Backspace', code: 'Backspace', keyCode: 8 })
+    await settle()
+    expect(proxy.value).toBe(fill)
+    expect(sent().map(e => [e.action, e.key, e.text])).toEqual([
+      ['down', 'a', 'a'], ['down', 'a', 'a'], ['up', 'a', undefined], ['down', 'Backspace', undefined], ['up', 'Backspace', undefined],
+    ])
+    expect(sent().some(e => e.action === 'press')).toBe(false)
+  })
+
+  it('a move waiting on its tick is sent before a key pressed meanwhile', async () => {
+    vi.useFakeTimers()
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerMove(canvas, { clientX: 30, clientY: 30, buttons: 0 })
+    fireEvent.keyDown(canvas, { key: 'Enter', code: 'Enter' })
+    await settle()
+    act(() => { vi.advanceTimersByTime(16) })
+    await settle()
+    expect(sent().map(e => [e.type, e.action])).toEqual([['mouse', 'move'], ['key', 'down']])
+  })
+
+  it('alternating moves and wheels behind a stalled POST stay one coalesced job', async () => {
+    vi.useFakeTimers()
+    const release = slowFirstDown()
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1 })
+    await settle()
+    for (let i = 0; i < 10; i += 1) {
+      fireEvent.pointerMove(canvas, { clientX: 100 + i, clientY: 100, buttons: 0 })
+      act(() => { vi.advanceTimersByTime(16) })
+      wheel(canvas, 10)
+      await settle()
+    }
+    expect(writes.input).toHaveBeenCalledTimes(1)
+    release()
+    await settle()
+    expect(sent().slice(1).map(e => [e.type, e.action, e.x, e.dy])).toEqual([['mouse', 'move', 218, undefined], ['wheel', undefined, 320, 100]])
+  })
+
+  it('hand back then retake while a POST is stalled: nothing queued before reaches the new takeover', async () => {
+    let release!: () => void
+    writes.input.mockImplementationOnce(() => new Promise(r => { release = () => r({ sent: 1 }) }))
+    const { rerender } = mount({ interactive: true })
+    const proxy = screen.getByTestId('browser-live-type-proxy') as HTMLInputElement
+    edit(proxy, proxy.value + 'a')
+    edit(proxy, proxy.value + 'b')
+    await settle()
+    rerender(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive={false} aria-label="frame" />)
+    rerender(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive aria-label="frame" />)
+    edit(proxy, proxy.value + 'c')
+    release()
+    await settle()
+    expect(sent()).toEqual([text('a'), text('c')])
+  })
+
+  it('Esc during a composition cancels the candidate and does not hand back', async () => {
+    const onHandBack = vi.fn()
+    mount({ interactive: true, onHandBack })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    proxy.dispatchEvent(new Event('compositionstart'))
+    expect(fireEvent.keyDown(proxy, { key: 'Escape', code: 'Escape', keyCode: 27, isComposing: true })).toBe(true)
+    await settle()
+    expect(onHandBack).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(proxy)
+    expect(sent()).toEqual([])
+  })
+
+  it('a key held when the proxy blurs, or at hand-back, is released on the page', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65 })
+    act(() => proxy.blur())
+    await settle()
+    expect(sent().map(e => [e.action, e.key])).toEqual([['down', 'a'], ['up', 'a']])
+    writes.input.mockClear()
+    await desktopClick()
+    fireEvent.keyDown(proxy, { key: 'w', code: 'KeyW', keyCode: 87 })
+    await settle()
+    rerender(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive={false} aria-label="frame" />)
+    await settle()
+    expect(sent().map(e => [e.action, e.key])).toEqual([['down', 'w'], ['up', 'w']])
+  })
+
+  it('desktop: a click on a page password field makes the proxy a password box, and a non-field keeps it focused', async () => {
+    let focus = { editable: true, kind: 'password', mode: '' }
+    writes.input.mockImplementation(async (_k: string, ev: { action?: string }) => (ev.action === 'up' ? { sent: 1, focus } : { sent: 1 }))
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    expect(proxy.type).toBe('password')
+    focus = { editable: false, kind: '', mode: '' }
+    await desktopClick(200, 50)
+    expect(proxy.type).toBe('text')
+    expect(document.activeElement).toBe(proxy)
+  })
+
+  it('a drag between press and release ends the multi-click: the next press is a single', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, buttons: 1, pointerId: 1 })
+    fireEvent.pointerMove(canvas, { clientX: 200, clientY: 100, buttons: 1 })
+    fireEvent.pointerMove(canvas, { clientX: 160, clientY: 100, buttons: 1 })
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1 })
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, buttons: 1, pointerId: 1 })
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1 })
+    await settle()
+    expect(sent().filter(e => e.action !== 'move').map(e => [e.action, e.clicks])).toEqual([['down', 1], ['up', 1], ['down', 1], ['up', 1]])
+  })
+
+  const handBack = (rerender: (ui: React.ReactElement) => void) =>
+    rerender(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive={false} aria-label="frame" />)
+  const retake = (rerender: (ui: React.ReactElement) => void) =>
+    rerender(<BrowserLiveCardCanvas sessionKey={S} turnId="t1" visible interactive aria-label="frame" />)
+  /** The next POST stays in flight until the returned function resolves it. */
+  const stallNext = () => {
+    let resolve!: (v: unknown) => void
+    writes.input.mockImplementationOnce(() => new Promise(r => { resolve = r }))
+    return (v: unknown = { ok: true }) => resolve(v)
+  }
+
+  it('desktop: the letter typed right after an IME commit goes out; the commit Enter does not', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    proxy.dispatchEvent(new Event('compositionstart'))
+    proxy.dispatchEvent(new CompositionEvent('compositionend', { data: '你' }))
+    // Inside the 50 ms post-composition window.
+    fireEvent.keyDown(proxy, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    fireEvent.keyDown(proxy, { key: 'w', code: 'KeyW', keyCode: 87 })
+    fireEvent.keyUp(proxy, { key: 'w', code: 'KeyW', keyCode: 87 })
+    await settle()
+    expect(sent().filter(e => e.type === 'key' && e.action !== 'press').map(e => [e.action, e.key])).toEqual([['down', 'w'], ['up', 'w']])
+  })
+
+  it('a key queued behind a stalled POST and dropped by a hand-back is never released either', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    const release = stallNext()
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    fireEvent.keyDown(proxy, { key: 'k', code: 'KeyK', keyCode: 75 })
+    fireEvent.keyDown(canvas, { key: 'j', code: 'KeyJ' })
+    handBack(rerender)
+    release()
+    await settle()
+    // The press was out, so its button is let go; the keys were never sent, so no release.
+    expect(sent().map(e => [e.type, e.action])).toEqual([['mouse', 'down'], ['mouse', 'up']])
+  })
+
+  it('a pointercancel during a press releases the page button once, at the last position', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, buttons: 1, pointerId: 1 })
+    fireEvent.pointerMove(canvas, { clientX: 200, clientY: 100, buttons: 1 })
+    fireEvent.pointerCancel(canvas, { pointerId: 1 })
+    fireEvent.pointerUp(canvas, { clientX: 200, clientY: 100, button: 0, pointerId: 1 })
+    await settle()
+    expect(sent().filter(e => e.action !== 'move').map(e => [e.action, e.button, e.x])).toEqual([['down', 'left', 320], ['up', 'left', 400]])
+  })
+
+  it('a hand-back during a press releases the page button once', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 2, buttons: 2, pointerId: 1 })
+    await settle()
+    handBack(rerender)
+    await settle()
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 2, pointerId: 1 })
+    await settle()
+    expect(sent().map(e => [e.action, e.button])).toEqual([['down', 'right'], ['up', 'right']])
+  })
+
+  it('a press in the letterbox sends no release and handles no reply', async () => {
+    writes.input.mockImplementation(async () => ({ sent: 1, focus: { editable: true, kind: 'password', mode: '' } }))
+    mount({ interactive: true })
+    // 640x200 in a 320x200 box: drawn 320x100, letterbox above y=50.
+    act(() => browserLiveStore.applyFrame(frame(1, { w: 640, h: 200 })))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 10, button: 0, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 10, button: 0, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    expect(writes.input).not.toHaveBeenCalled()
+    expect((screen.getByTestId('browser-live-type-proxy') as HTMLInputElement).type).toBe('text')
+  })
+
+  it('a click reply that lands after a hand-back and retake changes nothing', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    const reply = stallNext()
+    fireEvent.pointerUp(canvas, { clientX: 160, clientY: 100, button: 0, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    handBack(rerender)
+    retake(rerender)
+    act(() => canvas.focus())
+    const proxy = screen.getByTestId('browser-live-type-proxy') as HTMLInputElement
+    expect(document.activeElement).toBe(proxy)
+    reply({ sent: 1, focus: { editable: true, kind: 'password', mode: '' } })
+    await settle()
+    expect(proxy.type).toBe('text')
+  })
+
+  it('key repeats behind a stalled POST queue at most one more down per key', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    const release = stallNext()
+    fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65 })
+    await settle()
+    for (let i = 0; i < 20; i += 1) fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65, repeat: true })
+    const canvas = screen.getByTestId('browser-live-canvas')
+    for (let i = 0; i < 20; i += 1) fireEvent.keyDown(canvas, { key: 'b', code: 'KeyB', repeat: i > 0 })
+    release()
+    await settle()
+    expect(sent().map(e => [e.action, e.key])).toEqual([['down', 'a'], ['down', 'a'], ['down', 'b']])
+  })
+
+  it('a key pressed on the canvas fallback is released at hand-back', async () => {
+    const { rerender } = mount({ interactive: true })
+    const canvas = screen.getByTestId('browser-live-canvas')
+    fireEvent.keyDown(canvas, { key: 'ArrowUp', code: 'ArrowUp' })
+    fireEvent.keyDown(canvas, { key: 'Process', code: 'KeyN', keyCode: 229 })
+    await settle()
+    handBack(rerender)
+    await settle()
+    expect(sent().map(e => [e.action, e.key])).toEqual([['down', 'ArrowUp'], ['up', 'ArrowUp']])
   })
 
   it('a click on the live (non-interactive) frame claims', () => {
