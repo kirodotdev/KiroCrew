@@ -12,6 +12,7 @@ import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { forgetClosedSessionRef, rememberClosedSession, trackClosedSessionClose } from '../lib/recentlyClosedSessions'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
 import type { ForkFailureNotice } from '../utils/forkFailure'
@@ -498,7 +499,15 @@ export function useSessionActions(mode?: string, opts?: {
   // the two made it ask (`closeConfirmPrompt`).
   const close = useCallback((slotKey: string) => {
     const prompt = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
-    if (prompt === null || confirm(prompt)) dispatch(deleteSlot(slotKey))
+    if (prompt === null || confirm(prompt)) {
+      // Recorded at the press, not on `fulfilled` (which trails the peer
+      // session's transcript load); a refused close drops the record.
+      const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
+      const ref = rememberClosedSession(slot)
+      const close = dispatch(deleteSlot(slotKey))
+      trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
+      void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
+    }
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
