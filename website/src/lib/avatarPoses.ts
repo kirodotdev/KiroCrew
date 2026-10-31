@@ -16,8 +16,10 @@
  * fed by `iconMotionVars()`. A CSS animation inside an `<img>`'s SVG makes the
  * browser re-raster the picture every frame, and iOS Safari re-rasters it in
  * pieces: the head, the tail and one eye came out of step, so the face looked
- * torn. A still raster moved as one layer cannot come apart: eyes and body are
- * the same pixels. Reduced-motion users get the still frame unchanged.
+ * torn. So both layers are still rasters: the body (`poseBodyDataUri`) and the
+ * eyes (`poseEyesDataUri`) sit inside the same body-motion wrappers, and only
+ * the eye layer adds its own blink and glance on top, as the ghost's eyes do.
+ * Reduced-motion users get the still frame unchanged.
  *
  * The art is a set of hand-drawn SVGs (`assets/avatarPoses/pose-N.svg`), each a
  * white ghost silhouette with two black eye cut-outs over a background rect.
@@ -245,15 +247,63 @@ export function poseDataUri(pose: string | undefined, bg: string | undefined): s
 const RECT_RE = /<rect\b[^>]*\/>/
 
 /**
- * The pose with its background tile removed: the white silhouette and the black
- * eyes on a transparent canvas, the layer a WORKING icon moves. Paths and
- * colours are byte-identical to the still frame's, so the moving face is the
- * still face. The tile is painted by `CrewAvatar` behind it and stays put, as
- * the ghost's tile does under its own body motion.
+ * An eye of a pose: every shipped pose draws one white silhouette path
+ * (`fill="#fff"`) and then two eye paths with no `fill`, which SVG paints black.
+ */
+const EYE_PATH_RE = /<path\b(?![^>]*\bfill=)[^>]*\/>/g
+
+/**
+ * The pose with its background tile and its eyes removed: the white silhouette
+ * alone on a transparent canvas, the body layer a WORKING icon moves. The path
+ * is byte-identical to the still frame's. The tile is painted by `CrewAvatar`
+ * behind it and stays put, as the ghost's tile does under its own body motion.
  */
 export function poseBodyDataUri(pose: string | undefined): string {
-  const body = POSE_SVG[resolvePose(pose)].replace(RECT_RE, '')
+  const body = POSE_SVG[resolvePose(pose)].replace(RECT_RE, '').replace(EYE_PATH_RE, '')
   return `data:image/svg+xml;utf8,${encodeURIComponent(body)}`
+}
+
+/**
+ * The pose's two eyes alone, in the same 300-unit canvas as the body, so the
+ * two layers stack pixel for pixel. A working icon blinks and glances with this
+ * layer the way the ghost's eyes do (`kg-blink`, `kg-look`), while the body
+ * layer carries both through sway, bob and squash.
+ */
+export function poseEyesDataUri(pose: string | undefined): string {
+  const svg = POSE_SVG[resolvePose(pose)]
+  const eyes = svg.match(EYE_PATH_RE) ?? []
+  const open = svg.match(/<svg\b[^>]*>/)?.[0] ?? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">'
+  return `data:image/svg+xml;utf8,${encodeURIComponent(`${open}${eyes.join('')}</svg>`)}`
+}
+
+/**
+ * Center of each pose's two eyes, in its 300-unit canvas: the origin a blink
+ * squashes toward, so the lids close on the eyes and not on the tile's middle.
+ * Measured with `getBBox()` over the two eye paths of each shipped file.
+ */
+const EYE_CENTERS: Record<string, readonly [number, number]> = {
+  'pose-1': [181.9, 115.4],
+  'pose-2': [158.8, 108],
+  'pose-3': [231.8, 125.7],
+  'pose-4': [114.8, 117.4],
+  'pose-5': [172.5, 101.4],
+  'pose-6': [108.1, 95.5],
+  'pose-7': [206.4, 102.5],
+  'pose-8': [157.8, 105.1],
+  'pose-9': [181, 124.7],
+  'pose-10': [102.7, 102.3],
+  'pose-11': [198, 100.6],
+}
+
+/** The pose canvas edge, in its own units. */
+const POSE_TILE = 300
+
+/** The custom properties placing a pose's blink origin, as unitless shares of
+ *  the box that `crewIconMotion.css` multiplies by `1%`. */
+export function poseEyeVars(pose: string | undefined): Record<string, string> {
+  const [x, y] = EYE_CENTERS[resolvePose(pose)]
+  const share = (v: number) => String(+((v / POSE_TILE) * 100).toFixed(4))
+  return { '--crew-icon-eye-x': share(x), '--crew-icon-eye-y': share(y) }
 }
 
 /** A length in the ghost's 1200-unit tile as a share of the avatar box, in
@@ -289,6 +339,9 @@ export function iconMotionVars(): Record<string, string> {
     '--crew-icon-sway-origin-y': pct(BODY_ORIGINS.sway[1]),
     '--crew-icon-sq-origin-x': pct(BODY_ORIGINS.sq[0]),
     '--crew-icon-sq-origin-y': pct(BODY_ORIGINS.sq[1]),
+    // The ghost's `kg-look` glance: 30 units right, then 26 left.
+    '--crew-icon-look-right': pct(30),
+    '--crew-icon-look-left': pct(-26),
   }
 }
 

@@ -687,6 +687,28 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
+  it('a working icon face flies with its framed root counter-scaled, not its bare inner image', async () => {
+    // A working icon draws its border and round corner on the motion root; the
+    // image it moves has none. The flight must hold THAT border's size.
+    localStorage.setItem(PANEL_OPEN_KEY, '0')
+    await renderPage([row({
+      bound: true, slot_key: 'member-oncall', running: true,
+      avatar: { kind: 'icon', pose: 'pose-3', bg: '#25679d' },
+    })])
+    fireEvent.click(await rosterRow('oncall'))
+    const pillFace = await screen.findByTestId('member-pill-face')
+    vi.spyOn(pillFace, 'getBoundingClientRect').mockReturnValue(
+      { x: 640, y: 14, left: 640, top: 14, right: 670, bottom: 44, width: 30, height: 30, toJSON: () => ({}) } as DOMRect,
+    )
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    const flight = await screen.findByTestId('crew-face-flight')
+    const root = flight.querySelector('[data-testid="crew-icon-motion"]') as HTMLElement
+    expect(root).not.toBeNull()
+    expect(root.style.borderWidth).not.toBe('')
+    expect((root.querySelector('img') as HTMLElement).style.borderWidth).toBe('')
+    await waitFor(() => expect(screen.queryByTestId('crew-face-flight')).toBeNull(), { timeout: 3000 })
+  })
+
   it('re-docking during the undock exit leaves the card face painted once the flight lands', async () => {
     // The undock hides the LEAVING card's face by an inline style, since props
     // cannot reach an exiting AnimatePresence child. A re-dock opens a new card

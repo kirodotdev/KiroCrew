@@ -10,15 +10,18 @@ opener of the same new file running the same pragma -- the switch fails at once 
 ``enable_wal`` reads the mode first and returns when it is already ``wal``; otherwise
 it retries the switch while the failure is a lock conflict, until its deadline.
 
-``keep_wal_on_close`` and ``truncate_wal_before_close`` stop a closing connection
-from deleting a ``-wal`` that another process may still be writing through.
+``keep_wal_on_close``, ``close_keeping_wal`` and ``truncate_wal_before_close`` stop
+a closing connection from deleting a ``-wal`` that another process may still be
+writing through.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3 as _stdlib_sqlite3
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew._sqlite_compat import sqlite3
@@ -89,7 +92,8 @@ def keep_wal_on_close(conn: Any) -> bool:
     :func:`truncate_wal_before_close` first.
 
     Returns whether the option is set. A driver without ``Connection.setconfig``
-    (``pysqlite3``, Python before 3.12) keeps SQLite's default and returns False.
+    (``pysqlite3``, Python before 3.12) keeps SQLite's default and returns False;
+    close such a connection with :func:`close_keeping_wal` instead.
     """
     setconfig = getattr(conn, "setconfig", None)
     option = getattr(_stdlib_sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
@@ -117,3 +121,43 @@ def truncate_wal_before_close(conn: Any) -> None:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
     except Exception:  # best effort: the committed data is already safe in the -wal
         logger.debug("WAL checkpoint before close did not run", exc_info=True)
+
+
+def close_keeping_wal(conn: Any) -> None:
+    """Close *conn* so that its close cannot delete the ``-wal`` and ``-shm``.
+
+    For a driver without ``Connection.setconfig``, where :func:`keep_wal_on_close`
+    cannot set ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``. The close only deletes the
+    files after it takes an exclusive lock on the database. Two things stop that:
+
+    1. A read-only connection to the same file, from the same SQLite library,
+       reads once and is still open when *conn* closes. In WAL mode it keeps a
+       shared lock, and SQLite refuses an exclusive lock while another connection
+       in this process holds a shared one.
+    2. That read-only connection closes last. Its descriptor is read-only, so
+       its own exclusive lock request fails and its close deletes nothing.
+
+    Committed data is unaffected, as with :func:`keep_wal_on_close`. Run
+    :func:`truncate_wal_before_close` first to empty the ``-wal``. When the
+    read-only connection cannot be opened, *conn* still closes, with SQLite's
+    default behaviour. *conn* is always closed; an error from its close is raised.
+    """
+    driver = _stdlib_sqlite3 if isinstance(conn, _stdlib_sqlite3.Connection) else sqlite3
+    holder = None
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        path = str(row[2]) if row is not None and row[2] else ""
+        if path:
+            holder = driver.connect(Path(path).as_uri() + "?mode=ro", uri=True)
+            holder.execute("SELECT count(*) FROM sqlite_schema").fetchone()
+    except Exception:  # fall back to the default close; it never loses committed data
+        logger.debug("read-only holder for the close did not open", exc_info=True)
+        failed, holder = holder, None
+        if failed is not None:
+            with contextlib.suppress(Exception):
+                failed.close()
+    try:
+        conn.close()
+    finally:
+        if holder is not None:
+            holder.close()

@@ -67,6 +67,7 @@ import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey, type MemberThreadOutcom
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector } from '../../store'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
+import { avatarFrameIn } from '../../components/CrewAvatar'
 import { PROFILE_FACE_PX } from './CrewProfilePanel'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
@@ -130,16 +131,18 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
     // the real faces at either end draw both at their fixed CSS size — the
     // corner visibly snapped on landing — so the two are counter-scaled to
     // hold their on-screen size for the whole flight.
-    const img = el.querySelector('img')
-    const rest = img ? getComputedStyle(img) : null
+    // The frame, not merely the first image: a working icon draws its border
+    // on the motion root, and the image inside it has none.
+    const frame = avatarFrameIn(el)
+    const rest = frame ? getComputedStyle(frame) : null
     const restRadius = rest ? parseFloat(rest.borderRadius) || 0 : 0
     const restBorder = rest ? parseFloat(rest.borderWidth) || 0 : 0
     const place = (left: number, top: number, side: number) => {
       const k = side / PROFILE_FACE_PX
       el.style.transform = `translate(${left}px, ${top}px) scale(${k})`
-      if (img) {
-        img.style.borderRadius = `${restRadius / k}px`
-        img.style.borderWidth = `${restBorder / k}px`
+      if (frame) {
+        frame.style.borderRadius = `${restRadius / k}px`
+        frame.style.borderWidth = `${restBorder / k}px`
       }
     }
     const { from } = flight

@@ -182,9 +182,11 @@ async def permission_pre_tool_block(
     hook meets KAS's "Fetch URL". A spec hook then matches those names and the
     trusted identity only, never the title, as on the chat turn loop.
 
-    Blocks by the same rule the chat turn loop applies: exit 2 is a delivered
-    deny, and any other nonzero exit or a fire that raises is a gate with no
-    verdict, which blocks. With no store registered in this process the saved
+    Blocks by the same rule the chat turn loop applies
+    (:attr:`ScriptHookResult.pre_tool_blocks`): for a Hooks-page hook exit 2 is a
+    delivered deny and any other nonzero exit is a gate with no verdict, which
+    blocks; a spec hook blocks only on a delivered exit 2, as on kiro-cli. A fire
+    that raises blocks. With no store registered in this process the saved
     Hooks-page hooks are read from disk (:func:`persisted_hook_store`), and saved
     hooks that cannot be read block.
     """
@@ -228,11 +230,17 @@ async def permission_pre_tool_block(
         logger.warning("PreToolUse hook fire failed; blocking tool", exc_info=True)
         return f"PreToolUse hook could not run: {exc}"[:500]
     for r in results:
-        if r.exit_code == 2:
-            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
-        if r.exit_code != 0:
-            detail = (
-                r.error[:200] if r.error else (r.stderr[-200:] or f"exited with code {r.exit_code}")
+        if r.exit_code == 0:
+            continue
+        if not r.pre_tool_blocks:
+            # A spec hook that was refused or failed: kiro-cli warns and runs the tool.
+            logger.warning(
+                "Spec hook %s did not run cleanly (%s); tool allowed",
+                r.hook_name,
+                r.failure_detail,
             )
-            return f"{r.hook_name}: {detail}"
+            continue
+        if r.exit_code == 2 and not r.refused:
+            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
+        return f"{r.hook_name}: {r.failure_detail}"
     return None
