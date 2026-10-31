@@ -240,15 +240,19 @@ def test_workflow_routes_every_scope_without_changing_local_defaults(jobs):
         assert jobs[name]["strategy"]["matrix"]["group"] == list(range(1, 9))
     hosted = jobs["backend-test-ipv6"]
     assert hosted["needs"] == ["changes", "await-fast-gate", "lint-gate"]
-    # Per leg, not `${{ matrix.os }}`: the Linux leg takes the organization's
-    # own larger-runner group in this repository and the standard image in a
-    # fork, which cannot reach that group, while the Windows leg keeps the
-    # runner matrix.os names. Pinning the whole expression is what catches a
-    # leg silently re-routed or a fork branch dropped.
+    # Per leg, not `${{ matrix.os }}`: each leg takes its OWN platform's
+    # larger-runner group in this repository and the standard image in a fork,
+    # which cannot reach that group. Both arms are pinned together because the
+    # trailing `|| matrix.os` makes a dropped arm silent -- the leg still runs,
+    # just back on the shared pool -- and a dropped fork branch strands every
+    # consumer in every fork. Each arm names a LABEL rather than a `group:`,
+    # which is what keeps a Windows leg off a Linux runner and vice versa.
     assert hosted["runs-on"] == (
         "${{ matrix.os == 'ubuntu-latest' && "
         "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' "
-        "|| 'ubuntu-latest') || matrix.os }}"
+        "|| 'ubuntu-latest') || matrix.os == 'windows-latest' && "
+        "(github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' "
+        "|| 'windows-latest') || matrix.os }}"
     )
     assert hosted["strategy"] == {
         "max-parallel": 4,

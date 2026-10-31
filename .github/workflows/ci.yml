@@ -1409,16 +1409,27 @@ jobs:
 
   # Native IPv6 loopback is required here, not enabled on the shared fleet.
   # Keep both OS contracts, including Windows' real IPv6 listener discovery.
+  #
+  # Both destinations below must therefore supply IPv6 loopback, the larger
+  # runners included. That is not taken on trust: the required cases bind `::1`
+  # with no skip guard and the step asserts a fixed case count with no skips, so
+  # a runner without it REDS this lane rather than passing a weaker check. If
+  # that ever happens on the Windows leg, the fix is to drop the Windows arm
+  # from the expression below, not to relax the assertion.
   backend-test-ipv6:
     name: Backend Tests (IPv6, ${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
     if: ${{ !cancelled() && needs.lint-gate.result == 'success' }}
     # Keep matrix.os stable: the check name and the artifact names use it, so
-    # the destination is resolved per leg here instead. The Linux leg takes the
-    # `kirocrew-runners` group, off the enterprise-shared standard pool, in this
-    # repository only -- a fork cannot reach an organization group. Every other
-    # leg, Windows here, keeps the runner matrix.os names.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
+    # the destination is resolved per leg here instead. Each leg takes its own
+    # platform's larger-runner group, off the enterprise-shared standard pool,
+    # in this repository only -- a fork cannot reach an organization group, so
+    # the inner `||` keeps it on the hosted image. Both definitions are 4 vCPU
+    # and 16 GB, the same as the images they replace, so only queue position
+    # moves. Each by its own LABEL: a bare `group:` dispatches to any member,
+    # and the two platforms live in two groups precisely so neither leg can
+    # land on the other's runner.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     timeout-minutes: 15
     strategy:
       max-parallel: 4
@@ -1942,9 +1953,10 @@ jobs:
   # non-leaf PRs -- where source changes land alongside new or modified test
   # files -- by running those test files LEAF_REPEAT times on both hosted
   # platforms.  GitHub-hosted runners only: the CodeBuild fleet is saturated
-  # by the eight-shard backend-test matrix.  The Linux leg's hosted runner is
-  # the `kirocrew-runners` group rather than the enterprise-shared standard
-  # pool; a fork cannot reach an organization group and stays standard.
+  # by the eight-shard backend-test matrix.  Each leg's hosted runner is its
+  # own platform's larger-runner group rather than the enterprise-shared
+  # standard pool; a fork cannot reach an organization group and stays
+  # standard.
   new-test-stability:
     name: New-test stability (${{ matrix.os }})
     needs: [changes, await-fast-gate, lint-gate]
@@ -1954,8 +1966,10 @@ jobs:
       && needs.lint-gate.result == 'success'
       && needs.changes.outputs.leaf_tests != 'true' }}
     # Keep matrix.os stable: the check name uses it, and each leg's
-    # pytest_timeout is keyed to it. Resolve the destination per leg instead.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os }}
+    # pytest_timeout is keyed to it. Resolve the destination per leg instead,
+    # each leg on its own platform's larger-runner group by LABEL, hosted in a
+    # fork that cannot reach an organization group.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
