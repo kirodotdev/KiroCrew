@@ -578,6 +578,8 @@ class TestHookGateKwargs:
         "spec_granted_builtins": "spec_granted_builtins",
         "spec_granted_commands": "spec_granted_commands",
         "spec_shell_allowlist": "spec_shell_allowlist",
+        "spec_write_allowlist": "spec_write_allowlist",
+        "spec_write_cwd": "spec_write_cwd",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -606,6 +608,8 @@ class TestHookGateKwargs:
             spec_granted_builtins=frozenset({"execute_bash"}),
             spec_granted_commands=("git status",),
             spec_shell_allowlist=("git log",),
+            spec_write_allowlist=("/w/out",),
+            spec_write_cwd="/w",
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -625,6 +629,8 @@ class TestHookGateKwargs:
             "spec_granted_builtins": frozenset({"execute_bash"}),
             "spec_granted_commands": ("git status",),
             "spec_shell_allowlist": ("git log",),
+            "spec_write_allowlist": ("/w/out",),
+            "spec_write_cwd": "/w",
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -657,6 +663,8 @@ class TestHookGateKwargs:
             "spec_granted_builtins": frozenset(),
             "spec_granted_commands": (),
             "spec_shell_allowlist": None,
+            "spec_write_allowlist": None,
+            "spec_write_cwd": "",
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -756,6 +764,8 @@ class TestHookGateKwargs:
         probe.spec_granted_builtins = frozenset({"<spec_granted_builtins>"})
         probe.spec_granted_commands = ("<spec_granted_commands>",)
         probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
+        probe.spec_write_allowlist = ("<spec_write_allowlist>",)
+        probe.spec_write_cwd = "<spec_write_cwd>"
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -785,7 +795,11 @@ class TestHookGateKwargs:
                 assert got[kwarg] is True
             elif kwarg == "spec_granted_builtins":
                 assert got[kwarg] == frozenset({f"<{attr}>"})
-            elif kwarg in ("spec_granted_commands", "spec_shell_allowlist"):
+            elif kwarg in (
+                "spec_granted_commands",
+                "spec_shell_allowlist",
+                "spec_write_allowlist",
+            ):
                 assert got[kwarg] == (f"<{attr}>",)
             else:
                 assert got[kwarg] == f"<{attr}>", kwarg

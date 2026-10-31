@@ -17,6 +17,7 @@ it.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -1169,6 +1170,116 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
         "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
         "and the command matches none of its allowedCommands"
     )
+
+
+def _is_spec_write_call(call: ToolCall) -> bool:
+    """Whether *call* is a file write of a KAS built-in: on the write plane
+    (:func:`is_edit_call`), or kiro-cli's ``fs_write`` among its names, deny-only
+    aliases included (KAS's ``delete_file``)."""
+    if is_edit_call(call.kind, call.diff_path):
+        return True
+    return "fs_write" in _spec_builtin_names(call) or "fs_write" in policy_aliases(call.mcp_tool)
+
+
+def _write_target_uncovered(target: str, patterns: Sequence[str], cwd: str) -> str | None:
+    """Why the write *target* is not covered by *patterns*, or ``None`` when it is.
+
+    ``~`` is expanded, as kiro-cli expands it, and a relative target is joined to
+    *cwd*, the session's own directory, which KAS resolves it against; with no
+    absolute *cwd* a relative target is not covered. Both the target as written
+    (normalized) and every symlink-resolved spelling of it must be covered, so a
+    link inside an allowed directory cannot carry the write out. The resolution
+    runs on the target before any ``..`` is folded, so ``link/..`` is followed the
+    way the filesystem follows it. Only when a spelling is not covered are the
+    entries' own directory parts resolved, as kiro-cli canonicalizes each entry,
+    so an entry written through a link still covers its real directory.
+    Resolution is bounded: one that does not complete, or fails, leaves the
+    target uncovered.
+    """
+    from kiro_crew.platform import allowed_paths
+    from kiro_crew.security.paths_resolver import PathResolutionStalled, _resolved_forms_bounded
+
+    expanded = os.path.expanduser(target)
+    if not os.path.isabs(expanded):
+        if not os.path.isabs(cwd):
+            return "it is a relative path and the session directory is unknown"
+        expanded = os.path.join(cwd, expanded)
+    lexical = os.path.normpath(expanded)
+    if not patterns:
+        return "none of its allowedPaths covers it"
+    try:
+        resolved = _resolved_forms_bounded(expanded)
+    except PathResolutionStalled:
+        return "its symlinks could not be resolved in time"
+    if not resolved:
+        return "its symlinks could not be resolved"
+    forms = [lexical, *sorted(resolved)]
+    uncovered = [form for form in forms if not allowed_paths.covered(patterns, form)]
+    if not uncovered:
+        return None
+    # The target may sit under an entry spelled through a symlink (the home
+    # directory, or a session directory reached through a link): kiro-cli
+    # canonicalizes each entry it builds, so the entries' directory parts are
+    # resolved too, here and only for a write the entries as written do not cover.
+    real_patterns: list[str] = list(patterns)
+    real_by_prefix: dict[str, set[str]] = {}
+    for pattern in patterns:
+        prefix = allowed_paths.literal_prefix_dir(pattern)
+        if prefix not in real_by_prefix:
+            try:
+                real_by_prefix[prefix] = _resolved_forms_bounded(prefix)
+            except PathResolutionStalled:
+                return "its allowedPaths' symlinks could not be resolved in time"
+        real_prefixes = real_by_prefix[prefix]
+        rest = pattern[len(prefix) :].lstrip("/")
+        for real in real_prefixes:
+            real = allowed_paths.to_glob_path(real)
+            if real == prefix or not allowed_paths.is_absolute(real):
+                continue
+            joined = allowed_paths.join(real, rest) if rest else real
+            twin = allowed_paths.anchor(joined, "", "")
+            if twin is not None:
+                real_patterns.append(twin)
+    if not allowed_paths.covered(real_patterns, lexical):
+        return "none of its allowedPaths covers it"
+    if not all(allowed_paths.covered(real_patterns, form) for form in uncovered):
+        return "it resolves through a symlink to a path none of its allowedPaths covers"
+    return None
+
+
+def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS spec's ``toolsSettings.fs_write.fallbackAction: "deny"``: refuse an
+    uncovered write, a relative target judged under ``spec_write_cwd``.
+
+    On kiro-cli such a spec refuses every file write its ``allowedPaths`` do not
+    cover, instead of asking. KAS has no rule for it, so the session handle stamps
+    the spec's usable entries, anchored at the session's directory, on its own
+    agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
+    the spec does not set it, and on a sub-session's or native sub-agent's
+    request), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    MCP server behind it) unless every target it names is covered
+    (:func:`_write_target_uncovered`, matched by
+    :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
+    read (none named, a truncated walk, a relative diff path) is refused too. A
+    deny, so it holds on every approval policy, ``AUTO_APPROVE`` included.
+
+    A ``deny_policy`` like ``spec-shell-allowlist``: the refusal is the spec's
+    state, so it does not count toward a cron's auto-pause. It only ever refuses;
+    a covered write goes on to the rows below and still prompts.
+    """
+    call = facts.call
+    allowlist = call.spec_write_allowlist
+    if allowlist is None or call.mcp_server or not _is_spec_write_call(call):
+        return None
+    prefix = "Blocked by this agent's spec: toolsSettings.fs_write.fallbackAction is deny and "
+    candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
+    if candidates.truncated or candidates.unanchored or not candidates:
+        return ToolHookResult.deny_policy(prefix + "the write's target path could not be read")
+    for target in candidates:
+        why = _write_target_uncovered(target, allowlist, call.spec_write_cwd)
+        if why is not None:
+            return ToolHookResult.deny_policy(f"{prefix}{why}: {target}")
+    return None
 
 
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:

@@ -1126,10 +1126,19 @@ def test_run_does_not_start_an_overlapping_flush_while_one_is_in_flight():
     publisher = routes.CrewLogPublisher(_Sockets())
     loop = MagicMock()
     publisher.bind(loop)
+    publisher._flush = MagicMock(return_value="the-flush-pass")
     publisher._flushing = True
     publisher._scheduled = True
     publisher._run()
     loop.create_task.assert_not_called()
+    # With no pass in flight the same call does start one, and holds it.
+    publisher._flushing = False
+    publisher._run()
+    loop.create_task.assert_called_once_with("the-flush-pass")
+    task = loop.create_task.return_value
+    assert task in publisher._tasks
+    task.add_done_callback.assert_any_call(publisher._tasks.discard)
+    task.add_done_callback.assert_any_call(publisher._finished)
 
 
 def test_finished_reschedules_when_work_arrived_mid_flush():
