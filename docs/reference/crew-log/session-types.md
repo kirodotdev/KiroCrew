@@ -3,7 +3,7 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Fifty types. Read [envelope.md](envelope.md) first for the fields every entry
+Fifty-one types. Read [envelope.md](envelope.md) first for the fields every entry
 carries; this page covers only each type's `data`.
 
 Session entries are written with `src` `gateway` or `acp` and nothing else. They
@@ -69,6 +69,7 @@ The **Emitter** column says whether this build writes the type. Every row below 
 | [`dashboard/goal_recorded`](#dashboardgoal_recorded) | A crewmate's goal record after a change: goals and milestones. | live | `gateway` | — |
 | [`dashboard/waiting_changed`](#dashboardwaiting_changed) | What a crewmate waits on the person for, after it changed. | live | `gateway` | — |
 | [`dashboard/custom_value`](#dashboardcustom_value) | One record a script cron or an installed app appended for a crewmate, stamped with who wrote it. | live | `gateway` | — |
+| [`dashboard/custom_failed`](#dashboardcustom_failed) | A run of a script cron bound to this crewmate ended in error, stamped by the gateway. | live | `gateway` | — |
 | [`card/proposed`](#cardproposed) | The agent proposed a change card, at this point in the conversation. | live | `gateway` | opener of `card/finished` |
 | [`card/finished`](#cardfinished) | A change card reached a finished status. | live | `gateway` | closer, by `card_id`; may repeat |
 | [`guide/offered`](#guideoffered) | The agent offered a guide, at this point in the conversation. | live | `gateway` | opener of `guide/finished` |
@@ -1805,7 +1806,8 @@ calls `ctx.crew_log_append(type, data)`, through
 `POST /api/agent-panel/dashboard/record` (`dashboard/handlers/agent_panel_record.py`),
 or when an installed app holding the `/api/member-records/*` grant posts to
 `POST /api/member-records/<slug>` (`dashboard/handlers/agent_panel_record_app.py`); both
-routes hand the record to the same append. The body carries `type` and `data` only;
+routes hand the record to the same append. The body carries `type`, `data` and an
+optional `max_age_s` only;
 `writer`, `member` and `crew_key` are stamped by the gateway from the caller's attested
 identity (the job's scope, or the token's app claim), so neither a script nor an app can
 choose who it writes as. A job bound to no crewmate is refused; an app names the
@@ -1824,9 +1826,32 @@ as text, and nothing frames it as an instruction to an agent.
 | `writer` | string | `cron:<job id>` or `app:<app id>`, stamped by the gateway |
 | `member` | string | the slug of the crewmate written for (the job's binding, or the app route's path), stamped by the gateway |
 | `crew_key` | string | digest of that crewmate's exact name, for ownership on a shared slot |
+| `max_age_s` | integer | optional; how many seconds the writer says the record stays current, `CUSTOM_MAX_AGE_MIN_S` to `CUSTOM_MAX_AGE_MAX_S`; the fold renders `stale_after` from the entry's own `time` plus this |
 
 ```json
 {"type":"dashboard/custom_value","seq":96,"time":1789000004500,"src":"gateway","data":{"type":"build_health","data":{"green":41,"red":2},"writer":"cron:nightly-build","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
+```
+
+### `dashboard/custom_failed`
+
+Kind `session`, `src` `gateway`. Written by the gateway's scheduler
+(`slack/gateway_runtime/cron_fire.py` through `agent_panel_record.record_cron_failure`)
+when a run of a script cron bound to this crewmate ends with `last_status` `error`: an
+exception, a refused `ctx.crew_log_append` (`quota_exceeded` among them), a timeout or a
+denial. Best-effort: a crewmate with no crew log yet gets none. No script can write one,
+because the record route only appends `dashboard/custom_value`. Folded by `custom`: each
+latest record the same `writer` wrote before it gains `failed_at` and `last_error`, until
+that writer's next record replaces the row, and `custom.failures` lists the writer.
+
+| field | type | notes |
+| --- | --- | --- |
+| `writer` | string | `cron:<job id>`, from the scheduler's own record of the job |
+| `error` | string | the run's `last_error`, redacted and cut to `CUSTOM_ERROR_LIMIT` characters |
+| `member` | string | the slug of the crewmate the job is bound to |
+| `crew_key` | string | digest of that crewmate's exact name |
+
+```json
+{"type":"dashboard/custom_failed","seq":97,"time":1789000004600,"src":"gateway","data":{"writer":"cron:nightly-build","error":"crew_log_append() failed: this cron job has sent 30 records in the last minute; wait before sending more","member":"conductor","crew_key":"04b27504d7cf4733ace180d2bd7123c36aebb36fcfdb2aebc6525affd6383c02"}}
 ```
 
 ## Change cards and guides

@@ -155,7 +155,14 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
 
         # ── Code-based script execution (deterministic, no LLM) ──
         if job.script:
-            return await self._cron_run_script(job)
+            result = await self._cron_run_script(job)
+            if job.last_status == "error" and not getattr(job, "run_never_started", False):
+                # A failed run writes no record, so the crewmate's page would keep the
+                # last good one as current: the gateway records the failure there. A
+                # run that never started (overlap guard, admission closed, pool
+                # starved) is not a failure of the job, as the scheduler counts it.
+                await self._record_bound_script_failure(job)
+            return result
 
         # ── Fire-time governance gate: message (LLM) jobs ──
         # Command and script jobs are gated inside their blocks above; a job
@@ -242,7 +249,7 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         self.cron_svc.set_refresh_callback(self.dashboard_state.push_refresh)
     # A run its deadline ends never returns to _cron_callback, whose failure
     # paths are the only ones that alert; the service hands it back here.
-    self.cron_svc.set_timeout_alert(self._alert_cron_failure)
+    self.cron_svc.set_timeout_alert(self._alert_cron_timeout)
     if self._no_crons:
         logger.info("Cron scheduler disabled (--no-crons)")
     else:
@@ -262,6 +269,41 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
         self._cron_reconciled = True
         if arm:
             await self._start_cron_after_memory_ready()
+
+
+async def _record_bound_script_failure(self: GatewayOrchestrator, job: CronJob) -> None:
+    """Record *job*'s failed run in the crew log of the crewmate it is bound to.
+
+    Only for a job bound to a crewmate (``member_id``). The identity is the
+    scheduler's own record of the job, never anything the script said. BEST-EFFORT and
+    off the loop: the recorder never raises, and a failure that cannot be recorded
+    (no crew log yet, the crew panel off) changes nothing about the run.
+    """
+    import asyncio as _asyncio
+
+    from kiro_crew.dashboard.handlers.agent_panel_record import record_cron_failure
+
+    member_id = str(getattr(job, "member_id", "") or "")
+    if not member_id:
+        return
+    try:
+        await _asyncio.to_thread(
+            record_cron_failure, str(job.id), member_id, str(job.last_error or "")
+        )
+    except Exception:
+        logger.debug("Cron '%s': failure record skipped", job.name, exc_info=True)
+
+
+async def _alert_cron_timeout(self: GatewayOrchestrator, job: CronJob, detail: str) -> None:
+    """The service's timeout alert: record a bound script's failure, then alert.
+
+    A run its deadline ends is cancelled inside ``_cron_run_script``, so the failure
+    record after it in ``_cron_callback`` never runs; this is where that run is
+    recorded instead. A run that never started is skipped, as there.
+    """
+    if getattr(job, "script", None) and not getattr(job, "run_never_started", False):
+        await self._record_bound_script_failure(job)
+    await self._alert_cron_failure(job, detail)
 
 
 async def _cron_capture(self: GatewayOrchestrator, job: CronJob) -> _CronCapture:

@@ -198,7 +198,9 @@ async def test_the_gateway_wires_its_failure_alert_into_the_service() -> None:
         cron_cls.create = AsyncMock(return_value=svc)
         await gw._init_cron(arm=False)
 
-    svc.set_timeout_alert.assert_called_once_with(gw._alert_cron_failure)
+    # The timeout alert also records a bound script's failure, then calls
+    # ``_alert_cron_failure`` with the same arguments.
+    svc.set_timeout_alert.assert_called_once_with(gw._alert_cron_timeout)
 
 
 @pytest.mark.asyncio

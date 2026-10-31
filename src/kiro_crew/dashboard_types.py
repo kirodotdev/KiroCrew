@@ -353,12 +353,34 @@ def _row_keys() -> dict[str, dict[str, Any]]:
             "row_note": "options is a list of strings; asked_at is the recorded time string",
         },
         "custom.latest": {
-            "row_keys": ["data", "at", "seq", "writer", "member", "crew_key"],
+            "row_keys": [
+                "data",
+                "at",
+                "seq",
+                "writer",
+                "member",
+                "crew_key",
+                "max_age_s",
+                "stale_after",
+                "failed_at",
+                "last_error",
+            ],
             "names_the_row": "writer",
             "row_note": (
                 "one row per record type, the latest record only; data is the object the "
                 "script sent (bind custom.latest.<type>.data.<key>), at is its ISO time, "
-                "writer is cron:<job id> stamped by the gateway"
+                "writer is cron:<job id> stamped by the gateway; stale_after (ISO, only when "
+                "the script declared max_age_s) is when the record stops being current; "
+                "failed_at and last_error appear when the writer's run failed after writing it"
+            ),
+        },
+        "custom.failures": {
+            "row_keys": ["writer", "at", "error"],
+            "names_the_row": "writer",
+            "row_note": (
+                "each bound cron's latest failed run, newest first, stamped by the gateway; "
+                "a writer listed here with no row in latest has never landed a record; "
+                "failures_omitted counts writers evicted past the cap"
             ),
         },
         "workstreams.series": series,

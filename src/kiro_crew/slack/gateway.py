@@ -916,6 +916,8 @@ class GatewayOrchestrator:
     # gateway_runtime/cron_fire.py
     _init_cron = _cron_fire._init_cron
     _cron_capture = _cron_fire._cron_capture
+    _record_bound_script_failure = _cron_fire._record_bound_script_failure
+    _alert_cron_timeout = _cron_fire._alert_cron_timeout
     _resolve_cron_agent = _cron_fire._resolve_cron_agent
     _acquire_with_model_fallback = _cron_fire._acquire_with_model_fallback
     _retained_session_agent_mismatch = _cron_fire._retained_session_agent_mismatch
