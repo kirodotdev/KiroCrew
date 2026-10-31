@@ -16,24 +16,32 @@ import { GitPullRequest, Inbox, ListChecks } from 'lucide-react'
 import { sageApi } from '../api'
 import { repoSlug, useSage } from '../context'
 import { GhNotice } from './AddReposModal'
+import { useRovingTabs } from '../../../components/Tablist'
 import PrPickList from './PrPickList'
 import RunList from './RunList'
 
 import { i18nT } from '../../../i18n/t'
+import type { ListTab } from '../lib/types'
+
+const LIST_TABS: ReadonlyArray<{ key: ListTab }> = [{ key: 'pulls' }, { key: 'reviews' }, { key: 'queue' }]
+
 function Tab({
-  label, icon: Icon, active, badge, onClick,
+  label, icon: Icon, active, badge, onClick, roving,
 }: {
   label: string
   icon: typeof GitPullRequest
   active: boolean
   badge?: number
   onClick: () => void
+  /** The shared tablist keyboard model: tab stop, ref and arrow keys. */
+  roving: ReturnType<ReturnType<typeof useRovingTabs>>
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       role="tab"
+      {...roving}
       aria-selected={active}
       // Same focus ring as every other control; without it the browser draws
       // its own blue outline instead.
@@ -112,6 +120,10 @@ export default function MiddleColumn() {
   // badge that occasionally exceeds the visible rows.
   const live = runs.filter((r) => r.status === 'running').length
 
+  // One tab stop for the three lists; Left/Right/Home/End move between them.
+  // Keys in the order the tabs are drawn below.
+  const roving = useRovingTabs(LIST_TABS, listTab, setListTab)
+
   // The rail is visible from Learning and Settings too, so opening a review has
   // to bring the review surface back with it.
   const open = (runId: string) => {
@@ -133,6 +145,7 @@ export default function MiddleColumn() {
           icon={GitPullRequest}
           active={listTab === 'pulls'}
           onClick={() => setListTab('pulls')}
+          roving={roving(0)}
         />
         <Tab
           label={i18nT('apps.codeReviewSage.components.middleColumn.reviews')}
@@ -140,12 +153,14 @@ export default function MiddleColumn() {
           active={listTab === 'reviews'}
           badge={live}
           onClick={() => setListTab('reviews')}
+          roving={roving(1)}
         />
         <Tab
           label={i18nT('apps.codeReviewSage.components.reviewQueue.tab')}
           icon={Inbox}
           active={listTab === 'queue'}
           onClick={() => setListTab('queue')}
+          roving={roving(2)}
         />
       </div>
 
