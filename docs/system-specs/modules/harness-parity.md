@@ -119,7 +119,15 @@ mirror: the consumed spec is the parse its member mounts and zero-tool answer
 come from (`AcpClient._mirrorless_member_mounts`), and since its projection is
 `BROKER_ONLY` a declared server that is not pooled never reaches pi and leaves
 the session unverified rather than applied. On a member session pi's pooled stubs
-pass the spec's `tools` allowlist, as a mirror's do. `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
+pass the spec's `tools` allowlist, as a mirror's do. strands is outside every
+member-facing set (`ACP_BACKENDS_MEMBER_CAPABILITIES`, `ACP_BACKENDS_MEMBER_DISPATCH`,
+`ACP_BACKENDS_MEMBER_PANEL`, `ACP_BACKENDS_MATE_WORKER_KIT`): a member or worker
+session's Crew servers (`kirocrew-core`, the dashboard and panel mounts) are stdio
+children inside its sandbox, and the enforced credential mask hides the gateway
+credential from them, so their gateway-backed calls would be refused. Its mirror
+already confirms a saved spec (`strands/saved-spec-projection-live.jsonl`, recorded
+with no mask); it joins once a host-side control-plane transport exists.
+`ACP_BACKENDS_MEMBER_TOOL_LIMITS`
 (Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. A member DM whose
