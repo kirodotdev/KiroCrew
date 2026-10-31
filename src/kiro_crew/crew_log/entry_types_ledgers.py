@@ -600,6 +600,14 @@ TYPES: tuple[EntryType, ...] = (
                 JSON_STRING,
                 note="The worker slot bound to the item, set by bind.",
             ),
+            Field(
+                "worker_instance_id",
+                JSON_STRING,
+                note=(
+                    "The remote crew the bound worker runs on, set by a remote bind "
+                    "beside worker_session_key (then the peer's slot key)."
+                ),
+            ),
             Field("fails", JSON_INT, note="The item's failed-verdict count, when it moved."),
             Field(
                 "status",

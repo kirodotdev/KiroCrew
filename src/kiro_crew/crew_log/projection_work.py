@@ -114,6 +114,7 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "verdict",
     "decision",
     "worker_session_key",
+    "worker_instance_id",
     "round",
     "fails",
     "status",
@@ -612,7 +613,7 @@ def _work_field(name: str, value: Any) -> Any:
         return _as_int(value) if value is not None else None
     if name == "reason":
         return _work_reason(value)
-    if name in ("verdict", "worker_session_key", "status"):
+    if name in ("verdict", "worker_session_key", "worker_instance_id", "status"):
         return _work_text(name, value) if value is not None else None
     return _work_text(name, value)
 

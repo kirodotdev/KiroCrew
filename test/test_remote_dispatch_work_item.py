@@ -279,13 +279,17 @@ async def test_a_locally_bound_worker_is_not_reachable_through_the_routes(state,
 
 
 @pytest.mark.asyncio
-async def test_a_closed_slot_answers_404(state, preview):
+async def test_a_closed_slot_still_reads_its_own_item_but_takes_no_decision(state, preview):
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
     slot = created["key"]
     state._slots.pop(slot)
-    assert (await _call(state, "GET", f"/api/chat/slots/{slot}/work-item"))[0] == 404
+    # The worker's last reports stay readable for the hub after its slot is gone.
+    status, body = await _call(state, "GET", f"/api/chat/slots/{slot}/work-item")
+    assert status == 200 and body["work_item"]["item_id"] == "it_0000abcd"
     patched = await _call(state, "PATCH", f"/api/chat/slots/{slot}/work-item", {"decision": "x"})
     assert patched[0] == 404
+    # A closed slot the item does not name answers nothing.
+    assert (await _call(state, "GET", "/api/chat/slots/chat-404/work-item"))[0] == 404
 
 
 @pytest.mark.asyncio
@@ -769,9 +773,15 @@ async def test_a_failed_birth_line_retracts_the_worker_and_its_item(state, previ
     assert list(wl.bindings_dir().glob("*.json")) == []
 
 
+def _reported() -> None:
+    """The worker's first report on the mailbox item."""
+    wl.apply_worker_report(f"hub:{HUB_CONDUCTOR}", "it_0000abcd", status="progress", summary="x")
+
+
 @pytest.mark.asyncio
 async def test_closing_the_slot_closes_its_hub_item(state, preview):
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    _reported()  # a copy the worker reported on is closed, not discarded
     slot = created["key"]
     await chat_handlers.close_slot(state, state._slots[slot], slot)
     item = wl.read_work_item(f"hub:{HUB_CONDUCTOR}", "it_0000abcd")
@@ -804,6 +814,7 @@ async def test_a_cancelled_close_still_closes_the_item():
     parsed = mailbox.parse_work_item(_work_item())
     wl.ensure_conductor(parsed.board)
     mailbox.open_mailbox(parsed, "chat-w3")
+    wl.apply_worker_report(parsed.board, parsed.item_id, status="progress", summary="x")
     entered = asyncio.Event()
     gate = asyncio.Event()
 
@@ -841,6 +852,7 @@ async def test_deleting_a_bound_workers_transcript_closes_its_hub_item():
     parsed = mailbox.parse_work_item(_work_item())
     wl.ensure_conductor(parsed.board)
     mailbox.open_mailbox(parsed, "chat-1-100")
+    wl.apply_worker_report(parsed.board, parsed.item_id, status="progress", summary="x")
     state = _make_state({"chat-1-100": _make_slot("chat-1-100")})
     await _remove_slot_for_history_key(state, "dashboard_chat-1-100")
     assert "chat-1-100" not in state._slots
@@ -856,6 +868,7 @@ async def test_deleting_an_archived_workers_transcript_closes_its_hub_item():
     parsed = mailbox.parse_work_item(_work_item())
     wl.ensure_conductor(parsed.board)
     mailbox.open_mailbox(parsed, "chat-1-200")
+    wl.apply_worker_report(parsed.board, parsed.item_id, status="progress", summary="x")
     await _remove_slot_for_history_key(_make_state({}), "dashboard_chat-1-200")
     item = wl.read_work_item(parsed.board, parsed.item_id)
     assert item is not None and item.state == "abandoned"
@@ -865,6 +878,7 @@ async def test_deleting_an_archived_workers_transcript_closes_its_hub_item():
 async def test_bulk_archival_closes_an_idle_workers_hub_item(state, preview, monkeypatch):
     """The owner's "Clean up sessions" closes like a single close."""
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    _reported()  # a copy the worker reported on is closed, not discarded
     slot = created["key"]
     monkeypatch.setattr(
         chat_handlers,

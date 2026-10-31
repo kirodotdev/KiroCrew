@@ -119,7 +119,7 @@ WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
 #: this one table so they cannot drift apart. A worker's fields are fixed.
 WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "create": ("title", "acceptance", "round"),
-    "bind": ("worker_session_key",),
+    "bind": ("worker_session_key", "worker_instance_id"),
     "decide": ("decision", "round"),
     "verdict": ("verdict", "fails"),
     "close": ("state", "decision"),

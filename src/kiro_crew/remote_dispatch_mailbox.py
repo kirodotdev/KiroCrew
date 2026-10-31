@@ -173,16 +173,25 @@ def open_mailbox(request: MailboxRequest, worker_slot_key: str) -> WorkItem:
 
 
 def close_mailbox(worker_slot_key: str) -> str | None:
-    """Close the hub item *worker_slot_key* is bound to, as ``abandoned``. BLOCKING.
+    """Close the hub item *worker_slot_key* is bound to. BLOCKING.
 
     Called when the slot is deleted, so a mailbox item never outlives its worker
-    open and the board can be swept. Returns the closed item id, or ``None`` when
-    the slot holds no open hub item.
+    open and the board can be swept. A copy the worker never reported on is
+    DISCARDED with its binding (nothing on it is the worker's, so nothing is lost),
+    which is what lets a hub whose own bind failed dispatch the same item to this
+    crew again. A copy that ever reported is closed ``abandoned``, keeping its
+    reports for the hub to read. Returns the item id, or ``None`` when the slot
+    holds no open hub item.
     """
     bound = bound_mailbox(worker_slot_key)
     if bound is None:
         return None
+    if not names_worker(bound, worker_slot_key):
+        # A binding the item does not name back is stale and closes nothing.
+        return None
     board, item_id = bound
+    if _discard_if_unreported(board, item_id, ledger_key(worker_slot_key)):
+        return item_id
     try:
         apply_conductor_action(
             board,
@@ -196,6 +205,39 @@ def close_mailbox(worker_slot_key: str) -> str | None:
             return None
         raise
     return item_id
+
+
+def _discard_if_unreported(board: str, item_id: str, worker: str) -> bool:
+    """Remove an open mailbox copy with no report, and its binding. Whether it did.
+
+    Under the item lock then the worker's binding lock (the store's order), and
+    re-checked under both: a report that lands first keeps the copy. A delete that
+    fails answers False, so the copy is closed rather than left half-removed.
+    """
+    with item_lock(board, item_id, create=False), binding_lock(worker):
+        item = read_work_item(board, item_id)
+        if (
+            item is None
+            or item.is_terminal
+            or item.status is not None
+            or item.worker_session_key != worker
+            or read_binding(worker) != (board, item_id)
+        ):
+            return False
+        # The item first and checked: a delete that fails leaves the copy and its
+        # binding whole, and the caller closes it instead. The binding goes last;
+        # one left behind names an item that is gone and resolves nothing.
+        try:
+            item_events_path(board, item_id).unlink(missing_ok=True)
+            item_path(board, item_id).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("remote work item %s: could not discard; closing it", item_id)
+            return False
+        try:
+            binding_path(worker).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("remote work item %s: stale binding left for %s", item_id, worker)
+    return True
 
 
 def discard_mailbox(request: MailboxRequest, worker_slot_key: str) -> None:
@@ -228,6 +270,12 @@ def bound_mailbox(worker_slot_key: str) -> tuple[str, str] | None:
     return binding
 
 
+def names_worker(bound: tuple[str, str], worker_slot_key: str) -> bool:
+    """Whether the mailbox item *bound* names *worker_slot_key* as its worker."""
+    item = read_work_item(*bound)
+    return item is not None and item.worker_session_key == ledger_key(worker_slot_key)
+
+
 def read_mailbox(
     board: str, item_id: str, *, limit: int
 ) -> tuple[WorkItem, list[WorkEvent]] | None:
@@ -239,7 +287,11 @@ def read_mailbox(
 
 
 def item_exists(request: MailboxRequest) -> bool:
-    """Whether *request*'s item is already stored on this crew. BLOCKING."""
+    """Whether *request*'s item is already stored on this crew. BLOCKING.
+
+    Open or closed: a closed copy is never replaced here. Giving an item a new
+    worker belongs to retire and redispatch (rfc wave 8), with binding history.
+    """
     return item_path(request.board, request.item_id).exists()
 
 

@@ -305,6 +305,48 @@ def test_close_forgets_the_slot(env):
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
 
 
+def test_a_create_with_work_item_is_born_bound_on_the_callers_ledger(env, monkeypatch):
+    """Wave 4: ``work_item`` routes the create through the bound path, on the ledger
+    the caller's own key names, and the reply says which item it bound."""
+    from kiro_crew import session_ledger
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    seen: dict = {}
+
+    async def _bound(state, mgr, board, instance_id, item_id, create):
+        seen.update(board=board, instance=instance_id, item=item_id, create=create)
+        return "chat-77", {"key": "chat-77"}, SimpleNamespace(item_id=item_id, title="item one")
+
+    monkeypatch.setattr(remote_ingest, "create_bound", _bound)
+    status, body = _call(env, "create", crew="lab", work_item="it_0000abcd")
+    assert status == 200, body
+    assert body["work_item_id"] == "it_0000abcd" and body["title"] == "item one"
+    assert seen["board"] == session_ledger.ledger_key(_key(env.caller))
+    assert seen["instance"] == INSTANCE and "memory_mode" in seen["create"]
+
+
+def test_after_a_restart_the_item_pair_still_fences_the_slot(env, monkeypatch):
+    """The in-memory record is gone after a hub restart; an open item bound to the
+    slot on that crew still admits the verbs, and nothing else does."""
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    target = _create(env)
+    crew._DISPATCHED.clear()
+
+    async def never(board, inst, slot):
+        return False
+
+    monkeypatch.setattr(remote_ingest, "holds_peer_slot", never)
+    status, body = _call(env, "send", crew="lab", target=target, message="again")
+    assert (status, body["code"]) == (403, "crew_target_not_dispatched")
+
+    async def only_target(board, inst, slot):
+        return (inst, slot) == (INSTANCE, target)
+
+    monkeypatch.setattr(remote_ingest, "holds_peer_slot", only_target)
+    assert _call(env, "send", crew="lab", target=target, message="again")[0] == 200
+
+
 def test_a_crew_create_refuses_local_only_fields(env):
     status, body = _call(env, "create", crew="lab", folder_id="f1")
     assert (status, body["code"]) == (400, "crew_field_unsupported")
