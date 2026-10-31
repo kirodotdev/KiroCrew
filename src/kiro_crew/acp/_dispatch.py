@@ -644,6 +644,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         derive_edit_diff,
         extract_tool_purpose,
         fits_tool_result,
+        is_rendered_edit_diff,
         is_tool_purpose_key,
         make_unified_diff,
         redact_backend_text,

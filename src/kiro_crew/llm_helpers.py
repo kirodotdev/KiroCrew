@@ -150,7 +150,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _steer_host_deny,
     )
     from kiro_crew.llm_helpers_parts.tool_input_denials import (  # noqa: F401
+        _DIFF_TRUNCATION_MARK,
         _MAX_SCANNABLE_TOOL_INPUT_CHARS,
+        _diff_candidates,
         _edit_target_denial,
         _extract_tool_input_strings,
         _first_tool_input_denial,
