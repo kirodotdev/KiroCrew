@@ -5815,6 +5815,7 @@
     "voicePlaybackNotice": {
       "failed": "« {{speak}} » a échoué. Vérifie les paramètres de synthèse vocale et réessaie.",
       "consent_required": "« {{speak}} » a besoin que tu confirmes Amazon Polly pour ce profil AWS et cette région. Confirme-le dans les paramètres de synthèse vocale, puis réessaie.",
+      "polly_rejected": "Amazon Polly ne propose pas la voix ou le moteur sélectionnés dans la région AWS sélectionnée. Dans les paramètres de synthèse vocale, choisis une autre « Voix », un autre « Moteur » ou une autre « Région ».",
       "blocked": "Le navigateur a bloqué la lecture automatique. Ouvre « {{moreActions}} » sous la réponse terminée, puis sélectionne « {{speak}} ».",
       "settings": "Paramètres de « {{speak}} » (synthèse vocale)"
     },

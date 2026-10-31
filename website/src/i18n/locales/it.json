@@ -5815,6 +5815,7 @@
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",
       "consent_required": "«{{speak}}» ha bisogno che tu confermi Amazon Polly per questo profilo AWS e questa regione. Confermalo nelle impostazioni «Da testo a voce», poi riprova.",
+      "polly_rejected": "Amazon Polly non offre la voce o il motore selezionati nella regione AWS selezionata. Nelle impostazioni «Da testo a voce», scegli un'altra «Voce», «Motore» o «Regione».",
       "blocked": "Il browser ha bloccato la riproduzione automatica. Apri «{{moreActions}}» sotto la risposta completata, poi seleziona «{{speak}}».",
       "settings": "Impostazioni di «{{speak}}» (Da testo a voce)"
     },
