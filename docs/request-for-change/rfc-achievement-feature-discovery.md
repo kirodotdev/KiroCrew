@@ -19,7 +19,7 @@ superseded-by: []
 - **Tracks:** [#26327](https://github.com/kirodotdev/KiroCrew/issues/26327).
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.
 - **Naming:** the file name keeps the earlier word "achievement" so links stay stable. The internal keys, routes, metrics and state file use "milestone" (D14). The user-facing names changed on 2026-10-31 (D15).
-- **Amended 2026-10-31 (product owner):** section 8 renames the panel to "Explore", adds a daily "Try today" pick, keeps the existing suggestion cards on the new-chat page, puts the 15-second intro video at the top of the Explore panel, adds progress bars and a calm badge wall under "Your progress", lists the Ship 2 items (8.10), and moves the top-bar ring into the readout capsule. Where an earlier section disagrees with section 8, section 8 wins; those passages are marked "Replaced by section 8". Implementation: backend [#26512](https://github.com/kirodotdev/KiroCrew/pull/26512), frontend [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488).
+- **Amended 2026-10-31 (product owner):** section 8 renames the panel to "Explore", adds a daily "Try today" pick, keeps the existing suggestion cards on the new-chat page, puts the 15-second intro video at the top of the Explore panel, adds progress bars and a calm badge wall under "Your progress", lists the Ship 2 items (8.10), and gives the top-bar ring its own "Explore N/M" pill beside the readout capsule (8.7, D17). Where an earlier section disagrees with section 8, section 8 wins; those passages are marked "Replaced by section 8". Implementation: backend [#26512](https://github.com/kirodotdev/KiroCrew/pull/26512), frontend [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488).
 
 ## One-page summary
 
@@ -35,7 +35,7 @@ superseded-by: []
 | Streak | days in a row 3 / 7 / 30 / 100 | Ship 1 |
 | Running at once | chats running at once 5 / 20 / 50 | Ship 2 |
 
-Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this list are replaced by section 8 (D15, D16): the panel is "Explore" with "Try today" and "Your progress" (progress bars and a badge wall), the intro video is a card at the top of that panel, the new-chat page keeps its suggestion cards and swaps only the last one for a "Try today" entry card, and the top-bar ring sits inside the readout capsule.
+Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this list are replaced by section 8 (D15–D17): the panel is "Explore" with "Try today" and "Your progress" (progress bars and a badge wall), the intro video is a card at the top of that panel, the new-chat page keeps its suggestion cards and swaps only the last one for a "Try today" entry card, and the top-bar ring sits in its own pill beside the readout capsule, labeled "Explore N/M" with the streak as smaller text.
 
 1. **Top-bar indicator.** A small ring for new-feature progress, with the current streak number beside it. Clicking it opens the Milestones panel: plain checkmarks, progress bars, dates, current and best streak, "Mark as done" and "Mark all as done".
 2. **New-chat empty state.** A short clip plus 3 cards = the next 3 untried **new-feature** milestones. Usage milestones and streaks never appear here, because no surface may nudge the user to open more chats and spend more. Once every new-feature milestone is handled, the empty state returns to today's page.
@@ -51,7 +51,7 @@ Four quiet surfaces read this one table (D14). Surfaces 1–3 as written in this
 
 It is deterministic and never calls a model. The local file is user-editable; that is accepted for a personal tool, with no anti-cheat.
 
-**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page, ring in the readout capsule. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list (2026-10-31, section 8). See 7.1.
+**Decided.** D1: low-cost rows send directly, others prefill. D2: the daily task is a real Mate model turn. D3: the main switch defaults on (2026-10-29). D4–D8: one table, surfaces, rollout, open-question defaults, the Crew Mode signal. D9: local only. D10: count events. D11: manual marking. D12: streaks. D13: milestones first, features as a group. D14: quiet style and the "milestone" name (2026-10-30). D15: "Explore" naming, daily "Try today" pick, one entry card on the new-chat page. D16: the final Ship 1 Explore panel with progress bars and badges, and a Ship 2 list. D17: intro video only in Explore, the "Explore N/M" pill beside the readout capsule, and tiered badges (2026-10-31, section 8). See 7.1.
 
 **Still open.** Only Q7 (relationship to Feature Tips), deferred to the "Later" batch. See 7.2.
 
@@ -411,7 +411,7 @@ Only `widgets` and `parallel-chats` send directly. Sending directly is the most 
 
 ### 4.6 Surface 1: top-bar indicator and Milestones panel
 
-> **Replaced in part by section 8 (D15, 2026-10-31).** The indicator is a segment inside the readout capsule, not a control next to the bell, and it reads "5 days" rather than a bare number (8.7). The panel is named "Explore"; its parts and order are in 8.2. "Mark as done", "Mark all as done", the per-row dates and the no-nudging rules below still apply.
+> **Replaced in part by section 8 (D15, D17, 2026-10-31).** The indicator is its own pill beside the readout capsule, not a control next to the bell. It reads "Explore 2/7" with "5-day streak" as smaller text, rather than a bare number (8.7). Advanced badges use one calm color (8.4). The panel is named "Explore"; its parts and order are in 8.2. "Mark as done", "Mark all as done", the per-row dates and the no-nudging rules below still apply.
 
 **Indicator (D14).** A small, quiet control next to the notification bell in `shellHeader.tsx`. No trophy and no badge colors:
 
@@ -597,7 +597,7 @@ Success criteria (read 4 weeks after Ship 1):
 - **D11 Manual marking.** Each open feature row has "Mark as done", and the panel has one control to mark them all (first named "Unlock all", renamed "Mark all as done" by D14). Both write the local file with `source: manual`. Usage milestones cannot be set by hand. Metrics tell organic, backfill and manual apart. No anti-cheat. See 4.6 and 4.11.
 - **D12 Streaks.** Count local days in a row with at least one user-sent turn, in the user's time zone. Show current and best. Missing a day resets current, never best. Tiers 3 / 7 / 30 / 100 days, on best. Same local file. No penalty and no notice about losing a streak. See 3.3.
 - **D13 Milestones first, features as one group.** The top level is milestones: new features, sessions (10 / 100 / 1000), messages, streak and running at once. The empty state still suggests only untried new features, never volume milestones or streaks, so the spend risk is unchanged. See 3.1.
-- **D14 Quiet style and the "milestone" name.** No trophy icon and no fanfare. The top bar has a small ring for feature progress with the streak number beside it; the panel is a plain "Milestones" list with checkmarks and thin progress bars; a new milestone is one small line. The design uses "milestone" for all terms, keys, routes, metrics and the state file; the RFC file name keeps "achievement" so links stay stable. The local counters are user-editable, which is accepted for a personal tool. See 4.6 and 4.7.
+- **D14 Quiet style and the "milestone" name.** No trophy icon and no fanfare. The top bar has a small ring for feature progress with the streak number beside it; the panel is a plain "Milestones" list with checkmarks and thin progress bars; a new milestone is one small line. The design uses "milestone" for all terms, keys, routes, metrics and the state file; the RFC file name keeps "achievement" so links stay stable. The local counters are user-editable, which is accepted for a personal tool. See 4.6 and 4.7. *(Amended by D17 on 2026-10-31: the top-bar label is "Explore N/M" with the streak as smaller text, and reached tiers show as tiered badges, Advanced ones in one calm color.)*
 
 ### 7.2 Open questions
 
@@ -607,23 +607,27 @@ Q4, Q5, Q6 and Q8 were closed by D7.
 
 **2026-10-31, product owner:**
 
-- **D15 "Explore", "Try today" and one entry card.** Crew is a work tool, so the user-facing text drops game words. The panel is "Explore", with "Try today" (up to 3 untried features for today) and "Your progress" (streak and usage counts). The new-chat page keeps its suggestion cards and replaces only the last one with a "Try today" entry card. The top-bar ring sits inside the readout capsule and shows a dot while "Try today" has something left. The Mate daily task stays out of Ship 1. See section 8.
+- **D15 "Explore", "Try today" and one entry card.** Crew is a work tool, so the user-facing text drops game words. The panel is "Explore", with "Try today" (up to 3 untried features for today) and "Your progress" (streak and usage counts). The new-chat page keeps its suggestion cards and replaces only the last one with a "Try today" entry card. The top-bar ring shows a dot while "Try today" has something left; where it sits is set by D17. The Mate daily task stays out of Ship 1. See section 8.
 - **D16 Final Ship 1 Explore panel, and a Ship 2 list.** Top to bottom: a "Kiro Crew in 15 seconds" intro video card (the only home for that video; no startup popup, not on the new-chat page), Try today (quick untried features only), Your progress (a "Getting started" pair for the first days, a progress bar toward each next tier, and a badge wall), then the full feature list. Badges are Regular (quiet line icon) or Advanced (one calm color); only Ship 2's Hard tier is showy, because owner feedback said trophies felt like too much. The streak stays "a day you used Crew" in Ship 1. Ship 2 items are listed in 8.10. See 8.2–8.4 and 8.9–8.10.
+- **D17 Final Ship 1 rulings on the video, the top-bar entry and badges.** Three rulings settle what the build shows:
+  1. *Intro video.* The video lives only in the "Kiro Crew in 15 seconds" card at the top of the Explore panel. It is not on the new-chat page, and there is no standalone startup popup for it. The new-chat page keeps its suggestion cards, with a "Try today" card as the last one while untried features remain. See 8.2 and 8.6.
+  2. *Top-bar entry.* The ring sits in its own pill beside the readout capsule, as its own button, not inside the capsule, so the capsule keeps at most two buttons per row. The pill shows the ring and the label "Explore N/M" (for example "Explore 2/7"), with the streak ("5-day streak") as smaller secondary text. A small dot shows while something is left to try. Clicking it opens Explore. This replaces D15's capsule placement. See 8.7.
+  3. *Badges (amends D14).* Your progress has a tiered badge wall, and each usage row shows a progress bar. The Regular tier uses quiet line icons; the Advanced tier uses one calm color; the showy style of the hardest tier is Ship 2. The overall style stays quiet. See 8.4 and 8.10.
 
 ## 8. Amendment, 2026-10-31 (product owner)
 
-This section records D15 and D16. Where an earlier section disagrees with it, this section wins. The local file, the API routes, switches, metrics and the security rules in sections 3–5 do not change, except for the one new counter in 8.4.
+This section records D15, D16 and D17. Where an earlier section disagrees with it, this section wins. The local file, the API routes, switches, metrics and the security rules in sections 3–5 do not change, except for the one new counter in 8.4.
 
 ### 8.1 Naming and style: "Explore"
 
-Crew is a work tool, so the look stays calm. User-facing text does not use "quest" or "trophy", and "milestone" is no longer the panel's name. Reached tiers show as badges (8.5), drawn as quiet line icons or a calm color; no trophies, confetti or fanfare. Owner feedback on Slack was that trophies felt like too much.
+Crew is a work tool, so the look stays calm. User-facing text does not use "quest" or "trophy", and "milestone" is no longer the panel's name. Reached tiers show as badges (8.4), drawn as quiet line icons or a calm color; no trophies, confetti or fanfare. Owner feedback on Slack was that trophies felt like too much.
 
 | Earlier name | New name |
 |---|---|
 | Milestones panel | **Explore** |
 | New features group | **Try today** (today's pick, 8.3); the full list stays below it |
 | Sessions, Messages, Streak, Running at once | **Your progress** |
-| Top-bar number `4` | **`4 days`** |
+| Top-bar number `4` | **`Explore 2/7`**, with **`4-day streak`** as smaller text (8.7) |
 
 Internal names do not change. The module, config keys, routes, metric names, i18n key prefix and state file keep "milestone" (D14).
 
@@ -697,19 +701,20 @@ The new-chat page (`website/src/components/WelcomeView.tsx`) keeps only its exis
 
 This replaces the layout in 4.5. `POST /api/milestones/skip-all` has no caller in the Ship 1 frontend.
 
-### 8.7 Top bar: a segment in the readout capsule
+### 8.7 Top bar: an "Explore" pill beside the readout capsule (D17)
 
-- The ring is a segment inside the existing top-bar readout capsule (the capsule that holds the credits and system readouts in `website/src/shell/topbar/shellHeader.tsx`), not a new control next to the bell. The right-hand group stays at two controls.
-- Beside the ring the capsule reads `N days` (the current streak) when it is 1 or more, and nothing when it is 0.
+- The ring sits in its own pill, as its own button, beside the existing top-bar readout capsule (the capsule that holds the credits and system readouts in `website/src/shell/topbar/shellHeader.tsx`). It is not a segment inside the capsule, so the capsule keeps at most two buttons per row, and it is not a new control next to the bell.
+- The pill shows the ring and a visible label, "Explore N/M": `N` is `features.done` and `M` is `features.total` from 4.6, for example "Explore 2/7". The label says what the ring measures and where the click goes.
+- The current streak shows after the label as smaller secondary text, "5-day streak", when it is 1 or more, and nothing when it is 0.
 - The ring shows a small dot while Try today (8.3) has at least one row left today. The dot carries no number and no color change.
-- Clicking the segment opens the Explore panel.
-- When the capsule is collapsed to the connection dot, the segment is hidden with the rest of the capsule. The phone layout, which does not render the capsule, keeps the ring in `MobileTopBar.tsx`, with the same dot and label.
+- Clicking the pill opens the Explore panel.
+- The phone layout, which does not render the capsule, shows the same entry just before the notification bell.
 
-This replaces the placement and label in 4.6.
+This replaces the placement and label in 4.6 and D15.
 
 ### 8.8 Labels
 
-The layout strings in 4.10 become: "Explore", "Kiro Crew in 15 seconds" and the intro card's close label, "Try today", "Your progress", "Getting started", "Get a first finished result", "Set up a morning brief", the morning-brief starter prompt, "{value} / {next}", "{n} days", "{n} days · best {best}", the badge-wall heading and per-badge date, "Try it", "Skip", "Mark as done", "Marked done", "Mark all as done", "Mark every new feature as done?", the "Try today" entry-card title and line, and the notice strings in 8.5. "Things you can try", "Do it", "Fill it in for me", "Take a look", "Don't show again", "Milestones", "Milestone: {title}" and "{n} new milestones" are removed. The button never says "Do it": "Try it" is the one label, and the row's blurb says whether it sends at once or fills the composer.
+The layout strings in 4.10 become: "Explore", "Kiro Crew in 15 seconds" and the intro card's close label, "Try today", "Your progress", "Getting started", "Get a first finished result", "Set up a morning brief", the morning-brief starter prompt, "{value} / {next}", "Explore {done}/{total}", "{n}-day streak", "{n} days · best {best}", the badge-wall heading and per-badge date, "Try it", "Skip", "Mark as done", "Marked done", "Mark all as done", "Mark every new feature as done?", the "Try today" entry-card title and line, and the notice strings in 8.5. "Things you can try", "Do it", "Fill it in for me", "Take a look", "Don't show again", "Milestones", "Milestone: {title}" and "{n} new milestones" are removed. The button never says "Do it": "Try it" is the one label, and the row's blurb says whether it sends at once or fills the composer.
 
 ### 8.9 Ship 1 scope
 
