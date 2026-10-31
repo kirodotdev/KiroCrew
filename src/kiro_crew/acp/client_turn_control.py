@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Collection
 
 from kiro_crew import mediated_request_capability
 from kiro_crew import sel as sel_module
-from kiro_crew.acp import pi_steer_turn, transport_framing
+from kiro_crew.acp import launch_tuning, pi_steer_turn, transport_framing
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_STEERING_MIN_VERSION,
     _adapter_version_at_least,
@@ -247,7 +247,8 @@ async def command_result(
     it reaches an external surface. The TuiCommand object form is required:
     current kiro-cli can exit without a response for the legacy string form.
     """
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
     cmd_name, cmd_args = parse_slash_command(command)
     payload: dict[str, Any] = {
         "sessionId": self._session_id,
@@ -270,7 +271,8 @@ async def send_command(self: AcpClient, command: str, args: dict | None = None) 
     Otherwise the plain-string form is kept for backward compat with
     older kiro-cli.
     """
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
     if args:
         cmd_name = command.strip().split(None, 1)[0].lstrip("/")
         payload: dict = {
@@ -306,7 +308,8 @@ async def stream_command(
     """
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
 
     cmd_name, cmd_args = parse_slash_command(command)
     req_id = await self._send_request(

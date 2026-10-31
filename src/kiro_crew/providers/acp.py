@@ -88,6 +88,10 @@ from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND  # noqa: F401
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
+)
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.tool_search import (  # noqa: F401
     TOOL_SEARCH_DEFAULT_MIN_PCT,
@@ -1058,6 +1062,18 @@ class AcpProvider(LLMProvider):
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight (and not yet cancelled) on the client."""
         return bool(self._client) and self._client.has_active_turn()
+
+    @property
+    def switches_by_relaunch(self) -> bool:
+        """Whether a model or effort change relaunches this session's process (Strands).
+
+        Such a switch either lands on the same chat or raises with the prior values
+        back in force, so a caller answers the raise as a refusal: it keeps the old
+        setting and does not reset the session, which would cold-start on the refused
+        value and fail the same way.
+        """
+        backend = getattr(self._client, "backend", "")
+        return backend in ACP_BACKENDS_MODEL_AT_LAUNCH or backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
 
     def background_launch(self) -> tuple[float, str] | None:
         """The client's newest background launch, or ``None`` (see base)."""

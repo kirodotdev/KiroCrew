@@ -33,7 +33,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
-from kiro_crew.acp import disposed_session, pi_steer_turn
+from kiro_crew.acp import disposed_session, launch_tuning, pi_steer_turn
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -698,7 +698,8 @@ async def send_message(self: AcpClient, message: str, timeout: float | None = No
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
 
     req_id = await self._send_prompt(message)
     return await self._read_prompt_response(req_id, timeout)
@@ -716,7 +717,8 @@ async def send_message_stream(
     # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
 
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
@@ -844,7 +846,8 @@ async def stream_events(
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
     req_id = await self._send_prompt(message, allow_image=allow_image)
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers
@@ -951,7 +954,8 @@ async def _dispatch_events(
         None if extract_agent_from_result or req_id == _AGENT_STARTED_REQUEST_ID else req_id
     )
 
-    async for action, msg in self._prompt_loop(req_id, timeout):
+    _prompt_events = self._prompt_loop(req_id, timeout)
+    async for action, msg in _prompt_events:
         if action != "update":
             logger.debug(
                 "ACP event: method=%s id=%s action=%s",
@@ -1048,6 +1052,10 @@ async def _dispatch_events(
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return
+            # The error IS the turn's end. Close the loop now so its finally (turn
+            # lock, _turn_done) runs before the error reaches a caller that acts on
+            # it at once (a fallback switch), not at deferred generator finalization.
+            await _prompt_events.aclose()
             _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
         if action == "permission":
             permission_event = self._build_permission_event(msg)

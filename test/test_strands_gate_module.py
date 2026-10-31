@@ -874,3 +874,10 @@ def test_another_spelling_of_the_folder_is_still_the_folder(
     (alias / "helper.py").write_text("MARK = 'edited'\n", encoding="utf-8")
     with pytest.raises(ImportError, match="not part of the Strands project version"):
         _load_by_path("alias_helper_2", alias / "helper.py")
+
+
+@pytest.mark.parametrize("overrides", [{"model": "openai/x"}, {"effort": "high"}])
+def test_an_exported_instance_refuses_a_launch_override_it_cannot_apply(gated, overrides) -> None:
+    """A plain ``agent = Agent(...)`` keeps its own model and effort: refused, not ignored."""
+    with pytest.raises(ValueError, match="create_agent"):
+        gated.gate._serve_exported_instance(gated(), "s", dict(overrides))
