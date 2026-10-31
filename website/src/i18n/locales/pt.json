@@ -17677,7 +17677,10 @@
         "desktop_app": "Aplicativo para desktop",
         "keep_running_when_window_closed": "Manter o aplicativo em execução em segundo plano ao fechar a janela",
         "keep_running_when_window_closed_desc": "Fechar a janela oculta o {{productName}}, e suas sessões e tarefas continuam em execução. Desative para que o botão de fechar encerre o aplicativo. Um gateway iniciado por este aplicativo para junto com ele, e um gateway ao qual ele apenas se conecta continua em execução.",
-        "keep_running_when_window_closed_save_failed": "Não foi possível salvar esta configuração. Nada foi alterado. Tente novamente."
+        "keep_running_when_window_closed_save_failed": "Não foi possível salvar esta configuração. Nada foi alterado. Tente novamente.",
+        "milestones": "Explorar",
+        "milestones_hint": "Mostra Explorar na barra superior e um cartão \"Experimente hoje\" em um chat novo.",
+        "milestones_save_failed": "Não foi possível salvar a configuração de Explorar. Tente de novo."
       },
       "importPanel": {
         "agent_data": "Dados do agente",
@@ -20997,5 +21000,98 @@
     "apply_replace_n": "Substituir diretrizes e adicionar {{count}}",
     "current_directions": "Diretrizes atuais (serão substituídas): {{directions}}",
     "done_replaced": "Diretrizes de comportamento substituídas."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "Primeiro widget",
+      "blurb": "Transforme seus dados em um cartão clicável",
+      "starter_prompt": "Crie um widget que mostre minha agenda desta semana",
+      "action": "Crie um widget"
+    },
+    "scheduled_task": {
+      "title": "Primeira tarefa agendada",
+      "blurb": "Roda na hora certa, como um resumo da manhã",
+      "starter_prompt": "Toda manhã, me dê um resumo",
+      "action": "Agende uma tarefa"
+    },
+    "mate": {
+      "title": "Conheceu o Mate",
+      "blurb": "Um colega que ajuda você a começar",
+      "starter_prompt": "Me apresente o Mate",
+      "action": "Conheça o Mate, seu guia"
+    },
+    "parallel_chats": {
+      "title": "Primeiros chats em paralelo",
+      "blurb": "Divida uma tarefa entre vários chats",
+      "starter_prompt": "Abra dois chats ao mesmo tempo: um pesquisa, o outro escreve um roteiro",
+      "action": "Rode dois chats ao mesmo tempo"
+    },
+    "slack": {
+      "title": "Slack conectado",
+      "blurb": "Me passe trabalho pelo Slack também",
+      "starter_prompt": "Conecte o Crew ao meu Slack",
+      "action": "Conecte o Slack"
+    },
+    "pr_watch": {
+      "title": "Primeiro PR acompanhado",
+      "blurb": "Saiba quando a CI ficar verde ou chegar uma revisão",
+      "starter_prompt": "Acompanhe o PR que vou colar a seguir e me avise quando a CI ficar verde.",
+      "action": "Acompanhe um pull request"
+    },
+    "crew_mode": {
+      "title": "Usou o Ultra Mode",
+      "blurb": "Alguns colegas trabalham juntos em um objetivo",
+      "starter_prompt": "Divida a tarefa que vou descrever a seguir entre alguns colegas trabalhando em paralelo.",
+      "action": "Experimente o Ultra Mode"
+    },
+    "chats_opened": {
+      "title": "Chats abertos",
+      "tier_one": "{{count}} chat",
+      "tier_many": "{{count}} chats",
+      "tier_other": "{{count}} chats"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Melhor sequência",
+      "tier_one": "Sequência de {{count}} dia",
+      "tier_many": "Sequência de {{count}} dias",
+      "tier_other": "Sequência de {{count}} dias"
+    }
+  },
+  "milestones": {
+    "title": "Explorar",
+    "close": "Fechar Explorar",
+    "indicator_label": "Explorar: {{done}} de {{total}} recursos experimentados",
+    "group_streak": "Sequência",
+    "streak_days_one": "{{count}} dia · melhor {{best}}",
+    "streak_days_many": "{{count}} dias · melhor {{best}}",
+    "streak_days_other": "{{count}} dias · melhor {{best}}",
+    "try_it": "Experimentar",
+    "mark_as_done": "Marcar como feito",
+    "notice_one": "Alcançado: {{title}}",
+    "load_failed": "Não foi possível carregar Explorar.",
+    "indicator_label_streak_one": "Explorar: {{done}} de {{total}} recursos experimentados, sequência de {{count}} dia",
+    "indicator_label_streak_many": "Explorar: {{done}} de {{total}} recursos experimentados, sequência de {{count}} dias",
+    "indicator_label_streak_other": "Explorar: {{done}} de {{total}} recursos experimentados, sequência de {{count}} dias",
+    "try_today": "Experimente hoje",
+    "your_progress": "Seu progresso",
+    "all_tried": "Você já experimentou todos os recursos daqui.",
+    "try_today_entry_one": "Experimente hoje: {{count}} recurso novo",
+    "try_today_entry_many": "Experimente hoje: {{count}} recursos novos",
+    "try_today_entry_other": "Experimente hoje: {{count}} recursos novos",
+    "notice_count_one": "{{count}} novidade em Explorar",
+    "notice_count_many": "{{count}} novidades em Explorar",
+    "notice_count_other": "{{count}} novidades em Explorar",
+    "intro_video_title": "{{productName}} em 15 segundos",
+    "intro_video_watch": "Assistir",
+    "intro_video_close": "Fechar vídeo",
+    "getting_started": "Primeiros passos",
+    "getting_started_result": "Um primeiro resultado pronto",
+    "getting_started_brief": "Configure um resumo matinal",
+    "badges": "Selos",
+    "try_today_none": "Comece por \"Primeiros passos\", abaixo.",
+    "streak_short_one": "Sequência de {{count}} dia",
+    "streak_short_many": "Sequência de {{count}} dias",
+    "streak_short_other": "Sequência de {{count}} dias"
   }
 }

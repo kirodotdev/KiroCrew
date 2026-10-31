@@ -17085,7 +17085,10 @@
         "desktop_app": "デスクトップアプリ",
         "keep_running_when_window_closed": "ウィンドウを閉じてもアプリをバックグラウンドで実行し続ける",
         "keep_running_when_window_closed_desc": "ウィンドウを閉じると {{productName}} は非表示になり、セッションとジョブは実行を続けます。オフにすると、閉じるボタンでアプリが終了します。このアプリが起動したゲートウェイは一緒に停止し、接続しているだけのゲートウェイは実行を続けます。",
-        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。"
+        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。",
+        "milestones": "探索",
+        "milestones_hint": "トップバーに探索を、新しいチャットに「今日試す」カードを表示します。",
+        "milestones_save_failed": "探索の設定を保存できませんでした。もう一度お試しください。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",
@@ -20337,5 +20340,84 @@
     "apply_replace_n": "行動指示を置き換えて {{count}} 件を追加",
     "current_directions": "現在の行動指示（置き換えられます）：{{directions}}",
     "done_replaced": "行動指示を置き換えました。"
+  },
+  "milestone": {
+    "widgets": {
+      "title": "初めてのウィジェット",
+      "blurb": "データをクリックできるカードにする",
+      "starter_prompt": "今週のカレンダーを表示するウィジェットを作って",
+      "action": "ウィジェットを作る"
+    },
+    "scheduled_task": {
+      "title": "初めての定期タスク",
+      "blurb": "毎朝のまとめのように、決まった時間に動く",
+      "starter_prompt": "毎朝、ブリーフをちょうだい",
+      "action": "タスクをスケジュールする"
+    },
+    "mate": {
+      "title": "Mate に会った",
+      "blurb": "使い始めを手伝ってくれるチームメイト",
+      "starter_prompt": "Mate を紹介して",
+      "action": "ガイド役の Mate に会う"
+    },
+    "parallel_chats": {
+      "title": "初めての並行チャット",
+      "blurb": "1 つの作業を複数のチャットに分ける",
+      "starter_prompt": "チャットを 2 つ同時に開いて：1 つは調査、もう 1 つはアウトライン作成",
+      "action": "2 つのチャットを同時に動かす"
+    },
+    "slack": {
+      "title": "Slack に接続した",
+      "blurb": "Slack からも仕事を頼める",
+      "starter_prompt": "Crew を私の Slack につないで",
+      "action": "Slack をつなぐ"
+    },
+    "pr_watch": {
+      "title": "初めての PR ウォッチ",
+      "blurb": "CI が緑になったりレビューが来たら知らせる",
+      "starter_prompt": "次に貼る PR を見ていて、CI が緑になったら教えて。",
+      "action": "プルリクエストを見張る"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode を使った",
+      "blurb": "数人のチームメイトで 1 つの目標に取り組む",
+      "starter_prompt": "次に説明する作業を数人のチームメイトに分けて並行で進めて。",
+      "action": "Ultra Mode を試す"
+    },
+    "chats_opened": {
+      "title": "開いたチャット",
+      "tier_other": "{{count}} チャット"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "最長連続日数",
+      "tier_other": "{{count}} 日連続"
+    }
+  },
+  "milestones": {
+    "title": "探索",
+    "close": "探索を閉じる",
+    "indicator_label": "探索：{{total}} 機能中 {{done}} 試した",
+    "group_streak": "連続日数",
+    "streak_days_other": "{{count}} 日 · 最長 {{best}} 日",
+    "try_it": "試す",
+    "mark_as_done": "完了にする",
+    "notice_one": "達成：{{title}}",
+    "load_failed": "探索を読み込めませんでした。",
+    "indicator_label_streak_other": "探索：{{total}} 機能中 {{done}} 試した、{{count}} 日連続",
+    "try_today": "今日試す",
+    "your_progress": "あなたの進み具合",
+    "all_tried": "ここの機能はすべて試しました。",
+    "try_today_entry_other": "今日試す：新しい機能 {{count}} 件",
+    "notice_count_other": "探索に新着 {{count}} 件",
+    "intro_video_title": "15 秒でわかる {{productName}}",
+    "intro_video_watch": "見る",
+    "intro_video_close": "動画を閉じる",
+    "getting_started": "はじめに",
+    "getting_started_result": "最初にできあがった成果",
+    "getting_started_brief": "朝のブリーフを設定",
+    "badges": "バッジ",
+    "try_today_none": "まずは下の「はじめに」から。",
+    "streak_short_other": "{{count}} 日連続"
   }
 }

@@ -17381,7 +17381,10 @@
         "desktop_app": "Desktop-App",
         "keep_running_when_window_closed": "Nach dem Schließen des Fensters im Hintergrund weiterlaufen",
         "keep_running_when_window_closed_desc": "Beim Schließen des Fensters wird {{productName}} ausgeblendet, und deine Sitzungen und Jobs laufen weiter. Schalte dies aus, damit die Schließen-Schaltfläche die App beendet. Ein von dieser App gestartetes Gateway wird mit ihr beendet, ein Gateway, mit dem sie nur verbunden ist, läuft weiter.",
-        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut."
+        "keep_running_when_window_closed_save_failed": "Diese Einstellung konnte nicht gespeichert werden. Es wurde nichts geändert. Versuch es erneut.",
+        "milestones": "Entdecken",
+        "milestones_hint": "Zeigt Entdecken in der oberen Leiste und eine Karte „Heute ausprobieren“ in einem neuen Chat.",
+        "milestones_save_failed": "Die Einstellung für Entdecken konnte nicht gespeichert werden. Versuch es noch einmal."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",
@@ -20667,5 +20670,91 @@
     "apply_replace_n": "Anweisungen ersetzen und {{count}} hinzufügen",
     "current_directions": "Aktuelle Anweisungen (werden ersetzt): {{directions}}",
     "done_replaced": "Verhaltensanweisungen ersetzt."
+  },
+  "milestone": {
+    "widgets": {
+      "title": "Erstes Widget",
+      "blurb": "Mach aus deinen Daten eine klickbare Karte",
+      "starter_prompt": "Erstelle ein Widget, das meinen Kalender für diese Woche zeigt",
+      "action": "Ein Widget bauen"
+    },
+    "scheduled_task": {
+      "title": "Erste geplante Aufgabe",
+      "blurb": "Läuft pünktlich, etwa als Morgenbericht",
+      "starter_prompt": "Gib mir jeden Morgen ein Briefing",
+      "action": "Eine Aufgabe planen"
+    },
+    "mate": {
+      "title": "Mate kennengelernt",
+      "blurb": "Ein Teammitglied, das dir beim Start hilft",
+      "starter_prompt": "Stell mir den Mate vor",
+      "action": "Den Mate kennenlernen, deinen Guide"
+    },
+    "parallel_chats": {
+      "title": "Erste parallele Chats",
+      "blurb": "Teile eine Aufgabe auf mehrere Chats auf",
+      "starter_prompt": "Öffne zwei Chats gleichzeitig: einer recherchiert, einer schreibt eine Gliederung",
+      "action": "Zwei Chats gleichzeitig laufen lassen"
+    },
+    "slack": {
+      "title": "Slack verbunden",
+      "blurb": "Gib mir Arbeit auch aus Slack",
+      "starter_prompt": "Verbinde Crew mit meinem Slack",
+      "action": "Slack verbinden"
+    },
+    "pr_watch": {
+      "title": "Erster PR im Blick",
+      "blurb": "Erfahre, wenn CI grün wird oder ein Review kommt",
+      "starter_prompt": "Behalte den PR im Blick, den ich gleich einfüge, und sag mir, wenn CI grün wird.",
+      "action": "Einen Pull Request beobachten"
+    },
+    "crew_mode": {
+      "title": "Ultra Mode genutzt",
+      "blurb": "Ein paar Teammitglieder arbeiten an einem Ziel",
+      "starter_prompt": "Teile die Aufgabe, die ich gleich beschreibe, auf ein paar Teammitglieder auf, die parallel arbeiten.",
+      "action": "Ultra Mode ausprobieren"
+    },
+    "chats_opened": {
+      "title": "Geöffnete Chats",
+      "tier_one": "{{count}} Chat",
+      "tier_other": "{{count}} Chats"
+    },
+    "turns_sent": {},
+    "streak_best": {
+      "title": "Längste Serie",
+      "tier_one": "{{count}} Tag in Folge",
+      "tier_other": "{{count}} Tage in Folge"
+    }
+  },
+  "milestones": {
+    "title": "Entdecken",
+    "close": "Entdecken schließen",
+    "indicator_label": "Entdecken: {{done}} von {{total}} Funktionen ausprobiert",
+    "group_streak": "Serie",
+    "streak_days_one": "{{count}} Tag · Rekord {{best}}",
+    "streak_days_other": "{{count}} Tage · Rekord {{best}}",
+    "try_it": "Ausprobieren",
+    "mark_as_done": "Als erledigt markieren",
+    "notice_one": "Erreicht: {{title}}",
+    "load_failed": "Entdecken konnte nicht geladen werden.",
+    "indicator_label_streak_one": "Entdecken: {{done}} von {{total}} Funktionen ausprobiert, {{count}} Tag in Folge",
+    "indicator_label_streak_other": "Entdecken: {{done}} von {{total}} Funktionen ausprobiert, {{count}} Tage in Folge",
+    "try_today": "Heute ausprobieren",
+    "your_progress": "Dein Fortschritt",
+    "all_tried": "Du hast alle Funktionen hier ausprobiert.",
+    "try_today_entry_one": "Heute ausprobieren: {{count}} neue Funktion",
+    "try_today_entry_other": "Heute ausprobieren: {{count}} neue Funktionen",
+    "notice_count_one": "{{count}} Neuigkeit in Entdecken",
+    "notice_count_other": "{{count}} Neuigkeiten in Entdecken",
+    "intro_video_title": "{{productName}} in 15 Sekunden",
+    "intro_video_watch": "Ansehen",
+    "intro_video_close": "Video schließen",
+    "getting_started": "Erste Schritte",
+    "getting_started_result": "Ein erstes fertiges Ergebnis",
+    "getting_started_brief": "Ein Morgen-Briefing einrichten",
+    "badges": "Abzeichen",
+    "try_today_none": "Fang unten mit „Erste Schritte“ an.",
+    "streak_short_one": "{{count}} Tag in Folge",
+    "streak_short_other": "{{count}} Tage in Folge"
   }
 }
