@@ -10629,9 +10629,9 @@
       "title": "Execute você mesmo"
     },
     "uninstalledBuiltinSkillsList": {
-      "title": "Habilidades integradas desinstaladas",
+      "title": "Habilidades integradas excluídas",
       "hint": "Habilidades integradas que você excluiu. Elas continuam removidas após reinicializações e atualizações até que você as restaure.",
-      "load_failed": "Não foi possível carregar as habilidades integradas desinstaladas.",
+      "load_failed": "Não foi possível carregar as habilidades integradas excluídas.",
       "restore": "Restaurar",
       "restoring": "Restaurando…",
       "restore_failed": "Não foi possível restaurar esta habilidade. Tente novamente."

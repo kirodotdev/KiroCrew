@@ -10476,9 +10476,9 @@
       "title": "Selbst ausführen"
     },
     "uninstalledBuiltinSkillsList": {
-      "title": "Deinstallierte integrierte Skills",
+      "title": "Gelöschte integrierte Skills",
       "hint": "Integrierte Skills, die du gelöscht hast. Sie bleiben nach Neustarts und Updates entfernt, bis du sie wiederherstellst.",
-      "load_failed": "Die deinstallierten integrierten Skills konnten nicht geladen werden.",
+      "load_failed": "Die gelöschten integrierten Skills konnten nicht geladen werden.",
       "restore": "Wiederherstellen",
       "restoring": "Wird wiederhergestellt…",
       "restore_failed": "Dieser Skill konnte nicht wiederhergestellt werden. Versuche es erneut."

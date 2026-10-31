@@ -10629,9 +10629,9 @@
       "title": "Eseguilo tu"
     },
     "uninstalledBuiltinSkillsList": {
-      "title": "Skill integrate disinstallate",
+      "title": "Skill integrate eliminate",
       "hint": "Skill integrate che hai eliminato. Restano rimosse dopo riavvii e aggiornamenti finché non le ripristini.",
-      "load_failed": "Impossibile caricare le skill integrate disinstallate.",
+      "load_failed": "Impossibile caricare le skill integrate eliminate.",
       "restore": "Ripristina",
       "restoring": "Ripristino…",
       "restore_failed": "Impossibile ripristinare questa skill. Riprova."
