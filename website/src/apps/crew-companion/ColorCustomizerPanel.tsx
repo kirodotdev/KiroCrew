@@ -5,7 +5,7 @@
  * with per-body-part highlighting. i18n via useT().
  */
 import { Check, X } from 'lucide-react'
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from './colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from './catPresets'
 import { BUILT_IN_CAT_PRESETS } from './builtInCatPresets'
@@ -138,6 +138,21 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
   const [showSaveForm, setShowSaveForm] = useState(false)
   const [saveNameInput, setSaveNameInput] = useState('')
+  // The "Save preset" button that opens the name field. Closing the field
+  // unmounts whatever had focus in it (the input, or its confirm or cancel
+  // button), and a browser then drops focus to document.body, so every close
+  // hands focus back here once the button has remounted (the pattern in
+  // MeetingTitle).
+  const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const closeSaveForm = useCallback(() => {
+    setShowSaveForm(false)
+    // Only take back focus the unmount dropped: a save can resolve after the
+    // user has already moved on to another control, and that control keeps it.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+    })
+  }, [])
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
   useEffect(() => {
@@ -186,8 +201,8 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
     setRegistry(new PresetRegistry(BUILT_IN_CAT_PRESETS, customs))
     await api?.presetsSaveCustom?.(customs)
     setSaveNameInput('')
-    setShowSaveForm(false)
-  }, [colorMap, registry, saveNameInput])
+    closeSaveForm()
+  }, [closeSaveForm, colorMap, registry, saveNameInput])
 
   const handleDeletePreset = useCallback(async (id: string) => {
     registry.removeCustomPreset(id)
@@ -227,14 +242,14 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
       <div style={CS.btnRow}>
         <button style={CS.btn} onClick={handleReset}>{i18nT('apps.crewCompanion.color.reset')}</button>
         {!showSaveForm ? (
-          <button style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.crewCompanion.color.savePreset')}</button>
+          <button ref={saveTriggerRef} style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.crewCompanion.color.savePreset')}</button>
         ) : (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
               type="text"
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
-              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: () => setShowSaveForm(false) })}
+              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
               placeholder={i18nT('apps.crewCompanion.color.promptName')}
               aria-label={i18nT('apps.crewCompanion.color.promptName')}
               autoFocus
@@ -248,7 +263,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               aria-label={i18nT('apps.crewCompanion.color.savePreset')}>
               <Check className="lucide-inline" aria-hidden="true" />
             </button>
-            <button style={CS.btn} onClick={() => { setShowSaveForm(false); setSaveNameInput('') }}
+            <button style={CS.btn} onClick={() => { setSaveNameInput(''); closeSaveForm() }}
               aria-label={i18nT('apps.crewCompanion.gallery.cancel')}>
               <X className="lucide-inline" aria-hidden="true" />
             </button>
