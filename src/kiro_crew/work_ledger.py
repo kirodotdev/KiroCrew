@@ -1043,6 +1043,8 @@ from kiro_crew.work_ledger_purge import (  # noqa: E402, F401
     purge_conductor,
 )
 from kiro_crew.work_ledger_records import (  # noqa: E402, F401
+    ACCEPTANCE_CHECK_NAME,
+    ACCEPTANCE_CHECK_REF,
     ACCEPTANCE_GH_REPO,
     ACCEPTANCE_KINDS,
     ACCEPTANCE_PLACEHOLDERS,
