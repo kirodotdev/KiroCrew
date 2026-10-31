@@ -257,6 +257,36 @@ describe('App — applying an update', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
   })
 
+  it('keeps focus inside the failure dialog and dismisses it on Escape', async () => {
+    vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
+    await startUpdate()
+
+    const dialog = await screen.findByRole('dialog', { name: 'Update error' })
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    // The agent hand-off stays beside Dismiss.
+    const ask = within(dialog).getByRole('button', { name: /ask the agent/i })
+    const dismiss = within(dialog).getByRole('button', { name: 'Dismiss' })
+    dismiss.focus()
+    fireEvent.keyDown(dismiss, { key: 'Tab' })
+    expect(document.activeElement).toBe(ask)
+    fireEvent.keyDown(ask, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismiss)
+
+    // A page shortcut typed inside the dialog stays inside it.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(dismiss, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(dismiss, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Update error' })).toBeNull())
+  })
+
   it('falls back to the raw failure text when it is not a JSON body', async () => {
     vi.mocked(api.applyUpdate).mockRejectedValueOnce(new Error('no space left on device'))
     await startUpdate()

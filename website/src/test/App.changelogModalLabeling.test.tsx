@@ -18,6 +18,7 @@ import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
 import type { RootState } from '../store'
 import App from '../App'
+import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -160,6 +161,40 @@ describe('changelog modal labeling', () => {
 
     expect(await screen.findByTestId('changelog-notes')).toHaveTextContent('patch note from 0.7.1')
     expect(screen.queryByTestId('changelog-stale-notice')).toBeNull()
+  })
+
+  it('takes focus on open, keeps Tab inside, and closes on Escape with focus restored', async () => {
+    renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
+    const dialog = await screen.findByTestId('changelog-modal')
+    // Focus moves in once the dialog's effects have run.
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+
+    const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE))
+    const first = items[0]
+    const last = items[items.length - 1]
+    expect(first).not.toBe(last)
+    last.focus()
+    fireEvent.keyDown(last, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+
+    // A page shortcut typed inside the dialog stays inside it, so no second
+    // overlay (the command palette) opens to fight the trap for focus.
+    const pageKeys = vi.fn()
+    window.addEventListener('keydown', pageKeys)
+    try {
+      fireEvent.keyDown(last, { key: 'k', ctrlKey: true })
+      expect(pageKeys).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', pageKeys)
+    }
+
+    fireEvent.keyDown(last, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('changelog-modal')).toBeNull())
+    // Focus goes back to the page, not lost with the unmounted dialog.
+    expect(document.activeElement).not.toBe(document.body)
+    expect(document.body.contains(document.activeElement)).toBe(true)
   })
 
   it('is sized for a real release and keeps its width when the full changelog opens', async () => {
