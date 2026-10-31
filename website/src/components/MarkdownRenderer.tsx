@@ -158,7 +158,7 @@ function MdAnchor({ node, href, children, [SESSION_REF_TRAILING]: trailing }: Md
   }, [href, claimed, jiraHosts])
   // A chipped link is never handed to the unfurl gate — mirroring `claimed`,
   // so the no-fetch guarantee holds at the network boundary, not just visually.
-  const target = useUnfurlHref(claimed || source ? null : href)
+  const target = useUnfurlHref(claimed || source ? null : href, textOf(children))
   const meta = useLinkMeta(target ?? undefined, target !== null)
   let localHref: string | null = null
   if (href?.startsWith('/')) {
@@ -444,7 +444,7 @@ function MdParagraph({ node, children }: React.HTMLAttributes<HTMLParagraphEleme
   // A recognized Jira link never reaches the unfurl machinery: its card is
   // synchronous, so handing the href on would only add a fetch whose result
   // is discarded.
-  const target = useUnfurlHref(jira ? null : sole?.href)
+  const target = useUnfurlHref(jira ? null : sole?.href, sole?.text)
   // Same priority rule as MdAnchor: a link the override owns stays an in-app
   // affordance inside an ordinary paragraph, never a card. The provider is a
   // pure render prop (Issue Radar's returns a RefLink element), and the probe
