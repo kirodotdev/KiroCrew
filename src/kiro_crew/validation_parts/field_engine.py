@@ -12,6 +12,7 @@ module never imports that facade.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,7 +81,9 @@ class FieldSpec:
     max_len: int = 0  # 0 = no limit
     min_val: float | None = None  # for numeric fields
     max_val: float | None = None
-    allowed: frozenset[str] | None = None  # enum allow-list
+    # Enum allow-list. A zero-argument callable is resolved on every validation,
+    # for a vocabulary that grows after import (boot-time plugin registration).
+    allowed: frozenset[str] | Callable[[], frozenset[str]] | None = None
     pattern: re.Pattern[str] | None = None  # regex pattern
     default: Any = None
     item_type: type | tuple[type, ...] | None = None  # type: ignore[valid-type]  # for list fields: expected type(s) of each element
@@ -318,8 +321,9 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
                     f"exceeds max length {spec.max_len} "
                     f"(got {len(value)}, trim {len(value) - spec.max_len} chars)",
                 )
-        if spec.allowed and value not in spec.allowed:
-            raise ValidationError(spec.name, f"must be one of: {', '.join(sorted(spec.allowed))}")
+        allowed = spec.allowed() if callable(spec.allowed) else spec.allowed
+        if allowed and value not in allowed:
+            raise ValidationError(spec.name, f"must be one of: {', '.join(sorted(allowed))}")
         if spec.pattern and value and not spec.pattern.match(value):
             raise ValidationError(spec.name, "invalid format")
 

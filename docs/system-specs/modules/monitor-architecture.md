@@ -28,7 +28,7 @@ this spec states the target and that one states the present.
 
 | Layer | Status | Where it lives today |
 |---|---|---|
-| Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch, now for two kernel-path kinds (`gh-pr`, `work-ledger`), and `work-ledger` has no registry row at all |
+| Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`, and `monitoring/plugins.py` lets a downstream edition register further pull-request-shaped kinds at boot; `probes/__init__.py` still has its separate dispatch branch, now for two kernel-path kinds (`gh-pr`, `work-ledger`), and `work-ledger` has no registry row at all |
 | Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
 | Observation | `partial` | the `MonitorCondition` type and the `MonitorSeverity` / `MonitorResetsOn` vocabulary live in `monitoring/models.py`, all four pull-request kinds derive their named conditions in `monitoring/pull_request.py`, and `monitoring/decision.py` masks, ages and resets per condition; `irq.py` keeps its own copy of the vocabulary, and a subject's fingerprint is still derived from the canonical facts rather than from the conditions |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the kernel path |
@@ -83,8 +83,9 @@ than from the canonical facts.
 **Status: implemented for structured monitors.** `MonitorProbe` in `models.py`
 is the public, plural Protocol and returns
 `Mapping[str, MonitorProbeResult]`. `run_shadow_probe` consumes it directly.
-The controller's private `_Provider` mirrors that provider-neutral result and
-adds only the `use_owner_credentials` capability its delivery path owns. GitHub,
+`MonitorProbeProvider`, beside it in `models.py`, extends it with only the
+`use_owner_credentials` capability the controller's delivery path owns; the
+controller and the contributed-kind seam both type providers to it. GitHub,
 GitLab, Azure DevOps, Bitbucket, and the workflow-run acceptance provider all
 return the shared record; no boundary names a GitHub-specific result.
 
@@ -271,6 +272,8 @@ The `monitoring/` package now has a different extension point:
 the data-only kind registry. The four source-provider adapters and the workflow
 run acceptance provider conform to it. The controller still owns the concrete
 default provider map, while the shadow path receives a provider explicitly.
+A downstream edition adds to that map, without editing it, through
+`monitoring.plugins.register_monitor_kind` (see *Adding a new monitored kind*).
 
 That is progress, not consolidation: a kind intended for both drivers still has
 to integrate with two contracts. The remaining target is one plugin shape that
@@ -1076,6 +1079,35 @@ provider into the controller and/or shadow caller whose capability the registry
 declares. A kind that must reach both drivers still pays for both integrations.
 The numbered steps that follow describe the unified target, not the current
 tree.
+
+**From a downstream edition, without editing core.** A review system the public
+core does not know about registers a `MonitorKindPlugin` (its `MonitorKind`
+entry, a provider factory and a strict target parser) through
+`monitoring.plugins.register_monitor_kind`, from the edition's platform-context
+builder so it runs in every process that boots the platform. From then on the
+`monitor_watch` validator, target inference and normalization, the persisted
+objective check and the controller's default provider table accept the kind.
+The limits a registrant must design for:
+
+- The kind is pull-request shaped: its provider returns a
+  `PullRequestProbeResult`, and its only objective is `review_ready`.
+- Registration must precede controller construction, and must be unconditional:
+  a persisted monitor whose kind is absent on a later boot stops as blocked.
+- Built-in parsers run first during inference, so a contributed parser cannot
+  claim a built-in host's URL; a built-in or duplicate name is refused.
+- Transport safety is mostly the registrant's: the core refuses a parsed target
+  that is not `https` with a host, and refuses one carrying credentials, but
+  applies no host backstop. The built-in `_parts()` checks (pinned host, no
+  port, query or fragment) do not run for a contributed parser, so it must pin
+  its own host or the core will probe whatever address it returns.
+- Owner credentials follow the built-in rule: never from a channel-created
+  monitor, and from a dashboard one only through the recorded grant. The shadow
+  path, which has no such gate, is refused to a contributed kind.
+- The dashboard's kind vocabulary is the checked-in contract snapshot, so a
+  contributed-kind monitor is shown as blocked even while it probes, with save
+  and restart disabled; stop works.
+- A provider factory that raises is logged and fails only its own kind, whose
+  monitors then stop as blocked on their first tick.
 
 1. Define the subject type with a stable `identity()`.
 2. Register the kind as data in the registry.

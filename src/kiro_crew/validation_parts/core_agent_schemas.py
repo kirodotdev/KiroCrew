@@ -383,9 +383,9 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
     custom_validator=_validate_monitor_runtime,
     fields=[
-        FieldSpec("kind", str, required=True, allowed=publicly_armable_kinds()),
+        FieldSpec("kind", str, required=True, allowed=publicly_armable_kinds),
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, required=True, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, required=True, allowed=publicly_armable_objectives),
         FieldSpec(
             "interval_secs",
             int,
@@ -553,7 +553,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_cycles", int, min_val=1, max_val=1000),
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, allowed=publicly_armable_objectives),
         # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
         FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),

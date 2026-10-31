@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import quote, unquote, urlparse
 
 from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
+from kiro_crew.monitoring.plugins import (
+    MonitorKindPlugin,
+    registered_monitor_kind,
+    registered_monitor_kinds,
+)
 from kiro_crew.security import redact_credentials
+
+logger = logging.getLogger(__name__)
 
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 _AZURE_SEGMENT_RE = re.compile(r"^[^/:\\~&%;@'\"?<>|#$*}{,+=\[\]\x00-\x1f\x7f-\x9f\u2028\u2029]+$")
@@ -165,6 +173,38 @@ def parse_bitbucket_pull_request_target(raw: str) -> BitbucketPullRequestTarget:
     return target
 
 
+def _contributed_target(plugin: MonitorKindPlugin, raw: str) -> str:
+    """Run a contributed parser, folding anything it raises into ``ValueError``.
+
+    Every caller of target parsing handles ``ValueError`` alone, and inference
+    hands every contributed parser URLs it does not own, so one that raises a
+    ``TypeError`` on foreign input must read as "not mine", not escape as a 500.
+
+    The core backstops only the scheme: the canonical target must be an
+    ``https`` URL with a host. The host itself stays the registrant's to pin,
+    since the first consumer of this seam is an internal review host that a
+    blanket private-address rule would refuse.
+    """
+    try:
+        target = plugin.parse_target(raw)
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "monitor kind %s: target parser raised %s", plugin.kind.name, type(exc).__name__
+        )
+        raise ValueError("target must be a supported pull-request URL") from exc
+    if not isinstance(target, str) or not target:
+        raise ValueError("target must be a supported pull-request URL")
+    try:
+        parsed = urlparse(target)
+    except ValueError as exc:
+        raise ValueError("target must be a supported pull-request URL") from exc
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("target must be an https pull-request URL")
+    return target
+
+
 def infer_pull_request_kind(
     raw: str,
     *,
@@ -188,6 +228,14 @@ def infer_pull_request_kind(
         except ValueError:
             continue
         return kind
+    # Built-ins first, so a contributed parser can never claim a URL a built-in
+    # provider owns.
+    for plugin in registered_monitor_kinds():
+        try:
+            _contributed_target(plugin, raw)
+        except ValueError:
+            continue
+        return plugin.kind.name
     raise ValueError("target must be a supported pull-request URL")
 
 
@@ -206,6 +254,8 @@ def normalize_pull_request_target(
         target = parse_azure_devops_pull_request_target(raw).url
     elif kind == "bitbucket_pull_request":
         target = parse_bitbucket_pull_request_target(raw).url
+    elif (plugin := registered_monitor_kind(kind)) is not None:
+        target = _contributed_target(plugin, raw)
     else:
         raise ValueError("kind is not a supported pull-request monitor")
 
