@@ -17828,7 +17828,6 @@
         "host_surface": "होस्ट सरफ़ेस",
         "i_understand_this_weakens_kirocrew_s_protection": "मैं समझता हूँ कि इससे {{productName}} की सुरक्षा कमज़ोर होती है।",
         "interactive": "इंटरैक्टिव",
-        "invalid_regular_expression": "अमान्य रेगुलर एक्सप्रेशन",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} 6 सुरक्षा परतें लागू करता है। प्रत्येक परत स्वतंत्र रूप से काम करती है — सफल होने के लिए हमलावर को सभी परतों को एक साथ बायपास करना होगा।",
         "layer_auth": "प्रमाणन",

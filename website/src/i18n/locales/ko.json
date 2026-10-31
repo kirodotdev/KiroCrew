@@ -17522,7 +17522,6 @@
         "host_surface": "호스트 표면",
         "i_understand_this_weakens_kirocrew_s_protection": "이 설정이 {{productName}}의 보호를 약화시킨다는 점을 이해합니다.",
         "interactive": "대화형",
-        "invalid_regular_expression": "잘못된 정규식",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}}은(는) 6개의 보안 레이어를 구현합니다. 각 레이어는 독립적으로 동작합니다 — 공격자가 성공하려면 모든 레이어를 동시에 우회해야 합니다.",
         "layer_auth": "인증",

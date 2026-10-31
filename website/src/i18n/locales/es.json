@@ -18134,7 +18134,6 @@
         "host_surface": "superficie del host",
         "i_understand_this_weakens_kirocrew_s_protection": "Entiendo que esto debilita la protección de {{productName}}.",
         "interactive": "Interactivo",
-        "invalid_regular_expression": "Expresión regular no válida",
         "kiro_crew_security_policy_json": "security_policy.json",
         "kirocrew_implements_6_security_layers_each_layer": "{{productName}} implementa 6 capas de seguridad. Cada capa funciona de forma independiente — un atacante debe superar todas las capas a la vez para tener éxito.",
         "layer_auth": "Autenticación",
