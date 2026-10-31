@@ -240,6 +240,22 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("test-durations.yml", "refresh"): (
         "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
     ),
+    # The same-repo scope lane's three non-matrix jobs. They keep their place in
+    # _PERMANENT_EXCEPTIONS because none of them takes a fleet route, and a group
+    # label is not a fleet route. `generate` has its own documented reason to
+    # stay off the fleet, which its comment in the workflow states; the other two
+    # are simply not argued onto it. The label form rather than `group:` is
+    # required because the workflow fires on `pull_request`, so a contributor's
+    # own fork runs it where an organization group is unreachable.
+    ("security-scope-review.yml", "generate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "validate"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
+    ("security-scope-review.yml", "publish"): (
+        "${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+    ),
 }
 _DEFAULT_HOSTED_EXCEPTION_RUNNER = "ubuntu-latest"
 

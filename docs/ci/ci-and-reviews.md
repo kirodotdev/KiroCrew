@@ -1071,7 +1071,7 @@ its timeout starts; diagnose or roll back rather than raising that timeout.
 Some `runs-on` sites draw on the `kirocrew-runners` larger-runner group by
 `group:` rather than `ubuntu-latest`, and others reach it conditionally by label
 (the label-route sections below name them, along with the matrix legs in
-`denial-differential.yml` and `fork-security-scope-review.yml` covered with
+`denial-differential.yml` and both scope lanes covered with
 them). Every one of them can land on the group's cap, which is what
 **Capacity** below is about. `ci.yml`'s `changes` resolver reaches the same group
 a third way, conditionally and by label, and is treated separately throughout
@@ -1217,9 +1217,10 @@ Windows definition to `kirocrew-runners` would make every one of these jobs
 eligible to land on Windows. A Windows definition belongs in its own group,
 which is where `kirocrew-runners-windows` holds the one below.
 
-**Two cross-platform matrix jobs reach these runners by LABEL instead.**
-`denial-differential.yml`'s `denial-differential` and
-`fork-security-scope-review.yml`'s `adjudicate` each run one Linux, one macOS
+**Three cross-platform matrix jobs reach these runners by LABEL instead.**
+`denial-differential.yml`'s `denial-differential` and the `adjudicate` job of
+both scope lanes -- `fork-security-scope-review.yml`'s and
+`security-scope-review.yml`'s -- each run one Linux, one macOS
 and one Windows leg off `os: [ubuntu-latest, macos-latest, windows-latest]`.
 Their Linux and Windows legs now resolve to `kirocrew-linux-4-core` and
 `kirocrew-windows-4-core`, dispatched on `matrix.os` in a single `runs-on`
@@ -1236,19 +1237,20 @@ and Windows definitions are: it is a 3-core arm64 runner capped at
 `maximum_runners: 8`, so whether a macOS leg runs unchanged on it has to be
 measured rather than assumed. Moving one is a separate decision.
 
-These two are the exception to the group-targeting rule above, and the reason is
-fork reachability. A runner group belongs to the kirodotdev organization, so a
-fork running either workflow **in its own repository** cannot reach one, and a
+These three are the exception to the group-targeting rule above, and the reason
+is fork reachability. A runner group belongs to the kirodotdev organization, so a
+fork running any of these workflows **in its own repository** cannot reach one, and a
 job dispatched to a group that does not admit the repository queues until the
 24-hour auto-cancel. A label inside a
 `github.repository == 'kirodotdev/KiroCrew'` conditional degrades to the hosted
 image there; a group reference cannot. Note this is about a fork running its own
 copy, not about a fork pull request against this repository: a `pull_request`
 run on a fork PR executes in the base repository, where the group is reachable.
-`adjudicate`'s own `if` already skips the commonest fork-internal case -- a pull
-request whose head repository is the fork itself -- so the conditional is what
-covers the paths that remain. The rename exposure the group form protects
-against is real and accepted here; these two sites are the ones that break if
+`fork-security-scope-review.yml`'s `adjudicate` carries an `if` that already
+skips the commonest fork-internal case -- a pull request whose head repository
+is the fork itself -- so on that site the conditional covers only the paths that
+remain. The other two carry no such clause. The rename exposure the group form protects
+against is real and accepted here; these three sites also break if
 either definition is renamed.
 
 A larger runner does not change `adjudicate`'s posture. It is still a
@@ -1263,13 +1265,13 @@ have far less headroom to spend. Nothing gets faster on either: both definitions
 are 4 vCPU and 16 GB, so the **Nothing gets faster** paragraph above applies
 unchanged -- only queue position moves, and the minutes become billed ones.
 
-Neither job fires on every pull request, which is what bounds the added load:
-`denial-differential` is behind a `paths` filter covering the security
-surface and `scripts/deny_diff.py`, and `adjudicate` runs only when `validate`
-emits `adjudicate=true`, which needs the model to have written candidates the
-committed corpus does not already cover. **Measure both rates from the jobs API
-filtered on `runner_group_name` before adding a third matrix site**, rather than
-reading one leg per pull request off the matrix. A stuck leg rolls back the same
+None of the three fires on every pull request, which is what bounds the added
+load: `denial-differential` is behind a `paths` filter covering the security
+surface and `scripts/deny_diff.py`, and each scope lane's `adjudicate` runs only
+when its own `validate` emits `adjudicate=true`, which needs the model to have
+written candidates the committed corpus does not already cover. **Measure these
+rates from the jobs API filtered on `runner_group_name` before adding another
+matrix site**, rather than reading one leg per pull request off the matrix. A stuck leg rolls back the same
 way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
@@ -1441,6 +1443,22 @@ whole-line replacement, since
 these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
 the affected line.
 
+**The same-repo scope lane reaches the group by LABEL too.**
+`security-scope-review.yml`'s `generate`, `validate` and `publish` take the same
+expression; its `adjudicate` is covered with the cross-platform matrix jobs
+above. The reason is the same one, reached by a different trigger: this workflow
+fires on `pull_request`, so a contributor running its own copy inside a fork is
+in a repository no organization group admits. The rename exposure therefore
+applies to these three lines as well. One of them can hold merges: `publish`
+carries the protected `Security Scope Review` check name, so its own conclusion
+is the lane's verdict, and that name sits in `pr-readiness.yml`'s same-repo
+`workflow_specs` -- a `publish` run waiting for a runner keeps the required
+`PR Readiness` status pending. `generate` and `publish` carry no `paths:`
+filter, so every pull-request event that is not superseded draws them from this
+definition's cap, which the review lanes draw on too. Rollback is the plain
+whole-line replacement, since none of the three carries a fleet route to
+preserve: restore `runs-on: ubuntu-latest` on the affected line.
+
 **The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
 in `ci.yml` that were pinned to a default hosted runner now reach the
 group through its `kirocrew-linux-4-core` label instead of through group
@@ -1541,15 +1559,18 @@ empty resolver output means the `changes` job failed, which is not the same
 condition as a run being found ineligible, and a paid runner is the wrong answer
 to a broken resolver.
 
-**What is deliberately still on `ubuntu-latest`.** `security-scope-review.yml`
-is itself on that lane's own scope surface, so a diff touching it sets
-`in_scope=true` while giving the model no shell, flow or cron surface to propose
-candidates for, and `scope_candidates.py validate` refuses the resulting empty
-`candidates.json` as `CandidateError`, exit 2, by design -- which reds a lane
-`PR Readiness` watches, so moving it needs its own pull request and a
-`/ai-review override scope <head-sha>: <reason>`. And
-`ai-review-human-override.yml` is the mechanism that clears such a red, so it
-does not move in a change that could need it.
+**What is deliberately still on `ubuntu-latest`.**
+`ai-review-human-override.yml` is the mechanism that clears a red scope lane, so
+it does not move in a change that could need it.
+
+**Any diff touching `security-scope-review.yml` reds that lane.** The file is on
+the lane's own scope surface, so a diff touching it sets `in_scope=true` while
+giving the model no shell, flow or cron surface to propose candidates for, and
+`scope_candidates.py validate` refuses the resulting empty `candidates.json` as
+`CandidateError`, exit 2, by design -- which reds a lane `PR Readiness` watches.
+Clearing it needs `/ai-review override scope <head-sha> <class>: <reason>` on
+every head, since the record is keyed to one commit. A rollback of that
+workflow's own `runs-on` lines pays the same cost.
 
 **The same-repo lanes are provisional, not permanent.** `codex-review`,
 `claude-review`, `first-principles-review`, `design-review` and `ux-review` are
@@ -1576,9 +1597,10 @@ shared pool, and because these lanes feed `PR Readiness` the cost of being
 wrong shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
-`runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
-matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
-so the rollback does not send the Windows leg to Linux. The twenty
+`runs-on: ubuntu-latest` on the affected line -- except on a matrix site, meaning
+any `runs-on` that ends in `|| matrix.os`, where the line goes back to
+`runs-on: ${{ matrix.os }}` instead, so the rollback does not send a Windows or
+macOS leg to Linux. The twenty
 fleet-fallback sites, plus `readiness`, are the exception twice over.
 It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
@@ -1595,9 +1617,10 @@ than waiting out the timeout.
 **Moving one of these lanes again means updating a ratchet.**
 `test/test_ci_fleet_routing_expression_parity.py` keeps `_PERMANENT_EXCEPTIONS`,
 the set of jobs that must stay off the CodeBuild fleet, and pins each one's
-expected `runs-on` so a silent re-route fails review. Twelve of the lanes moved
+expected `runs-on` so a silent re-route fails review. Fifteen of the lanes moved
 here are in that set -- `first-principles-review`, `ux-review`,
-`design-review`, the five `release.yml` jobs and the four fork helpers -- so
+`design-review`, the five `release.yml` jobs, the four fork helpers and
+`security-scope-review.yml`'s `generate`, `validate` and `publish` -- so
 their expected value lives in
 `_HOSTED_EXCEPTION_RUNNERS` rather than the `ubuntu-latest` default. Staying off
 the fleet is what that set guarantees; a larger runner is still GitHub-hosted,
@@ -1611,7 +1634,7 @@ Three `runs-on` sites take `kirocrew-runners-windows`, a second group holding on
 Windows definition (`kirocrew-windows-4-core`), through `group:`: `ci.yml`'s
 `pod-boot-windows`, `build.yml`'s `build-windows-installer` and
 `build-ffmpeg-decoder.yml`'s `verify-windows`. Two more reach the same
-definition through its LABEL, the way the two cross-platform matrix jobs above
+definition through its LABEL, the way the three cross-platform matrix jobs above
 do: `build-windows.yml`'s `build-windows` (Build Windows Desktop) and
 `smoke-install-windows` (Smoke-install Windows installer (x64)).
 
@@ -1644,7 +1667,7 @@ runner, not because a merge gate needed it.
 the form a rename of the definition survives. `build-windows.yml` is
 `workflow_call` and `workflow_dispatch`, and a fork can fire both on its own
 copy, where an organization-scoped runner group does not exist -- the same fork
-reachability that puts the two cross-platform matrix jobs above on a label. A
+reachability that puts the three cross-platform matrix jobs above on a label. A
 `group:` reference there leaves the run queued against a group no runner can
 ever claim, until the 24-hour queue timeout. So each site reads
 
