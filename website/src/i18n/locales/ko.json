@@ -11783,7 +11783,12 @@
         "open_in_the_subagents_panel": "서브에이전트 패널에서 열기",
         "panel": "패널",
         "show_details": "세부 정보 표시",
-        "stopped": "중지됨"
+        "stopped": "중지됨",
+        "chip_ok_other": "에이전트 {{count}}개 성공",
+        "chip_failed_other": "에이전트 {{count}}개 실패",
+        "chip_stopped_other": "에이전트 {{count}}개 중지됨",
+        "state_some_failed": "일부 실패",
+        "state_partial": "일부 전달됨"
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "연결 불안정 — 재시도 중…",
@@ -11810,7 +11815,15 @@
         "stop_all_failed": "서브에이전트를 중지할 수 없습니다",
         "retry_failed_error": "실패한 서브에이전트 중 {{count}}개를 다시 시도할 수 없습니다",
         "checking_whether_it_started": "시작되었는지 확인하는 중…",
-        "liveness_check_failed": "시작되었는지 확인하지 못했습니다. 다시 시도하는 중…"
+        "liveness_check_failed": "시작되었는지 확인하지 못했습니다. 다시 시도하는 중…",
+        "chip_running_other": "에이전트 {{count}}개 실행 중",
+        "chip_awaiting_other": "에이전트 {{count}}개 승인 대기 중",
+        "chip_unresolved_other": "에이전트 {{count}}개 시작 확인 중",
+        "chip_queued_other": "에이전트 {{count}}개 대기 중",
+        "chip_done_other": "에이전트 {{count}}개 완료",
+        "chip_failed_other": "에이전트 {{count}}개 실패",
+        "chip_stopped_other": "에이전트 {{count}}개 중지됨",
+        "chip_stalled_other": "에이전트 {{count}}개 멈춤 가능성"
       },
       "subagentQueued": {
         "low_memory": "시작 대기 중 — 여유 메모리 {{required}} 필요, 현재 {{available}} 여유. 계속하려면 메모리를 확보하세요",
@@ -11840,7 +11853,16 @@
         "open_subagents_panel": "서브에이전트 패널 열기",
         "waiting": "대기 중",
         "waiting_for_your_approval_to_start": "시작하려면 승인을 기다리는 중입니다",
-        "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 인해 대기 중"
+        "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 인해 대기 중",
+        "chip_awaiting_other": "에이전트 {{count}}개 승인 대기 중",
+        "chip_done_other": "에이전트 {{count}}개 완료",
+        "chip_failed_other": "에이전트 {{count}}개 실패",
+        "chip_stopped_other": "에이전트 {{count}}개 중지됨",
+        "state_running": "실행 중",
+        "state_awaiting": "승인 대기 중",
+        "state_failed": "실패",
+        "state_finished": "완료됨",
+        "state_queued": "대기열에 있음"
       },
       "taskProgressBar": {
         "all_tasks_complete": "모든 작업이 완료되었습니다",

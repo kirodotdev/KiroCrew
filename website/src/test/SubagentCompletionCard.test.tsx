@@ -788,3 +788,40 @@ describe('downgrade is visible, not hover-only (UX review on #3582)', () => {
     expect(screen.getByTestId('subagent-completion-model').className).not.toContain('text-warn')
   })
 })
+
+/**
+ * The tally chips' icons are aria-hidden, so a screen reader heard "8 1" with
+ * no meaning. Each chip now carries sr-only words and hides the bare digit, and
+ * a batch card's state glyph says its state (a single run's chip already does).
+ */
+describe('SubagentCompletionCard — tally chips and glyph speak in words', () => {
+  const store = () => createTestStore({ chat: {} as unknown as ChatState })
+
+  it('labels each tally chip and hides the bare digit', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg(WAVE)} />, { store: store() })
+    const ok = screen.getByTestId('chip-ok')
+    const failed = screen.getByTestId('chip-failed')
+    expect(ok.querySelector('.sr-only')?.textContent).toBe('8 agents succeeded')
+    expect(failed.querySelector('.sr-only')?.textContent).toBe('1 agent failed')
+    expect(ok.querySelector('span[aria-hidden="true"]')?.textContent).toBe('8')
+    expect(failed.querySelector('span[aria-hidden="true"]')?.textContent).toBe('1')
+    expect(screen.getByTestId('glyph-state').textContent).toBe('Some failed')
+  })
+
+  it('labels the stopped chip', () => {
+    const withStop = WAVE.replace('8 ✅ · 1 ❌ · 0 ⏹ of 9 agents', '7 ✅ · 0 ❌ · 2 ⏹ of 9 agents')
+    renderWithProviders(<SubagentCompletionCard message={msg(withStop)} />, { store: store() })
+    expect(screen.getByTestId('chip-stopped').querySelector('.sr-only')?.textContent).toBe('2 agents stopped')
+  })
+
+  it('says a mid-wave chunk is partly delivered', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg(CHUNK)} />, { store: store() })
+    expect(screen.getByTestId('glyph-state').textContent).toBe('Partly delivered')
+  })
+
+  it('adds no glyph words to a single run, whose chip already names the outcome', () => {
+    renderWithProviders(<SubagentCompletionCard message={msg()} />, { store: store() })
+    expect(screen.queryByTestId('glyph-state')).toBeNull()
+    expect(screen.getByText('Completed')).toBeTruthy()
+  })
+})

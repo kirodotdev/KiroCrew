@@ -11958,7 +11958,15 @@
         "open_in_the_subagents_panel": "Im Subagenten-Panel öffnen",
         "panel": "Panel",
         "show_details": "Details anzeigen",
-        "stopped": "Gestoppt"
+        "stopped": "Gestoppt",
+        "chip_ok_one": "{{count}} Agent erfolgreich",
+        "chip_ok_other": "{{count}} Agenten erfolgreich",
+        "chip_failed_one": "{{count}} Agent fehlgeschlagen",
+        "chip_failed_other": "{{count}} Agenten fehlgeschlagen",
+        "chip_stopped_one": "{{count}} Agent gestoppt",
+        "chip_stopped_other": "{{count}} Agenten gestoppt",
+        "state_some_failed": "Teilweise fehlgeschlagen",
+        "state_partial": "Teilweise geliefert"
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "Verbindung instabil — wird wiederholt…",
@@ -11987,7 +11995,23 @@
         "stop_all_failed": "Die Subagents konnten nicht gestoppt werden",
         "retry_failed_error": "{{count}} der fehlgeschlagenen Subagenten konnten nicht wiederholt werden",
         "checking_whether_it_started": "Wird geprüft, ob der Start erfolgt ist…",
-        "liveness_check_failed": "Konnte nicht prüfen, ob der Start erfolgt ist. Neuer Versuch…"
+        "liveness_check_failed": "Konnte nicht prüfen, ob der Start erfolgt ist. Neuer Versuch…",
+        "chip_running_one": "{{count}} Agent läuft",
+        "chip_running_other": "{{count}} Agenten laufen",
+        "chip_awaiting_one": "{{count}} Agent wartet auf Genehmigung",
+        "chip_awaiting_other": "{{count}} Agenten warten auf Genehmigung",
+        "chip_unresolved_one": "{{count}} Agent mit unbestätigtem Start",
+        "chip_unresolved_other": "{{count}} Agenten mit unbestätigtem Start",
+        "chip_queued_one": "{{count}} Agent in der Warteschlange",
+        "chip_queued_other": "{{count}} Agenten in der Warteschlange",
+        "chip_done_one": "{{count}} Agent abgeschlossen",
+        "chip_done_other": "{{count}} Agenten abgeschlossen",
+        "chip_failed_one": "{{count}} Agent fehlgeschlagen",
+        "chip_failed_other": "{{count}} Agenten fehlgeschlagen",
+        "chip_stopped_one": "{{count}} Agent gestoppt",
+        "chip_stopped_other": "{{count}} Agenten gestoppt",
+        "chip_stalled_one": "{{count}} Agent möglicherweise hängengeblieben",
+        "chip_stalled_other": "{{count}} Agenten möglicherweise hängengeblieben"
       },
       "subagentQueued": {
         "low_memory": "wartet auf den Start — benötigt {{required}} freien Speicher, aktuell {{available}} frei; gib Speicher frei, um fortzufahren",
@@ -12026,7 +12050,20 @@
         "open_subagents_panel": "Subagenten-Panel öffnen",
         "waiting": "wartet",
         "waiting_for_your_approval_to_start": "Warten auf deine Genehmigung zum Starten",
-        "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
+        "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze",
+        "chip_awaiting_one": "{{count}} Agent wartet auf Genehmigung",
+        "chip_awaiting_other": "{{count}} Agenten warten auf Genehmigung",
+        "chip_done_one": "{{count}} Agent abgeschlossen",
+        "chip_done_other": "{{count}} Agenten abgeschlossen",
+        "chip_failed_one": "{{count}} Agent fehlgeschlagen",
+        "chip_failed_other": "{{count}} Agenten fehlgeschlagen",
+        "chip_stopped_one": "{{count}} Agent gestoppt",
+        "chip_stopped_other": "{{count}} Agenten gestoppt",
+        "state_running": "Läuft",
+        "state_awaiting": "Wartet auf Genehmigung",
+        "state_failed": "Fehlgeschlagen",
+        "state_finished": "Abgeschlossen",
+        "state_queued": "In der Warteschlange"
       },
       "taskProgressBar": {
         "all_tasks_complete": "Alle Aufgaben abgeschlossen",

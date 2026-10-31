@@ -11783,7 +11783,12 @@
         "open_in_the_subagents_panel": "サブエージェントパネルで開く",
         "panel": "パネル",
         "show_details": "詳細を表示",
-        "stopped": "停止"
+        "stopped": "停止",
+        "chip_ok_other": "{{count}} 個のエージェントが成功",
+        "chip_failed_other": "{{count}} 個のエージェントが失敗",
+        "chip_stopped_other": "{{count}} 個のエージェントが停止",
+        "state_some_failed": "一部失敗",
+        "state_partial": "一部配信済み"
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "接続が不安定 — 再試行中…",
@@ -11810,7 +11815,15 @@
         "stop_all_failed": "サブエージェントを停止できませんでした",
         "retry_failed_error": "失敗したサブエージェントのうち {{count}} 件を再試行できませんでした",
         "checking_whether_it_started": "起動したかどうかを確認しています…",
-        "liveness_check_failed": "開始したかどうかを確認できませんでした。再試行しています…"
+        "liveness_check_failed": "開始したかどうかを確認できませんでした。再試行しています…",
+        "chip_running_other": "{{count}} 個のエージェントが実行中",
+        "chip_awaiting_other": "{{count}} 個のエージェントが承認待ち",
+        "chip_unresolved_other": "{{count}} 個のエージェントの起動を確認中",
+        "chip_queued_other": "{{count}} 個のエージェントが待機中",
+        "chip_done_other": "{{count}} 個のエージェントが完了",
+        "chip_failed_other": "{{count}} 個のエージェントが失敗",
+        "chip_stopped_other": "{{count}} 個のエージェントが停止",
+        "chip_stalled_other": "{{count}} 個のエージェントが停滞している可能性"
       },
       "subagentQueued": {
         "low_memory": "開始待ち — {{required}} の空きメモリが必要です（現在の空き {{available}}）。続行するにはメモリを空けてください",
@@ -11840,7 +11853,16 @@
         "open_subagents_panel": "サブエージェントパネルを開く",
         "waiting": "待機中",
         "waiting_for_your_approval_to_start": "開始の承認をお待ちしています",
-        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
+        "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中",
+        "chip_awaiting_other": "{{count}} 個のエージェントが承認待ち",
+        "chip_done_other": "{{count}} 個のエージェントが完了",
+        "chip_failed_other": "{{count}} 個のエージェントが失敗",
+        "chip_stopped_other": "{{count}} 個のエージェントが停止",
+        "state_running": "実行中",
+        "state_awaiting": "承認待ち",
+        "state_failed": "失敗",
+        "state_finished": "完了",
+        "state_queued": "待機中"
       },
       "taskProgressBar": {
         "all_tasks_complete": "すべてのタスクが完了しました",
