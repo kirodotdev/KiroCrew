@@ -19,6 +19,7 @@ import {
 import { ContentRenderer, langFor, wrapCode } from './ContentRenderer'
 import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
+import MarkdownOutlineRail from './MarkdownToc'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -117,7 +118,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   kind, content, editing, onChange, previewRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
-  heightStyle, flush, scrollMemoryKey,
+  heightStyle, flush, scrollMemoryKey, headingRail = false,
 }: {
   kind: Artifact['kind']
   content: string
@@ -149,6 +150,13 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  (different lifecycles, and a second instance sharing the key would
    *  fight the first over recording). */
   scrollMemoryKey?: string
+  /** Show the heading rail beside a read-only markdown body, the same rail a
+   *  markdown FILE gets (#26608). Opt-in per caller: the full-page viewer
+   *  passes it. It wraps the scroller in a positioned box for the rail, so a
+   *  caller keeps it fixed for an instance's life, which keeps the scroller
+   *  (and its scroll position) mounted across edit toggles. The rail itself
+   *  shows only for two or more headings. */
+  headingRail?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const fileType = fileTypeForKind(kind)
@@ -166,14 +174,16 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   // markdown (rendered DOM) AND the code path (text/json/svg). Widgets/HTML use
   // the iframe bridge instead.
   const showOverlay = !editing && !!onActivateComment && (comments?.length ?? 0) > 0
-  return (
+  const showRail = headingRail && isMarkdown && !editing
+  const scroller = (
     <div
       ref={scrollerRef}
       onScroll={scrollMemory.onScroll}
       className={`relative overflow-auto ${flush ? '' : 'rounded-xl border border-border bg-card'}`}
       style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
     >
-      <div className={flush ? 'h-full' : 'p-5 h-full'}>
+      {/* pr-8 keeps the text clear of the rail's ticks. */}
+      <div className={`${flush ? 'h-full' : 'p-5 h-full'} ${showRail ? 'pr-8' : ''}`}>
         <ContentRenderer
           isRichType={isRichType}
           fileType={fileType}
@@ -201,6 +211,15 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
           onActivate={onActivateComment!}
         />
       )}
+    </div>
+  )
+  if (!headingRail) return scroller
+  // The rail floats over the scroller's right edge, so it sits in a box that
+  // shares the scroller's size rather than inside the scrolled content.
+  return (
+    <div className="relative">
+      {scroller}
+      {showRail && <MarkdownOutlineRail containerRef={scrollerRef} />}
     </div>
   )
 })
