@@ -211,33 +211,42 @@ entry would exceed 1024 checkpoints, so an entry's size is capped regardless of
 transcript length. A file-stamp or invalidation-generation change makes the
 cached entry unusable; an exact revision reuses it. The next scan then either
 starts at byte zero or resumes from the last complete scan: the projection keeps
-that scan (`_page_index_base`: device, inode, the record boundary it stopped at,
-a blake2b digest of the 4 KiB before the boundary, the row count and the
+that scan (`_page_index_base`: the first line's length, the record boundary it
+stopped at, a blake2b digest of three 4 KiB body windows -- the start of the body,
+the last checkpoint and the bytes before the boundary -- plus the byte before and
+the 64 bytes after EVERY checkpoint, the row count and the
 checkpoints) across invalidation, because `ConversationLog.append` invalidates on
-every write and the file only grows by appends. The scan resumes only when the
-open handle it is about to read has the same device and inode, is at least as long
-as the boundary (equal means nothing was appended, and nothing is scanned), and has
-the same digest before the boundary; it then scans only the appended rows. A final
-row without a line terminator is never used as a boundary.
+every write and the file only grows by appends. The base is identified by content,
+never by inode (`history_page_index.relocate`): the open handle it is about to read
+is checked with every offset moved by the first line's change in length, must reach
+the moved boundary (equal means nothing was appended, and nothing is scanned), and
+must hash to the saved digest there; the scan then covers only the rows after the
+boundary. A final row without a line terminator is never used as a boundary. When
+the first line is itself a row (a legacy file with no metadata line) it is part of
+the digested body, and a change to its length refuses the base.
 
-The base also survives a restart and a first-line rewrite
+The base also survives a restart, a copy and every rewrite that keeps the rows
 (`kiro_crew.history_page_index`). For a transcript of 256 KiB or more it is
-persisted to `<transcripts>/.page-index/<file>.json` after a build, and again after
-each further 256 KiB; a read with no usable in-memory base loads it, checks its
-shape, and applies the same handle re-check, so a stale or damaged sidecar costs one
-rebuild and never a wrong page. `delete_session` removes it. The metadata-line
-writers (`update_metadata`, `clear_closed`, `mark_consolidated`,
-`advance_consolidation_sub_offset`) replace the file through `atomic_write` (a new
-inode) and then move the base onto the new file, shifting every offset by the first
-line's change in length, only when that is proven: both first lines end in a
-newline, the bytes after them are the same length in both files (which rules out a
-text read's newline translation), the base names the old file with every offset past
-its first line, and the 4 KiB before the moved boundary in the new file hash to the
-saved digest. Compaction, rotation and body rewrites change rows, so they rebuild
-from byte zero. The premise is that
-product writes are `O_APPEND` appends or atomic replaces; an in-place edit that
-keeps the inode and the 4 KiB before the old end and also lengthens the file would
-not be noticed. A key with
+persisted to `<transcripts>/.page-index/<file>.json` (format version 2) after a
+build, again after each further 256 KiB, and whenever the base no longer extends
+the one this process last wrote; a read with no usable in-memory base loads it,
+checks its shape, and applies the same relocation check, so a stale, damaged or
+version-1 sidecar costs one rebuild and never a wrong page. `delete_session`
+removes it. Because the check follows the rows, no writer has to move the base: the
+metadata-line writers (`update_metadata`, `clear_closed`, `mark_consolidated`,
+`advance_consolidation_sub_offset`), the dashboard's full save (which rewrites the
+whole file through `atomic_write` behind a new first line on every flush), a copy of
+the data home and a restore all resume. An inode-keyed base failed every one of
+those, which on a live data home left most large transcripts framing from byte zero
+on their first page after a restart. Compaction, rotation and body rewrites that
+change a row's length move the windows after it off their expected offsets, so they
+rebuild from byte zero; the per-checkpoint windows matter for a rewrite whose length
+changes cancel out before the end, which would otherwise leave the end windows in
+place while every checkpoint between the edits points at the wrong row
+(`test_interior_row_length_changes_that_cancel_out_are_rescanned`). Not noticed: a
+rewrite that changes rows outside all those windows while keeping every row's length,
+which leaves the offsets correct and only the row count at risk if a row's validity
+changed. A key with
 no transcript file is a stable empty revision (`total=0`); any other stat error
 propagates rather than reading as empty.
 The index is built lazily by the first paginated read of a revision (one O(rows)
@@ -266,6 +275,14 @@ so the endpoint never returns a mixed revision. Indexed reads use the strict fra
 (`strict_raw_records_with_offsets`): a record over `RECORD_CAP` raises instead of
 being skipped, because a skipped row would shift every cursor above it; the
 endpoint then serves the request from the full reader, which has no per-record cap.
+The framer (`jsonl_util._frames_with_offsets`) reads the handle in 1 MiB chunks
+(`_FRAME_CHUNK`) and serves its line requests from them, so a scan drops and
+retakes the GIL once per megabyte rather than once per line; while turns and
+searches run Python threads in the same process, each retake can cost a switch
+interval, and per-line reads made a cold page read of a 20 MB transcript take about
+50 times longer than it does alone. Framing and offsets are unchanged; a caller that
+stops early finds the handle up to one chunk further on, which is why every caller
+takes positions from the yielded offsets.
 
 `ConversationLog.read_messages_chained_tail(key, limit)` answers the newest *limit*
 rows of `read_messages_chained` without building that index: it reads the end of
