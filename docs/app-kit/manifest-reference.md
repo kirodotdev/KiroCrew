@@ -936,6 +936,7 @@ packages at all.
     "memory": "app-scoped",
     "network": false,
     "sessionApproval": false,
+    "crewmateThreads": false,
     "spawn": false,
     "jobs": false,
     "proposeCrewmate": false,
@@ -954,6 +955,7 @@ packages at all.
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
+| `permissions.crewmateThreads` | boolean | Widens `sessionApproval` to a crewmate's pinned DM thread (the live `member-*` slot the owner opened): the same actions, nothing else about the crewmate. Grants nothing without `sessionApproval`; see [the scope below](#permissionscrewmatethreads--a-crewmates-own-thread) |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 | `permissions.jobs` | boolean | May run durable background work through `ctx.job` and the app-owned `_jobs/*` routes |
 | `permissions.proposeCrewmate` | boolean | **Preview, switched off**: `ctx.crewmate` stays `None` until the owner view that lists the cards lands (#21718). May propose one crewmate from a `.crewmate` bundle through `ctx.crewmate`. Gates a real capability like `spawn`: `ctx.crewmate` is absent unless the value is literally `true`. Each proposal is an owner change card; only the owner's press creates the crewmate ([api-reference](api-reference.md#crewmate-proposals-ctxcrewmate)) |
@@ -976,6 +978,38 @@ the platform does not rate-limit spawns per app today.
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 `SpawnError`.
 
+#### `permissions.crewmateThreads` — A crewmate's own thread
+
+A scope of `permissions.sessionApproval`, not a grant of its own. With both
+declared, the four actions the grant already gives an app on a user's session —
+send a turn or one of the agent's `[OPTIONS:]` choices, approve or deny a pending
+tool request, switch the approval mode — also reach a crewmate's pinned DM
+thread: the live `member-<slug>` slot the owner opened from the Crewmates page,
+and only that. The thread is recognised by both marks it is born with
+(`mode: "member"` and the `member-` key); a member-mode session under any other
+key stays denied. The routes are the same ones (`POST /api/chat` with
+`slot: "member-<slug>"`, `POST /api/chat/slots/member-<slug>/approve`,
+`POST /api/chat/mode`, `POST /api/approvals/{id}/{action}`), each still needing
+its `permissions.api` prefix, and the thread must be live: a `member-*` key with
+no open thread answers `404 slot_not_found`, and an app never creates one. The
+scope changes nothing else about crewmates — `/api/members/*` and `/api/teams*`
+stay owner-only, the thread's transcript is not readable, and
+`POST /v1/chat/completions` still refuses a member key.
+
+Consent follows the grant's. A manifest that newly declares the scope on an app
+whose `sessionApproval` the owner already enabled is treated as a widened grant:
+the update lands disabled with `notice: "session_approval_reconsent"`, the
+detail page and the consent dialog name the crewmate threads when the owner
+re-enables it, and until they do no request reaches a crewmate thread -- the
+scope is read from the same manifest as the grant's consent, never from a newer
+one. Declaring the scope without `sessionApproval` grants nothing and
+asks for nothing; removing it revokes the reach on the next request.
+
+Why a scope and not a widening of `sessionApproval` itself: an owner who
+consented to "your chats" did not consent to the agents they gave their own
+memory, goals and heartbeat to, and "which apps can speak to my crewmates" must
+be answerable from the manifest, as `spawn` and `jobs` are.
+
 > **Not an in-process sandbox.** Most fields remain advisory for app code loaded
 > inside the gateway. The validator functions in `apps/permissions.py`
 > (`validate_permissions`, `format_permissions_summary`) are still **not wired
@@ -986,18 +1020,21 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > pending it prints what the app asks for and the app's dashboard link, exits 1 and
 > leaves the app off. It is enforced for app-token
 > user-session calls, in addition to `permissions.api`. The app must be enabled.
-> The grant reaches existing local user-owned sessions only; cron, system, remote,
-> member-mode, and other apps' sessions are denied. Apps retain their pre-existing
+> The grant reaches existing local user-owned sessions only; cron, system, remote
+> and other apps' sessions are denied, and a member-mode session is denied unless
+> the manifest also declares `permissions.crewmateThreads`, which admits a
+> crewmate's live pinned thread and nothing else. Apps retain their pre-existing
 > access to their own slots. On the per-slot routes (`/api/chat/slots/{slot}/*`)
 > the grant reaches approving or denying a pending tool request only; every other
 > per-slot route answers an app `404 slot_not_found` unless the app owns the slot,
 > whatever `permissions.api` prefix it holds. Mode changes must name a live allowed slot and are
 > limited to Normal, Reads and Trust; YOLO is a process-global override and stays
-> dashboard-only. An update that newly adds the flag disables the app until the user
+> dashboard-only. An update that newly adds the flag, or newly adds
+> `crewmateThreads` to a held grant, disables the app until the user
 > enables it again from the detail page, which shows why. An update that adds an
 > entry to `permissions.api` or `permissions.events` keeps the app enabled but
 > withholds the new entries until the user approves them on the detail page.
-> Official catalog entries mirror this flag so users see it before
+> Official catalog entries mirror this flag and its scope so users see them before
 > install even when the store skips fetching the app manifest. Install-time path
 > traversal is blocked separately by
 > `_check_path_safety(name)` plus `manifest.validate()`. Full in-process

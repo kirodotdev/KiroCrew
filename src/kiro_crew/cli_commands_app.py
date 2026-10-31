@@ -127,6 +127,10 @@ _SESSION_APPROVAL_DESC = (
     "Can send messages and choose response options in your chats, approve or deny "
     "tool prompts, and switch a chat's approval mode."
 )
+# The dashboard's line for ``permissions.crewmateThreads``
+# (``pages.appDetailPage.session_approval_crewmates``), shown only when the manifest
+# declares that scope beside the grant.
+_CREWMATE_THREADS_DESC = "This includes your crewmates' own chats."
 
 
 def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
@@ -148,6 +152,8 @@ def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
         manifest = get_app_manifest(app_name)
     except Exception:  # noqa: BLE001 - an unreadable manifest must not hide the link
         manifest = None
+    if manifest is not None and manifest.permissions.crewmateThreads:
+        print(f"   Crewmates: {_CREWMATE_THREADS_DESC}", file=sys.stderr)
     if manifest is not None:
         # Manifest text is app-authored, so every line goes through the sanitizer.
         for line in format_permissions_summary(manifest).splitlines():

@@ -137,7 +137,15 @@ User-session routes add a second, semantic check. An enabled app must declare
 an existing local user-owned session, choose a generated response option,
 approve or deny a pending tool request, or change that session's approval mode.
 The app still needs the matching route in `permissions.api`. Cron, system,
-remote, member-mode, and other apps' sessions are denied; an app's existing
+remote, and other apps' sessions are denied; a member-mode session is denied
+too unless the manifest also declares `permissions.crewmateThreads: true`, a
+scope of the same grant that admits one thing: a crewmate's live pinned DM
+thread (`mode: "member"` on a `member-` key), through the same actions and the
+same routes, with every `/api/members/*` route, the thread's transcript and the
+creation of a member slot still refused. The scope grants nothing alone, is
+read live beside the grant, and a manifest that newly declares it on a held
+grant re-opens that grant's consent exactly as a newly declared
+`sessionApproval` does; an app's existing
 access to its own slots is unchanged. A message the app sends runs as a turn: a
 send carrying a change to the session's agent binding, persona settings, or a
 harness slash command is refused before anything is written or queued

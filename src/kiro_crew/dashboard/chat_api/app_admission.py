@@ -25,10 +25,11 @@ if TYPE_CHECKING:
         app_owns_slot_session,
         app_owns_transcript_meta,
         audit_app_slot_denial,
+        crewmate_thread_grant,
         deny_app_slot_access,
         deny_app_slot_session_access,
         own_session_key,
-        read_session_grant,
+        read_session_control_grant,
         sel,
         session_grant,
         slot_not_found,
@@ -57,7 +58,10 @@ async def _app_slot_acquisition_denial(
     * a member, cron or workflow key (:func:`app_reserved_key_reason`): an app
       never owns one, and the cron and workflow binders would link a slot under
       that key to the job's or run's own transcript. So is a ``dashboard_`` key,
-      whose transcript is another slot's;
+      whose transcript is another slot's. The one exception is a LIVE crewmate
+      thread named on a *session_grant_route*, which the per-slot decision below
+      judges with the ``crewmateThreads`` scope; a member key with no live
+      thread stays reserved, so an app never mints one;
     * a key under construction, in any letter case: a session being imported is
       nobody's to name yet (the person still gets the 409; the app gets the 404,
       with no audit row);
@@ -85,7 +89,9 @@ async def _app_slot_acquisition_denial(
         # Read before anything about the slot is looked at, for every app caller,
         # so the cost of the answer does not depend on which session was named.
         granted = await session_grant(request, request_app)
-    refused, reason = app_new_key_refusal(state, key, history_key)
+    refused, reason = app_new_key_refusal(
+        state, key, history_key, session_grant_route=session_grant_route
+    )
     if refused:
         if reason:
             audit_app_slot_denial(request_app, operation, key, reason)
@@ -93,7 +99,9 @@ async def _app_slot_acquisition_denial(
     existing = state._slots.get(key)
     if existing is not None:
         allowed = (
-            app_may_control_session(request_app, existing, granted)
+            app_may_control_session(
+                request_app, existing, granted, crewmate_threads=crewmate_thread_grant(request)
+            )
             if session_grant_route
             else app_owns_slot_session(request_app, existing)
         )
@@ -112,7 +120,13 @@ async def _app_slot_acquisition_denial(
 
 
 async def _app_slot_acquisition_recheck(
-    state: "DashboardState", request_app: str, key: str, judged: Any, operation: str
+    state: "DashboardState",
+    request_app: str,
+    key: str,
+    judged: Any,
+    operation: str,
+    *,
+    session_grant_route: bool = False,
 ) -> web.Response | None:
     """Recheck a named acquisition after setup, without publishing an unjudged slot.
 
@@ -120,9 +134,16 @@ async def _app_slot_acquisition_recheck(
     respect the construction marker, so a create-and-close cannot hide between
     that read and the loop resuming. The caller must acquire synchronously after
     this returns; releasing the marker does not yield.
+
+    *session_grant_route* is the pre-check's: a crewmate thread it judged stays
+    unreserved here only while that same slot is still live under *key*
+    (:func:`_acquired_slot_was_judged`), so a thread closed meanwhile leaves a
+    member key an app may not take.
     """
     history_key = _history_key_for(key)
-    refused, reason = app_new_key_refusal(state, key, history_key)
+    refused, reason = app_new_key_refusal(
+        state, key, history_key, session_grant_route=session_grant_route
+    )
     if not refused and not _acquired_slot_was_judged(state, key, judged):
         refused, reason = True, "slot was replaced while the request was authorized"
     if not refused and judged is None and state._slots.get(key) is None:
@@ -137,7 +158,9 @@ async def _app_slot_acquisition_recheck(
         finally:
             state.end_slot_construction(key)
         if not refused:
-            refused, reason = app_new_key_refusal(state, key, history_key)
+            refused, reason = app_new_key_refusal(
+                state, key, history_key, session_grant_route=session_grant_route
+            )
         if not refused and state._slots.get(key) is not None:
             refused, reason = True, "slot was replaced while the request was authorized"
     if refused:
@@ -227,13 +250,16 @@ def _slot_not_found() -> web.Response:
 async def _app_may_send_to_slot(request_app: str, slot: Any) -> bool:
     """Whether *request_app* may control *slot* through the session APIs.
 
-    The session-control rule (:func:`app_may_control_session`) on a live read of
-    the ``sessionApproval`` grant, judged after that read completes.
+    The session-control rule (:func:`app_may_control_session`) on one live read
+    of the ``sessionApproval`` grant and its crewmate-thread scope, both from the
+    manifest that read judged (``read_session_control_grant``).
     """
     if not request_app:
         return True
-    granted = await read_session_grant(request_app)
-    return app_may_control_session(request_app, slot, granted)
+    grant = await read_session_control_grant(request_app)
+    return app_may_control_session(
+        request_app, slot, grant.granted, crewmate_threads=grant.crewmate_threads
+    )
 
 
 async def _app_claim_refused(

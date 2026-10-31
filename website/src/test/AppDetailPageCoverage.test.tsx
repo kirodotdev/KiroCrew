@@ -635,6 +635,32 @@ describe('AppDetailPage — uncovered surfaces', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/Allow .* to control your chats\?/)).toBeInTheDocument()
     expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
+    // A grant that stops at the owner's own chats says nothing about crewmates.
+    expect(within(dialog).queryByText(/crewmates/)).not.toBeInTheDocument()
+    expect(enableApp).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))
+  })
+
+  it('names the crewmate threads in the consent dialog when the manifest widens to them', async () => {
+    // An update that only adds `crewmateThreads` to a held grant leaves the app
+    // disabled pending re-consent; on a trusted repository this dialog is the
+    // whole ceremony, so it must say what the owner is now consenting to.
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      sessionApprovalConsentPending: true,
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { sessionApproval: true, crewmateThreads: true },
+      },
+    }))
+    renderDetail()
+    await loaded()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable and allow chat control' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/Can send messages and choose response options/)).toBeInTheDocument()
+    expect(within(dialog).getByText("This includes your crewmates' own chats.")).toBeInTheDocument()
     expect(enableApp).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Enable and allow chat control' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, true))

@@ -77,8 +77,10 @@ class SlotRoutePolicy(enum.Enum):
     #: The default: only the slot's owner app, on its own session and transcript.
     OWNER = "owner"
     #: :func:`app_may_control_session`: the owner app, or an app holding
-    #: ``permissions.sessionApproval`` acting on a local user session. The
-    #: handler additionally requires the grant from every app caller.
+    #: ``permissions.sessionApproval`` acting on a local user session (a
+    #: crewmate's pinned DM thread included when it also holds
+    #: ``permissions.crewmateThreads``). The handler additionally requires the
+    #: grant from every app caller.
     SESSION_GRANT = "session_grant"
     #: The route addresses a slot that is usually not live yet, so there is no
     #: slot object to judge here; the handler makes the ownership decision.
@@ -113,6 +115,10 @@ CHECKPOINT_SLOT_KEY = "slot_ownership.checkpoint_slot"
 
 #: Request key memoizing this request's ``permissions.sessionApproval`` read.
 _SESSION_GRANT_KEY = "slot_ownership.session_grant"
+
+#: Request key memoizing whether that grant also reaches crewmate threads
+#: (``permissions.crewmateThreads``), written by the same read.
+_CREWMATE_GRANT_KEY = "slot_ownership.crewmate_thread_grant"
 
 #: Slot-key prefixes the gateway mints for sessions no app owns: a cron job's tab
 #: (``cron-<job_id>``) and a workflow result tab (``workflow-<run_id>``). Their
@@ -303,7 +309,27 @@ def deny_app_slot_session_access(
     return slot_not_found()
 
 
-def app_reserved_key_reason(slot_key: str, history_key: str) -> str:
+#: The audit reason for a member key an app may not hold or name.
+MEMBER_KEY_RESERVED = "app cannot access member slots"
+
+
+def is_crewmate_thread(slot: Any) -> bool:
+    """Whether *slot* is a crewmate's pinned DM thread, by both marks it is born with.
+
+    ``POST /api/members/{slug}/thread`` is the only birthplace of such a slot: it
+    mints it under a ``member-`` key with ``mode="member"``, and both round-trip
+    through a restart. Judged on BOTH, positively: a member-mode slot under some
+    other key, or a ``member-`` key some other mode holds, is not a crewmate
+    thread, so nothing the scope reaches is decided by one mark alone.
+    """
+    if slot is None or getattr(slot, "mode", "") != members_mod.DM_SLOT_MODE:
+        return False
+    return str(getattr(slot, "key", "") or "").startswith(members_mod.DM_SLOT_KEY_PREFIX)
+
+
+def app_reserved_key_reason(
+    slot_key: str, history_key: str, *, live_crewmate_thread: bool = False
+) -> str:
     """Why an app may never hold the slot *slot_key*, whose history key is *history_key*, or ``""``.
 
     Judged on the HISTORY key, the one every spelling of a slot name folds to, so
@@ -311,13 +337,20 @@ def app_reserved_key_reason(slot_key: str, history_key: str) -> str:
     cron or workflow key past the check. A slot key that is not the bare form of
     its own history key (``dashboard_s9`` writes ``dashboard:s9``) would share a
     transcript with the slot that IS that bare form, so an app may not hold one.
+
+    *live_crewmate_thread* says the caller found a live crewmate thread under
+    exactly *slot_key* on a route the ``sessionApproval`` grant reaches. The
+    member reservation then stands down for that key, because the thread is
+    decided by the session-control rule (:func:`app_may_control_session`, with the
+    ``crewmateThreads`` scope) rather than minted: an app still never creates a
+    member slot, and every other reservation here still applies.
     """
     bare = history_key.split(":", 1)[1] if history_key.startswith("dashboard:") else history_key
     if bare != slot_key:
         return "app cannot name a session by another session's transcript key"
     folded = bare.casefold()
-    if folded.startswith(members_mod.DM_SLOT_KEY_PREFIX):
-        return "app cannot access member slots"
+    if folded.startswith(members_mod.DM_SLOT_KEY_PREFIX) and not live_crewmate_thread:
+        return MEMBER_KEY_RESERVED
     if folded.startswith((CRON_SLOT_PREFIX, WORKFLOW_SLOT_PREFIX)):
         return "app cannot name a cron or workflow session"
     return ""
@@ -357,7 +390,9 @@ def live_case_alias_reason(state: Any, slot_key: str, history_key: str) -> str:
     return ""
 
 
-def app_new_key_refusal(state: Any, slot_key: str, history_key: str) -> tuple[bool, str]:
+def app_new_key_refusal(
+    state: Any, slot_key: str, history_key: str, *, session_grant_route: bool = False
+) -> tuple[bool, str]:
     """Whether an app may not name *slot_key* for a slot it would create, and why.
 
     Returns ``(refused, reason)``. The checks shared by send, create and resume's
@@ -366,8 +401,18 @@ def app_new_key_refusal(state: Any, slot_key: str, history_key: str) -> tuple[bo
     live slot (:func:`live_case_alias_reason`). An empty *reason* on a refusal is
     the key under construction, which is answered with no audit row: a session
     being imported is nobody's to name yet.
+
+    On a *session_grant_route* a live crewmate thread under exactly *slot_key* is
+    not reserved: the caller judges it by the session-control rule. With no live
+    thread the member key stays reserved, grant or not, so an app never mints
+    one; and ``get_or_create_slot`` hands the caller the live thread, not a new slot.
     """
-    reserved = app_reserved_key_reason(slot_key, history_key)
+    live_crewmate_thread = session_grant_route and is_crewmate_thread(
+        getattr(state, "_slots", {}).get(slot_key)
+    )
+    reserved = app_reserved_key_reason(
+        slot_key, history_key, live_crewmate_thread=live_crewmate_thread
+    )
     if reserved:
         return True, reserved
     if under_construction_alias(state, slot_key):
@@ -441,25 +486,38 @@ def transcript_acquisition_reason(log: Any, history_key: str, request_app: str) 
     return "app does not own this transcript"
 
 
-def app_slot_is_local_user_session(slot: Any) -> bool:
+def app_slot_is_local_user_session(slot: Any, *, crewmate_threads: bool = False) -> bool:
     """A USER-origin, dashboard-run slot: the only kind the grant reaches.
 
     Judged on the EFFECTIVE session, not the origin alone -- a user-created slot
     that a cron injection or channel binder re-linked to ``cron:<id>`` /
     ``slack:<ts>`` runs its turns on that foreign session.
+
+    A crewmate's pinned DM thread (:func:`is_crewmate_thread`) is a user-origin
+    slot on its own ``dashboard:`` session too, but it is reached only with the
+    ``crewmateThreads`` scope, *crewmate_threads*. Any other member-mode slot is
+    refused whatever the scope.
     """
     if str(getattr(slot, "_origin", "") or "") != SlotOrigin.USER:
         return False
-    if getattr(slot, "mode", "") == "member" or getattr(slot, "executor", "") == "remote":
+    if getattr(slot, "executor", "") == "remote":
+        return False
+    if getattr(slot, "mode", "") == members_mod.DM_SLOT_MODE and not (
+        crewmate_threads and is_crewmate_thread(slot)
+    ):
         return False
     return effective_session_key(slot).startswith("dashboard:")
 
 
-async def read_session_grant(request_app: str) -> bool:
-    """One live read of the app's ``permissions.sessionApproval`` grant, off the loop."""
-    return bool(
-        await asyncio.to_thread(app_permissions.app_can_manage_session_approvals, request_app)
-    )
+async def read_session_control_grant(request_app: str) -> app_permissions.SessionControlGrant:
+    """One live read of the app's ``permissions.sessionApproval`` grant and its
+    crewmate-thread scope, off the loop.
+
+    Both come from the one manifest
+    :func:`~kiro_crew.apps.permissions.app_session_control_grant` judges, so the
+    scope can never be paired with a grant consented under an earlier manifest.
+    """
+    return await asyncio.to_thread(app_permissions.app_session_control_grant, request_app)
 
 
 async def session_grant(request: web.Request, request_app: str, *, fresh: bool = False) -> bool:
@@ -468,25 +526,45 @@ async def session_grant(request: web.Request, request_app: str, *, fresh: bool =
     Never cached across requests: the manifest is read live so that removing the
     flag revokes the grant at once. *fresh* re-reads, for a check that runs after
     a long await such as a body upload.
+
+    The crewmate-thread scope arrives in the same read, for every app caller
+    alike, and is memoized under :data:`_CREWMATE_GRANT_KEY` for
+    :func:`crewmate_thread_grant`: the cost of a verdict never depends on which
+    kind of session the request named, and the scope stored is the one the
+    grant's own manifest declared, never a later read's.
     """
     cached = request.get(_SESSION_GRANT_KEY)
     if fresh or not isinstance(cached, bool):
-        cached = await read_session_grant(request_app)
+        grant = await read_session_control_grant(request_app)
+        cached = grant.granted
         request[_SESSION_GRANT_KEY] = cached
+        request[_CREWMATE_GRANT_KEY] = grant.crewmate_threads
     return cached
 
 
-def app_may_control_session(request_app: str, slot: Any, granted: bool) -> bool:
+def crewmate_thread_grant(request: web.Request) -> bool:
+    """This request's crewmate-thread scope, as :func:`session_grant` last read it.
+
+    Synchronous, so a check that must not suspend between its verdict and its
+    write can read it; ``False`` when no grant read has run on this request.
+    """
+    return request.get(_CREWMATE_GRANT_KEY) is True
+
+
+def app_may_control_session(
+    request_app: str, slot: Any, granted: bool, *, crewmate_threads: bool = False
+) -> bool:
     """The session-control rule, given the grant verdict.
 
     The owner app on its own session and transcript (:func:`app_owns_slot_session`),
-    or an app holding the grant on a local user session.
+    or an app holding the grant on a local user session -- a crewmate's pinned DM
+    thread among them only when it also holds the scope, *crewmate_threads*.
     """
     if not request_app:
         return True
     if getattr(slot, "_app", ""):
         return app_owns_slot_session(request_app, slot)
-    return granted and app_slot_is_local_user_session(slot)
+    return granted and app_slot_is_local_user_session(slot, crewmate_threads=crewmate_threads)
 
 
 def _slot_still_live(request: web.Request, slot: Any) -> bool:
@@ -520,7 +598,9 @@ async def deny_app_session_control(
         # *slot* detached, and a verdict on it says nothing about the replacement.
         audit_app_slot_denial(request_app, operation, name, "slot replaced during the grant read")
         return slot_not_found()
-    if slot is not None and app_may_control_session(request_app, slot, granted):
+    if slot is not None and app_may_control_session(
+        request_app, slot, granted, crewmate_threads=crewmate_thread_grant(request)
+    ):
         return None
     if slot is not None:
         audit_app_slot_denial(request_app, operation, name, SESSION_CONTROL_DENIED)

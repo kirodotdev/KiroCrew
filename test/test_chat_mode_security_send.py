@@ -645,7 +645,7 @@ async def test_app_send_refused_when_the_slot_closes_during_the_permission_read(
     reading = threading.Event()
     release = threading.Event()
 
-    def gated_grant(_app: str) -> bool:
+    def gated_grant(_app: str, **_kw: object) -> bool:
         reading.set()
         assert release.wait(5)
         return True
