@@ -614,7 +614,22 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#:
+#: Raised again, from 33,523, for the quoted-newline rule in the push segment
+#: split: a newline inside quotes stays in its word, so a literal feature push after
+#: a multi-line ``git commit`` message parses as the push it is. Constructs the
+#: quote walk does not model keep the per-line split, and the per-line reading still
+#: judges every push line, dropping its ungated sentinel only behind a quoted word
+#: ``_quoted_word_is_inert`` accepts: a ``git commit`` message in a command that
+#: passes one closed lowercase allowlist (``cd <dir>``, ``git add``/``commit``/``push``
+#: with allowlisted flags, no editor, config write, pipe, redirect or expansion).
+#: Each flag in that allowlist has a real-bash oracle row. The refusal's "own line"
+#: hint is shown only when moving the push onto its own line clears the floor,
+#: moving only at unquoted separators and reading every nested shell payload.
+#: The proof reads through one exact leading ``running: `` (kiro-cli's shell title).
+#: The masked rest of the command, the same for every quoted line, is read once per
+#: command rather than once per line.
+_PACKAGE_LINE_BUDGET = 33_735
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
