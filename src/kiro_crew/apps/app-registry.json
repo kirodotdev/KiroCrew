@@ -16,5 +16,11 @@
     "gitUrl": "https://github.com/LeTeutz/todo-txt",
     "repo": "https://github.com/LeTeutz/todo-txt",
     "branch": "main"
+  },
+  {
+    "name": "slack-channels-onboard",
+    "gitUrl": "https://github.com/mvn-bachhuynh-dn/slack-channels-onboard",
+    "repo": "https://github.com/mvn-bachhuynh-dn/slack-channels-onboard",
+    "branch": "release"
   }
 ]
