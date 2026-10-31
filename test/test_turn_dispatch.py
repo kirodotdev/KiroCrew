@@ -386,10 +386,15 @@ class TestFinishTurnTask:
         await asyncio.sleep(0)
         error_calls = [c for c in slot.append.call_args_list if c.args[0] == "error"]
         assert len(error_calls) == 1
-        assert error_calls[0].kwargs.get("meta") == {
-            "kind": td.TURN_TIMEOUT_KIND,
-            "limit_scope": td.TURN_LIMIT_GLOBAL,
-        }
+        _meta = error_calls[0].kwargs.get("meta")
+        assert _meta["kind"] == td.TURN_TIMEOUT_KIND
+        assert _meta["limit_scope"] == td.TURN_LIMIT_GLOBAL
+        # The row also carries its localization token and the values its copy
+        # interpolates, so the dashboard renders the frame in the reader's language.
+        assert _meta["notice"] == "turn_timeout"
+        assert _meta["notice_args"]["limit_value"] == 1
+        assert _meta["notice_args"]["limit_unit"] == "minute"
+        assert _meta["notice_args"]["limit_scope"] == td.TURN_LIMIT_GLOBAL
 
     @pytest.mark.asyncio
     async def test_deadline_absorbed_by_the_turn_still_renders_a_card(self) -> None:

@@ -122,6 +122,41 @@ def test_cancelling_a_queued_delivery_tells_its_sender(tmp_path):
     assert "authorization" not in sent[0]
 
 
+def _notice_rows(slot):
+    return [m for m in slot.messages if m.get("role") == "notice"]
+
+
+def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
+    """The excerpt that rides in meta.notice_args must carry no credential, so a
+    secret in the dropped message never surfaces in the sender's dashboard.
+
+    This asserts the OBSERVABLE contract, not a single scrub site. The queued
+    prompt is already ``sanitize_outbound``-ed when it is enqueued
+    (``session_messaging.send_to_target``), and the notice path scrubs the
+    excerpt again before it rides in ``notice_args`` — defense in depth. Either
+    scrub alone removes the token here, so this test does not prove one of them
+    is load-bearing; it pins the end-to-end guarantee that the token never
+    reaches the sender's row, in meta or in content."""
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = _busy(state.get_or_create_slot("chat-2"))
+    message = "summarize this AKIAIOSFODNN7EXAMPLE run"
+    _send(state, caller, "chat-2", message)
+    queue_id = target._queue[0]["id"]
+
+    _cancel(state, target, queue_id)
+
+    (row,) = _notice_rows(caller)
+    meta = row.get("meta") or {}
+    excerpt = meta.get("notice_args", {}).get("excerpt", "")
+    # The bare excerpt now rides in notice_args (the frontend owns the
+    # ``Text: "…"`` label); whichever scrub ran, the credential is gone from it.
+    assert "AKIAIOSFODNN7EXAMPLE" not in excerpt
+    assert "[REDACTED" in excerpt
+    # The content the dashboard renders carries the same scrubbed excerpt.
+    assert "AKIAIOSFODNN7EXAMPLE" not in (row.get("content") or "")
+
+
 def test_cancelling_one_entry_tells_only_its_own_sender(tmp_path):
     """The cancel removes one card. The sender of a neighbouring entry still has a
     message that will run, and must not be told otherwise."""

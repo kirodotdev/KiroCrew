@@ -551,6 +551,8 @@ async def _on_permission_prompt(
     finally:
         if _approval_card is not None:
             try:
+                # Stays English: ``_approval_card`` is the approval formatter's
+                # own output (the tool and its decision), carried verbatim.
                 slot.append("error", _approval_card, "msg msg-err")
             except Exception:
                 logger.debug("Failed to render approval card", exc_info=True)

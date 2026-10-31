@@ -709,15 +709,35 @@ def notify_send_origin_dropped(
     if sender is None:
         return False
     try:
-        excerpt = send_drop_excerpt(text)
+        from kiro_crew.dashboard.chat_utils import _redact_for_display
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_SEND_DROPPED,
+            gateway_notice_meta,
+        )
+
+        # Redact the excerpt through the same egress chain the channel notice
+        # uses: it rides in meta.notice_args, which the dashboard renders
+        # verbatim and which the row's content-only redaction does not reach, so
+        # a credential in the dropped message must be removed here.
+        excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+        _change = describe_containment_change(constraints, mirror_unverified=mirror_unverified)
+        _excerpt_suffix = f' Text: "{excerpt}"' if excerpt else ""
         sender.append(
             "notice",
-            f"⚠️ Message you sent to {target_key} was dropped before it ran: "
-            + describe_containment_change(constraints, mirror_unverified=mirror_unverified)
-            + " after it was queued, so the authorization that admitted it no "
-            + "longer holds. It was not delivered and will not run."
-            + (f' Text: "{excerpt}"' if excerpt else ""),
+            f"⚠️ Message you sent to {target_key} was dropped before it ran: {_change}"
+            " after it was queued, so the authorization that admitted it no "
+            f"longer holds. It was not delivered and will not run.{_excerpt_suffix}",
             "msg msg-info",
+            meta=gateway_notice_meta(
+                GATEWAY_NOTICE_SEND_DROPPED,
+                target=target_key,
+                change=_change,
+                # The BARE redacted excerpt, never the English `` Text: "…"``
+                # wrapper: the frontend owns that label (its own catalog key), so
+                # every locale frames the quote in its own words. Empty string
+                # when there is nothing to quote, so the frontend drops the label.
+                excerpt=excerpt,
+            ),
         )
     except Exception:  # pragma: no cover - reporting must not block the drop
         logger.exception(
@@ -766,14 +786,29 @@ def notify_send_origin_discarded(
         return False
     try:
         reason = _SEND_DISCARD_REASONS[cause]
-        excerpt = send_drop_excerpt(text)
+        from kiro_crew.dashboard.chat_utils import _redact_for_display
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_SEND_DISCARDED,
+            gateway_notice_meta,
+        )
+
+        # Same redaction as the dropped-notice path: the excerpt rides in
+        # meta.notice_args, which the row's content-only redaction does not reach.
+        excerpt = _redact_for_display(sanitize_outbound(send_drop_excerpt(text)))
+        _excerpt_suffix = f' Text: "{excerpt}"' if excerpt else ""
         sender.append(
             "notice",
-            f"⚠️ Message you sent to {target_key} was discarded before it ran: "
-            + reason
-            + ". It was not delivered and will not run."
-            + (f' Text: "{excerpt}"' if excerpt else ""),
+            f"⚠️ Message you sent to {target_key} was discarded before it ran: {reason}"
+            f". It was not delivered and will not run.{_excerpt_suffix}",
             "msg msg-info",
+            meta=gateway_notice_meta(
+                GATEWAY_NOTICE_SEND_DISCARDED,
+                target=target_key,
+                reason=reason,
+                # Bare redacted excerpt; the frontend owns the `` Text: "…"``
+                # label. See the dropped-notice path for why.
+                excerpt=excerpt,
+            ),
         )
     except Exception:
         logger.exception(

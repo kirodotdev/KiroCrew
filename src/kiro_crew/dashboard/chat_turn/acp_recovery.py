@@ -598,6 +598,10 @@ async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
         # The fresh process failed too, so the helper itself is broken
         # and a new chat would fail the same way: the provider's own
         # instruction is the only actionable line.
+        # Stays English: ``credential_give_up_text(exc)`` is the provider
+        # helper's own instruction, carried verbatim; a token would localize
+        # only the surrounding "Then send your message again." fragment and
+        # drop that instruction.
         slot.append(
             "error",
             f"❌ {credential_give_up_text(exc)} Then send your message again.",

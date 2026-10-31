@@ -129,12 +129,28 @@ def test_every_token_names_catalog_copy() -> None:
     copy_keys = _frontend_copy_keys()
     assert set(copy_keys) == set(_frontend_families())
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
-    for token, key in copy_keys.items():
+    plural_bases = set(
+        json.loads((_REPO / "website" / "src" / "i18n" / "pluralKeys.json").read_text("utf-8"))
+    )
+
+    def _leaf(key: str) -> object:
         node: object = catalog
         for part in key.split("."):
-            assert isinstance(node, dict) and part in node, f"{token}: {key} not in en.json"
+            if not (isinstance(node, dict) and part in node):
+                return None
             node = node[part]
-        assert isinstance(node, str) and node, f"{token}: {key} is not a string"
+        return node
+
+    for token, key in copy_keys.items():
+        leaf = _leaf(key)
+        if leaf is None and key in plural_bases:
+            # A plural base has no flat key; i18next resolves `_one`/`_other`
+            # from it at runtime. Require the English forms both languages have.
+            one, other = _leaf(f"{key}_one"), _leaf(f"{key}_other")
+            assert isinstance(one, str) and one, f"{token}: {key}_one not in en.json"
+            assert isinstance(other, str) and other, f"{token}: {key}_other not in en.json"
+            continue
+        assert isinstance(leaf, str) and leaf, f"{token}: {key} is not a string"
 
 
 def test_frontend_reads_the_meta_field_the_backend_writes() -> None:
@@ -192,10 +208,10 @@ def _legacy_token(text: str) -> str | None:
 
 
 def test_token_tables_have_the_pinned_size() -> None:
-    # 3 transient-5xx tokens and 58 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 61
-    assert len(_frontend_families()) == 61
-    assert len(_legacy_entries()) == 63
+    # 3 transient-5xx tokens and 71 gateway tokens; a new row family moves both.
+    assert len(_backend_tokens()) == 74
+    assert len(_frontend_families()) == 74
+    assert len(_legacy_entries()) == 76
 
 
 def _tokenized_literal_sites() -> list[tuple[str, int, str, str]]:
@@ -258,7 +274,7 @@ def test_every_tokenized_literal_site_is_recognised_by_its_legacy_pattern() -> N
     # English, so the frontend's LEGACY table must map each wording to the very
     # token the site writes today.
     sites = _tokenized_literal_sites()
-    assert len(sites) == 27
+    assert len(sites) == 31
     wrong = [
         (p, line, tok, _legacy_token(text))
         for p, line, tok, text in sites
@@ -323,7 +339,7 @@ def test_every_cancelled_replay_wording_has_its_own_token() -> None:
 def test_localized_copy_avoids_internal_vocabulary() -> None:
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
     copy = catalog["pages"]["chat"]["gatewayNotice"]
-    assert len(copy) == 60
+    assert len(copy) == 83
     for key, text in copy.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (key, text)
@@ -369,7 +385,7 @@ def test_composed_owner_modules_read_the_notice_module_locally() -> None:
             assert not global_reads, (info.name, global_reads)
             if any("gn" in c.co_varnames or "gn" in c.co_freevars for c in codes):
                 readers += 1
-    assert readers == 12
+    assert readers == 15
 
 
 def test_gateway_notice_meta_shape() -> None:

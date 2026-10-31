@@ -1200,6 +1200,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
             slot.key,
             _rejected_id,
         )
+        # Stays English: the row's text is the provider's own entitlement
+        # exception (redacted), carried verbatim with no fixed frame of ours.
         _entitle_text = redact(str(exc))
         slot.purge_chunks()
         slot.append(
@@ -1255,6 +1257,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                     _access_fb_candidate,
                     exc_info=True,
                 )
+                # Stays English: the provider's own entitlement exception
+                # (redacted), carried verbatim with no fixed frame of ours.
                 _entitle_text = redact(str(exc))
                 slot.purge_chunks()
                 slot.append(
@@ -1285,6 +1289,8 @@ async def _on_acp_model_access(turn: _ChatTurn, exc, _rejected_id, _access_fb_ca
                         _access_fb_candidate,
                         _raw_after,
                     )
+                    # Stays English: the provider's own entitlement exception
+                    # (redacted), carried verbatim with no fixed frame of ours.
                     _entitle_text = redact(str(exc))
                     slot.purge_chunks()
                     slot.append(

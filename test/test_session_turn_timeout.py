@@ -168,10 +168,14 @@ class TestDispatch:
         await asyncio.sleep(0)
         errors = [c for c in slot.append.call_args_list if c.args[0] == "error"]
         assert len(errors) == 1
-        assert errors[0].kwargs["meta"] == {
-            "kind": td.TURN_TIMEOUT_KIND,
-            "limit_scope": td.TURN_LIMIT_SESSION,
-        }
+        _meta = errors[0].kwargs["meta"]
+        assert _meta["kind"] == td.TURN_TIMEOUT_KIND
+        assert _meta["limit_scope"] == td.TURN_LIMIT_SESSION
+        # The row also carries its localization token and the limit its copy
+        # interpolates, beside the kind/scope the frontend already read.
+        assert _meta["notice"] in ("turn_timeout", "turn_timeout_native_pending")
+        assert _meta["notice_args"]["limit_unit"] in ("minute", "hour")
+        assert _meta["notice_args"]["limit_scope"] == td.TURN_LIMIT_SESSION
         assert td.SESSION_TURN_LIMIT_MENU in errors[0].args[1]
 
     def test_session_card_points_at_the_session_menu_not_settings(self) -> None:

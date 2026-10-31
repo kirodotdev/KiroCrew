@@ -140,6 +140,8 @@ async def _on_auth_required(turn: _ChatTurn, exc) -> None:
     # same wall. The exception decides (from the harness that raised it)
     # whether that card IS the fix; on a harness with its own credential
     # store the row stays a plain error. The prose is unchanged.
+    # Stays English: ``_auth_msg`` is the harness's own exception text, carried
+    # verbatim; a token would localize no fixed frame of ours.
     slot.append("error", _auth_msg, "msg msg-err", meta=_terminal_error_meta(exc))
     _mark_kiro_signed_out(state)
     await _deliver_linked_slack_message(state, slot, sessions, session_key, _auth_msg)
@@ -404,6 +406,9 @@ async def _on_acp_error_card(turn: _ChatTurn, exc) -> None:
         # The same seam carries the sign-in tag: a session the upstream
         # rejected gets a "Sign in to Kiro" affordance instead.
         _unentitled_meta = _terminal_error_meta(exc)
+        # Stays English: ``_err_text`` is the entitlement/startup formatter's own
+        # output (the provider's rejection story), which a token cannot localize
+        # without dropping that text.
         slot.append(
             "error",
             f"⏱️ {_err_text}" if "timed out" in _msg else f"❌ {_err_text}",
@@ -602,7 +607,18 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
             "the whole server off or turn those tools back on, then start a new "
             "chat."
         )
-        _err_meta = _terminal_error_meta(exc)
+        # This branch's text is fixed and ours, so it carries a token the
+        # dashboard localizes. The other arms keep ``str(exc)`` / a composed
+        # worker reason and stay English (the text is the exception's own).
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _err_meta = dict(_terminal_error_meta(exc) or {})
+        _err_meta.update(
+            gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED,
+                setting="agent.member_acp_backend",
+            )
+        )
     else:
         # A session start on the SHARED runtime lands here (see the sibling
         # note below), and its ``session_start_failed`` tag is what lets the

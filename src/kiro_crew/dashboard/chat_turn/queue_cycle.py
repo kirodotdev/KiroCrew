@@ -766,17 +766,31 @@ def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:
     """Show the user an exit that raised before the turn reached its main ``try``.
 
     Nothing else answers it: the dispatcher only logs the exception."""
-    failed = (
-        f"⚠️ `{turn_exit.local_command}` failed."
-        if turn_exit.local_command
-        else "⚠️ This message failed before it started."
-    )
-    slot.append(
-        "error",
-        f"{failed} The gateway log has the details.",
-        "msg msg-err",
-        meta={TURN_FAILED_META: True},
-    )
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    if turn_exit.local_command:
+        slot.append(
+            "error",
+            f"⚠️ `{turn_exit.local_command}` failed. The gateway log has the details.",
+            "msg msg-err",
+            meta={
+                TURN_FAILED_META: True,
+                **gn.gateway_notice_meta(
+                    gn.GATEWAY_NOTICE_LOCAL_COMMAND_FAILED_BEFORE_START,
+                    command=turn_exit.local_command,
+                ),
+            },
+        )
+    else:
+        slot.append(
+            "error",
+            "⚠️ This message failed before it started. The gateway log has the details.",
+            "msg msg-err",
+            meta={
+                TURN_FAILED_META: True,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START),
+            },
+        )
 
 
 async def _turn_record_outcome(turn: _ChatTurn) -> None:
