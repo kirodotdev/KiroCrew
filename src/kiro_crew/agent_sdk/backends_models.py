@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Mapping
+from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
@@ -29,6 +29,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -524,7 +525,19 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # to them, so sharing the ``acp`` bucket would let a Copilot session replace the
     # list the picker offers for kiro-cli with models kiro-cli cannot serve.
     ACP_BACKEND_COPILOT: "copilot",
+    # strands gets its own key: its ids are ``provider/model`` strings (or bare
+    # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
+    ACP_BACKEND_STRANDS: "strands",
 }
+
+
+#: Backends that take their model as a LAUNCH argument and have no model channel on
+#: the ACP wire. The Strands CLI's Python-project mode reads ``--model`` when it
+#: starts and answers no ``session/set_model`` or model config option, so a member's
+#: startup apply sends nothing (the spawn already passed the pin) and a mid-session
+#: switch is refused with a "start a new chat" remedy instead of an unknown-method
+#: error from the harness.
+ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 
 
 def model_registry_namespace(backend: str) -> str:

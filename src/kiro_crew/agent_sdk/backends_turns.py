@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 
@@ -624,6 +625,9 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # strands sends every prompt to its model as text in project mode, ``/clear``
+        # included, so the dashboard answers it.
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -639,6 +643,11 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 #   (``test/fixtures/acp_frames/kas/commands-refused-live.jsonl``), and its
 #   ``available_commands_update`` lists only custom agents and skills, so a
 #   ``/help`` or ``/context`` sent as prompt text reaches the model as a message.
+# - strands: the Strands CLI's project-mode ACP serves initialize, session/new,
+#   session/load, authenticate, session/prompt and session/cancel, and nothing
+#   else. It sends no ``available_commands_update`` and its prompt handler parses
+#   no slash at all, so every command (``/clear``, ``/help``, ``/context``) reaches
+#   the model as text (Strands CLI 0.2.3, ``tui/project/acp.js``).
 #
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
@@ -646,7 +655,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 # knows from its own prompt handler, so their other commands keep the prompt
 # path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
 # harness added later stays out until its command handling is checked.
-ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS})
+ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

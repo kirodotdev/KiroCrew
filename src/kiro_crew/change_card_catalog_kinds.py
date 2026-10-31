@@ -321,6 +321,12 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "session_environments.coder_url",
         "session_environments.sprites_profiles",
         "session_environments.boxd_profiles",
+        # Which vault secret the Strands harness is handed, and which provider
+        # address (a LiteLLM proxy, an Ollama host) its conversation is sent to.
+        "agent.strands_env",
+        # The provider and model a Strands session runs: where its conversation goes.
+        "agent.strands_provider",
+        "agent.strands_model",
     }
 )
 

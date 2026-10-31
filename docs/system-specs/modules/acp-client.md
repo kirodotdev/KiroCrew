@@ -64,6 +64,7 @@ through it reaches every owner binding the same object (`kiro_crew._facade_mirro
 | `acp/client_turn_control.py` | a turn controlled from outside it: kiro, claude, goose and opencode steers, cancel, slash commands and the turn-state queries callers poll |
 | `acp/client_start.py` | the session start: the spawn (kiro-cli's own arm, and every other host's plan through the launch tail both drivers share), the `initialize` handshake and its params, new, loaded, forked and substituted sessions, and `ensure_ready` |
 | `acp/client_turn.py` | the turn loop: sending the prompt, `_prompt_loop`, reading the prompt response, dispatching and processing frames, `send_message`, `send_message_stream`, `stream_events` and `stream_unsolicited`, the tool-interrupted marker, OpenCode's deferred shell permission and the liveness consult |
+| `acp/disposed_session.py` | not a member owner: the per-harness texts that mean a session's backend was disposed in a live process, and the two answers `_prompt_loop` takes from it (see *A session the harness disposed*) |
 | `acp/client_class.py` | the class statement: the constructor, the properties, the class defaults, the member table that binds every owner's members, and the members that stay class-resident |
 | `acp/client_lifecycle.py` | the child after it is spawned: the stderr drain, process-tree tracking, kill, failed-start classification, state reset, the workspace and sandbox discards, re-binding a live process, and shutdown |
 
@@ -2492,6 +2493,22 @@ both `AcpClient` and `AcpSessionProvider` (called after `ensure_ready()`).
 `cancel_session()` sends a `session/cancel` JSON-RPC notification to the agent's stdin. It is fire-and-forget — no response ID is awaited.
 
 After the notification it answers every permission request still open (`_permission_options`) with the `cancelled` outcome, as ACP requires. goose and pi do not acknowledge a cancel while a permission request is unanswered, so without this a Stop from a surface that had not rejected the open approval first waited out the ack budget and hard-killed the harness. Each answered request gets one SEL record (`tool_name=approval_cancel`, `outcome=rejected_on_cancel`) before the answers go out: one off-loop hop for all of them, bounded by `_SEL_AUDIT_TIMEOUT_SECONDS`. The answers are ordinary response frames through `_send_response`, so each carries the response-write no-progress bound. Both costs fall inside the cancel grace window. A cancelled pi gate dialog is recorded as denied, the same as a rejection.
+
+### A session the harness disposed (`acp/disposed_session.py`)
+
+A harness in `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` can stop serving one session while its process keeps running, and then answers every `session/prompt` on that id with the same error. The Strands CLI does this when a cancel does not stop its Python worker within 3s: it kills the worker and answers `-32603` with `data.details` "The Python agent did not stop after cancellation. Reload it to continue." (`test/fixtures/acp_frames/strands/cancel-dispose-live.jsonl`). A second process loads the saved session and serves the next prompt (`cancel-dispose-reload-live.jsonl`).
+
+For a member, `_prompt_loop` asks the module about every prompt error and every approval request, so all three prompt APIs behave the same. A harness outside the set never reaches it:
+
+| Read in the turn | What the client does |
+|---|---|
+| A prompt error whose `data.details` is one of the member's disposal texts (`DISPOSED_SESSION_DETAILS`), on a turn Crew cancelled | Ends the turn as `cancelled`, marks the client stalled (`_stdin_stalled`) and keeps this session as `_resume_session_id` |
+| The same error on a turn nobody cancelled | Marks the client the same way and raises a non-transient `AcpError` with a plain message: send the message again |
+| A `session/request_permission` read after `cancel_session` | Answers `cancelled` at once, with the same SEL record as the cancel's own answers (`cause=asked_after_cancel`), and never puts it to a person. The CLI holds its turn open on that answer, so the cancel could not finish while a card waited |
+
+The next `ensure_ready` replaces it through the stalled-child path it already has: it kills the process (force), refuses to spawn beside one it could not confirm dead, and resets state, which clears the flag. The start path itself is unchanged. `_resume_session_id` survives the reset, so the spawn that follows sends `session/load` for the same id and the conversation comes back before the next prompt goes out. Any other error text on the same code stays an ordinary turn failure.
+
+An open approval is a different case, and the client does not handle it. A cancel that finds a Strands approval OPEN ends cleanly as `cancelled`. But Strands CLI 0.2.3 leaves the agent in its interrupt state and saves it, so a bare CLI then fails every later prompt with "must resume from interrupt", and so does a reload (`cancel-approval-open-live.jsonl`). That text is not a disposal, because a fresh process loads the same saved state. Crew's gate module clears it instead: before any prompt that is not itself an interrupt answer, it resumes each open interrupt with a deny (`agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py`, `_gated_stream_async`).
 
 ### stopReason Parsing
 

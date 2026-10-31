@@ -5,13 +5,14 @@ first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
 growing set of adapted ones: Claude Code (`ACP_BACKEND_CLAUDE`), `KAS`
 (`ACP_BACKEND_KAS`), Codex (`ACP_BACKEND_CODEX`), OpenCode
 (`ACP_BACKEND_OPENCODE`), Pi (`ACP_BACKEND_PI`), goose (`ACP_BACKEND_GOOSE`),
-and DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), plus whatever a bring-your-own
+DeepSeek Harness (`ACP_BACKEND_DEEPSEEK`), GitHub Copilot CLI
+(`ACP_BACKEND_COPILOT`) and Strands (`ACP_BACKEND_STRANDS`), plus whatever a bring-your-own
 (BYO) adapter registers next. Adding a harness requires reviewing
 `session_pid_orphan_scan.py::_BROWSER_PLAUSIBLE_OWNER_NAMES` as a separate
 touchpoint, because an unreadable environment on a recognizable harness process
 must keep its browser daemon alive.
 
-Kiro, Claude Code, KAS, Codex, OpenCode, Pi, goose and DeepSeek are selectable on a
+Kiro, Claude Code, KAS, Strands, Codex, OpenCode, Pi, goose, DeepSeek and Copilot are selectable on a
 plain public build. Claude Code in particular is a shipped harness and not a dormant seam: `acp/harness/claude.py` owns the
 whole Claude launch and the adapter is a public npm package, so an earlier
 revision that left it out of the baseline removed only the switch, never a
@@ -38,9 +39,9 @@ set once both halves landed — `backend_install.py` gained its probe, so the in
 names the missing component and its command instead of reading `unknown`, and
 `acp_tool_gate` established that its tool calls reach the PreToolUse gate.
 
-Read the invariants below against that tree: eight harnesses can serve a real
+Read the invariants below against that tree: ten harnesses can serve a real
 session today, so a site that spells "kiro" by exclusion is already wrong on
-seven of them.
+nine of them.
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -201,10 +202,11 @@ exists, it uses the factory's member-aware `select_provider_backend` authority.
 default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
-`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS): the list keeps only the commands
-the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
-`/model`, `/prompts`, `/side`, `/tools`, `/workflow`), because the slash gate reads
-the same set and answers every other harness command with a notice. `/model`,
+`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
+commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
+`/prompts`, `/side`, `/workflow`, plus `/mcp`, `/model` and `/tools` on KAS alone,
+`served_slash_commands`), because the slash gate reads the same set and answers
+every other harness command with a notice naming the harness. `/model`,
 `/tools` and `/mcp` are answered by `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`
 shows the slot's pin and the session's advertised list (else the recorded KAS

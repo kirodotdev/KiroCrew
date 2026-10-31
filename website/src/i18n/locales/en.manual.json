@@ -9325,7 +9325,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       }
     },
     "appPage": {

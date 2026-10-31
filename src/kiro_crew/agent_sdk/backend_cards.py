@@ -367,6 +367,10 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_MODEL_AT_LAUNCH": (
+        "which channel carries a model pick: a launch argument instead of a wire "
+        "request. The model-switch line already says whether a running session can move."
+    ),
     "ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN": (
         "whether a server the user approved for a template Crew does not own reaches "
         "that template's sessions here. The approval card asks the same question for "
@@ -579,6 +583,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
     "ACP_BACKENDS_FORK_AT_MESSAGE": (
         "whether an edited message's rewind forks the native session or replays "
         "the transcript as text. The edit runs either way"
+    ),
+    "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": (
+        "whether Crew reads one harness's own error for a session it disposed in a "
+        "live process, and reloads that session in a fresh one before the next "
+        "prompt. Recovery from a harness's failure mode, not a feature: a harness "
+        "without that failure mode loses nothing by being outside the set"
     ),
     "ACP_BACKENDS_SELF_SERVED_ACP": (
         "whether a harness's whole launch is a row of ACP_BACKEND_LAUNCH, so the "

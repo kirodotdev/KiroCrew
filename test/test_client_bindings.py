@@ -147,6 +147,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_is_opencode": ("property", False, "a6632a57e602", "client_class"),
     "_is_pi": ("property", False, "a6632a57e602", "client_class"),
     "_is_process_alive": ("function", False, "a6632a57e602", "client_lifecycle"),
+    "_is_strands": ("property", False, "a6632a57e602", "client_class"),
     "_jsonl_tool_results": ("staticmethod", False, "db2ae4946f1c", "client_tool_events"),
     "_judge_activated_model": ("function", True, "b60c5fea256e", "client_model_selection"),
     "_judges_permission_requests": ("property", False, "a6632a57e602", "client_class"),

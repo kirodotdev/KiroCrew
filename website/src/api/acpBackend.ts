@@ -91,6 +91,7 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
     case 'goose': return i18nT('pages.developer.agentBackendTab.goose')
     case 'opencode': return i18nT('pages.developer.agentBackendTab.opencode')
     case 'pi': return i18nT('pages.developer.agentBackendTab.pi')
+    case 'strands': return i18nT('pages.developer.agentBackendTab.strands')
     default: return backend.policy_id || backend.id
   }
 }

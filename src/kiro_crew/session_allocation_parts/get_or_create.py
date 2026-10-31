@@ -34,6 +34,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -64,6 +65,12 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+def _model_is_a_launch_argument(provider: Any) -> bool:
+    """Whether *provider*'s harness fixes its model at launch and refuses a switch."""
+    backend = getattr(getattr(provider, "client", None), "backend", None)
+    return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -747,7 +754,8 @@ async def _get_or_create_impl(
     pooled = None if pool_decision else await owner._drain_and_claim(agent)
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
-    owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
+        owner._record_pool_decision(pool_decision, key)
     # Assigned by the cold-start branch inside its semaphore section (the
     # spawn-identity stamp read there must already run under the shield);
     # the pool-claim branch leaves it None and is shielded after the
@@ -755,6 +763,7 @@ async def _get_or_create_impl(
     starting_pid: int | None = None
     if pooled is not None:
         provider = pooled
+        launch_pin = False
         # A warm-pool claim owns a LIVE process from this line on -- the pool
         # path's spawn door. Marked exactly like a cold start past its
         # pre-spawn check, so a claim the ending fence refuses at registration
@@ -856,6 +865,11 @@ async def _get_or_create_impl(
                                 switch_model,
                                 pool_model,
                             )
+                        elif _model_is_a_launch_argument(provider):
+                            # The harness takes its model only at launch and
+                            # refuses a live switch: this claim cannot honour
+                            # the pin, so the chat cold-starts on it instead.
+                            launch_pin = True
                         else:
                             await cast(Any, provider).client.set_model(_send_model)
                             self._deps.logger.info(
@@ -863,7 +877,7 @@ async def _get_or_create_impl(
                                 _send_model,
                             )
                 _effort_override = extra_factory_kwargs.get("reasoning_effort_override")
-                if _effort_override:
+                if _effort_override and not launch_pin:
                     _eff = str(_effort_override)
                     try:
                         if not await provider.change_effort(_eff):
@@ -889,16 +903,29 @@ async def _get_or_create_impl(
                             key or "?",
                             exc_info=True,
                         )
-            self._deps.logger.info(
-                "Claimed warm-pool process for %s (agent=%s)",
-                key,
-                agent or owner._pool_agent,
-            )
-            owner._schedule_replenish()
+            if launch_pin:
+                # Same teardown as any failed claim, then the cold start below. The
+                # reservation stays in the spawning set the claim put it in, so an
+                # ending caller's read still sees a process in flight; the cold
+                # start's own fence check and cleanup take it from there exactly as
+                # for a fresh spawn.
+                owner._dispatch_hard_kill(provider)
+                owner._schedule_replenish()
+                pooled = None
+                pool_decision = "bypass_model_at_launch"
+            else:
+                self._deps.logger.info(
+                    "Claimed warm-pool process for %s (agent=%s)",
+                    key,
+                    agent or owner._pool_agent,
+                )
+                owner._schedule_replenish()
         except (asyncio.CancelledError, Exception):
+            owner._record_pool_decision(pool_decision, key)
             owner._dispatch_hard_kill(provider)
             raise
-    else:
+        owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))

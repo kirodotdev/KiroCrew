@@ -630,6 +630,17 @@ def _crew_mode_agent_or_default(value: object) -> str:
     return DEFAULT_CREW_MODE_AGENT
 
 
+def _strands_str_or_empty(value: object) -> str:
+    """A Strands string setting trimmed, or ``""``: ``agent.strands_project`` (empty is
+    the bundled project), ``agent.strands_provider`` and ``agent.strands_model``.
+
+    Only the shape is read here; whether a value is usable (a loadable project, a
+    provider the CLI knows) is decided at spawn, where a bad one refuses the session
+    by name.
+    """
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _build_agent_config(agent_data: dict) -> AgentConfig:
     section = _sections.SectionReader(AgentConfig, agent_data)
     return AgentConfig(
@@ -661,6 +672,11 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # so a new name joins it only by being an old one. Same shape as
         # ``coerce_refusal_fallback_model`` above.
         deepseek_env=_sections.coerce_deepseek_env(section.get("deepseek_env")),
+        # The same type coercion: the Strands map has deepseek_env's shape.
+        strands_env=_sections.coerce_deepseek_env(section.get("strands_env")),
+        strands_project=_strands_str_or_empty(section.get("strands_project")),
+        strands_provider=_strands_str_or_empty(section.get("strands_provider")),
+        strands_model=_strands_str_or_empty(section.get("strands_model")),
         sweep_agents_backups=section.read("sweep_agents_backups", _safe_bool),
         sandbox=section.get("sandbox"),
         sandbox_allow_no_isolation=bool(section.get("sandbox_allow_no_isolation")),

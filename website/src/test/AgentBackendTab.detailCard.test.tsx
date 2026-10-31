@@ -54,6 +54,12 @@ vi.mock('../pages/developer/KasBundleCard', () => ({
   KasBundleCard: () => <div data-testid="kas-bundle-card" />,
 }))
 
+// Same for the Strands provider card: its behaviour is pinned in
+// StrandsSetupCard.test.tsx, and the real card would need the secrets API.
+vi.mock('../pages/developer/StrandsSetupCard', () => ({
+  StrandsSetupCard: () => <div data-testid="strands-setup-card" />,
+}))
+
 import { AgentBackendTab } from '../pages/developer/AgentBackendTab'
 import {
   schemaWith,
@@ -1012,5 +1018,18 @@ describe('AgentBackendTab new backend', () => {
     await waitFor(() =>
       expect(patchConfigMock).toHaveBeenCalledWith('agent.acp_backend', unheardOf),
     )
+  })
+})
+
+describe('AgentBackendTab Strands setup', () => {
+  it('renders the provider card inside the Strands detail only', async () => {
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'kas', 'strands', 'claude']))
+    wrap()
+    await waitFor(() => expect(row('Strands')).toBeInTheDocument())
+    expect(screen.queryByTestId('strands-setup-card')).toBeNull()
+    highlight('Strands')
+    expect(detail().contains(screen.getByTestId('strands-setup-card'))).toBe(true)
+    highlight('Claude Code')
+    expect(screen.queryByTestId('strands-setup-card')).toBeNull()
   })
 })
