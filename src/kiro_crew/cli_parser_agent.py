@@ -18,7 +18,7 @@ import argparse
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
-from kiro_crew.cli_arg_types import positive_int
+from kiro_crew.cli_arg_types import non_negative_int, positive_int
 from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
 
 if TYPE_CHECKING:
@@ -645,7 +645,7 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_sub.add_parser("migrate", help="Migrate legacy markdown memory to vector store")
     mem_backup = mem_sub.add_parser("backup", help="Back up active memory stores now")
     mem_backup.add_argument(
-        "--keep", type=int, default=None, help="How many backups to keep per store"
+        "--keep", type=positive_int, default=None, help="How many backups to keep per store"
     )
     mem_backups = mem_sub.add_parser("backups", help="List memory backups, newest first")
     mem_backups.add_argument("--store", default=None, help="Only this store")
@@ -711,8 +711,10 @@ def register_memory_parser(sub: _Commands) -> None:
         choices=["scope", "surface", "crew", "session_key", "derived_from", "kind"],
         help="Report counts grouped by this axis instead of listing rows",
     )
-    mem_carve.add_argument("--limit", type=int, default=50, help="How many rows to list")
-    mem_carve.add_argument("--offset", type=int, default=0, help="Rows to skip when listing")
+    mem_carve.add_argument("--limit", type=positive_int, default=50, help="How many rows to list")
+    mem_carve.add_argument(
+        "--offset", type=non_negative_int, default=0, help="Rows to skip when listing"
+    )
     mem_retired = mem_sub.add_parser(
         "retired", help="List episodes a semantic write superseded, and restore one"
     )
