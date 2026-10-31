@@ -933,6 +933,14 @@ def test_control_plane_url_is_the_regional_cps_host():
         control_plane.control_plane_url("eu-central-1")
         == "https://management.eu-central-1.kiro.dev/"
     )
+    # eu-west-1 is the EU region the dashboard picker offers, and it has no CPS
+    # host of its own: its profiles live on the Frankfurt control plane. The
+    # us-east-1 fallback would answer zero profiles for it, and the sign-in
+    # would stall with "no available Kiro profiles" after a successful browser
+    # authorization.
+    assert (
+        control_plane.control_plane_url("eu-west-1") == "https://management.eu-central-1.kiro.dev/"
+    )
     # No dedicated CPS for that region: same fallback as kiro-cli's DEFAULT_ENDPOINT.
     assert control_plane.control_plane_url("ap-southeast-2") == control_plane.control_plane_url(
         "us-east-1"

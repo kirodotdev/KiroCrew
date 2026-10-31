@@ -44,9 +44,14 @@ _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 # Control-plane (CPS) endpoints per region, mirroring kiro-cli's
 # ``Endpoint::cps_for_region``. Regions without a dedicated CPS fall back to
 # us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
+# eu-west-1 has no CPS host of its own (the name does not resolve); its
+# profiles are served by the Frankfurt control plane, which is where kiro-cli
+# sends EU regions — the us-east-1 fallback would answer zero profiles for
+# them and sign-in would stall with "no available Kiro profiles".
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
+    "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
 _DEFAULT_CPS_REGION = "us-east-1"
 
