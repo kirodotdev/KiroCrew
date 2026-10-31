@@ -13063,6 +13063,8 @@
       "run_in_terminal_shell_alive_error": "Il comando non è stato inviato al nuovo terminale, ma la sua shell è in esecuzione: la scheda è stata lasciata aperta per poter eseguire il comando lì.",
       "run_in_terminal_dispatch_rolled_back_error": "Il comando non è stato inviato al nuovo terminale, quindi quel terminale è stato chiuso.",
       "delivery_removed_delivered": "Un messaggio che hai rimosso è stato consegnato comunque. Svuota il campo di scrittura per non inviarlo due volte.",
+      "delivery_recovered_after_reload": "Un messaggio di prima del ricaricamento della pagina non è mai stato confermato, quindi il suo testo è di nuovo nel campo di scrittura.",
+      "delivery_recovered_delivered": "Un messaggio di prima del ricaricamento della pagina è stato consegnato comunque. Svuota il campo di scrittura per non inviarlo due volte.",
       "delivery_remove": "Rimuovi il messaggio, conserva il testo",
       "delivery_unconfirmed_resend": "Consegna non confermata: reinviarlo potrebbe inviarlo due volte.",
       "delivery_unconfirmed_dismiss_note": "Il tuo testo torna nel campo di scrittura, e questa scheda ti avvisa se il messaggio è arrivato comunque.",

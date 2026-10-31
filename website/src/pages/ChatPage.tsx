@@ -5,8 +5,8 @@ import {
   switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey,
 } from '../store/chatSlice'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
-import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
-import { mergeSentTurns, type SentTurnRestore } from './chat/page/composerSend'
+import { useDeliveryWarningStrip, useRetireRecoveredWhenEmptied } from '../components/useDeliveryWarningStrip'
+import { mergeSentTurns, parseSentTurn, type SentTurnRestore } from './chat/page/composerSend'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { useScrollManager } from './chat/useScrollManager'
 import { useChatPageTranscriptEarlyController } from './chat/useChatPageTranscriptController'
@@ -1010,8 +1010,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const composerSessionControls = useSessionControlChips({ sessionControls, openSessionControl, activeSlot, sessionControlStatuses })
 
   const currentChatSlot = useCallback(() => activeSlotRef.current, [activeSlotRef])
+  const composerHoldsText = useCallback((slot: string) => composerSlotRef.current === slot
+    ? !!composerDraft.get().trim() || !!pendingFilesRef.current.length || !!pendingSessionsRef.current.length
+    : !!drafts.current[slot]?.trim() || !!fileDrafts.current[slot]?.length || !!sessionRefDrafts.current[slot]?.length,
+  [composerSlotRef, composerDraft, pendingFilesRef, pendingSessionsRef, drafts, fileDrafts, sessionRefDrafts])
+  useRetireRecoveredWhenEmptied(activeSlot, 'page', !inputNonBlank && !pendingFiles.length && !pendingSessions.length,
+    !slotLoading && slotSwitchTarget !== activeSlot)
   const deliveryStrip = useDeliveryWarningStrip<SentTurnRestore>({
     slot: activeSlot, surface: 'page', currentSlot: currentChatSlot, restore: restoreSentTurn, merge: mergeSentTurns,
+    ready: !slotLoading && slotSwitchTarget !== activeSlot, parse: parseSentTurn, holdsText: composerHoldsText,
   })
   const composerBand = useMemo(() => (
     <>
