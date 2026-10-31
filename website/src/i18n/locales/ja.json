@@ -5905,6 +5905,14 @@
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "アプリを別ウィンドウに切り離す",
+      "this_app_is_open_in_its_own_window_focus_it": "このアプリは別ウィンドウで開いています — そこにフォーカス",
+      "focus_popped_out_window": "切り離したウィンドウにフォーカス",
+      "return": "戻す",
+      "return_to_main_window": "メインウィンドウに戻す",
+      "return_this_app_to_the_main_window": "このアプリをメインウィンドウに戻す"
+    },
     "approvalCard": {
       "actions_group": "承認アクション",
       "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
@@ -10709,6 +10717,14 @@
       "retry": "再試行",
       "back_to_apps": "アプリに戻る",
       "failed_to_load_app": "アプリの読み込みに失敗"
+    },
+    "appPopoutFrame": {
+      "app": "アプリ",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}} にアプリはありません",
+      "no_app_at_route_lead": "このウィンドウは、アプリではないページ、またはすでにインストールされていないアプリのために開かれました。続けるにはメインウィンドウに戻してください。",
+      "could_not_load_the_app_list": "アプリ一覧の読み込みに失敗",
+      "retry": "再試行"
     },
     "appsPage": {
       "action_failed": "{{name}} の{{action}}に失敗しました",

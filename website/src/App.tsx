@@ -24,6 +24,7 @@ import ChatPage from './pages/ChatPage'
 import PopoutFrame from './pages/PopoutFrame'
 import ArtifactPopoutFrame from './pages/ArtifactPopoutFrame'
 import TerminalPopoutFrame from './pages/TerminalPopoutFrame'
+import AppPopoutFrame, { AppPopoutHardExit } from './pages/AppPopoutFrame'
 
 import ErrorBoundary from './components/ErrorBoundary'
 import AskAgentButton from './components/AskAgentButton'
@@ -301,7 +302,7 @@ export { NavItem, NavBadge }
 export default function App() {
   const shell = useAppShell()
   const {
-    isEmbed, isPopout, initialPopoutPath, updateAvailable, terminalEnabled, terminalPoppedOut,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, updateAvailable, terminalEnabled, terminalPoppedOut,
     bottomTerminalOpen, mobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked, firstRun,
     lookPreviewFrame, branding, avatar, isMobile, bottomDock, activeInstanceId, macFullscreen, macInset,
@@ -519,7 +520,27 @@ export default function App() {
     {/* Same rule for a file-menu action's result: the dashboard shows it in the
         notification sheet's banner region, which these frames do not render. */}
     {(isPopout || isEmbed) && <FileMenuResultToastFrame />}
-    {isPopout ? (
+    {appPopoutRoute ? (
+      /* An app pop-out window. Its router is mounted at `/popout/app`
+         (main.tsx, via appPopoutRouterBasename), so the paths here are the
+         app's OWN — `/dev-fleet/…`, `/apps/<name>` — exactly as the dashboard
+         branch below spells them, and an app's absolute sub-path navigation
+         resolves unchanged. The two arms are the dashboard's two app arms; the
+         frame renders the pinned app for its own route and hands any other
+         destination (an app's "go to chat" exit, a link to Settings) to the
+         main window instead of mounting it here. The hard-exit sink is
+         installed above the route boundary, so a hard "Ask the agent" from a
+         crashed app (or a crashed frame) hands off to main instead of loading
+         the dashboard here. */
+      <>
+        <AppPopoutHardExit />
+        <Routes>
+          <Route path="/apps/:name" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+          <Route path="/:builtinApp/*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+          <Route path="*" element={<ErrorBoundary><AppPopoutFrame route={appPopoutRoute} /></ErrorBoundary>} />
+        </Routes>
+      </>
+    ) : isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
         <Route path="/popout/artifact/:slug" element={<ErrorBoundary><ArtifactPopoutFrame /></ErrorBoundary>} />

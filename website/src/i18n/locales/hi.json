@@ -6039,6 +6039,14 @@
       "this_app_is_disabled": "यह ऐप अक्षम है",
       "this_app_provides_agents_and_skills_but_no_visua": "यह ऐप एजेंट और स्किल देता है, लेकिन कोई विज़ुअल इंटरफ़ेस नहीं।\n            इसके एजेंट चैट से उपयोग करें।"
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "ऐप को अपनी अलग विंडो में पॉप आउट करो",
+      "this_app_is_open_in_its_own_window_focus_it": "यह ऐप अपनी अलग विंडो में खुला है — उस पर फ़ोकस करो",
+      "focus_popped_out_window": "पॉप-आउट विंडो पर फ़ोकस करो",
+      "return": "वापस लाओ",
+      "return_to_main_window": "मुख्य विंडो में वापस लाओ",
+      "return_this_app_to_the_main_window": "इस ऐप को मुख्य विंडो में वापस लाओ"
+    },
     "approvalCard": {
       "actions_group": "अनुमोदन क्रियाएँ",
       "approval_no_longer_pending": "यह स्वीकृति समाप्त हो गई है या पहले ही तय हो चुकी है — एजेंट अब इसकी प्रतीक्षा नहीं कर रहा है।",
@@ -10864,6 +10872,14 @@
       "retry": "फिर कोशिश करें",
       "back_to_apps": "ऐप्स पर वापस",
       "failed_to_load_app": "ऐप लोड नहीं हो सका"
+    },
+    "appPopoutFrame": {
+      "app": "ऐप",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}} पर कोई ऐप नहीं है",
+      "no_app_at_route_lead": "यह विंडो ऐसे पेज के लिए खोली गई थी जो ऐप नहीं है, या ऐसे ऐप के लिए जो अब इंस्टॉल नहीं है। जारी रखने के लिए मुख्य विंडो में वापस जाओ।",
+      "could_not_load_the_app_list": "ऐप सूची लोड नहीं हो सकी",
+      "retry": "फिर कोशिश करो"
     },
     "appsPage": {
       "action_failed": "{{name}} को {{action}} करने में विफल",

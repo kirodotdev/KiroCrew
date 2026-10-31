@@ -18,6 +18,7 @@ import { RailBrandToggle, RailCommunityLinks } from './railChrome'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge } from './navRow'
+import { AppRowPopoutAction } from './appRowPopoutAction'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { coversPaneProps } from '../../hooks/paneVisibility'
 
@@ -76,6 +77,21 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         : undefined}
       badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
+  )
+
+  // An Apps-group row with its pop-out action beside it. The action is a
+  // sibling of the row, never a child (the row is itself a `role="button"`),
+  // and the row's trailing padding widens so its chord and badges sit clear of
+  // the action. Expanded desktop rail only: the collapsed rail's icon rows and
+  // the phone drawer carry no pop-out entry point. The DragOverlay ghost uses
+  // `renderNavRow` directly, so the floating copy carries no action either.
+  const renderAppRow = (n: Parameters<typeof renderNavRow>[0]) => (
+    !effectiveCollapsed && !isMobile ? (
+      <div className="relative group/approw [&>.nav-item]:pr-9">
+        {renderNavRow(n)}
+        <AppRowPopoutAction route={n.path} active={navRowActive(n.path)} />
+      </div>
+    ) : renderNavRow(n)
   )
 
   return (
@@ -237,14 +253,14 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
                     <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                      <div role="presentation"><SortableAppNavRow id={n.id}>{renderNavRow(n)}</SortableAppNavRow></div>
+                      <div role="presentation"><SortableAppNavRow id={n.id}>{renderAppRow(n)}</SortableAppNavRow></div>
                     </AppRailMenu>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
                 {pulledInRows.map(n => (
                   <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
-                    <div role="presentation">{renderNavRow(n)}</div>
+                    <div role="presentation">{renderAppRow(n)}</div>
                   </AppRailMenu>
                 ))}
                 {/* The ghost has no menu because it is a second rendering of the dragged row. */}

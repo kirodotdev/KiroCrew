@@ -312,6 +312,7 @@
     "pages.appDetailPage.github_stars_2": "Row label in the app detail page's Details metadata card, with the exact stargazer count interpolated as {{value}}. GitHub repository stars, not a rating.",
     "pages.appDetailPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "pages.appsPage.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
+    "pages.appPopoutFrame.app": "The OS window title of a popped-out app window, used in place of the app's name when the installed-apps list has not named it yet; the noun 'application' (as in the dashboard's Apps section), rendered as '{{label}} — Kiro Crew'.",
     "pages.artifactDeployPage.aws": "The literal name of the AWS CLI executable, `aws`. Do not translate: the user types it.",
     "pages.artifactDetailPage.copy_failed": "Brief error status on the artifact content copy button after a clipboard write fails. A past outcome, not a command.",
     "pages.artifactDetailPage.tag_2": "Noun: a label attached to an artifact. Not the verb.",

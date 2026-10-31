@@ -459,6 +459,7 @@ renders, so nothing in them carries the sidebar.
 | `/popout/chat/:slug?` | One session in its own OS window | `pages/PopoutFrame.tsx` |
 | `/popout/artifact/:slug` | One artifact in its own window | `pages/ArtifactPopoutFrame.tsx` |
 | `/popout/terminal` | The docked terminal, detached | `pages/TerminalPopoutFrame.tsx` |
+| `/popout/app/<route>` | One app page (`/popout/app/dev-fleet`, `/popout/app/apps/<name>`) in its own window, so the app stays on screen beside the main window's chat. The window's router is mounted at `/popout/app` (`utils/appPopoutRoute.ts`), so the app's own absolute paths resolve inside it unchanged; a navigation that leaves the app is handed to the main window instead of mounting there. Opened from the sidebar: each Apps-group row of the expanded desktop rail carries a pop-out action shown on hover or keyboard focus, which opens the app at the page on screen when it is the active app (`shell/nav/appRowPopoutAction.tsx`); while the app is out the row shows an accent mark instead, which focuses that window. The window's own title bar carries the app's name and Return (`components/AppPopoutTitleBar.tsx`) | `pages/AppPopoutFrame.tsx` |
 | `/embed/chat/:slug?` | Chat embedded in a host surface | `pages/ChatPage.tsx` (`embedded`) |
 | `/embed/sessions` | Session list embedded in a host surface | `pages/ChatPage.tsx` (`embedded`) |
 | `/embed/settings` | Reduced settings for an embedded host | `pages/EmbedSettingsPage.tsx` |

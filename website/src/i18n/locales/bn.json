@@ -6039,6 +6039,14 @@
       "this_app_is_disabled": "এই অ্যাপটি বন্ধ করা আছে",
       "this_app_provides_agents_and_skills_but_no_visua": "এই অ্যাপটি এজেন্ট ও স্কিল দেয়, কিন্তু কোনও ভিজ্যুয়াল ইন্টারফেস নেই।\n            চ্যাট থেকে এর এজেন্টগুলি ব্যবহার করুন।"
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "অ্যাপটি আলাদা উইন্ডোতে খোলো",
+      "this_app_is_open_in_its_own_window_focus_it": "এই অ্যাপটি আলাদা উইন্ডোতে খোলা আছে — সেটিতে ফোকাস করো",
+      "focus_popped_out_window": "পপ-আউট উইন্ডোতে ফোকাস করো",
+      "return": "ফিরিয়ে আনো",
+      "return_to_main_window": "মূল উইন্ডোতে ফিরিয়ে আনো",
+      "return_this_app_to_the_main_window": "এই অ্যাপটি মূল উইন্ডোতে ফিরিয়ে আনো"
+    },
     "approvalCard": {
       "actions_group": "অনুমোদন ক্রিয়া",
       "approval_no_longer_pending": "এই অনুমোদনটির মেয়াদ শেষ হয়ে গেছে বা ইতিমধ্যে সিদ্ধান্ত নেওয়া হয়েছে — এজেন্ট আর এটির জন্য অপেক্ষা করছে না।",
@@ -10864,6 +10872,14 @@
       "retry": "আবার চেষ্টা করুন",
       "back_to_apps": "অ্যাপে ফিরে যান",
       "failed_to_load_app": "অ্যাপ লোড করা যায়নি"
+    },
+    "appPopoutFrame": {
+      "app": "অ্যাপ",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "{{route}}-এ কোনো অ্যাপ নেই",
+      "no_app_at_route_lead": "এই উইন্ডোটি এমন একটি পেজের জন্য খোলা হয়েছিল যা কোনো অ্যাপ নয়, অথবা এমন একটি অ্যাপের জন্য যা আর ইনস্টল করা নেই। চালিয়ে যেতে মূল উইন্ডোতে ফিরে যাও।",
+      "could_not_load_the_app_list": "অ্যাপের তালিকা লোড করা যায়নি",
+      "retry": "আবার চেষ্টা করো"
     },
     "appsPage": {
       "action_failed": "{{name}}-কে {{action}} করা যায়নি",

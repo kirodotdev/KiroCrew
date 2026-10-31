@@ -6143,6 +6143,14 @@
       "this_app_is_disabled": "Este app está desativado",
       "this_app_provides_agents_and_skills_but_no_visua": "Este app fornece agentes e habilidades, mas nenhuma interface visual.\n            Use os agentes dele pelo chat."
     },
+    "appPopoutControl": {
+      "pop_out_app_to_its_own_window": "Destacar o app em uma janela própria",
+      "this_app_is_open_in_its_own_window_focus_it": "Este app está aberto em sua própria janela — focar nela",
+      "focus_popped_out_window": "Focar a janela destacada",
+      "return": "Voltar",
+      "return_to_main_window": "Voltar para a janela principal",
+      "return_this_app_to_the_main_window": "Retornar este app para a janela principal"
+    },
     "approvalCard": {
       "actions_group": "Ações de aprovação",
       "approval_no_longer_pending": "Esta aprovação expirou ou já foi decidida — o agente não está mais aguardando por ela.",
@@ -11019,6 +11027,14 @@
       "retry": "Tentar novamente",
       "back_to_apps": "Voltar para Apps",
       "failed_to_load_app": "Falha ao carregar o app"
+    },
+    "appPopoutFrame": {
+      "app": "App",
+      "window_title": "{{label}} — {{productName}}",
+      "no_app_at_route": "Nenhum app em {{route}}",
+      "no_app_at_route_lead": "Esta janela foi aberta para uma página que não é um app, ou para um app que não está mais instalado. Volte para a janela principal para continuar.",
+      "could_not_load_the_app_list": "Falha ao carregar a lista de apps",
+      "retry": "Tentar novamente"
     },
     "appsPage": {
       "action_failed": "Falha ao {{action}} {{name}}",
