@@ -346,6 +346,9 @@ export default [
           // components/crewIconMotion.css (imported by CrewAvatar.tsx, outside
           // index.css's @source graph): a working icon avatar's body motion.
           'crew-icon-*',
+          // components/chat/warmBriefOrb.css (imported by WarmBriefOrb.tsx,
+          // outside index.css's @source graph): the catch-up's progress orb.
+          'wb-orb', 'wb-orb-*',
         ],
       }],
       'shadcn/require-static-classes': 'error',

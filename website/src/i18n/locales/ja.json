@@ -5596,15 +5596,19 @@
       "asked": "ご依頼",
       "done": "済んだこと",
       "label": "進捗のまとめ",
+      "more_waiting": "ほか {{count}} 件",
       "needs_you": "あなたの対応が必要",
       "next": "次に",
+      "no_count": "まだ数えられません",
       "progress": "進み具合",
       "progress_count": "{{total}} 件中 {{accepted}} 件完了",
       "remaining": "残り",
+      "show_fewer": "閉じる",
       "status_blocked": "止まっています",
       "status_done": "完了",
       "status_needs_you": "あなた待ち",
-      "status_on_track": "順調"
+      "status_on_track": "順調",
+      "unlisted": "ほか {{count}} 件は一覧にありません"
     },
     "voicePlaybackNotice": {
       "failed": "「{{speak}}」に失敗しました。テキスト音声変換の設定を確認して、もう一度お試しください。",

@@ -5802,15 +5802,19 @@
       "asked": "Hai chiesto",
       "done": "Fatto",
       "label": "Riepilogo",
+      "more_waiting": "Altre {{count}}",
       "needs_you": "Serve a te",
       "next": "Prossimi passi",
+      "no_count": "Ancora nessun conteggio",
       "progress": "Avanzamento",
       "progress_count": "{{accepted}} di {{total}} completate",
       "remaining": "Manca",
+      "show_fewer": "Mostra meno",
       "status_blocked": "Bloccato",
       "status_done": "Completato",
       "status_needs_you": "Aspetta te",
-      "status_on_track": "Procede bene"
+      "status_on_track": "Procede bene",
+      "unlisted": "Altre {{count}} non elencate"
     },
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",

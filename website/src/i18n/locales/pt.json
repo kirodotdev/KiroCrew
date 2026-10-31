@@ -5802,15 +5802,19 @@
       "asked": "Você pediu",
       "done": "Feito",
       "label": "Resumo",
+      "more_waiting": "Mais {{count}}",
       "needs_you": "Precisa de você",
       "next": "Próximos passos",
+      "no_count": "Ainda sem contagem",
       "progress": "Progresso",
       "progress_count": "{{accepted}} de {{total}} concluídas",
       "remaining": "Falta",
+      "show_fewer": "Mostrar menos",
       "status_blocked": "Travado",
       "status_done": "Concluído",
       "status_needs_you": "Esperando você",
-      "status_on_track": "No caminho certo"
+      "status_on_track": "No caminho certo",
+      "unlisted": "Mais {{count}} não listadas"
     },
     "voicePlaybackNotice": {
       "failed": "Não foi possível usar “{{speak}}”. Verifique as configurações de texto para fala e tente novamente.",

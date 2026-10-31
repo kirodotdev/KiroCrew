@@ -1584,15 +1584,19 @@
       "asked": "You asked",
       "done": "Done so far",
       "label": "Catch-up",
+      "more_waiting": "{{count}} more",
       "needs_you": "Needs you",
       "next": "Next",
+      "no_count": "No count yet",
       "progress": "Progress",
       "progress_count": "{{accepted}} of {{total}} done",
       "remaining": "Left",
+      "show_fewer": "Show fewer",
       "status_blocked": "Blocked",
       "status_done": "Done",
       "status_needs_you": "Waiting on you",
-      "status_on_track": "On track"
+      "status_on_track": "On track",
+      "unlisted": "{{count}} more not listed"
     },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",

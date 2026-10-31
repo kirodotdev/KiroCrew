@@ -255,6 +255,12 @@ def work_item_is_terminal(state: object) -> bool:
     return state in work_ledger.TERMINAL_ITEM_STATES
 
 
+def work_item_answered(item: work_ledger.WorkItem) -> bool:
+    """Whether the conductor's ``decide`` answered *item*'s last report: the
+    ledger's own hand-back rule, so the next move is the worker's again."""
+    return work_ledger._decided_after_report(item) is not None
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 

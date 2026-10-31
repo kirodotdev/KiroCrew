@@ -5802,15 +5802,19 @@
       "asked": "Pediste",
       "done": "Hecho",
       "label": "Puesta al día",
+      "more_waiting": "{{count}} más",
       "needs_you": "Te necesita",
       "next": "Siguiente",
+      "no_count": "Aún sin recuento",
       "progress": "Progreso",
       "progress_count": "{{accepted}} de {{total}} hechas",
       "remaining": "Falta",
+      "show_fewer": "Mostrar menos",
       "status_blocked": "Bloqueado",
       "status_done": "Terminado",
       "status_needs_you": "Te espera",
-      "status_on_track": "Va bien"
+      "status_on_track": "Va bien",
+      "unlisted": "{{count}} más sin listar"
     },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",
