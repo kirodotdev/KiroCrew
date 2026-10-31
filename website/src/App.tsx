@@ -41,7 +41,7 @@ const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
 const SessionDashboardsPage = lazy(() => import('./pages/chat/command-center/SessionDashboardsPage'))
 import ArtifactDetailPage from './pages/ArtifactDetailPage'
-import { ChangelogModal } from './shell/updates/updateFlow'
+import { ChangelogModal, UpdateErrorDialogFrame } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
 import { LocalOverlayRoot } from './components/overlayRoot'
@@ -699,7 +699,7 @@ export default function App() {
 
       {/* Update error modal */}
       {updateError && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('app.update_error')}>
+        <UpdateErrorDialogFrame setError={setUpdateError}>
           <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
             <div className="text-4xl mb-4"><AlertTriangle className="lucide-inline" /></div>
             <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.update_failed')}</div>
@@ -713,7 +713,7 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
+        </UpdateErrorDialogFrame>
       )}
 
       {/* Every surface that opens ITSELF at launch, mounted from one place so

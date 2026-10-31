@@ -5231,7 +5231,7 @@ polled by this watchdog.
 | `../components/mobileConnect.tsx` | The phone-connection methods behind the "Connect your phone" row, and its dialog. It lives outside the shell because Settings > People mounts the same dialog |
 | `topbar/metricsReadout.tsx`, `topbar/kiroUsageReadout.tsx`, `topbar/requestFeature.ts` | The readout capsule's system-metrics segment and hover card, its Kiro credit segment, and Request a Feature |
 | `notifications/notificationSheet.tsx` | The bell's sheet (open and exit phases, background dismiss, crash fallback) and the live banner beside it |
-| `updates/updateFlow.tsx` | The post-update changelog, Update Now and its failure, and the changelog modal; its update switches are `components/WhatsNewAutoUpdateToggle.tsx`, the rows Settings → About draws |
+| `updates/updateFlow.tsx` | The post-update changelog, Update Now and its failure, and the changelog and update-failed dialogs (both on `useDialogFocusTrap`: Escape closes, Tab stays inside, focus returns); its update switches are `components/WhatsNewAutoUpdateToggle.tsx`, the rows Settings → About draws |
 | `focus/focusChrome.ts`, `platform/electronBridge.ts` | Focus mode's summoned header and rail with the window chrome that follows them; every Electron bridge call the shell makes |
 | `shortcuts/shellKeyboard.ts`, `branding.ts` | The global shortcuts, the command palette and the shortcuts modal; the product label, rail logo, favicon and a theme's activation effect |
 
