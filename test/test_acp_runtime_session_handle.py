@@ -1366,6 +1366,37 @@ class TestAcpSessionHandleCommands:
         assert cmd["args"] == {"level": "high"}
 
     @pytest.mark.asyncio
+    async def test_command_result_with_args(self):
+        """command_result preserves structured output and TuiCommand args."""
+        rt, _, _ = _make_runtime()
+        q = _register(rt, "s1")
+        handle = AcpSessionHandle("s1", q["s1"], rt)
+
+        sent_payloads = []
+
+        async def capture_send(method, params, **_kw):
+            sent_payloads.append((method, params))
+            response = JsonRpcMessage.from_dict(
+                {"id": 201, "result": {"success": True, "message": "Effort set to high"}}
+            )
+            await q["s1"].put(response)
+            return 201
+
+        rt.send_request = capture_send
+        result = await handle.command_result("/effort", args={"level": "high"})
+
+        assert result == {"success": True, "message": "Effort set to high"}
+        assert sent_payloads == [
+            (
+                METHOD_COMMANDS_EXECUTE,
+                {
+                    "sessionId": "s1",
+                    "command": {"command": "effort", "args": {"level": "high"}},
+                },
+            )
+        ]
+
+    @pytest.mark.asyncio
     async def test_set_config_option(self):
         """set_config_option sends correct JSON-RPC request."""
         rt, _, _ = _make_runtime()

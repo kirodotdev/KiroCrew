@@ -237,7 +237,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "cancel_pending_elicitations": ("function", True, "fa6cfecd5574", "session_handle_elicitation"),
     "cleanup_transcript_files": ("staticmethod", False, "a9cece317161", "session_handle_lifecycle"),
     "clear_pending_steers": ("function", True, "16180c63d5e6", "session_handle_steering"),
-    "command_result": ("function", True, "1f650230e18e", "session_handle_lifecycle"),
+    "command_result": ("function", True, "ef1b0634d9c5", "session_handle_lifecycle"),
     "compact": ("function", True, "416a3df991e6", "session_handle_compaction"),
     "config_options": ("property", False, "7eb96c2fda05", "session_handle_class"),
     "destroy": ("function", True, "b60c5fea256e", "session_handle_lifecycle"),

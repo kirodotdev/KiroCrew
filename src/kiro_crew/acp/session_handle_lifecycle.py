@@ -171,7 +171,9 @@ async def send_command(
         return ""
 
 
-async def command_result(self: AcpSessionHandle, command: str) -> dict[str, Any]:
+async def command_result(
+    self: AcpSessionHandle, command: str, args: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Execute a native kiro command and return its structured result.
 
     Mirrors :meth:`AcpClient.command_result`: for internal callers whose
@@ -182,7 +184,10 @@ async def command_result(self: AcpSessionHandle, command: str) -> dict[str, Any]
     cmd_name, cmd_args = parse_slash_command(command)
     req_id = await self._send_awaited(
         METHOD_COMMANDS_EXECUTE,
-        {"sessionId": self._session_id, "command": {"command": cmd_name, "args": cmd_args}},
+        {
+            "sessionId": self._session_id,
+            "command": {"command": cmd_name, "args": args if args is not None else cmd_args},
+        },
     )
     msg = await self._wait_for_response(req_id, timeout=60.0)
     result = msg.result

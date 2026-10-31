@@ -1357,9 +1357,11 @@ class AcpSessionProvider(LLMProvider):
         """Execute a kiro slash command. Returns response text."""
         return await self._guarded(self._handle.send_command(command, args))
 
-    async def command_result(self, command: str) -> dict[str, Any]:
+    async def command_result(
+        self, command: str, args: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute a native kiro command and return its structured result."""
-        return await self._guarded(self._handle.command_result(command))
+        return await self._guarded(self._handle.command_result(command, args))
 
     async def set_config_option(self, config_id: str, value: str) -> None:
         """Set a session config option (e.g. effort level)."""

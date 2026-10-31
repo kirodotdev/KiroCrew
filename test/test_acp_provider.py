@@ -582,6 +582,7 @@ class TestEffortControl:
         provider._client._model = model
         provider._client._work_dir = MagicMock()
         provider._client.send_command = AsyncMock()
+        provider._client.command_result = AsyncMock(return_value={"success": True})
         provider._client.set_config_option = AsyncMock()
         # Default: the session advertises an 'effort' option (modern adapter).
         provider._client.supports_config_option = MagicMock(return_value=True)
@@ -815,8 +816,9 @@ class TestEffortControl:
     async def test_kiro_effort_rollback_follows_the_file_when_the_rewrite_fails(self):
         # The live push failed, so change_effort rolls the prior level back and
         # rewrites the overlay to match. When THAT rewrite also fails the file
-        # keeps the attempted level and construction re-seeds from it, so the map
-        # follows the file instead of reporting an undo the next spawn contradicts.
+        # keeps the attempted level, which is the level the session was asked to
+        # run, so the map follows the file and the next spawn projects it back
+        # instead of the rollback reporting an undo the file does not show.
         from kiro_crew.acp.client import AcpError
 
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
@@ -882,6 +884,33 @@ class TestEffortControl:
         provider._client.send_command.assert_awaited_once_with("/effort", args={"level": "max"})
         wco.assert_called_once()
         assert provider._effort_per_model["gpt-5.6-luna"] == "max"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model,overrides,expected_level",
+        [
+            ("claude-opus-4.7", {"claude-opus-4.7": "high"}, "high"),
+            ("auto", {"auto": "high"}, None),
+            ("claude-opus-4.7", {}, None),
+        ],
+        ids=["concrete-level", "auto", "no-level"],
+    )
+    async def test_new_conversation_reasserts_only_a_concrete_resolved_kiro_level(
+        self, model, overrides, expected_level
+    ):
+        provider = self._effort_provider(backend="", model=model)
+        provider._effort_per_model = overrides
+        provider._client.new_conversation = AsyncMock()
+
+        await provider.new_conversation()
+
+        provider._client.new_conversation.assert_awaited_once()
+        if expected_level is None:
+            provider._client.command_result.assert_not_awaited()
+        else:
+            provider._client.command_result.assert_awaited_once_with(
+                "/effort", args={"level": expected_level}
+            )
 
     def test_supports_effort_reflects_model(self):
         assert self._effort_provider(backend="", model="claude-opus-4.7").supports_effort()
