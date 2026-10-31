@@ -74,6 +74,30 @@ can reorder strictness or redefine matching):
   collapses a leading `//` to `/` (POSIX leaves a two-slash prefix
   implementation-defined and `normpath` preserves it, so `//etc/passwd` would
   otherwise dodge a `/etc/**` deny while the OS opens `/etc/passwd`).
+  On a **Windows** gateway the item comes out of `abspath` with `\` and a drive,
+  while a pattern is written with `/` (`~/.ssh/**` even expands to
+  `C:\Users\u/.ssh/**`), and a directory usually opens a name whatever its case.
+  So there a separator the pattern writes outside a bracket expression also
+  meets the other separator (`_match_local_path`, `_windows_glob`), and in a
+  **deny** pattern only, an ASCII letter also meets its other case
+  (`_match_denied_path`, served to `ScopedRuleset.permits` through
+  `_DENY_MATCHERS`). An allow compares case as written: a directory can be case
+  sensitive (`fsutil file setCaseSensitiveInfo`, no elevation needed), and there
+  `private` and `Private` are two directories, so an allow that folded case
+  would admit the one the operator did not name, while a deny that folds case
+  refuses at most an extra directory. Nothing else changes: the item is matched as written, and a
+  bracket expression, `?` and `*` read it as on POSIX. Rewriting the pattern
+  would change what a bracket expression covers (lower-casing turns `[A-z]`,
+  which covers `_`, into `[a-z]`; `/` for `\` turns `[\-z]` into `[/-z]`, which
+  covers the digits). The case fold is ASCII-only because Unicode simple case
+  folding pairs letters NTFS keeps apart (`I`/`İ`, `k`/Kelvin `K`, `s`/`ſ`), so a
+  full fold would refuse a name no spelling of the deny opens; a non-ASCII
+  letter in another case matches only as written. The pattern is never
+  `normpath`'d. Each Windows reading is an OR beside the as-written comparison,
+  so no deny loses a path that comparison covers, and a negated class (`[!a-z]`)
+  stays as case sensitive as the as-written match. Compared as written only, a `~/.ssh/**` deny matched no path
+  at all there. A pattern rooted without a drive (`/data/**`) still never
+  meets an item, which `abspath` gives a drive. POSIX is unchanged.
 
   **Path matcher — lexical-only contract.** The `path` matcher does **not**
   resolve symlinks (no `realpath`): a symlink lexically inside an allow-prefix
