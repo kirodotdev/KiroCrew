@@ -40,6 +40,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from off_loop_helpers import off_loop
 
+from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
 from kiro_crew import session_ledger as sl
 from kiro_crew.crew_log import CrewLog
@@ -783,7 +784,7 @@ async def test_delete_with_folded_spelling_preserves_exact_channel_key_ledger():
     assert directory.exists()
 
 
-@pytest.mark.skipif(not IS_POSIX, reason="symlink creation needs no privilege on POSIX")
+@requires_symlinks
 def test_purge_matching_never_follows_a_linked_store_or_a_linked_entry(tmp_path):
     """A linked store directory is skipped whatever its breadcrumb says, and a
     linked entry INSIDE a store is unlinked as a name, never walked."""

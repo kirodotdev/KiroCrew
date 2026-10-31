@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import sys
 from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import hooks
 from kiro_crew.knowledge import folder_watcher as fw_mod
 from kiro_crew.knowledge import kiroignore
@@ -222,7 +222,7 @@ class TestKiroIgnoreReadIsGuarded:
         assert seen["within_root"] == str(tmp_path)
         assert seen["max_bytes"] == kiroignore.MAX_FILE_BYTES
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_symlink_out_of_the_source_root_is_never_read(self, tmp_path):
         """A rule file is project config: resolving outside the tree it describes
         is refused even when the target is not itself classified sensitive."""
@@ -237,7 +237,7 @@ class TestKiroIgnoreReadIsGuarded:
         # Not merely "no matcher" -- the outside file's rules must have no effect.
         assert kiroignore.load(root) is None
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_symlink_to_a_protected_file_is_never_read(self, tmp_path, monkeypatch):
         """The reported vector: a ``.kiroignore`` symlinked at a credential store
         would otherwise have the secret's lines parsed -- and logged -- as rules."""

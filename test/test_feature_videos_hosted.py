@@ -53,6 +53,7 @@ from feature_videos_hosted_helpers import (
     _write_media,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import asset_downloader
 from kiro_crew import feature_videos_cache as cache_mod
 from kiro_crew import feature_videos_manifest as manifest_mod
@@ -748,7 +749,7 @@ class TestManifestOnDisk:
             path.write_text(json.dumps(doctored), encoding="utf-8")
             assert manifest_mod.load_cached_manifest("0.6.0") is None
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_link_at_the_cached_manifest_name_is_not_followed(
         self, signing_key: Path, tmp_path: Path
     ) -> None:
@@ -880,7 +881,7 @@ class TestManifestOnDisk:
             if not sys.platform.startswith("win"):
                 assert stat.S_IMODE(folder.stat().st_mode) == 0o700
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_a_junction_at_the_release_folder_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -914,7 +915,7 @@ class TestManifestOnDisk:
             with pytest.raises(manifest_mod.CacheDirRefused):
                 manifest_mod.ensure_cache_dir("0.6.0")
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_the_clip_transfer_refuses_a_symlinked_release_folder(self, tmp_path: Path) -> None:
         """Both transfers ask ensure_cache_dir for the folder, so the gate covers them."""
         outside = tmp_path / "outside"
@@ -1132,7 +1133,7 @@ class TestPinnedReleaseDir:
                 folder.write_text("note.txt", "x")
             assert (manifest_mod.release_dir("0.6.0") / "note.txt").read_text() == "x"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_root_swapped_after_the_check_is_refused_by_the_descriptors_real_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1254,7 +1255,7 @@ class TestEviction:
             self._seed_releases({"0.4.0": 10, "0.6.0": 10})
             assert cache_mod.evict("0.6.0", max_bytes=0) == []
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_a_symlinked_cache_root_is_never_scanned_or_evicted(self, tmp_path: Path) -> None:
         """rmtree is irreversible: a root that is a link lists nothing and deletes nothing."""
         outside = tmp_path / "elsewhere"
@@ -1269,7 +1270,7 @@ class TestEviction:
             assert cache_mod._remove_release("0.3.0", manifest_mod.cache_root() / "0.3.0") is False
         assert (outside / "0.3.0" / "clip.mp4").is_file()
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_a_symlinked_release_folder_is_not_an_eviction_candidate(self, tmp_path: Path) -> None:
         outside = tmp_path / "elsewhere"
         outside.mkdir()
@@ -1341,7 +1342,7 @@ class TestEviction:
             assert cache_mod._remove_release("0.3.0", folder) is True
             assert not folder.exists()
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_the_held_handle_fallback_refuses_a_link_at_the_folder_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

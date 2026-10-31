@@ -18,6 +18,7 @@ import pytest
 import work_ledger_helpers
 from work_ledger_helpers import CONDUCTOR, WORKER, _new_item
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import work_ledger as wl
 
@@ -284,9 +285,7 @@ def test_purge_conductor_removes_a_headerless_itemless_residue_with_allow_unread
     assert not directory.exists()
 
 
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX, reason="symlink creation needs no privilege on POSIX"
-)
+@requires_symlinks
 def test_the_content_walker_unlinks_a_linked_items_directory_as_a_name(tmp_path):
     """Defence in depth behind the census and the purge's own refusal: even called
     directly on a store whose ``items/`` is a link, the walker removes the LINK

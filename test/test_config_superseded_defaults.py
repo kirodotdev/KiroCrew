@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.config import loader as L
 from kiro_crew.config import superseded_defaults as SD
@@ -810,7 +811,7 @@ def test_dropping_an_unacked_key_never_touches_the_file(tmp_path, monkeypatch):
     assert not SD.ack_file_path().exists()
 
 
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="os.symlink needs elevation on Windows")
+@requires_symlinks
 def test_a_link_at_the_ack_path_is_refused_not_written_through(tmp_path, monkeypatch):
     """The config writers FOLLOW a link on purpose (dotfiles repos). That is wrong for
     a path the agent can name: following it would overwrite the link's target."""
@@ -825,7 +826,7 @@ def test_a_link_at_the_ack_path_is_refused_not_written_through(tmp_path, monkeyp
     assert victim.read_text(encoding="utf-8") == '{"keep": "me"}'
 
 
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="os.symlink needs elevation on Windows")
+@requires_symlinks
 def test_a_link_swapped_in_after_the_check_is_replaced_not_followed(tmp_path, monkeypatch):
     """The check reports the condition; the rename-over-leaf is what makes it
     unexploitable, so a link winning the race still cannot reach its target."""

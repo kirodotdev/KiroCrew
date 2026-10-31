@@ -16,12 +16,12 @@ leave, must live inside the masked staging directory and nowhere else.
 from __future__ import annotations
 
 import errno
-import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import atomic_write as aw
 from kiro_crew import hidden_leaf_staging
 from kiro_crew.sandbox_leaves import _AUTH_STORE_STAGING_LEAF, _CREW_HIDDEN_LEAVES
@@ -150,7 +150,7 @@ def test_unusable_staging_refuses_rather_than_writing_beside_the_leaf(crew_home,
     assert crew_home not in temp_dirs
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privilege on Windows")
+@requires_symlinks
 def test_symlinked_staging_is_refused(crew_home, tmp_path, temp_dirs):
     outside = tmp_path / "outside"
     outside.mkdir()

@@ -21,6 +21,7 @@ from feature_videos_hosted_helpers import _fresh_cache  # noqa: F401 - fixture
 from feature_videos_hosted_helpers import _no_network  # noqa: F401 - fixture
 from feature_videos_hosted_helpers import _CDN, _CLIP, _entry, _parsed, _seed, _write_media
 
+from conftest import requires_symlinks
 from kiro_crew import feature_videos as fv
 from kiro_crew import feature_videos_cache as cache_mod
 from kiro_crew import feature_videos_manifest as manifest_mod
@@ -60,7 +61,7 @@ def _default_on_intro_already_retired(_floor_monkeypatch: pytest.MonkeyPatch) ->
 
 
 class TestServingRoute:
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_a_symlinked_cache_root_serves_nothing(self, tmp_path: Path) -> None:
         """Read, write and delete share one anchor: a linked root is refused by all three."""
         outside = tmp_path / "elsewhere"
@@ -144,7 +145,7 @@ class TestServingRoute:
             assert resp.headers["Content-Type"] == "video/mp4"
             assert _served_body(request) == b""
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_file_swapped_for_a_link_after_resolution_is_not_followed(
         self, tmp_path: Path
     ) -> None:
@@ -176,7 +177,7 @@ class TestServingRoute:
                     asyncio.run(cache_mod.api_feature_video_file(request))
             assert _served_body(request) == b""
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_folder_swapped_for_a_link_after_resolution_is_not_followed(
         self, tmp_path: Path
     ) -> None:
@@ -388,7 +389,7 @@ class TestServingRoute:
             with pytest.raises(web.HTTPNotFound):
                 asyncio.run(cache_mod.api_feature_video_file(_file_request("0.6.0", "sub.mp4")))
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_symlink_out_of_the_cache_is_refused(self, tmp_path: Path) -> None:
         """Name validation cannot see a symlink; the containment re-check can."""
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -399,7 +400,7 @@ class TestServingRoute:
             with pytest.raises(web.HTTPNotFound):
                 asyncio.run(cache_mod.api_feature_video_file(_file_request("0.6.0", "escape.mp4")))
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_release_folder_cannot_become_the_boundary(self, tmp_path: Path) -> None:
         """The escape one level UP from the file: the release folder is the link.
 
@@ -420,7 +421,7 @@ class TestServingRoute:
                     cache_mod.api_feature_video_file(_file_request("0.6.0", "hosted-clip.mp4"))
                 )
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="symlinks need privilege on Windows")
+    @requires_symlinks
     def test_a_symlink_inside_the_cache_is_refused_too(self, tmp_path: Path) -> None:
         """Refused for being a link, not for where it points.
 

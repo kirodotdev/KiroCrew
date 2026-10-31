@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_discovery
 from kiro_crew.dashboard import side_readonly_spec as srs
@@ -101,7 +102,7 @@ def test_a_base_two_specs_declare_still_resolves(agents_dir):
     assert derived.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_a_same_named_base_entry_of_any_kind_keeps_the_spec(agents_dir, tmp_path):
     """The publisher skips a symlinked base, but kiro-cli may load it: keep."""
     derived = _publish_user(agents_dir)
@@ -176,7 +177,7 @@ def test_only_derived_json_names_are_candidates(agents_dir):
     assert plain.exists() and md.exists() and (agents_dir / "twin--readonly.json").is_dir()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_a_symlink_is_neither_followed_nor_removed(agents_dir, tmp_path):
     derived = _publish_user(agents_dir)
     (agents_dir / "ghost.json").unlink()
