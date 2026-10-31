@@ -12900,6 +12900,8 @@
       "folder_order_reorder_note": "只有在自定义顺序下才能拖动排列文件夹",
       "folder_order_switch_custom": "切换到“自定义”",
       "folder_order_unstamped_note": "在开始记录日期之前创建的文件夹没有日期；它们按你的自定义顺序排在最后",
+      "folder_order_unread_first": "将有未读聊天的文件夹移到顶部",
+      "folder_order_unread_first_note": "开启时无法拖动文件夹排序；如需排序请关闭此项",
       "sort_sessions_by": "会话排序方式",
       "sort_newest": "最新",
       "sort_oldest": "最早",
