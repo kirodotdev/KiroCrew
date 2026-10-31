@@ -5232,7 +5232,8 @@
         "mode_load_failed": "Couldn't read the Tool Search mode; showing the default"
       },
       "mcpOAuthBanner": {
-        "mcp_server": "MCP server"
+        "mcp_server": "MCP server",
+        "failed_next_step": "To sign in again, open Customize → Connections → MCP Servers."
       },
       "notificationItem": {
         "acknowledged": "Acknowledged"
