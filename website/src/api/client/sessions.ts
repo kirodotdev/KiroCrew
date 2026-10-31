@@ -54,6 +54,8 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
         rss_mb: number; peak_rss_mb: number; cpu_cores: number
         procs: number | null; mcp: number | null
         started_at: number; shared: boolean; pid: number | null; sampled: boolean
+        /** Credits this live task has burned so far; absent/null means none yet. */
+        credits?: number | null
       }[]
       totals: {
         rss_mb: number; runtimes: number; host_mb: number | null

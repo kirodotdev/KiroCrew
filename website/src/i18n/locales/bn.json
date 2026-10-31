@@ -16458,6 +16458,7 @@
       "created_by": "{{name}} দ্বারা তৈরি (চলছে না, তাই শীর্ষ স্তরে দেখানো)",
       "created_by_closed_unnamed": "একটি বন্ধ সেশন দ্বারা তৈরি",
       "credits": "ক্রেডিট",
+      "sort_credit_hungry": "সর্বাধিক ক্রেডিট",
       "done": "সম্পন্ন",
       "expand_sessions": "{{name}} এর সেশন দেখাও",
       "expand_tasks": "{{name}} এর কাজ দেখান",

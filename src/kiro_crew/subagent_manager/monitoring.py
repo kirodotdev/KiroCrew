@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio as _asyncio
 import logging as _logging
+import math
 import time as _time
 from typing import TYPE_CHECKING, Any
 
@@ -1816,6 +1817,14 @@ class OrphanStallMonitor(ManagerComponent):
                 "cpu_cores": round(a.last_cpu_cores, 2),
                 "procs": a.last_procs,
                 "mcp": a.last_stubs,
+                "credits": (
+                    round(float(a.credits), 3)
+                    if isinstance(a.credits, (int, float))
+                    and not isinstance(a.credits, bool)
+                    and math.isfinite(a.credits)
+                    and a.credits > 0
+                    else None
+                ),
                 "started_at": a.started,
                 "shared": a._session_sharing,
                 "pid": a._pid,

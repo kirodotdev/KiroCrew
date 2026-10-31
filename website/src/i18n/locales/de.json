@@ -16458,6 +16458,7 @@
       "created_by": "Erstellt von {{name}} (läuft nicht, daher auf oberster Ebene gezeigt)",
       "created_by_closed_unnamed": "Erstellt von einer geschlossenen Sitzung",
       "credits": "Credits",
+      "sort_credit_hungry": "Credit-hungrig",
       "done": "Fertig",
       "expand_sessions": "Sitzungen unter {{name}} einblenden",
       "expand_tasks": "Aufgaben für {{name}} einblenden",
