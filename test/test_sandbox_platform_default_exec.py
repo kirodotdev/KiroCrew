@@ -167,10 +167,12 @@ class TestTheGateReadsTheResolvedValue:
 
     The platform default is folded into the field by the loader (its matrix lives in
     ``test_config_loader_agent_section.py``), so nothing here re-derives policy from whether the
-    key was declared. Keying the gate on presence would let a full-document
-    ``KiroCrewConfig.save()`` — which publishes ``asdict(self.agent)`` — turn "never
-    decided" into a declared lockdown and re-brick every spawn on a platform with no
-    installable backend.
+    key was declared. A full-document ``KiroCrewConfig.save()`` builds its snapshot
+    through ``asdict(self.agent)`` but strips this key unless
+    ``unsandboxed_exec_declared()`` says the operator recorded it, so writing the
+    snapshot back leaves "never decided" undecided; the gate stays a read of the
+    resolved value so it agrees with that, and never re-bricks every spawn on a
+    platform with no installable backend.
     """
 
     def test_a_permitting_value_permits(self, monkeypatch) -> None:

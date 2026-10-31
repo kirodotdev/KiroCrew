@@ -49,13 +49,13 @@ def unsandboxed_exec_platform_default() -> bool:
     unconfined there would hide a repairable host.
 
     Resolved HERE, into the dataclass value, rather than downstream from whether
-    the key is present. Presence cannot carry the meaning safely:
-    :meth:`KiroCrewConfig.save` publishes the whole in-memory snapshot through
-    ``to_dict()`` -> ``asdict(self.agent)``, so every full-document write (the boot
-    default-config write, CLI one-shots) materializes this key. Were the effective
-    policy keyed on presence, that write would silently turn "never decided" into a
-    declared lockdown and re-brick every Windows spawn. Resolving into the value
-    makes such a round-trip write ``true`` on Windows, which changes nothing.
+    the key is present, so every reader takes the effective policy from one field.
+    :meth:`KiroCrewConfig.save` builds the whole in-memory snapshot through
+    ``to_dict()`` -> ``asdict(self.agent)``, which holds this resolved value, and
+    strips the key before writing unless :func:`unsandboxed_exec_declared` says the
+    operator recorded it. If the key were written, every full-document write (the boot
+    default-config write, CLI one-shots) would turn "never decided" into a
+    declaration that outranks the platform default.
 
     A function rather than a module constant so tests can pin the verdict without
     patching ``sys.platform`` process-wide.
@@ -73,9 +73,9 @@ def unsandboxed_exec_declared() -> bool:
     resolved dataclass value (see :func:`unsandboxed_exec_platform_default`); this
     exists so a message can tell "you set this to false" apart from "you never set
     it", and so the audit event can name an operator grant rather than a platform
-    one. Because a full-document ``save()`` materializes the key, a host that never
-    answered can read as declared afterwards — acceptable for a label, and the
-    reason this must not decide anything.
+    one. :meth:`KiroCrewConfig.save` reads it too, to leave an undeclared key off
+    disk, so a host that never answered still reads as undeclared after a
+    full-document write.
 
     An unreadable or non-object document contributes nothing: a corrupt config is
     not a declaration.
