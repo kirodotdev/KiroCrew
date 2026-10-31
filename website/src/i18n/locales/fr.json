@@ -8124,6 +8124,7 @@
         "keep_receiving_these": ". Continuer à les recevoir ?",
         "mark_all_as_read": "Tout marquer comme lu",
         "mute_channel": "Mettre le canal en sourdine",
+        "mute_failed": "Impossible de mettre ce canal en sourdine. Réessaie.",
         "muted_2": "en sourdine",
         "no_notifications": "Aucune notification",
         "open_notification": "Ouvrir la notification : {{title}}",

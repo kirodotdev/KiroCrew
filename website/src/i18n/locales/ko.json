@@ -7870,6 +7870,7 @@
         "keep_receiving_these": ". 계속 받으시겠습니까?",
         "mark_all_as_read": "모두 읽음으로 표시",
         "mute_channel": "채널 음소거",
+        "mute_failed": "이 채널을 음소거하지 못했어요. 다시 시도해 주세요.",
         "muted_2": "음소거됨",
         "no_notifications": "알림 없음",
         "open_notification": "알림 열기: {{title}}",

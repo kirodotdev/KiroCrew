@@ -8124,6 +8124,7 @@
         "keep_receiving_these": ". Continuar recebendo estas?",
         "mark_all_as_read": "Marcar todas como lidas",
         "mute_channel": "Silenciar canal",
+        "mute_failed": "Não foi possível silenciar este canal. Tente novamente.",
         "muted_2": "silenciado",
         "no_notifications": "Sem notificações",
         "open_notification": "Abrir notificação: {{title}}",

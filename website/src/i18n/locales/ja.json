@@ -7870,6 +7870,7 @@
         "keep_receiving_these": "。これらを受け続けますか？",
         "mark_all_as_read": "すべてを既読にする",
         "mute_channel": "チャネルをミュート",
+        "mute_failed": "このチャネルをミュートできませんでした。もう一度お試しください。",
         "muted_2": "ミュート済み",
         "no_notifications": "通知がありません",
         "open_notification": "通知を開く：{{title}}",

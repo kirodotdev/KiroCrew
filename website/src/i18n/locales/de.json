@@ -7997,6 +7997,7 @@
         "keep_receiving_these": ". Diese weiterhin erhalten?",
         "mark_all_as_read": "Alle als gelesen markieren",
         "mute_channel": "Kanal stummschalten",
+        "mute_failed": "Dieser Kanal konnte nicht stummgeschaltet werden. Versuch es erneut.",
         "muted_2": "stummgeschaltet",
         "no_notifications": "Keine Benachrichtigungen",
         "open_notification": "Benachrichtigung öffnen: {{title}}",

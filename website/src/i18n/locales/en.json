@@ -5104,6 +5104,7 @@
         "keep_receiving_these": ". Keep receiving these?",
         "mark_all_as_read": "Mark all as read",
         "mute_channel": "Mute channel",
+        "mute_failed": "Couldn't mute this channel. Try again.",
         "muted_2": "muted",
         "no_notifications": "No notifications",
         "press_again_to_clear": "Press again to clear",

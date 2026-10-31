@@ -7997,6 +7997,7 @@
         "keep_receiving_these": ". এগুলো পেতে থাকতে চান?",
         "mark_all_as_read": "সবগুলো পঠিত হিসেবে চিহ্নিত করুন",
         "mute_channel": "চ্যানেল মিউট করুন",
+        "mute_failed": "এই চ্যানেল মিউট করা যায়নি। আবার চেষ্টা করো।",
         "muted_2": "মিউট করা",
         "no_notifications": "কোনো নোটিফিকেশন নেই",
         "open_notification": "নোটিফিকেশন খোলো: {{title}}",
