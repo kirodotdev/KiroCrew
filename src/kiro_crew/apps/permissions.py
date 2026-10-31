@@ -239,6 +239,35 @@ def app_can_manage_session_approvals(app_name: str) -> bool:
         return False
 
 
+def app_session_grant_reaches_crewmate_threads(app_name: str) -> bool:
+    """Whether the app's live manifest widens ``sessionApproval`` to crewmate threads.
+
+    A manifest read only: ``permissions.crewmateThreads`` is a SCOPE of the
+    user-session grant, so it means nothing unless
+    :func:`app_can_manage_session_approvals` holds for the same app, and the
+    caller combines the two. The consent that grant carries covers the scope,
+    because a manifest that newly declares the flag re-opens that consent
+    (``manager_records._session_control_widened``). Read live, like the grant, so
+    that removing the flag revokes the reach at once. Any read fault refuses.
+    """
+    if not app_name:
+        return False
+    try:
+        manifest = get_app_manifest(app_name)
+        return bool(
+            manifest
+            and manifest.permissions.sessionApproval
+            and manifest.permissions.crewmateThreads
+        )
+    except Exception:
+        logger.warning(
+            "Could not resolve the crewmate-thread scope for app %s",
+            app_name,
+            exc_info=True,
+        )
+        return False
+
+
 def format_permissions_summary(manifest: AppManifest) -> str:
     """Format a human-readable permissions summary for display during install."""
     perms = manifest.permissions

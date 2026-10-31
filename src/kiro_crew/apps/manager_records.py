@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
@@ -806,6 +806,24 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
 
         permissions[family] = staged_app_grants(name, family, _read)
     return permissions
+
+
+def _session_control_widened(prior: Permissions | None, requested: Permissions) -> bool:
+    """Whether *requested* asks for user-session control the owner has not consented to.
+
+    Consent is captured when the owner enables the app, against the manifest of
+    that moment, so any later manifest that reaches further must go back through
+    it: the grant itself (``sessionApproval``) newly declared, or its
+    crewmate-thread scope (``crewmateThreads``) newly declared on a held grant.
+    *prior* is the manifest consented to, ``None`` for a first install or
+    registration. A scope flag without the grant widens nothing, because it
+    grants nothing; the grant arriving later is judged then, scope included.
+    """
+    if not requested.sessionApproval:
+        return False
+    if prior is None or not prior.sessionApproval:
+        return True
+    return requested.crewmateThreads and not prior.crewmateThreads
 
 
 def _pending_session_approval_after_manifest_change(

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         attachment_meta,
         audit_app_slot_denial,
         chat_message_frame,
+        crewmate_thread_grant,
         cron_creator_admission,
         cron_slot_creator,
         deny_app_session_control,
@@ -717,7 +718,12 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     if request_app and _requested_key:
         denied = await _app_slot_acquisition_recheck(
-            state, request_app, _requested_key, acquisition_judged, "chat_send"
+            state,
+            request_app,
+            _requested_key,
+            acquisition_judged,
+            "chat_send",
+            session_grant_route=True,
         )
         if denied is not None:
             return denied
@@ -781,11 +787,14 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         command = await _send_harness_command(message)
         # The slot may have closed, or a cron or channel binder may have
         # re-linked it, during the permission and config reads; the grant
-        # reaches only a local user session.
+        # reaches only a local user session, a crewmate thread among them only
+        # with the scope this request's grant read recorded.
         if (
             state._slots.get(slot.key) is not slot
             or slot.is_closing
-            or not app_slot_is_local_user_session(slot)
+            or not app_slot_is_local_user_session(
+                slot, crewmate_threads=crewmate_thread_grant(request)
+            )
         ):
             audit_app_slot_denial(
                 request_app,
@@ -794,10 +803,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 "slot closed or re-linked during the permission read",
             )
             return slot_not_found()
-        # No await sits between this check and the agent write below for a slot
-        # this grant reaches: the member awaits never run for one, and the
-        # mismatch branch's awaits run only on a slot that already has an agent.
-        # The persona condition reads only the request body.
+        # No await sits between this check and a slot write for a slot this
+        # grant reaches: the agent and persona writes are refused for the app
+        # right here, the member awaits below only refuse or fall through, and
+        # the mismatch branch's awaits run only on a slot that already has an
+        # agent. The persona condition reads only the request body.
         if command:
             return _deny_app_session_settings(request_app, slot.key, f"command={command[:64]}")
         if _send_binds_agent(agent, slot):
@@ -809,7 +819,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             operation="chat_send",
             outcome="allowed",
             source="app_isolation",
-            resources=f"permissions.sessionApproval|slot={slot.key}",
+            resources=(
+                "permissions.sessionApproval"
+                + ("+crewmateThreads" if slot.mode == members_mod.DM_SLOT_MODE else "")
+                + f"|slot={slot.key}"
+            ),
         )
         # The gateway mints the row id for a turn sent onto another's session.
         if user_meta is not None and "mid" in user_meta:

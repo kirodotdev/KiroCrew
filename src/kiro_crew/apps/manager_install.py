@@ -34,6 +34,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _session_control_widened,
     _tree_swap,
     _update_retired_tree_prefix,
     _UpdateMarker,
@@ -536,9 +537,8 @@ def update_app(
 
     old_version = existing.version
     requested_session_approval = bool(manifest.permissions.sessionApproval)
-    widened_session_approval = bool(
-        requested_session_approval
-        and not (old_manifest and old_manifest.permissions.sessionApproval)
+    widened_session_approval = _session_control_widened(
+        old_manifest.permissions if old_manifest else None, manifest.permissions
     )
     # ``permissions.api`` / ``permissions.events`` are read live too. An added
     # entry is held back instead of disabling the app: it keeps running on the

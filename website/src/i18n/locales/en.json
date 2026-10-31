@@ -6259,6 +6259,7 @@
       "origin": "Origin:",
       "permissions": "Permissions",
       "session_approval_desc": "Can send messages and choose response options in your chats, approve or deny tool prompts, and switch a chat's approval mode.",
+      "session_approval_crewmates": "This includes your crewmates' own chats.",
       "session_approval_modes": "Chat approval modes it can set",
       "session_approval_manifest_key": "Manifest key",
       "platform": "Platform:",
