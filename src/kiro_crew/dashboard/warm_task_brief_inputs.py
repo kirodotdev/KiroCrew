@@ -1,35 +1,63 @@
 """What a warm task brief reads besides what waits on the owner (that list is
 ``member_waiting.waiting_items``, the "Waiting on you" list): what changed while
-they were away, the turns since their last message, and the open work items.
+they were away, a bounded live read of the pull requests the asks name, the turns since their last message, and the open work items.
 
 Every section has its own budget and drops whole entries, so the model always
 sees the ask and the changes first and never a cut JSON document (the old
 40,000-character slice of the whole payload cut the transcript off). Each fact
-carries its source and time, so the brief can say "not checked since HH:MM"
-instead of repeating a stale claim as current.
+carries its source and the time it was read, so the brief can say "not checked
+since HH:MM" instead of repeating a stale claim as current.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import re
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.session_summary import TranscriptTurn
 
+logger = logging.getLogger(__name__)
+
 # Per-section budgets, in characters of each entry's compact JSON. A section
 # keeps whole entries, most important first, until the next would not fit.
 CHANGES_CHARS = 5_000
+LIVE_PRS_CHARS = 3_000
 TRANSCRIPT_CHARS = 16_000
 OPEN_ITEMS_CHARS = 9_000
 # One entry larger than its whole section keeps both ends of its text with a
 # visible omission marker: the text field is cut, never the JSON around it.
 _ENTRY_TEXT_CHARS = 4_000
 _ITEM_TEXT_CHARS = 400
+# The live read: at most this many pull requests, each answer reused for 15
+# minutes (the repo's GitHub polling rule).
+MAX_LIVE_PRS = 5
+LIVE_PR_TTL_SECS = 15 * 60
+_MAX_LIVE_CACHE = 256
+CHECKS_NOT_READ = "not fully read"
 _RECENT_OWNER_TURNS = 3
 _OWNER_SAMPLE_CHARS = 300
+
+# ASCII boundaries: a CJK letter next to a number is a boundary, as a space is.
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})/pull/(\d{1,9})(?![0-9])",
+    re.ASCII,
+)
+# ``owner/repo#N``: a number with its repository.
+_PR_REPO_HASH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#(\d{1,9})(?![0-9])",
+    re.ASCII,
+)
+# A bare ``#N`` or ``PR#N``; never an HTML entity (``&#38;``) or part of a path.
+_PR_HASH_RE = re.compile(r"(?<![A-Za-z0-9_&/])(?:PR)?#(\d{1,9})(?![0-9])", re.ASCII | re.I)
+_REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 
 
 def parse_epoch(raw: object) -> float | None:
@@ -246,7 +274,8 @@ def change_entries(
     session_state: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """What changed since *anchor*: item reports, decisions and closes, and
-    session-ledger events. Newest first."""
+    session-ledger events. Newest first. A PR's live state is not a change:
+    the read cannot tell when it merged, so it stays in ``live_prs``."""
     rows: list[tuple[float, dict[str, Any]]] = []
     for item in items:
         if not changed_since(item, anchor):
@@ -346,3 +375,168 @@ def owner_samples(turns: Sequence[TranscriptTurn]) -> list[str]:
     """The owner's last three genuine messages, for the reply language."""
     genuine = [t.text for t in turns if t.role == "user" and not t.injected and t.text.strip()]
     return [text[:_OWNER_SAMPLE_CHARS] for text in genuine[-_RECENT_OWNER_TURNS:]]
+
+
+# ---------------------------------------------------------------- live PRs
+
+
+@dataclass(frozen=True)
+class PrRef:
+    repo: str
+    number: int
+
+    @property
+    def url(self) -> str:
+        return f"https://github.com/{self.repo}/pull/{self.number}"
+
+
+def ledger_ref(item: Mapping[str, Any]) -> PrRef | None:
+    """The pull request a work item holds in ledger data: its ``pr`` (or its
+    acceptance's ``pr``) in its acceptance's ``repo``. ``None`` without both."""
+    acceptance = item.get("acceptance")
+    if not isinstance(acceptance, Mapping):
+        return None
+    repo = acceptance.get("repo")
+    number = item.get("pr") if isinstance(item.get("pr"), int) else acceptance.get("pr")
+    if not (isinstance(repo, str) and _REPO_RE.match(repo)):
+        return None
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return None
+    return PrRef(repo, number)
+
+
+def pr_refs(
+    texts: Iterable[str], ledger: Iterable[PrRef] = (), limit: int = MAX_LIVE_PRS
+) -> list[PrRef]:
+    """The pull requests to read live: the *ledger* refs, then every full PR
+    URL in *texts*, in order, without repeats, at most *limit*. A PR's repo
+    comes only from ledger data or the URL itself: a bare ``#N`` in text is
+    never resolved to a repo."""
+    refs: list[PrRef] = []
+    found = [
+        *ledger,
+        *(
+            PrRef(f"{m.group(1)}/{m.group(2)}", int(m.group(3)))
+            for text in texts
+            for m in _PR_URL_RE.finditer(text)
+        ),
+    ]
+    for ref in found:
+        if ref not in refs:
+            refs.append(ref)
+        if len(refs) >= limit:
+            break
+    return refs
+
+
+def text_values(value: object) -> list[str]:
+    """Every string in a JSON-like *value*, keys and values, in order."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        return [t for k, v in value.items() for t in (*text_values(k), *text_values(v))]
+    if isinstance(value, (list, tuple)):
+        return [t for v in value for t in text_values(v)]
+    return []
+
+
+def pr_numbers(text: str) -> set[int]:
+    """Every pull-request number *text* names: as a PR URL, ``owner/repo#N``,
+    or a bare ``#N`` or ``PR#N``."""
+    numbers = {
+        int(m.group(3))
+        for pattern in (_PR_URL_RE, _PR_REPO_HASH_RE)
+        for m in pattern.finditer(text)
+    }
+    numbers.update(int(m.group(1)) for m in _PR_HASH_RE.finditer(text))
+    return numbers
+
+
+def facts_of(response: object) -> dict[str, Any] | None:
+    """One probe result's ``response`` reduced to what the brief states, or
+    ``None`` for an error result (it carries no response)."""
+    # Deferred: the monitoring stack is only needed once a brief reads a PR.
+    from kiro_crew.monitoring.github_pull_request import GitHubPullRequestResponse
+    from kiro_crew.monitoring.pull_request import PullRequestFacts
+
+    # The GitHub provider hands back its own response type; the shared facts
+    # type carries the same fields, so either is read the same way.
+    if not isinstance(response, (GitHubPullRequestResponse, PullRequestFacts)):
+        return None
+    checks = {"failed": 0, "pending": 0, "passed": 0, "unknown": 0}
+    for check in response.checks:
+        if check.state in checks:
+            checks[check.state] += 1
+    # A check read that did not finish says nothing about green or red.
+    complete = bool(getattr(response, "checks_complete", True))
+    return {
+        "state": "draft" if response.state == "open" and response.draft else response.state,
+        "review": response.review_decision or "",
+        "mergeable": response.mergeability or "",
+        # A closed or merged PR's checks are not reported; an open one whose
+        # check read did not finish says so in words, which survive the
+        # None-dropping in read_live_prs.
+        "checks": ((checks if complete else CHECKS_NOT_READ) if response.state == "open" else None),
+    }
+
+
+def _probe_github(urls: list[str]) -> dict[str, dict[str, Any] | None]:
+    """Read each PR's state through the structured monitor's GitHub probe."""
+    from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
+
+    results = GitHubPullRequestProvider().probe(urls)
+    return {url: facts_of(getattr(results.get(url), "response", None)) for url in urls}
+
+
+# Module seam: tests replace it, so no unit test ever runs gh.
+probe_github: Callable[[list[str]], dict[str, dict[str, Any] | None]] = _probe_github
+# url -> (read epoch, facts). Shared by every thread in this process.
+_live_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+async def read_live_prs(refs: Sequence[PrRef], now: float | None = None) -> list[dict[str, Any]]:
+    """One entry per ref: its live state and read time, or ``checked: false``
+    with the time of the last good read. Never raises."""
+    now = time.time() if now is None else now
+    stale = [
+        ref.url
+        for ref in refs
+        if ref.url not in _live_cache or now - _live_cache[ref.url][0] >= LIVE_PR_TTL_SECS
+    ]
+    if stale:
+        try:
+            fresh = await asyncio.to_thread(probe_github, stale)
+        except Exception:
+            logger.debug("warm task brief live PR read failed", exc_info=True)
+            fresh = {}
+        for url, facts in fresh.items():
+            if isinstance(facts, dict):
+                _live_cache.pop(url, None)
+                _live_cache[url] = (now, facts)
+        while len(_live_cache) > _MAX_LIVE_CACHE:
+            _live_cache.pop(next(iter(_live_cache)))
+        failed = {url for url in stale if not isinstance(fresh.get(url), dict)}
+    else:
+        failed = set()
+    entries: list[dict[str, Any]] = []
+    for ref in refs:
+        cached = _live_cache.get(ref.url)
+        entry: dict[str, Any] = {"pr": f"#{ref.number}", "repo": ref.repo, "url": ref.url}
+        if cached is None or ref.url in failed:
+            entry["checked"] = False
+            entry["not_checked_since"] = clock(cached[0]) if cached else "never"
+        else:
+            entry.update(cached[1])
+            entry["checked"] = True
+            entry["source"] = "GitHub"
+            entry["read_at"] = clock(cached[0])
+            entry["_read_epoch"] = cached[0]
+        entries.append({k: v for k, v in entry.items() if v is not None})
+    return entries
+
+
+def public_live(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """*entries* without the private read epoch, within the section budget."""
+    return fit(
+        ({k: v for k, v in e.items() if not k.startswith("_")} for e in entries), LIVE_PRS_CHARS
+    )
