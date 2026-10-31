@@ -29,6 +29,21 @@ Once it is on, auto-merge enqueues the PR; the queue re-runs the tests (not the 
 reviews) on the tree that lands, and a failing group ejects the PR — fix it, or rerun
 it once after the skill's *Before you rerun a red test*, then re-arm.
 
+## Rerun, don't re-push
+
+Read from SKILL.md's *Before you rerun a red test*. When a job fails on a flaky
+test, or an AI review lane dies on infrastructure before it produces a verdict,
+rerun that one job: `gh run rerun <run-id> --failed`, or `--job <job-id>`. Do not
+rebase and push an identical commit to re-trigger it. A new head restarts every
+check, a full round of about 90 minutes, throws away the green rows already earned,
+and can hit the same flake again. Push only when the base actually moved.
+
+If `gh run rerun` is refused, read your current access before concluding you
+cannot rerun: `gh api repos/<owner>/<repo> --jq .permissions`. An older note that
+the account is read-only can be out of date. With `push: true` you can rerun the
+job yourself. Without it, ask a maintainer to rerun that one job and give them the
+run URL.
+
 ## File-overlap scan
 
 Read from SKILL.md's Phase 0 *File overlap* gate. Do not use
