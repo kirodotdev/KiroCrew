@@ -268,6 +268,7 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'terminal': 'hooks.useKeyboardShortcuts.toggle_terminal',
   // Reuses the terminal panel's own "+" button label, so every locale already has it.
   'terminal-new': 'components.bottomTerminalPanel.new_terminal',
+  'side-terminal': 'hooks.useKeyboardShortcuts.toggle_side_terminal',
 }
 
 /**
