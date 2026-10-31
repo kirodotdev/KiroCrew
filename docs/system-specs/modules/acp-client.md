@@ -895,12 +895,24 @@ pass covers it. Without this a subagent fan-out queued one full prune per ended
 projection on the lock set_mode re-preparation waits on, and starts ran out
 their in-process wait and were refused. When the end runs on an event-loop thread the lease release and
 the prune both go to a daemon thread, so no session start is stalled behind a
-file-lock wait. A finalizer the cyclic collector runs does none of that work on
-the collecting thread: the collector fires on whatever thread allocated, possibly
-inside a non-reentrant lock such as a `ThreadPoolExecutor.submit` lock the prune's
-own path checks need, so the end is only queued (`SimpleQueue`, safe inside a
-collection) for one daemon reaper thread started when the finalizer is armed. A
-`gc.callbacks` hook records which thread is collecting. Pruning runs ONE bounded lease scan for the whole
+file-lock wait. A finalizer that fires for a dropped projection -- whether the
+cyclic collector freed it OR its last reference simply went -- does none of that
+work on the thread that triggered it: that thread fires on whatever allocated at
+that point, possibly inside a non-reentrant lock such as a
+`ThreadPoolExecutor.submit` lock the prune's own path checks need, so the end is
+only queued (`SimpleQueue`, safe inside a collection) for one daemon reaper thread
+started when the finalizer is armed. The explicit `release()` is told apart from
+the finalizer by HOW it arrives, not by any process flag: it `detach()`es the
+finalizer and calls the same `_end_projection` DIRECTLY with `from_release=True`,
+so off the loop it may run the end inline (a known-safe call site); the finalizer
+path calls with the default `from_release=False` and is never run inline off the
+loop. The one exception is interpreter shutdown: the `atexit` weakref sweep can
+fire a finalizer for a projection never explicitly released after the daemon
+reaper is already gone, where a queued end would never run -- so when the reaper
+is not alive the lease is released INLINE instead (its two identity-checked
+unlinks are safe from any thread; the prune, which re-enters the executor, is
+dropped for the next process's boot drain to cover), because a retained lock file
+would block the next process's view of this home. Pruning runs ONE bounded lease scan for the whole
 run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.
