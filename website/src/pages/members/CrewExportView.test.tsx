@@ -34,7 +34,7 @@ import CrewExportView from './CrewExportView'
 
 const view = (over: Partial<CrewmateExportPreview> = {}): CrewmateExportPreview => ({
   name: 'Scout',
-  filename: 'Scout.crewmate',
+  filename: 'Scout.crewjam',
   description: 'Watches release branches.',
   model: 'claude-sonnet',
   dashboard: '',
@@ -127,7 +127,7 @@ describe('CrewExportView', () => {
     fireEvent.click(screen.getByTestId('crew-export-download'))
     await waitFor(() => expect(downloadBlob).toHaveBeenCalledTimes(1))
     expect(downloadBlob.mock.calls[0][0]).toBeInstanceOf(Blob)
-    expect(downloadBlob).toHaveBeenCalledWith(file, 'Scout.crewmate')
+    expect(downloadBlob).toHaveBeenCalledWith(file, 'Scout.crewjam')
   })
 
   it('sends no lessons when the toggle is on but the editor is empty', async () => {

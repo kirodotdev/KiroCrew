@@ -9,7 +9,7 @@ import { CREWMATE_IMPORT_SLOT, cardsApi, errorCode, type Card } from '../../api/
 import { i18nT } from '../../i18n/t'
 
 /** The file picker's filter: a `.crewmate` file is a zip under its own name. */
-export const CREWMATE_FILE_ACCEPT = '.crewmate'
+export const CREWMATE_FILE_ACCEPT = '.crewjam,.crewmate'
 
 /** Cards that still ask something of the owner: press, wait, retry or undo. */
 const OPEN: ReadonlySet<string> = new Set(['pending', 'applying', 'failed', 'partial'])

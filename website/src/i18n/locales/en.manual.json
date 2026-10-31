@@ -9346,7 +9346,7 @@
       "fresh_start_unsaved_fold": "It forgot this conversation and the messages are folded away, but the fold time wasn't saved. They unfold again after a reload.",
       "import_from_file": "Import from file",
       "import_title": "Import a mate",
-      "import_hint": "Pick a .crewmate file someone shared with you. Nothing is created until you press Import mate on the next screen.",
+      "import_hint": "Pick a .crewjam file someone shared with you. Nothing is created until you press Import mate on the next screen.",
       "import_checking": "Checking the file…",
       "import_pick": "Choose a file",
       "import_refused": "This file can't be imported.",
