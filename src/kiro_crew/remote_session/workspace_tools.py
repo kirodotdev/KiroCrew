@@ -299,6 +299,59 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
     return re.compile("".join(out) + r"\Z")
 
 
+#: Deepest group nesting a grep pattern may use. Python's regex compiler
+#: recurses a few frames per nested group, so a deeper pattern drives the
+#: stack to the interpreter's limit; anything that runs there meanwhile (a
+#: garbage-collected object's finalizer) overflows too and is lost, even
+#: though the compile's own RecursionError is caught.
+MAX_REGEX_GROUP_DEPTH = 100
+#: A flags group that may turn on verbose mode, where ``#`` starts a comment
+#: whose text the nesting scan below would otherwise read as pattern.
+_VERBOSE_FLAG = re.compile(r"\(\?[a-zA-Z-]*x")
+
+
+def _regex_group_depth(pattern: str) -> int:
+    """Return an upper bound on how deeply ``pattern``'s groups nest.
+
+    Escapes, character classes and ``(?#...)`` comments are skipped the way
+    the regex parser skips them. When verbose mode may be on, every ``(`` is
+    counted instead: that can only overstate the depth, never understate it.
+    """
+    if _VERBOSE_FLAG.search(pattern):
+        return pattern.count("(")
+    depth = deepest = 0
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "[":
+            # A ``]`` first in the class (after an optional ``^``) is literal.
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            while i < n and pattern[i] != "]":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            continue
+        if pattern.startswith("(?#", i):
+            i += 3
+            while i < n and pattern[i] != ")":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char == ")":
+            depth = max(0, depth - 1)
+        i += 1
+    return deepest
+
+
 def glob_matches(rel: str, pattern: str) -> bool:
     """Whether a ``/``-separated relative path matches; a pattern with no ``/`` matches
     the file name at any depth."""
@@ -519,6 +572,8 @@ class Workspace:
         return "\n".join(found) or "(no matches)"
 
     def grep(self, pattern: str, path: str, include: str = "") -> str:
+        if _regex_group_depth(pattern) > MAX_REGEX_GROUP_DEPTH:
+            raise ToolError(f"invalid regex: groups nested more than {MAX_REGEX_GROUP_DEPTH} deep")
         try:
             regex = re.compile(pattern)
         except (re.error, OverflowError, RecursionError) as exc:
