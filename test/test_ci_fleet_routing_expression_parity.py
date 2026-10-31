@@ -161,6 +161,11 @@ _PERMANENT_EXCEPTIONS = {
     # was rejected. Neither fires on a pull request or declares merge_group.
     ("merge-queue-ruleset.yml", "check"),
     ("playwright-cli-banner.yml", "check"),
+    # The same no-actor reason, reached by a workflow_run completion rather than a
+    # schedule: the event names the finished run, never a collaborator. It takes
+    # the group by LABEL, not `group:`, because the trigger carries no
+    # head-repository guard and a fork's own watched workflows fire it in the fork.
+    ("scheduled-failure-watch.yml", "surface"),
     # Dispatch-only, and never fleet-routed. The allowlist reason above does not
     # apply: a workflow_dispatch does carry an actor, which is why pages.yml can
     # route one to the fleet through the same actor predicate.
@@ -200,6 +205,7 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("nightly.yml", "version"): _GROUP_LABEL_EXPR,
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
+    ("scheduled-failure-watch.yml", "surface"): _GROUP_LABEL_EXPR,
     # These dispatchable jobs use the group label upstream, but a personal
     # fork cannot reach the org group and must retain the hosted fallback.
     ("memory-benchmark.yml", "accept"): (

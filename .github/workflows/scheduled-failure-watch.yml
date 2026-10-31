@@ -67,9 +67,16 @@ name: Scheduled Failure Watch
 # never reads the source run's artifacts; everything it needs is in the event
 # payload. `issues: write` implies the read that `gh issue list` needs.
 #
-# RUNNER: `ubuntu-latest`. A `workflow_run` completion has no live collaborator
-# actor for the AWS webhook allowlist to check, so it cannot route to the
-# CodeBuild fleet -- the same reason every `schedule:` job here stays hosted.
+# RUNNER: the `kirocrew-linux-4-core` larger runner upstream, `ubuntu-latest` in
+# a fork. A `workflow_run` completion has no live collaborator actor for the AWS
+# webhook allowlist to check, so it cannot route to the CodeBuild fleet -- the
+# same reason every `schedule:` job here stays hosted. That reason is about the
+# fleet alone: the larger-runner group is a GitHub-hosted Ubuntu VM admitted by
+# repository, not by actor, so this lane takes it. The label is conditional
+# rather than `group:` because this trigger carries no head-repository guard: a
+# fork's own watched workflows fire `workflow_run` in the fork, which cannot
+# reach an organization runner group, and a `group:` request there would queue
+# to the timeout instead of running.
 
 on:
   workflow_run:
@@ -131,7 +138,7 @@ concurrency:
 jobs:
   surface:
     name: Surface a red scheduled run as an issue
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: >-
       github.event.workflow_run.event == 'schedule' &&
