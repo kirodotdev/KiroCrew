@@ -120,11 +120,11 @@ KIROCREW_CONNECTIONS_GOOGLE_DRIVE_CLIENT_ID=1234567890-abc.apps.googleuserconten
 KIROCREW_CONNECTIONS_GOOGLE_DRIVE_CLIENT_SECRET=GOCSPX-...
 ```
 
-After saving, the Google Drive card on **Capabilities → Connections** switches from "Needs configuration" to "Connect".
+After saving, the Google Drive card on **Customize → Connections** switches from "Needs configuration" to "Connect".
 
 ## 6. Verify the connection
 
-1. On **Capabilities → Connections**, click **Connect** on the Google Drive card. A Google sign-in and consent page opens. If the project is External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View and download all your Drive files" (that is `drive.readonly`).
+1. On **Customize → Connections**, click **Connect** on the Google Drive card. A Google sign-in and consent page opens. If the project is External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list "View and download all your Drive files" (that is `drive.readonly`).
 2. Approve. The browser lands on `http://127.0.0.1:48103/callback?...`. On a local install the page closes itself; on a remote install paste the URL back into the dashboard.
 3. The card shows **Connected**.
 4. In a chat session, ask the agent: **"Summarize the file Marketing Plan."** (substitute a real file name). Google's test description says the client "calls `drive.search_files` to locate 'Marketing Plan', then uses `drive.read_file_content` to retrieve and summarize its content." A successful tool call from `https://drivemcp.googleapis.com/mcp/v1` confirms the end-to-end path.
