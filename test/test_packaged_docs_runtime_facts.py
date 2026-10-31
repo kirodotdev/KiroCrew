@@ -14,6 +14,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_STRANDS,
 )
 from kiro_crew.computer_use.backend import UnsupportedBackend
 from kiro_crew.computer_use.linux_driver import LinuxBackend
@@ -33,6 +34,7 @@ def _read(name: str) -> str:
     [
         (ACP_BACKEND_GOOSE, Disposition.TRANSLATED),
         (ACP_BACKEND_OPENCODE, Disposition.TRANSLATED),
+        (ACP_BACKEND_STRANDS, Disposition.TRANSLATED),
         (ACP_BACKEND_CLAUDE, Disposition.NO_CHANNEL),
         (ACP_BACKEND_CODEX, Disposition.NO_CHANNEL),
     ],
@@ -42,7 +44,7 @@ def test_hooks_disposition_per_mirror_matches_the_spec_fields_page(backend, disp
     doc = _read("agent-spec-fields.md")
     assert "`hooks` is `no-channel` on all four" not in doc
     assert (
-        "`hooks` is `translated` on `goose` and `opencode`, where Crew's turn loop fires\n"
+        "`hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires\n"
         "  it, and `no-channel` on `claude` and `codex`." in doc
     )
 

@@ -113,7 +113,22 @@ def _stand_in_strands(monkeypatch: pytest.MonkeyPatch) -> type:
     module("strands.storage", LocalFileStorage=object)
     module("strands.tools", mcp=None)
     module("strands.tools.mcp", MCPAgentTool=_MCPAgentTool)
-    module("strands_harness", create_harness=lambda *a, **k: Agent())
+    slots = (
+        "shell",
+        "read",
+        "write",
+        "edit",
+        "web_fetch",
+        "web_search",
+        "programmatic_tool_caller",
+        "subagent",
+    )
+
+    def builtin_tools(*_a: Any, **_k: Any) -> dict:
+        return {slot: types.SimpleNamespace(tool_name=slot) for slot in slots}
+
+    module("strands_harness.agent", _builtin_tools=builtin_tools)
+    module("strands_harness", create_harness=lambda *a, **k: Agent(), BUILTIN_TOOL_NAMES=slots)
     return Agent
 
 
@@ -199,41 +214,28 @@ def test_a_deny_pass_that_stays_paused_never_blocks_the_prompt(gated) -> None:
     assert agent._interrupt_state.deactivated is True
 
 
-def _tool_from(module: str) -> Any:
-    def func() -> None:
-        pass
-
-    func.__module__ = module
-    return types.SimpleNamespace(_tool_func=func)
-
-
 def _event(name: str, tool: Any) -> Any:
     return types.SimpleNamespace(tool_use={"name": name}, selected_tool=tool)
 
 
-@pytest.mark.parametrize(
-    ("name", "module", "kind"),
-    [
-        ("read", "strands_harness.tools.file_tools", "read"),
-        ("write", "strands_harness.tools.file_tools", "edit"),
-        ("shell", "strands.vended_tools.shell.shell", "execute"),
-        ("web_fetch", "strands_harness.tools.web_fetch", "fetch"),
-    ],
-)
-def test_a_harness_builtin_keeps_its_kind(gated, name, module, kind) -> None:
-    assert gated.gate._tool_identity(_event(name, _tool_from(module))) == (name, kind)
+def _harness_builtins(gate: Any) -> dict:
+    """The built-ins as the harness's own factory builds them, through the gate's hook."""
+    return sys.modules["strands_harness.agent"]._builtin_tools({})
+
+
+@pytest.mark.parametrize("name", ["shell", "read", "write", "edit", "web_fetch"])
+def test_a_harness_builtin_is_owned_by_the_harness(gated, name) -> None:
+    tool = _harness_builtins(gated.gate)[name]
+    assert gated.gate._tool_identity(_event(name, tool)) == (name, "builtin")
 
 
 @pytest.mark.parametrize("name", ["read", "shell", "web_fetch"])
-def test_a_project_tool_wearing_a_builtin_name_gets_no_builtin_kind(gated, name) -> None:
-    """A ``read`` kind is auto-approved by the read-only tier, so a custom tool named
-    ``read`` (one that marks mail as read, say) must not inherit it."""
-    title, kind = gated.gate._tool_identity(_event(name, _tool_from("my_project.agent")))
-    assert (title, kind) == (name, "other")
-
-
-def test_a_tool_with_no_function_gets_no_builtin_kind(gated) -> None:
-    assert gated.gate._tool_identity(_event("read", object())) == ("read", "other")
+def test_a_project_tool_wearing_a_builtin_name_is_custom(gated, name) -> None:
+    """A ``read`` built-in is auto-approved by the read-only tier, so a project tool
+    named ``read`` (one that marks mail as read, say) is ``custom``, not the built-in."""
+    _harness_builtins(gated.gate)
+    own = types.SimpleNamespace(tool_name=name)
+    assert gated.gate._tool_identity(_event(name, own)) == (name, "custom")
 
 
 # ── The provider keys never sit in a launch environment ──
@@ -273,7 +275,8 @@ module("strands.session", SnapshotSessionManager=object)
 module("strands.storage", LocalFileStorage=object)
 module("strands.tools", mcp=None)
 module("strands.tools.mcp", MCPAgentTool=object)
-module("strands_harness", create_harness=lambda *a, **k: Agent())
+module("strands_harness.agent", _builtin_tools=lambda *a, **k: {})
+module("strands_harness", create_harness=lambda *a, **k: Agent(), BUILTIN_TOOL_NAMES=())
 
 spec = importlib.util.spec_from_file_location("gate_child", sys.argv[1])
 gate = importlib.util.module_from_spec(spec)
@@ -509,3 +512,21 @@ def test_a_linked_key_file_refuses_the_start(tmp_path, gated) -> None:
     link.symlink_to(target)
     with pytest.raises(gated.gate.ProviderKeysRefused, match="not a regular file"):
         gated.gate._load_provider_keys(str(link))
+
+
+def test_a_tool_that_is_not_an_object_the_harness_built_is_custom(gated) -> None:
+    assert gated.gate._tool_identity(_event("read", object())) == ("read", "custom")
+    assert gated.gate._tool_identity(_event("read", None)) == ("read", "custom")
+
+
+def test_a_factory_result_of_another_shape_records_no_builtin(gated) -> None:
+    """A renamed or missing slot breaks the one-per-slot shape: nothing is recorded."""
+    factory = sys.modules["strands_harness.agent"]
+    renamed = {"shell": types.SimpleNamespace(tool_name="read")}
+    original = gated.gate._original_builtin_tools
+    try:
+        gated.gate._original_builtin_tools = lambda *a, **k: renamed
+        tools = factory._builtin_tools({})
+    finally:
+        gated.gate._original_builtin_tools = original
+    assert gated.gate._tool_identity(_event("read", tools["shell"])) == ("read", "custom")

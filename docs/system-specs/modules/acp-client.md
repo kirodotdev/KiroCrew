@@ -213,7 +213,7 @@ row names its responsibility, and a new request shape or turn-metadata parser to
 | `acp/_dispatch_parts/tool_call_provenance.py` | the per-turn tool-call provenance caches: their scoped key, caps, overflow record and admission, the release at a terminal status, and the liveness keys (`liveness_key`, `InFlightIdSet`) |
 | `acp/_dispatch_parts/adapter_signals.py` | claude-agent-acp and codex-acp signals that ride ordinary frames: compaction notices, adapter-written errors, background-launch records and codex compaction updates |
 | `acp/_dispatch_parts/tool_result_events.py` | a `tool_call_update`'s output as `EVENT_TOOL_RESULT`: content and `rawOutput` text, the unrenderable-content diagnostic, the output measure and the `todo_list` snapshot |
-| `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope, MCP identity and approval, KAS consent and `build_permission_event` |
+| `acp/_dispatch_parts/permission_requests.py` | a `session/request_permission` as `EVENT_PERMISSION_REQUEST`: option kinds and the least-destructive reject, the gate-extension envelope and the Strands owner classification (`strands_envelope_identity`), MCP identity and approval, KAS consent and `build_permission_event` |
 | `acp/_dispatch_parts/session_update_parser.py` | the `session/update` parser: chunk text and message ids, the `tool_call` and refinement builders, and `parse_session_update` |
 
 `acp/liveness.py`, the per-session liveness oracle, keeps `LivenessOracle`, the
@@ -1157,6 +1157,26 @@ cancelled caller still lets the worker settle).
 **Unknown server→client requests are answered, never dropped.** `session/request_permission` and the elicitation request (`elicitation/create`, and on KAS `_kiro/mcp/elicitation`; see *MCP elicitation*) are the inbound *requests* `AcpClient` implements. `AcpSessionHandle` serves three more, all KAS-specific: `_kiro/hooks/list`, `_kiro/hooks/sessionStart` and `_kiro/hooks/executeHook`, answered from `acp/kas_wire.py` (see agent-host-contract.md, which states the four gates `executeHook` passes before anything spawns). `_kiro/hooks/executeHook` is routed there only while hooks are announced in the handshake (`kas_wire.hooks_announced()`); `KAS_CLIENT_CAPABILITIES` announces none today, so it is answered `-32601`. They are matched in that handle's own dispatch loop, ahead of the shared classifier, precisely so the classifier keeps reporting them as unknown on the `AcpClient` path — which serves no hooks surface, and where naming an action no branch handles would leave the request unanswered instead of refused. Any other server→client request (method **and** id — e.g. `fs/read_text_file`, `terminal/create`) is classified by `_process_message` as `"server_request_unknown"`. Every prompt dispatch site (`send_message_stream`, `_dispatch_events`, `_read_prompt_response`) handles that action by calling `_reject_unknown_server_request`, which replies with a JSON-RPC `-32601` (`JSONRPC_METHOD_NOT_FOUND`, "Method not found") error via `_send_error`. Without this, JSON-RPC semantics leave the agent blocked forever on an unanswered request — the turn hangs. Notifications (method, no id) are unaffected and still classified `"skip"`.
 
 `PermissionOption` field names differ between backends — kiro-cli uses `id`/`label`, claude-agent-acp uses `optionId`/`name` (per the public ACP spec). `_build_permission_event` reads both and remembers the optionIds keyed by `kind` (`allow_once`/`allow_always`/`reject_once`/`reject_always`) on the request id — recording an entry when **either** an allow option (for `approve_tool`) **or** a reject option (for a clean `reject_tool`) was advertised. `approve_tool(request_id, *, always=False)` echoes the matching allow id back, so the host doesn't need to know whether it's talking to kiro (`"allow_once"`/`"allow_always"`) or claude-agent-acp (`"allow"`/`"allow_always"`). `reject_tool` prefers a **clean reject**: if a reject optionId was advertised it sends `outcome: "selected"` with that id. Both backends advertise one — claude-agent-acp as `{kind:"reject_once", optionId:"reject"}` (→ `behavior:"deny"`), kiro-cli as `{kind:"reject_once", optionId:"reject_once"}` — and the fallback to `outcome: "cancelled"` therefore only applies to a backend that advertises no reject option at all. The distinction is load-bearing, not cosmetic: a clean reject resolves the tool call to `status:"failed"` with kiro-cli's fixed content `"User denied tool execution"` and the turn continues to the next model-inference boundary (`stopReason: "end_turn"`), whereas `cancelled` ends the turn immediately with `stopReason: "refusal"` and no text — and drops any queued `_session/steer` as `AgentExecutionUserMessageCleared`. That is why the host's in-band deny notice (`_steer_policy_notice`) can only be folded in on the clean-reject path, and why `stopReason: "refusal"` is NOT by itself evidence of a model-side content refusal.
+
+**Strands: classified from the gate envelope's owner, never from the card.**
+The Strands CLI asks only for Strands interrupts, so every tool call asks
+through Crew's gate module (`Routing.VERIFIED_GATE_EXTENSION`), and on that
+harness every permission frame must be the module's envelope (`kiro-crew-gate`,
+with the session nonce). The envelope names the tool, its `owner` and the
+call's `toolUseId` as `toolCallId`, which is the id on the CLI's `tool_call`
+card, so the request joins its card. The owner is read off the tool OBJECT
+Strands resolved: `builtin` for an object `strands_harness` built for that
+built-in's slot, `mcp:<server>` for an MCP tool (titled `mcp__<server>__<tool>`),
+`custom` for anything else. `strands_envelope_identity` derives the kind, the
+shell verdict, the MCP identity and the `strands#…` harness tool id from owner
+and name only (`STRANDS_BUILTIN_TOOL_KINDS`): a project tool named `read` is
+`other` with no tool name, so no read-only tier and no built-in alias proves it.
+The card's own `kind`, which the CLI guesses from name substrings, and the shell
+verdict cached from it are never read on this harness. A frame that is not the
+envelope, an unknown owner, an MCP owner with no readable server or a built-in
+this build has not classified is refused as an unreadable identity. "Always
+allow" stays Crew's own grant; Strands offers only `allow` / `deny`, and Crew
+answers `allow` (one call) for both choices, never writing Strands' config.
 
 Both the shared runtime and the legacy direct `AcpClient` route permission
 frames through `_dispatch.build_permission_event`, including the same provenance
