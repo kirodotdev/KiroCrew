@@ -3948,6 +3948,85 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   which is the STARTING placeholder. The protocol is therefore the price of restarting
   from within the existing multi-writer lifecycle without redesigning it; a future
   single-writer redesign remains open and would be a new spec section, not a repair.
+- **A coarse level-triggered backstop runs BESIDE the edge-triggered chain, not in place
+  of it.** The restart-from-exit protocol above is the whole in-process guarantee that
+  an enabled app's backend never stays dead, and it is a single edge-triggered chain:
+  the health watch observes the exit and hands the record to the restart loop. If that
+  chain itself is lost — the per-record watch thread dies on an unexpected exception, or
+  a lifecycle path outside the declared owners drops `_processes[name]` without a
+  successor — nothing else notices, and the app is dead until the next gateway start,
+  where boot's level-triggered pass picks it up. `start_app_backend_backstop`
+  (`backend_runtime/backstop.py`) is that boot pass run periodically at a COARSE interval
+  (`_BACKSTOP_INTERVAL`, 300 s) instead of only at boot: each sweep starts every enabled
+  app that declares a backend entry point, has NO tracked record, and is in
+  `_seated_backends` (the gateway started it successfully at least once this process),
+  through the INTERNAL `_start_app_backend`, with the same single-flight and health gate
+  as every other start.
+  This is the periodic level-triggered sweep rejected above AS THE PRIMARY MECHANISM, and
+  the trade is different here precisely because it is NOT primary: its "up to one interval
+  of downtime on every exit" cost is not paid on an ordinary exit at all (the edge chain
+  restarts that immediately with its fast ramp), only on the rare lost-watch case, where
+  bounding the strand to one coarse interval is the entire point; and it needs no second
+  scheduler for the ramp because it does not own the ramp. Its candidate rule is a wholly
+  ABSENT record WHOSE LAST LIFECYCLE TRANSITION IS A START — a STARTING placeholder, a
+  live record, an adopted record, or a dead-but-still-tracked record awaiting the restart
+  loop all count as present and are left to their existing owner, so the backstop never
+  double-starts (the STARTING placeholder and `start_app_backend`'s single-flight make a
+  race with an enable/restart harmless regardless). The lifecycle-phase half closes a
+  real window: `stop_app_backend` pops the record AND advances the generation to STOP
+  while the app's persisted `enabled` can still read true (disable, trust revoke and
+  update all stop → deregister → flip-metadata in that order), so an absent record alone
+  would let a sweep landing in that window revive a backend the gateway is deliberately
+  tearing down. The guard is re-made per app right before the spawn, and it does NOT hold
+  a lock across the spawn: `_revive_one_backend` takes `_health_reconcile_lock` (the one
+  lock every stop/start/health write takes) only to re-check the absent record + START
+  phase and SNAPSHOT the generation, then releases it and spawns through the INTERNAL
+  `_start_app_backend` — holding the lock across the spawn would stall the whole app
+  subsystem behind one app's up-to-120 s `npm install`. The internal entry records no
+  START transition (the public `start_app_backend` would bump the generation to START and
+  override a racing STOP); a teardown that lands DURING the unlocked spawn is caught by a
+  post-spawn re-read of the generation, which stops the freshly-spawned replacement by its
+  exact identity — the same post-spawn settlement `_restart_exited_backend` uses, and the
+  one stop the backstop can ever issue. So it signals nothing but its own racing spawn and
+  cannot touch another tenant's process. **The backstop re-vets activation for each
+  candidate, not as a per-sweep poller.** It considers only an app in `_seated_backends`
+  (`tracking`) — a name a live record was published for at least once this process (boot,
+  enable, or a restart replacement), which proves the ceilings passed AT THE SEAT. Because
+  an administrator may have tightened POLICY ∩ PROFILE or admission since then,
+  `_revive_one_backend` runs the same `_activation_denied` vet the boot, enable and restart
+  spawn paths run, once per actual candidate (a lost record for an enabled, seated app)
+  rather than every sweep, so it does not flood the SEL trail. A non-transient deny is
+  audited (`app_backend_backstop_revive`, outcome `denied`) and discards the seated name, so
+  later sweeps do not retry it; a transient evaluator error leaves the name seated and
+  retries next sweep. Every keep-down path clears the name — `stop_app_backend` discards
+  it, and disable, uninstall, trust revoke, update, gateway shutdown and the health watch's
+  execution-ceiling revocation all route through `stop_app_backend`; the two paths that do
+  not (the restart loop's non-transient activation-policy refusal, which has already popped
+  the record and so has no process to stop, and the backstop's own non-transient deny)
+  discard the name themselves — so an app the operator or a policy took down is not in the
+  set and is never revived. Without this discard the backstop would
+  revive, every sweep, the backend the activation ceiling just refused, undoing the restart
+  loop's deliberate keep-down. The pre-spawn re-check reads the app's OWN
+  `enabled` state fail-closed (a tri-state `None` is not a licence to start), not a policy
+  vet. A failed revive is NEVER terminal: the backstop retries every `_BACKSTOP_INTERVAL`
+  indefinitely while the app stays an eligible candidate, so a transient fault
+  (process-limit exhaustion) self-heals — a cap would strand the app until a gateway
+  restart, the exact failure this exists to prevent. `_BACKSTOP_WARN_AFTER` only throttles
+  the log (warn once, debug thereafter); the retry cost is bounded by the interval, the
+  same steady cadence the restart loop falls back to.
+
+  Known limitation (tracked in #22678): `_restart_exited_backend` pops the record and
+  then drains the dead root's tree with no lock held, so for that window the record is
+  absent and the phase is still START — indistinguishable to the backstop from a genuinely
+  abandoned record. A sweep tick that lands inside that drain could adopt the child being
+  drained. The backstop has no clean guard for it, because the only "a restart owns this
+  app" signal restart.py exposes (`_restart_attempts`) is a sticky retry counter that
+  outlives the restart thread on its non-transient-denial return paths, so gating on it
+  would permanently strand the abandoned-record case this pass exists to fix. The window
+  is a property of restart.py's teardown ordering that predates this pass; closing it at
+  its source (a liveness marker set before the pop and cleared in a `finally`) is tracked
+  separately. The exposure here is only that a coarse 300 s sweep adds one more observer
+  of that pre-existing window.
 - **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
   handed the `AppProcess` itself and derives both name and port from it; every attempt
   re-checks that the record is still the tracked one. A name plus a port are two
@@ -3991,9 +4070,16 @@ is the only honest answer and `healthy` is the load-bearing signal.
 
 Writers: `apps/backend_runtime/supervision.py` (`_health_check_loop`,
 `_watch_backend_health`, `_supervise_backend_health`, `_start_health_supervisor`,
-`_start_adopted_health_watch`), `apps/backend_runtime/registration.py` (`_demote`,
-`_promote`), `apps/backend_runtime/tracking.py` (`AppProcess.is_running`),
-`apps/routes_listing.py` (`handle_list_apps`).
+`_start_adopted_health_watch`), `apps/backend_runtime/restart.py`
+(`_restart_exited_backend`, which also discards `_seated_backends` on a non-transient
+activation-policy refusal), `apps/backend_runtime/backstop.py`
+(`start_app_backend_backstop`, `_run_backstop_sweep`, `_backstop_candidates`,
+`_revive_one_backend`, which also discards `_seated_backends` on a non-transient
+activation deny), `apps/backend.py::_start_app_backend_body` (adds
+`_seated_backends` at the seat), `apps/backend_runtime/termination.py::stop_app_backend`
+(clears it), `apps/backend_runtime/tracking.py` (`_seated_backends`,
+`AppProcess.is_running`), `apps/backend_runtime/registration.py` (`_demote`,
+`_promote`), `apps/routes_listing.py` (`handle_list_apps`).
 
 ## 18. An app UI is a dynamically imported ESM module, not an iframe
 
