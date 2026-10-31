@@ -142,6 +142,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "get_unconsolidated": ("function", "4c402cd67e6f", "history"),
     "has_log": ("function", "1eda252b53bd", "history"),
     "has_messages": ("function", "1eda252b53bd", "history"),
+    "listing_has_messages": ("function", "1eda252b53bd", "history"),
     "init": ("function", "b60c5fea256e", "history"),
     "invalidate_tab_id_cache": ("function", "b60c5fea256e", "history"),
     "last_message_info": ("function", "5ce93cd5cafb", "history"),
