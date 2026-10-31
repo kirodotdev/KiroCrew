@@ -444,7 +444,12 @@ def _mark_reached(
 
 def _features_completed_event(st: dict[str, Any], events: list) -> None:
     sources = {st["reached"].get(r.id, {}).get("source", "event") for r in feature_rows()}
-    via = "manual" if sources == {"manual"} else ("mixed" if "manual" in sources else "organic")
+    if sources == {"manual"}:
+        via = "manual"
+    elif "manual" in sources:
+        via = "mixed"
+    else:
+        via = "organic"
     events.append((M_FEATURES_COMPLETED, {"via": via}))
 
 
@@ -720,9 +725,9 @@ def _backfill_op() -> Op | None:
     Returns None when the state file already says ``backfilled`` (a tolerant
     read). Raises when a probe fails. Call it BEFORE taking the write lock: the
     probes can read the audit log. The op re-checks ``backfilled``, so two
-    racing callers apply it once. Credited rows are stamped ``source: backfill``
-    and go straight into ``noticed``: an existing user gets no notices on
-    upgrade day.
+    racing callers apply it once. Every tier a credited row's count meets that
+    has no ``reached`` entry yet is stamped ``source: backfill`` and goes
+    straight into ``noticed``: an existing user gets no notices on upgrade day.
     """
     if load()["backfilled"]:
         return None
@@ -734,15 +739,15 @@ def _backfill_op() -> Op | None:
             return
         for row in catalog():
             if row.id in fired:
-                counter = st["counters"].setdefault(row.id, {"count": 0, "first_seen": 0.0})
-                counter["count"] = max(counter["count"], 1)
-                counter["first_seen"] = counter["first_seen"] or now
-                _mark_reached(st, row, "backfill", now, events)
+                credit = 1
             elif row.id == "chats-opened" and chats:
-                counter = st["counters"].setdefault(row.id, {"count": 0, "first_seen": 0.0})
-                counter["count"] = max(counter["count"], chats)
-                counter["first_seen"] = counter["first_seen"] or now
-                _mark_reached(st, row, "backfill", now, events)
+                credit = chats
+            else:
+                continue
+            counter = st["counters"].setdefault(row.id, {"count": 0, "first_seen": 0.0})
+            counter["count"] = max(counter["count"], credit)
+            counter["first_seen"] = counter["first_seen"] or now
+            _mark_reached(st, row, "backfill", now, events)
         st["backfilled"] = True
 
     return apply
@@ -901,14 +906,16 @@ def snapshot(today: date | None = None) -> dict[str, Any]:
         if state == "open" and len(recommended) < 3:
             recommended.append(row.id)
         done_at = None
+        source = None
         if state == "done":
             done_at = reached["at"] if reached else (counter.get("first_seen") or None)
+            source = reached["source"] if reached else "event"
         feature_items.append(
             {
                 "id": row.id,
                 "state": state,
                 "done_at": done_at,
-                "source": (reached["source"] if reached else "event") if state == "done" else None,
+                "source": source,
                 "video": _video_payload(row.video_id),
                 "starter": row.starter.payload() if row.starter else None,
                 "doc": row.doc,

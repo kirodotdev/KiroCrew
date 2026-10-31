@@ -458,6 +458,31 @@ class TestBackfill:
         m.ensure_backfilled()
         assert m.load()["counters"]["chats-opened"]["count"] == 3
 
+    def test_backfill_keeps_a_higher_count_and_an_earlier_first_seen(
+        self, monkeypatch: pytest.MonkeyPatch, _home: Path
+    ) -> None:
+        # A flush whose backfill probes raised still applied its hook ops, so the
+        # backfill can later run over counts above what it credits. The counts are
+        # seeded without the ``reached`` entries those ops write, so the backfill's
+        # stamps show both crediting branches ran.
+        self._probes(monkeypatch, {"artifacts_nonempty"})
+        sessions = _home / "sessions"
+        sessions.mkdir()
+        header = json.dumps({"_type": "metadata", "memory_mode": "persistent"}) + "\n"
+        for i in range(10):
+            (sessions / f"dashboard_chat-{i}-1.jsonl").write_text(header, encoding="utf-8")
+        counters = {
+            "widgets": {"count": 3, "first_seen": 4.0},
+            "chats-opened": {"count": 30, "first_seen": 5.0},
+        }
+        m._path().write_text(json.dumps({"counters": counters}), encoding="utf-8")
+        m.ensure_backfilled()
+        st = m.load()
+        assert st["backfilled"] is True
+        assert st["reached"]["widgets"]["source"] == "backfill"
+        assert st["reached"]["chats-opened:10"]["source"] == "backfill"
+        assert {k: st["counters"][k] for k in counters} == counters
+
 
 class TestManual:
     def test_mark_done_writes_manual_without_touching_the_counter(self, metrics: list) -> None:
@@ -488,6 +513,22 @@ class TestManual:
         assert _items(snap, "sessions")["chats-opened"]["tiers_reached_at"] == {}
         assert [a for n, a in metrics if n == m.M_FEATURES_COMPLETED] == [{"via": "mixed"}]
         assert (m.M_MARK_ALL_DONE, {}) in metrics
+
+    @pytest.mark.parametrize(
+        ("marked", "via"), [(0, "organic"), (1, "mixed"), (None, "manual")], ids=str
+    )
+    def test_features_completed_via_names_how_the_rows_were_reached(
+        self, metrics: list, marked: int | None, via: str
+    ) -> None:
+        # The first *marked* rows (None: every row) are marked by hand, the
+        # rest are reached by events.
+        rows = m.feature_rows()
+        split = len(rows) if marked is None else marked
+        for row in rows[:split]:
+            m.apply_now(m.op_mark_done(row.id))
+        for row in rows[split:]:
+            m.record(row.id)
+        assert [a for n, a in metrics if n == m.M_FEATURES_COMPLETED] == [{"via": via}]
 
     def test_skip_all_keeps_rows_open_in_the_panel(self) -> None:
         m.record("widgets")
@@ -535,6 +576,15 @@ class TestReadModel:
         m.apply_now(m.op_notice_shown("made-up-key"))
         assert m.snapshot()["notices"] == ["chats-opened:10"]
         assert "made-up-key" not in m.load()["noticed"]
+
+    def test_a_counted_row_without_a_reached_entry_reads_as_an_event(self) -> None:
+        # A hand-edited file can hold a count with no ``reached`` entry.
+        state = {"counters": {"widgets": {"count": 1, "first_seen": 5.0}}}
+        m._path().write_text(json.dumps(state), encoding="utf-8")
+        features = _items(m.snapshot(), "features")
+        widgets = features.pop("widgets")
+        assert (widgets["state"], widgets["done_at"], widgets["source"]) == ("done", 5.0, "event")
+        assert {item["source"] for item in features.values()} == {None}
 
 
 class TestCatalogValidation:
