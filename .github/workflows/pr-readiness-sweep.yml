@@ -154,7 +154,8 @@ jobs:
       # The scan script, the withheld-verdict republisher, and the
       # disposition gate the republisher shells out to -- plus the modules
       # pr_status.py loads (green_age.py and its owners pr_status_issue_links.py
-      # and pr_status_verdict.py, which loads _review_contract.py). sparse-
+      # and pr_status_verdict.py, which loads _review_contract.py and its
+      # owners _review_pushes.py, _review_rounds.py and _review_fences.py). sparse-
       # checkout with cone mode off is what makes a single-file path list legal,
       # and persist-credentials: false leaves no token in the worktree -- nothing
       # here runs git against the remote.
@@ -166,6 +167,9 @@ jobs:
             .github/scripts/republish_withheld_verdict.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_fences.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_pushes.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_rounds.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_issue_links.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_verdict.py
