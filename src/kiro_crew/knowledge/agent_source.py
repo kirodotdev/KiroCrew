@@ -384,6 +384,15 @@ def find_document_by_hash(store: KnowledgeStore, source_id: str, content_hash: s
     return (row["slug"], row["name"] or "") if row else None
 
 
+def _release_stale_claim(store: KnowledgeStore, source_id: str, slug: str,
+                         prev_hash: str | None, content_hash: str,
+                         old_item_ids: list[str]) -> int:
+    """``release_stale_claim`` with the row's ``claimed_hash``, read in the same hop."""
+    return store.release_stale_claim(
+        source_id, prev_hash, content_hash, old_item_ids,
+        prev_claimed_hash=store.claimed_hash_of("agent_item_state", source_id, slug))
+
+
 def remove_document(store: KnowledgeStore, source_id: str, slug: str) -> int:
     """Drop one document's items and its state row. Returns items removed."""
     prev_hash, item_ids = get_state(store, source_id, slug)
@@ -394,7 +403,8 @@ def remove_document(store: KnowledgeStore, source_id: str, slug: str) -> int:
         # items. Removing it has to release that claim, exactly as the artifact
         # path does, or a later winner deletion resurfaces content this aggregate
         # does not have.
-        store.detach_source_location_by_hash(source_id, prev_hash or "")
+        claimed = store.claimed_hash_of("agent_item_state", source_id, slug)
+        store.detach_source_location_by_hash(source_id, claimed or prev_hash or "")
     store.db.execute(
         "DELETE FROM agent_item_state WHERE source_id = ? AND slug = ?",
         (source_id, slug))
@@ -526,7 +536,7 @@ async def _add_agent_document(
     # claim for its previous content, and this document's text has changed.
     # Off the loop: it takes the write lock through the guarded connection.
     await asyncio.to_thread(
-        store.release_stale_claim, source_id, prev_hash, content_hash, old_item_ids)
+        _release_stale_claim, store, source_id, slug, prev_hash, content_hash, old_item_ids)
 
     # Ownership is recorded from inside the ingest's finalize hop rather than
     # after it returns. The items become durable during the ingest, and every
