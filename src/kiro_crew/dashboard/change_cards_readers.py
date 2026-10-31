@@ -1286,11 +1286,16 @@ async def read_context(
             server_tools,
         )
 
+        mount_only = bool(p.get("mount_only"))
         return {
-            "reach": await asyncio.to_thread(addition_reach_view, state, p["template"]),
+            "reach": await asyncio.to_thread(
+                addition_reach_view, state, p["template"], mount_only=mount_only
+            ),
             "live": live_apply(state),
             "tools": await asyncio.to_thread(server_tools, p["server"]),
-            "grants": await asyncio.to_thread(existing_grants, p["template"], p["server"]),
+            "grants": await asyncio.to_thread(
+                existing_grants, p["template"], p["server"], mount_only=mount_only
+            ),
         }
     if kind == catalog.KIND_MCP_INSTALL:
         return {"detail": await _mcp_detail(p)}

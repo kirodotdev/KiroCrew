@@ -158,7 +158,7 @@ async def _caller_backend(state: Any, sk: str) -> str:
 # ── reach: which templates, sessions and members one addition reaches ──
 
 
-def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
+def addition_reach_view(state: Any, template: str, *, mount_only: bool = False) -> dict[str, Any]:
     """The templates, open sessions and crew members an addition to *template* reaches.
 
     Templates come from :func:`template_mcp_additions.addition_reach`; each open
@@ -169,7 +169,7 @@ def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.template_mcp_additions import addition_reach
 
-    templates = list(addition_reach(template))
+    templates = list(addition_reach(template, mount_only=mount_only))
     wanted = set(templates)
     sessions: list[str] = []
     for slot in list(getattr(state, "_slots", {}).values()):
@@ -201,7 +201,7 @@ def addition_reach_view(state: Any, template: str) -> dict[str, Any]:
     }
 
 
-def existing_grants(template: str, server: str) -> list[str]:
+def existing_grants(template: str, server: str, *, mount_only: bool = False) -> list[str]:
     """``allowedTools`` entries for *server* on every template the addition reaches. Blocking.
 
     The card adds no approval, but a grant the owner wrote earlier on ANY template
@@ -215,7 +215,7 @@ def existing_grants(template: str, server: str) -> list[str]:
 
     ref = f"@{server}"
     out: list[str] = []
-    for name in addition_reach(template) or (template,):
+    for name in addition_reach(template, mount_only=mount_only) or (template,):
         try:
             candidates = _agent_detail_candidates(name)
         except Exception:  # noqa: BLE001 - display only
@@ -273,6 +273,20 @@ def template_declares(template: str, server: str) -> bool:
     return False
 
 
+# ── the default agent and the worker: the MCP page, not a card ──
+
+#: Templates whose servers are the MCP page's: the default agent carries every
+#: server installed there, and the worker mirrors the default spec. A request from
+#: one of them raises a MOUNT-ONLY card: the server joins the default agent and the
+#: worker, and no ``allowedTools`` grant is written, so its calls still ask.
+MCP_PAGE_TEMPLATES = _additions.DEFAULT_TEMPLATES
+
+#: The template a mount-only request records under. The worker is the default
+#: spec on disk plus the work-ledger keys, so one record on the default reaches
+#: both.
+MOUNT_ONLY_TEMPLATE = "kirocrew"
+
+
 # ── agent half ──
 
 
@@ -299,7 +313,12 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
     if not template:
         _audit(sk, OP_REQUEST_SERVER, "denied", code)
         return _deny(403 if code == "crewmate_caller" else 409, code, message)
-    support = additions.addition_support(template, await _caller_backend(state, sk))
+    mount_only = template in MCP_PAGE_TEMPLATES
+    if mount_only:
+        template = MOUNT_ONLY_TEMPLATE
+    support = additions.addition_support(
+        template, await _caller_backend(state, sk), mount_only=mount_only
+    )
     if not support.supported:
         _audit(sk, OP_REQUEST_SERVER, "denied", "unsupported")
         return _deny(409, "unsupported", support.reason)
@@ -330,7 +349,13 @@ async def api_cards_agent_request_server(request: web.Request) -> web.Response:
         slot_key,
         sk,
         kind=KIND_TEMPLATE_MCP_SERVER,
-        params={"template": template, "server": name, "entry": entry, "origin": origin},
+        params={
+            "template": template,
+            "server": name,
+            "entry": entry,
+            "origin": origin,
+            "mount_only": mount_only,
+        },
         reason=body.get("reason"),
     )
 
@@ -446,8 +471,14 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _deny(400, "invalid_json", "invalid JSON body")
-    if not isinstance(body, dict) or set(body) != {"server", "entry"}:
-        return _deny(400, "invalid_body", "body is {server, entry}")
+    if not isinstance(body, dict) or set(body) not in (
+        {"server", "entry"},
+        {"server", "entry", "mount_only"},
+    ):
+        return _deny(400, "invalid_body", "body is {server, entry[, mount_only]}")
+    mount_only = body.get("mount_only", False)
+    if not isinstance(mount_only, bool):
+        return _deny(400, "invalid_body", "'mount_only' must be a boolean")
     template = request.match_info["name"]
     try:
         added = await asyncio.to_thread(
@@ -461,6 +492,7 @@ async def api_template_mcp_addition_add(request: web.Request) -> web.Response:
             # server after this card's own check, and replacing that approval would
             # let this card's rollback or Undo delete it.
             only_if_absent=True,
+            mount_only=mount_only,
         )
     except additions.AdditionError as exc:
         return _deny(400, "addition_refused", str(exc))

@@ -2771,13 +2771,17 @@ change card, and the server is written to the template's additions record
   route there is no own-thread exemption: a card nobody sees is never raised.
   The template is the caller's execution record's `template_id`; the record
   folds an alias onto its target on every read and write.
-- **The default agent and the worker are refused, with no card.** The default
-  `kirocrew` agent carries every server installed on the MCP page, and the
-  worker mirrors it (`template_mcp_additions.DEFAULT_TEMPLATES`). The MCP page's
-  add would also approve every tool of the server, so a request from either is
-  refused by `template_mcp_additions.addition_support` (`409 unsupported`, its
-  `DEFAULT_REASON` pointing to the MCP page). The card therefore
-  covers only conductors and third-party agents, where nothing auto-approves.
+- **The default agent and the worker get a mount-only card.** Both normally
+  take their servers from the MCP page
+  (`template_mcp_additions.DEFAULT_TEMPLATES`), whose add also approves every
+  tool of the server; a mid-chat request must not be a second path to that
+  grant. So a
+  request from either is recorded on the default `kirocrew` template with
+  `mount_only: true` (the worker mirrors the default spec, so one record reaches
+  both). The rebuild merges the entry into `mcpServers`, adds the `@server` ref
+  to `tools`, and writes no `allowedTools` grant: its calls still ask. The
+  record keeps that disposition across every rebuild, including one where the
+  same server is also on the MCP page.
 - **A harness that cannot apply it is refused with the record's reason.**
   `template_mcp_additions.addition_support(template, backend)` answers for the
   caller's backend; a template Crew does not own on a harness that loads its

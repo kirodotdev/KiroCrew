@@ -119,6 +119,26 @@ def test_the_shared_ref_sync_keeps_a_withheld_server_muted() -> None:
     assert "@atlassian" not in config["allowedTools"]
 
 
+def test_a_mount_only_server_is_mounted_without_a_grant() -> None:
+    """The default agent's mid-chat addition: the ref mounts the server and none
+    of its tools are auto-approved. A pre-existing grant goes too, so a later
+    rebuild cannot silently turn the mount into an approval."""
+    scope = {"command": "/opt/bin/atlassian-mcp", "env": {"API_TOKEN": REF}}
+    config = {
+        "mcpServers": {"atlassian": dict(scope)},
+        "tools": [],
+        "allowedTools": ["@atlassian", "@atlassian/search"],
+    }
+    sources = mcp_sources.McpSources(
+        kirocrew={"atlassian": scope}, kiro_global={}, provider_global={}, managed_names=set()
+    )
+    mcp_sources.sync_shared_server_refs(
+        config, sources, {"atlassian": "atlassian"}, mount_only=frozenset({"atlassian"})
+    )
+    assert config["tools"] == ["@atlassian"]
+    assert config["allowedTools"] == []
+
+
 def test_a_withheld_mute_keeps_the_users_per_tool_grants() -> None:
     """The withheld mute is temporary, and a hand-written ``@srv/tool`` grant
     cannot be re-derived once stripped; only the bare refs go."""
