@@ -94,10 +94,10 @@ describe('CrewModeWelcome', () => {
     render(<CrewModeWelcome onOpenTaskBoard={vi.fn()} />)
     const page = screen.getByTestId('crew-mode-welcome')
     expect(within(page).getByRole('heading', { name: 'Ultra Mode' })).toBeInTheDocument()
-    expect(within(page).getByRole('button', { name: 'Task board' })).toBeInTheDocument()
+    expect(within(page).getByRole('button', { name: 'Board' })).toBeInTheDocument()
     expect(within(page).getAllByRole('button')).toHaveLength(1)
     // Every visible word on the page, in order: nothing beyond these.
-    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.GoalSplitOwn chatsBoardNeeds youTask board')
+    expect(page.textContent).toBe('Ultra ModeYou set the goal. Your crew does the work.GoalSplitOwn chatsBoardNeeds youBoard')
   })
 
   it('reads the flow as an ordered list a screen reader can follow', () => {
@@ -171,10 +171,10 @@ describe('CrewModeWelcome', () => {
     expect(CREW_WELCOME_PLAY_SECS).toBeLessThanOrEqual(4)
   })
 
-  it('opens the task board from its one button', () => {
+  it('opens the Board from its one button', () => {
     const onOpenTaskBoard = vi.fn()
     render(<CrewModeWelcome onOpenTaskBoard={onOpenTaskBoard} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Task board' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Board' }))
     expect(onOpenTaskBoard).toHaveBeenCalledTimes(1)
   })
 
@@ -182,10 +182,12 @@ describe('CrewModeWelcome', () => {
     render(<CrewModeWelcome onOpenTaskBoard={vi.fn()} />)
     const btn = screen.getByTestId('crew-mode-open-board')
     // The name lives on the button itself, so hiding the label never loses it.
-    expect(btn).toHaveAttribute('aria-label', 'Task board')
-    expect(btn).toHaveAttribute('title', 'Task board')
+    expect(btn).toHaveAttribute('aria-label', 'Board')
+    expect(btn).toHaveAttribute('title', 'Board')
+    // The Board tab's own glyph, the lightning bolt.
+    expect(btn.querySelector('svg.lucide-zap')).not.toBeNull()
     const label = screen.getByTestId('crew-mode-open-board-label')
-    expect(label).toHaveTextContent('Task board')
+    expect(label).toHaveTextContent('Board')
     // Hidden on a short screen and in a narrow column, by the page's own queries.
     expect(label.className).toContain('[@media(max-height:480px)]:hidden')
     expect(label.className).toContain('@max-[18rem]/crewwelcome:hidden')
