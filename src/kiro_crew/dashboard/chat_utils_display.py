@@ -394,6 +394,7 @@ def _clear_display_redaction_cache() -> None:
         _display_clean_old = set()
         _display_preview_cache.clear()
         _display_preview_cache_bytes = 0
+        _display_preview_by_object.clear()
 
 
 # Entries keyed under the per-process salt are unreachable once the
@@ -576,6 +577,12 @@ _DISPLAY_PREVIEW_CACHE_MAX_BYTES = 2 * 1024 * 1024
 _DisplayPreviewKey = tuple[bytes, int, int]
 _display_preview_cache: OrderedDict[_DisplayPreviewKey, tuple[str, int]] = OrderedDict()
 _display_preview_cache_bytes = 0
+#: ``id(text) -> (text, (limit, hosts, prefixes, verdict base), preview)``: the
+#: previous answer for the same string object, so an unchanged tab's preview costs
+#: no digest. Holding ``text`` keeps its id from being reused while the entry
+#: lives. Bounded by count; past it the map is emptied, not trimmed.
+_DISPLAY_PREVIEW_BY_OBJECT_MAX = 4_096
+_display_preview_by_object: dict[int, tuple[str, tuple, str]] = {}
 
 
 def _cut_preview(text: str, limit: int) -> str:
@@ -595,6 +602,44 @@ def _redacted_preview(text: str, limit: int) -> str:
     if _display_scope_changes_battery():
         # _redact_for_display runs the battery uncached here too.
         return _cut_preview(_redact_for_display(strip_markdown_preview(text)), limit)
+    # Every slots broadcast previews each tab's last message, and the same string
+    # object comes back until that message changes. Matching on the object and on
+    # the inputs the key folds in (exempt hosts, token-parameter prefixes, verdict
+    # base) answers it without hashing the whole text on the event loop again.
+    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
+    context = (limit, hosts, _token_param_exempt_prefixes(), _display_verdicts.mac_base())
+    with _display_redaction_cache_lock:
+        seen = _display_preview_by_object.get(id(text))
+        if (
+            seen is not None
+            and seen[0] is text
+            and seen[1][0] == context[0]
+            and seen[1][1] == context[1]
+            and seen[1][2] == context[2]
+            and seen[1][3] is context[3]
+        ):
+            return seen[2]
+    preview = _redacted_preview_by_digest(text, limit)
+    after = (
+        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
+        _token_param_exempt_prefixes(),
+        _display_verdicts.mac_base(),
+    )
+    # Remembered only when the inputs did not move while it was computed, the
+    # same rule the digest-keyed cache applies before it files an entry.
+    if after[0] == context[1] and after[1] == context[2] and after[2] is context[3]:
+        with _display_redaction_cache_lock:
+            if len(_display_preview_by_object) >= _DISPLAY_PREVIEW_BY_OBJECT_MAX:
+                _display_preview_by_object.clear()
+            _display_preview_by_object[id(text)] = (text, context, preview)
+    return preview
+
+
+def _redacted_preview_by_digest(text: str, limit: int) -> str:
+    """:func:`_redacted_preview` through the digest-keyed preview cache."""
+    # Imported here so the chat_utils facade does not forward the strip as its own name.
+    from kiro_crew.preview_text import strip_markdown_preview
+
     (digest, length), _ = _display_redaction_cache_key(text)
     key = (digest, length, limit)
     with _display_redaction_cache_lock:

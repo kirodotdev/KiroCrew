@@ -210,16 +210,51 @@ def _binding_token(project_key: str, identity: str) -> str:
     return f"{project_key}{_TOKEN_SEP}{identity}"
 
 
+#: ``(signature, answer)`` of the last successful read of the off switch.
+_enabled_memo: tuple[tuple, bool] | None = None
+
+
+def _config_signature() -> tuple:
+    """What the off switch's answer depends on, read without building the config.
+
+    The switch is read only from the config files, so their stat fingerprint (which
+    names each path, so a changed data home misses too) and the config cache's
+    invalidation generation decide it. ``KiroCrewConfig.load`` itself is part of
+    the key so a replaced loader is never answered from the old one's read.
+    """
+    from kiro_crew.config.loader_document import _config_fingerprint
+    from kiro_crew.config.validation import _CONFIG_CACHE
+
+    return (
+        _config_fingerprint(),
+        _CONFIG_CACHE.generation(),
+        KiroCrewConfig.__dict__.get("load"),
+    )
+
+
 def _project_skills_enabled() -> bool:
     """The operator's hard off switch.
 
     Independent of any grant: with this false, project skills are impossible
     even for a directory that carries one. Fails closed -- an unreadable config
     disables the feature rather than enabling it.
+
+    Every skill-catalog read asks this, several times per turn, and a full
+    ``KiroCrewConfig.load`` rebuilds every section with the GIL held. The answer
+    is reused while the config files' signature is unchanged; a failed read is
+    never remembered, so it fails closed again on the next ask.
     """
+    global _enabled_memo
     try:
-        return bool(KiroCrewConfig.load().skills.project_skills_enabled)
+        signature = _config_signature()
+        memo = _enabled_memo
+        if memo is not None and memo[0] == signature:
+            return memo[1]
+        enabled = bool(KiroCrewConfig.load().skills.project_skills_enabled)
+        _enabled_memo = (signature, enabled)
+        return enabled
     except Exception as exc:  # noqa: BLE001 - unreadable policy must fail closed
+        _enabled_memo = None
         logger.error(
             "skills.project_skills_enabled unreadable (%s); " "refusing every project-skills grant",
             exc,

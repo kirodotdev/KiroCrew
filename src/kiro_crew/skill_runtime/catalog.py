@@ -80,6 +80,8 @@ def _builtin_dir_app_name(pkg_dir: str) -> str | None:
 
 
 _GLOB_CHARS = "*?["
+#: Catalog lists (one per scope) whose disabled-app filtering ``_iter_visible`` keeps.
+_VISIBLE_MEMO_MAX = 16
 
 
 def _literal_split(pattern: str) -> tuple[tuple[str, ...], int]:
@@ -887,15 +889,34 @@ def _get_disabled_app_names(loader: SkillsLoader) -> frozenset[str]:
 def _iter_visible(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
-    """Return all ``(name, skill_file, within)`` pairs, filtering out disabled app skills."""
+    """Return all ``(name, skill_file, within)`` pairs, filtering out disabled app skills.
+
+    ``_owning_app`` resolves real paths, so filtering the whole catalog costs a few
+    ``realpath`` walks per skill, and context assembly asks several times a turn.
+    ``_iter`` hands back the SAME cached list until the catalog is rebuilt, and an
+    app skill's owner follows from its path, so the filtered rows are kept against
+    that list object and the disabled set and reused while both are unchanged.
+    """
     disabled_apps = loader._get_disabled_app_names()
+    rows = loader._iter(project_dir)
     if not disabled_apps:
-        return loader._iter(project_dir)
-    return [
+        return rows
+    memo = loader._visible_memo.get(id(rows))
+    if memo is not None and memo[0] is rows and memo[1] == disabled_apps:
+        return memo[2]
+    visible = [
         (name, skill_file, within)
-        for name, skill_file, within in loader._iter(project_dir)
+        for name, skill_file, within in rows
         if loader._owning_app(name, skill_file, within) not in disabled_apps
     ]
+    # Holding `rows` keeps its id from being reused while the entry lives; a
+    # rebuilt catalog is a new list, so a stale entry is never matched.
+    # Readers on several threads share the dict, so only single atomic dict
+    # operations touch it: past the bound it is emptied rather than trimmed.
+    if len(loader._visible_memo) >= _VISIBLE_MEMO_MAX:
+        loader._visible_memo.clear()
+    loader._visible_memo[id(rows)] = (rows, disabled_apps, visible)
+    return visible
 
 
 def _alias_selected(
@@ -1184,6 +1205,7 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     that window to the walk's own duration.
     """
     loader._disabled_apps_cache = None
+    loader._visible_memo.clear()
     with loader._catalog_lock:
         # Moved BEFORE the drop: it fences every walk already in flight, and it
         # turns the snapshot tier off (`_snapshot_trusted_locked`) until the drop
