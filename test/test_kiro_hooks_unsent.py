@@ -138,6 +138,7 @@ class TestUnsentHookDocuments:
 
     def test_the_mute_ends_with_the_read(self) -> None:
         unsent_hook_documents([_doc()])
+        assert kiro_hooks._document_audit_muted.get() is False
         with patch.object(agent, "_sel_hook_rejected") as sel:
             normalize_spec_hooks([_doc("NoSuchTrigger")])
         assert sel.call_count == 1
