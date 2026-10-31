@@ -4783,6 +4783,7 @@
       "use_cases": "Use cases",
       "configuration": "Configuration",
       "open_screenshot": "Open screenshot {{n}}",
+      "screenshot_viewer": "Screenshot viewer",
       "screenshot": "Screenshot {{n}}",
       "install_complete": "Install complete",
       "install_failed": "Install failed",

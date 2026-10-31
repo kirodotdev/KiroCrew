@@ -10809,6 +10809,7 @@
       "next": "Weiter",
       "once_launched_the_app_will_automatically_connect": "Nach dem Start verbindet sich die App automatisch mit dieser {{productName}}-Instanz und erscheint unter „Apps“.",
       "open_screenshot": "Screenshot {{n}} öffnen",
+      "screenshot_viewer": "Screenshot-Ansicht",
       "origin": "Ursprung:",
       "permissions": "Berechtigungen",
       "session_approval_desc": "Kann Nachrichten senden und Antwortoptionen in deinen Chats auswählen, Tool-Anfragen genehmigen oder ablehnen und den Genehmigungsmodus eines Chats wechseln.",

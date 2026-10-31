@@ -10964,6 +10964,7 @@
       "next": "Siguiente",
       "once_launched_the_app_will_automatically_connect": "Una vez iniciada, la app se conectará automáticamente a esta instancia de {{productName}} y aparecerá en Apps.",
       "open_screenshot": "Abrir la captura de pantalla {{n}}",
+      "screenshot_viewer": "Visor de capturas de pantalla",
       "origin": "Origen:",
       "permissions": "Permisos",
       "session_approval_desc": "Puede enviar mensajes y elegir opciones de respuesta en tus chats, aprobar o rechazar solicitudes de herramientas y cambiar el modo de aprobación de un chat.",

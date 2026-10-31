@@ -137,7 +137,8 @@ describe('ScreenshotGallery lightbox magnification', () => {
     render(<MemoryRouter><ScreenshotGallery screenshots={[S1, S2, '/shots/c.png']} /></MemoryRouter>)
     fireEvent.click(document.querySelector('button[aria-label="Open screenshot 1"]')!)
     const dialog = document.querySelector('[role="dialog"]') as HTMLElement
-    expect(document.activeElement).toBe(dialog)
+    // Focus moves to the viewer's first control (the shared dialog contract).
+    expect(document.activeElement).toBe(dialog.querySelector('button[aria-label="Close"]'))
     // Moving to the next screenshot re-renders the viewer; that must not pull
     // focus back to the dialog box, or Enter on Next would only work once.
     const next = document.querySelector('[role="dialog"] button[aria-label="Next"]') as HTMLButtonElement

@@ -10964,6 +10964,7 @@
       "next": "Avanti",
       "once_launched_the_app_will_automatically_connect": "Una volta avviata, l'app si connetterà automaticamente a questa istanza di {{productName}} e apparirà in App.",
       "open_screenshot": "Apri lo screenshot {{n}}",
+      "screenshot_viewer": "Visualizzatore di screenshot",
       "origin": "Origine:",
       "permissions": "Permessi",
       "session_approval_desc": "Può inviare messaggi e scegliere opzioni di risposta nelle tue chat, approvare o rifiutare richieste degli strumenti e cambiare la modalità di approvazione di una chat.",

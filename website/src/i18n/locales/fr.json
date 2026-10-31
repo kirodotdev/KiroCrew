@@ -10964,6 +10964,7 @@
       "next": "Suivant",
       "once_launched_the_app_will_automatically_connect": "Une fois lancée, l'application se connectera automatiquement à cette instance {{productName}} et apparaîtra dans Applications.",
       "open_screenshot": "Ouvrir la capture d’écran {{n}}",
+      "screenshot_viewer": "Visionneuse de captures d’écran",
       "origin": "Origine :",
       "permissions": "Autorisations",
       "session_approval_desc": "Peut envoyer des messages et choisir des options de réponse dans tes chats, approuver ou refuser les demandes d'outils et changer le mode d'approbation d'un chat.",
