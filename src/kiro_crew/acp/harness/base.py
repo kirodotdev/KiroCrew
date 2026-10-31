@@ -333,6 +333,16 @@ class SessionExtras:
     stubs from the session-level array. Empty on every other host.
     """
 
+    withheld_credentials_notice: str = ""
+    """The session-start notice naming MCP servers that start without part of
+    their declared ``env`` or ``headers``, by server and key name, never a value.
+
+    For a host whose payload carries the agent's servers over the ACP wire, where
+    Crew withholds credential-bearing fields
+    (``kas_agents.withheld_credentials_notice``). ``""`` on every other host and
+    when nothing was withheld.
+    """
+
 
 # ── Seam 5: notification aliases ──
 

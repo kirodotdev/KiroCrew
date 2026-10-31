@@ -77,6 +77,7 @@ from kiro_crew.acp.kas_app_identity import (
     without_noop_restrictions,
 )
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+from kiro_crew.acp.kas_env_literals import _loggable_key_names, _relayable_literal
 from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
     CREW_ANSWERED_BUILTINS_KEY,
@@ -142,6 +143,10 @@ MANAGED_MCP_SERVER_NAMES = frozenset(KIROCREW_BIN_MCP_SERVERS)
 #: (``mcp_gateway.session_servers``) and a remote entry's ``headers`` can hold a
 #: static ``Authorization`` value, so neither crosses the wire intact.
 _CREDENTIAL_BEARING_FIELDS = ("env", "headers")
+
+#: Per server: the withheld ``env`` key names, the fields anything went from, and
+#: whether it is a stdio server (one with a ``command``, the kind the gateway routes).
+WithheldOut = dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]]
 
 #: The ONLY env key that survives for one of Crew's own managed servers. It pins
 #: the data home, so dropping it would have the shims read a different one than
@@ -627,8 +632,13 @@ def _project_mcp_servers(
     agent_id: str,
     stub_server_names: frozenset[str],
     session_key: str = "",
+    withheld_out: WithheldOut | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
+
+    *withheld_out*, when given, maps each declared server Crew did not author that
+    lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
+    only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`.
 
     Five subtractions, each load-bearing:
 
@@ -809,7 +819,11 @@ def _project_mcp_servers(
                 name,
                 "/".join(discarded),
             )
-        withheld = _withhold_credential_fields(projected, managed=managed, relayed=relayed)
+        dropped_env: list[str] = []
+        withheld = _withhold_credential_fields(
+            projected, managed=managed, relayed=relayed, dropped_env=dropped_env
+        )
+        stdio = bool(projected.get("command"))
         if managed:
             # Native MCP children do not inherit the gateway's environment.
             # Take the live listener from the gateway, never from an editable
@@ -822,11 +836,16 @@ def _project_mcp_servers(
         elif session_key:
             # The withheld env values stay on this machine: the engine is handed
             # Crew's launcher and a reference, never the values (kas_env_launch).
-            projected, _launched, complete = kas_env_launch.relay_withheld_env(
+            relayable = kas_env_launch.withheld_env(relay_env, projected.get("env"))
+            projected, launched, complete = kas_env_launch.relay_withheld_env(
                 projected, relay_env, session_key=session_key, agent_id=agent_id, server=name
             )
             if complete:
                 withheld = [w for w in withheld if not w.startswith("env")]
+            if launched:
+                # The launcher started the server with these values on this
+                # machine, so the notice names only what is still missing.
+                dropped_env = [k for k in dropped_env if k not in relayable]
             projected, bridged = kas_env_launch.relay_withheld_headers(
                 projected,
                 entry.get("headers"),
@@ -836,6 +855,9 @@ def _project_mcp_servers(
             )
             if bridged:
                 withheld = [w for w in withheld if w != "headers"]
+        if withheld_out is not None and withheld and not managed:
+            fields = tuple(field.split(" ", 1)[0] for field in withheld)
+            withheld_out[name] = (tuple(sorted(dropped_env)), fields, stdio)
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "
@@ -849,83 +871,16 @@ def _project_mcp_servers(
     return out
 
 
-#: The only literal values a third-party server's env may send over the KAS
-#: wire: a boolean, ``true`` or ``false``, matched case-insensitively after
-#: trimming. No secret is a boolean, so this holds by construction, with no
-#: guess about which key names or value shapes carry one. Everything else,
-#: numbers included (a PIN is digits), is withheld and named in the log; the
-#: rest of the env reaches the server through a local launcher that keeps it
-#: off the wire.
-_RELAYABLE_BOOLEANS = frozenset({"true", "false"})
-
-#: A key NAME printed in the log as written. Only a plain word the redactor
-#: leaves alone is printed; any other name is counted.
-_PLAIN_WORD = re.compile(r"[A-Za-z0-9._-]{1,256}")
-
-#: A camelCase boundary (``accessKey`` -> ``access_Key``), so a credential word
-#: joined by case alone still ends a segment for the shared class.
-_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
-_NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
-
-
-def _credential_shaped_env_key(key: str) -> bool:
-    """Whether the env KEY *key* names a credential.
-
-    The one shared answer, ``config.sections_agent_env.AGENT_ENV_CREDENTIAL_CLASS``,
-    on the name split at punctuation and camelCase (``encryptionKey`` reads as
-    ``ENCRYPTION_KEY``), plus the gateway's own credential prefixes.
-    """
-    from kiro_crew.config.sections_agent_env import AGENT_ENV_CREDENTIAL_CLASS
-    from kiro_crew.mcp_gateway.hashing import is_secret_env_key
-    from kiro_crew.mcp_gateway.manager import is_credential_env_key
-
-    normal = _NON_ALNUM.sub("_", _CAMEL_BOUNDARY.sub("_", key)).upper()
-    if is_secret_env_key(normal) or is_credential_env_key(normal):
-        return True
-    return bool(AGENT_ENV_CREDENTIAL_CLASS.search(normal))
-
-
-def _relayable_literal(key: str, value: Any) -> bool:
-    """Whether a third-party server's literal env *value* under *key* may cross the wire.
-
-    Only a boolean (:data:`_RELAYABLE_BOOLEANS`), and only when the KEY is not
-    credential-shaped (:func:`_credential_shaped_env_key`) and the credential
-    redactor would leave the value unchanged alone and spelled beside its key,
-    through :func:`kiro_crew.external_text.redact_external_text` so an edition's
-    extra patterns apply. The value is relayed as written.
-    """
-    if not isinstance(value, str) or not isinstance(key, str):
-        return False
-    if value.strip().lower() not in _RELAYABLE_BOOLEANS:
-        return False
-    if _credential_shaped_env_key(key):
-        return False
-    from kiro_crew.external_text import redact_external_text
-
-    return all(
-        redact_external_text(text) == text for text in (value, f"{key}={value}", f"{key}: {value}")
-    )
-
-
-def _loggable_key_names(keys: list[str]) -> str:
-    """*keys* for a log line: a name shown only when it is itself a plain word the
-    redactor leaves alone, so a credential-shaped NAME is counted, never printed."""
-    from kiro_crew.external_text import redact_external_text
-
-    shown = sorted(k for k in keys if _PLAIN_WORD.fullmatch(k) and redact_external_text(k) == k)
-    hidden = len(keys) - len(shown)
-    if hidden:
-        shown.append(f"{hidden} unnamed")
-    return ", ".join(shown)
-
-
 def _withhold_credential_fields(
     projected: dict[str, Any],
     *,
     managed: bool,
     relayed: frozenset[str] = frozenset(),
+    dropped_env: list[str] | None = None,
 ) -> list[str]:
     """Strip credential-bearing fields from one projected server entry in place.
+
+    *dropped_env*, when given, is extended with the ``env`` key names withheld.
 
     Returns the FIELD NAMES something was withheld from, for the caller's log —
     never a value. For a server Crew did not author the ``env`` entry also names
@@ -974,6 +929,8 @@ def _withhold_credential_fields(
             kept[k] = v
         else:
             dropped.append(k)
+    if dropped_env is not None:
+        dropped_env.extend(dropped)
     if len(kept) != len(env):
         # A third-party server's withheld keys are named so the operator can see
         # which setting went missing; a name that is not itself a plain word the
@@ -1028,10 +985,12 @@ def to_client_custom_agent(
     session_key: str = "",
     pre_tool_hook_matchers: tuple[str, ...] = (),
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
+    withheld_out: WithheldOut | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
     Pure: *prompt* is already-resolved content (see :func:`resolve_prompt`).
+    *withheld_out* is handed to :func:`_project_mcp_servers`.
 
     *stub_server_names* are the servers that will arrive as the session-level
     ``mcpServers`` param and must not also be declared here — see
@@ -1287,7 +1246,9 @@ def to_client_custom_agent(
         if entries:
             out["resources"] = entries
 
-    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names, session_key)
+    mcp_servers = _project_mcp_servers(
+        spec, agent_id, stub_server_names, session_key, withheld_out=withheld_out
+    )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
 
@@ -1629,8 +1590,11 @@ def build_kas_custom_agents(
     crew_panel: bool = False,
     session_key: str = "",
     skill_scope_rules: tuple[dict[str, Any], ...] = (),
+    withheld_out: WithheldOut | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
+
+    *withheld_out* is handed to :func:`_project_mcp_servers`.
 
     One entry: KAS registers the injected agent, it then surfaces as a mode, and
     the ordinary ``session/set_mode`` activation can select it. Without this the
@@ -1667,6 +1631,7 @@ def build_kas_custom_agents(
             session_key=session_key,
             pre_tool_hook_matchers=pre_tool_hook_matchers(agent_id, spec),
             skill_scope_rules=skill_scope_rules,
+            withheld_out=withheld_out,
         )
     ]
 

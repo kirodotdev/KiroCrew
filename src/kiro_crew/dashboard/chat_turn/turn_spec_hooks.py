@@ -430,8 +430,15 @@ def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: An
     """One notice row on a new session whose adapter is too old to take a mid-turn
     message, one whose KAS drops its agent's prompt, and one whose goose or codex is
     outside its tested range: the chat runs, and each row names the installed version, the
-    tested one and the command that installs it."""
-    for name in ("steer_upgrade_notice", "agent_prompt_upgrade_notice", "tested_version_notice"):
+    tested one and the command that installs it. One more on a session whose MCP
+    servers start without part of their env or headers, naming each server and the
+    key names it lost, never a value."""
+    for name in (
+        "steer_upgrade_notice",
+        "agent_prompt_upgrade_notice",
+        "tested_version_notice",
+        "withheld_credentials_notice",
+    ):
         notice = getattr(client, name, "")
         if isinstance(notice, str) and notice:
             append_and_surface(state, slot, "notice", _redact_display_text(notice), "msg msg-info")
