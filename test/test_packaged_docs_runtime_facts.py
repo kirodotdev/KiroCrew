@@ -5,6 +5,7 @@ claim there that drifts from the code misleads an agent, not only a human. Each 
 here pairs one sentence or table cell with the code fact it states.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,8 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_OPENCODE,
 )
-from kiro_crew.computer_use.backend import UnsupportedBackend
+from kiro_crew.computer_use import linux_x11
+from kiro_crew.computer_use.backend import ComputerUseBackend, UnsupportedBackend
 from kiro_crew.computer_use.linux_driver import LinuxBackend
 from kiro_crew.dashboard.upload_destination import DOCUMENT_CHANNELS
 from kiro_crew.providers.mirrors import mirror_for
@@ -69,8 +71,25 @@ def test_wecom_file_send_cell_follows_the_document_channels():
     assert row["WeCom"] == "✅"
 
 
-def test_linux_computer_use_is_documented_as_unsupported():
-    assert issubclass(LinuxBackend, UnsupportedBackend)
+def test_linux_computer_use_documents_the_shipped_driver():
+    """The Linux section states the driver's real split: full on X11, tree-only on Wayland."""
+    assert issubclass(LinuxBackend, ComputerUseBackend)
+    assert not issubclass(LinuxBackend, UnsupportedBackend)
     doc = _read("computer-use.md")
-    assert "## Linux" in doc
-    assert '"not\nsupported on this platform" refusal' in doc
+    section = doc.split("## Linux", 1)[1].split("\n## ", 1)[0]
+    assert "not\nsupported on this platform" not in section
+    assert "**X11**" in section and "full tool set" in section
+    assert "**Wayland**" in section and "tree-only subset" in section
+    assert "announces an assistive technology" in section
+
+
+_TOOLKIT_SWITCHES = ("QT_ACCESSIBILITY", "SAL_ACCESSIBILITY_ENABLED", "GNOME_ACCESSIBILITY")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="session_env reads /proc and the uid")
+def test_linux_launch_forces_no_toolkit_switch(monkeypatch):
+    """The doc says toolkits follow the bus flag; the launcher must not force them."""
+    for name in _TOOLKIT_SWITCHES:
+        monkeypatch.delenv(name, raising=False)
+    env = linux_x11.session_env()
+    assert not any(name in env for name in _TOOLKIT_SWITCHES)
