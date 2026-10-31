@@ -242,10 +242,14 @@ export const specApi = {
   // spec_dir. The backend compares both and refuses a mismatch, because a
   // directory alone does not identify a creation -- delete leaves the documents on
   // disk, so a re-import under the same name and path is a DIFFERENT spec.
-  message: (name: string, text: string, id?: SpecIdentity) =>
+  message: (name: string, text: string, id?: SpecIdentity, sendId?: string) =>
     req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
-      body: JSON.stringify({ text, ...identity(id) }),
+      body: JSON.stringify({
+        text,
+        ...identity(id),
+        ...(typeof sendId === 'string' ? { meta: { sendId } } : {}),
+      }),
     }),
   // A decision card's answer, sent with the decision's id so the backend can
   // record it and refuse a second answer for the same decision. Same endpoint as
