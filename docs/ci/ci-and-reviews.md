@@ -1258,7 +1258,7 @@ AWS role and no App credential, and `fork-opus-review` already pairs
 egress block that contains the fork matcher is unaffected.
 
 **The Windows group has a tighter cap.** `kirocrew-windows-4-core` is capped at
-`maximum_runners: 32`, against the Linux definition's 100, so the Windows legs
+`maximum_runners: 32`, against the Linux definition's 200, so the Windows legs
 have far less headroom to spend. Nothing gets faster on either: both definitions
 are 4 vCPU and 16 GB, so the **Nothing gets faster** paragraph above applies
 unchanged -- only queue position moves, and the minutes become billed ones.
@@ -1274,13 +1274,20 @@ way as any other site: restore `runs-on: ${{ matrix.os }}` on the affected line,
 which returns all three legs to the hosted images in one edit.
 
 **The fleet-fallback sites reach the group by LABEL instead, because they must
-choose at run time.** `build-wheel.yml`, `dependency-vulnerability.yml`,
-`pr-merge-conflict-label.yml` and both `pages.yml` jobs keep their CodeBuild
-fleet route and changed only what happens when the fleet does not admit the run.
+choose at run time.** Twenty jobs take this form. Six fire on no pull request at
+all -- `build-wheel.yml`, `dependency-vulnerability.yml`,
+`pr-merge-conflict-label.yml`, both `pages.yml` jobs, and `ci.yml`'s
+`cancel-superseded-run`, whose `if:` is a push to `main` -- and fourteen are the
+pull-request lanes: `code-review.yml`'s four, `fast-gate.yml`'s three,
+`ci.yml`'s `changes` and `await-fast-gate`, `build.yml`'s `build-wheel` and
+`desktop-matrix`, `pr-policy.yml`, `dependency-review.yml`'s `license-gate` and
+`macos-on-demand.yml`'s `decide`.
+Every one keeps its CodeBuild fleet route and changed only what happens when the
+fleet does not admit the run.
 A conditional cannot name the group: the fleet's runners are REPOSITORY-level
 self-hosted runners and are not members of this organization group, so no single
 `runs-on` names both destinations. The rename exposure that group targeting
-avoids therefore applies to these five lines -- **rename the definition and they
+avoids therefore applies to all twenty lines -- **rename the definition and they
 must move with it** -- which is why the expected strings live in one place,
 `_GROUP_THEN_HOSTED_TAIL` in `test/test_ci_fleet_routing_expression_parity.py`.
 
@@ -1297,25 +1304,58 @@ actor, event and repository truth table rather than string-matching it, and
 reads the expected non-fleet value off the policy's own expression, so a policy
 that moves later is covered without editing the assertion.
 
-**Why these five were kept to a non-PR-time batch.** None of them fires on
-`pull_request`, so none adds PR-time occupancy to a cap the review lanes already
-compete for. The
-two reusable ones are called only by `nightly.yml` and `release.yml`, and
-neither of those is itself called by anything.
+**What the first five bought, and what the PR-time fourteen cost.** The first
+batch fired on no `pull_request` at all, so it added no PR-time occupancy to a
+cap the review lanes already compete for; the two reusable ones are called only
+by `nightly.yml` and `release.yml`, and neither of those is itself called by
+anything. The fourteen pull-request lanes do add that occupancy, which is the
+whole of what their move trades for: in exchange, a run the fleet turns away
+stops landing on the enterprise-shared standard pool.
 
-`main-ratchet-audit.yml` meets that test and is still **deliberately left
-hosted**, which is the more useful rule to carry away: "not a pull-request
-event" is not the same as "off the merge path". It admits `merge_group`, and
+**What reaches this leg is mostly NOT fork traffic, which is the thing to
+measure rather than assume.** The fleet branch admits the `pull_request` actions
+`opened` and `synchronize` only, and these workflows subscribe to more than
+that: `code-review.yml` adds `reopened` and `edited`, `pr-policy.yml` adds
+`reopened`, `edited`, `labeled` and `unlabeled`, `dependency-review.yml` adds
+`reopened`, `labeled` and `unlabeled`, and `macos-on-demand.yml` adds `reopened`
+and `labeled`. So every label a bot adds or removes, and every description edit,
+on an ordinary same-repository pull request from a listed actor misses the fleet
+and lands here. Measured over one 6-hour window on the two workflows carrying
+most of it, 317 of 357 such jobs (88%) were same-repository runs on a
+non-admitted action and only 40 (11%) were fork pull requests. A merge group
+queued by an unlisted actor lands here too.
+
+**Size the added occupancy before adding a site, and size it as concurrency
+rather than as a monthly total**, because these lanes fire on the same
+pull-request traffic as the lanes already on the group -- their peaks coincide
+rather than averaging out. Read it from the jobs API as **Capacity** below asks,
+and read each job's REQUESTED labels rather than modelling admission: the runs
+API does not expose a run's triggering action, so a model built on the event
+alone counts every `labeled` and `edited` run as fleet-admitted and understates
+this leg.
+
+`main-ratchet-audit.yml` also fires on no pull request, and is still
+**deliberately left hosted** -- but read why carefully, because the obvious
+reason is no longer the true one. It admits `merge_group`, and
 `merge-queue-readiness.yml` polls it on every merge group, treating a queued run
-as pending and failing the group closed once its budget runs out. Routing it to
-a capped group would put merge capacity behind the pull-request lanes that
-already compete for that cap, which is the failure **Capacity** below describes.
-Moving it needs the merge-group leg handled on purpose, not as a side effect, so
-it waits for its own change. `test/test_ci_additional_fleet_routes.py` covers
-its policy while it is still hosted, and
-`test_the_ratchet_audit_route_stays_off_the_larger_runner_group` pins the hosted
-tail directly, so moving it means deleting that assertion on purpose rather than
-discovering the merge-queue hazard afterwards. The direct pin is there because
+as pending and failing the group closed once its budget runs out.
+
+That hazard is real and it is **no longer unique to this workflow.** The queue
+polls six workflows, and three of them -- `ci.yml`, `fast-gate.yml` and
+`build.yml` -- now reach the group on exactly the same leg: a merge group queued
+by an actor outside `CODEBUILD_ACTOR_IDS` misses the fleet and takes the group
+label. Several `ci.yml` jobs reach it unconditionally already, with no fleet
+branch at all. So every merge group already waits on this cap, and the honest
+statement is that moving the ratchet audit would add less merge-path exposure
+than is already there -- not that keeping it hosted protects merge capacity.
+
+What keeps it out is narrower: it is the one site whose hosted tail is pinned by
+a dedicated assertion rather than derived, so moving it means deleting
+`test_the_ratchet_audit_route_stays_off_the_larger_runner_group` on purpose.
+That is a deliberate decision with its own evidence, not a line to carry along
+inside a change about the pull-request lanes, so it waits for its own change.
+`test/test_ci_additional_fleet_routes.py` covers its policy while it is still
+hosted. The direct pin is there because
 the truth table alone would not catch it: that table derives its expected value
 from the expression under test, so a change editing the constant and the
 workflow together carries the expectation along and passes.
@@ -1324,9 +1364,9 @@ workflow together carries the expectation along and passes.
 queueing holds every merge.** `pr-readiness.yml`'s `readiness` job keeps its
 CodeBuild fleet route -- a same-repository `pull_request_target` run from a
 listed actor -- and changed only what happens when the fleet does not admit the
-run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the five above and the
-same rename exposure applies to its line. It is the exception to **Why these
-five were kept to a non-PR-time batch**: it fires on `pull_request_target`, and
+run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the twenty above and the
+same rename exposure applies to its line. What sets it apart from the other
+pull-request lanes is not the event: it fires on `pull_request_target`, and
 it publishes the required `PR Readiness` status itself rather than being polled
 for one, so when it queues there is no other lane to be waiting behind.
 
@@ -1355,7 +1395,7 @@ jobs API filtered on `runner_group_name` as **Capacity** below asks, and treat a
 lengthening hold window as the rollback trigger rather than waiting for a wrong
 verdict to be acted on.
 
-Rollback is the fleet-preserving recipe the five above use, and **this is the
+Rollback is the fleet-preserving recipe the twenty above use, and **this is the
 line to restore first** when the group is at its cap, because every merge is
 behind it: drop the middle branch so the expression's tail is `|| 'ubuntu-latest'
 }}` again, and in `_CANONICAL_READINESS_EXPR` REPLACE `_GROUP_THEN_HOSTED_TAIL`
@@ -1419,7 +1459,7 @@ runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-cor
 As above, this is about a fork running its own copy, not about a fork pull
 request against this repository: that `pull_request` run executes in the base
 repository, so `github.repository` matches and all six lanes do land on the
-group, against `kirocrew-linux-4-core`'s `maximum_runners: 100`. A
+group, against `kirocrew-linux-4-core`'s `maximum_runners: 200`. A
 `merge_group` run does the same.
 
 The rename exposure the group form avoids is real and accepted here: renaming
@@ -1520,22 +1560,27 @@ sit here rather than queueing on the shared pool, and the move is a one-line
 revert per file. Treat this as reversible spend and revisit it if that project
 is ever built.
 
-**Capacity.** The definition is capped at `maximum_runners: 100`, a per-runner
+**Capacity.** The definition is capped at `maximum_runners: 200`, a per-runner
 limit established when the runner is created; raising it goes through GitHub
 Support rather than the organization settings page, so it is not self-service.
+Read the live value rather than this number before reasoning against it
+(`gh api /orgs/kirodotdev/actions/hosted-runners`): the cap is raised through a
+Support request that leaves no mark on this page, so a capacity argument built
+on a stale figure here can be wrong by a factor of two.
 **Measure this definition's own peak from the jobs API filtered on
 `runner_group_name` before putting more load on it**, rather than extrapolating
 from the shared pool's peak-to-mean ratio, which is an aggregate a subset's
 burst pattern need not match. Exceeding the cap is not a failure state, just a
-worse one than headroom: jobs queue against our own 100 slots instead of the
+worse one than headroom: jobs queue against our own 200 slots instead of the
 shared pool, and because these lanes feed `PR Readiness` the cost of being
 wrong shows up as slower merges rather than as a broken check.
 
 Rollback is per site and needs no AWS or runner-group change: restore
 `runs-on: ubuntu-latest` on the affected line -- except on the two `ci.yml`
 matrix lanes, where the line goes back to `runs-on: ${{ matrix.os }}` instead,
-so the rollback does not send the Windows leg to Linux. The six fleet-fallback
-sites are the exception twice over. It is not a whole-line replacement there, because the
+so the rollback does not send the Windows leg to Linux. The twenty
+fleet-fallback sites, plus `readiness`, are the exception twice over.
+It is not a whole-line replacement there, because the
 fleet route has to survive: drop the middle branch so the expression's tail is
 `|| 'ubuntu-latest' }}` again, and drop `_GROUP_THEN_HOSTED_TAIL` from that
 policy's constant. And it is **not per site but per policy** -- the three
