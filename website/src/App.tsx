@@ -894,14 +894,16 @@ export default function App() {
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
       <InstancesViewport macInset={macInset} />
-      {/* macOS focus mode: window-drag strips for the LOCAL header, placed to be
-          structurally identical to the pane strips that provably work — the
+      {/* macOS: window-drag strips for the LOCAL header's gaps while it is on
+          screen (docked, or peeked in focus mode), placed to be structurally
+          identical to the pane strips that provably work — the
           .host-drag-strip mechanism, in the same top-level container, OUTSIDE
           the shell's grid/overflow/stacking context, painted after everything
-          drag-related. Every in-shell variant failed on the desktop app. */}
-      {activeInstanceId === null && focusActive && macInset && topChromeShown &&
+          drag-related. Every in-shell variant failed on the desktop app. Why
+          docked needs them as well: useFocusChrome's localHeaderDragGaps. */}
+      {activeInstanceId === null && macInset && (!focusActive || topChromeShown) &&
         localHeaderDragGaps.map((g, i) => (
-          <div key={`fm-drag-${i}`} aria-hidden data-testid="focus-mac-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
+          <div key={`mac-drag-${i}`} aria-hidden data-testid="mac-header-drag-strip" className="host-drag-strip" style={{ left: g.x, width: g.w, zIndex: 63 }} />
         ))}
       </div>{/* /pane stack */}
     </div>
