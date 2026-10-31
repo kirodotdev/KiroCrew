@@ -697,14 +697,11 @@ class TestPromptResolution:
                 resolve_prompt({"prompt": target}, agent_id="a", agents_dir=tmp_path)
 
     def test_proc_environ_prompt_is_refused(self, tmp_path):
-        # /proc/self/environ would leak the gateway's own environment. It must be
-        # refused either way: on POSIX it is absolute and caught by the pseudo-fs
-        # denylist ("not an allowed location"); on Windows it is not absolute (no
-        # drive letter), so it is treated as a relative prompt and rejected for
-        # escaping the agent directory. Both are fail-closed rejections.
-        with pytest.raises(
-            KasAgentTranslationError, match="not an allowed location|escapes the agent directory"
-        ):
+        # /proc/self/environ would leak the gateway's own environment. On POSIX it
+        # is caught by the pseudo-fs denylist; on Windows it has no drive, so it
+        # resolves to a `<drive>:\proc\...` that does not exist and the read fails.
+        # Both are fail-closed rejections.
+        with pytest.raises(KasAgentTranslationError, match="not an allowed location|unreadable"):
             resolve_prompt(
                 {"prompt": "file:///proc/self/environ"}, agent_id="a", agents_dir=tmp_path
             )
@@ -718,9 +715,15 @@ class TestPromptResolution:
         )
         assert out == "expert prompt"
 
-    def test_relative_prompt_escaping_the_agents_dir_is_refused(self, tmp_path):
-        with pytest.raises(KasAgentTranslationError, match="escapes"):
-            resolve_prompt({"prompt": "file://../../etc/passwd"}, agent_id="a", agents_dir=tmp_path)
+    def test_a_relative_prompt_may_climb_out_of_the_agents_dir(self, tmp_path):
+        # A user reported (0.11.0.3) `file://../prompts/x.md`, which kiro-cli loads,
+        # refused on KAS as escaping the agent directory.
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (tmp_path / "prompts").mkdir()
+        (tmp_path / "prompts" / "x.md").write_text("shared prompt", encoding="utf-8")
+        out = resolve_prompt({"prompt": "file://../prompts/x.md"}, agent_id="a", agents_dir=agents)
+        assert out == "shared prompt"
 
     @pytest.mark.parametrize("bad", [None, "", "   "])
     def test_empty_prompt_falls_back_to_the_kas_constant(self, bad, tmp_path, caplog):

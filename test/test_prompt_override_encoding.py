@@ -39,6 +39,21 @@ _UTF8_OVERRIDE = "UTF8-OVERRIDE-MARKER: you are the override prompt.\n"
 _REAL_LIVE_CAP_FIGURE = ContextBuilder.__dict__["_live_cap_figure"].__func__
 
 
+@pytest.fixture(autouse=True)
+def _no_host_browser_cli(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer "no browser CLI" without probing the host's PATH.
+
+    Building the context asks ``browser_cli.install.available()``, which resolves a
+    playwright-cli from PATH and logs a refusal warning for an untrusted one. A host
+    with such a candidate (an agent session's managed dir, a version manager's global
+    install) then adds a warning the counts below would read as a second override
+    warning. These tests are about the prompt override, so the probe is pinned off.
+    """
+    from kiro_crew.browser_cli import install
+
+    _floor_monkeypatch.setattr(install, "available", lambda *a, **k: False)
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A private data home so the override lives where ``_prompt_path`` looks."""
