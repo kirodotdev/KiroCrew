@@ -489,7 +489,16 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
                         try:
                             slot.note_pending_subagent_delivery(
                                 failure_msg,
-                                [SubagentDelivery(info.id, info.elapsed, info.credits)],
+                                [
+                                    SubagentDelivery(
+                                        info.id,
+                                        info.elapsed,
+                                        info.credits,
+                                        leaked_process=(
+                                            getattr(info, "_leaked_process", False) is True
+                                        ),
+                                    )
+                                ],
                             )
                         except Exception:
                             logger.debug(
