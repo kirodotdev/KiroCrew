@@ -17,11 +17,11 @@ from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.security import (
-    _URL_RE,
     contains_injection,
     redact_credentials,
     redact_exfiltration_urls_with_records,
 )
+from kiro_crew.security.exfil import _scan_span_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ _OPTIMIZER_DENY_REASON = (
     "given and answers with text, so every tool call is refused here"
 )
 
-#: Sentence punctuation ``_URL_RE`` can include at the end of a match. Stripped
+#: Sentence punctuation a URL match can include at the end. Stripped
 #: from both the draft's URLs and the redacted addresses before they are compared.
 _URL_TRAILING_PUNCT = ".,;:!?]"
 
@@ -486,7 +486,9 @@ async def handle_optimize(request: web.Request) -> web.Response:
     # keeps the user's own draft.
     removed: list[tuple[str, str]] = []
     optimized, _, _ = redact_exfiltration_urls_with_records(optimized, removed_out=removed)
-    draft_urls = {m.group(0).rstrip(_URL_TRAILING_PUNCT) for m in _URL_RE.finditer(prompt)}
+    # The draft's URLs are read with the redactor's own spans, so any span it
+    # can remove is recognized as the user's.
+    draft_urls = {url.rstrip(_URL_TRAILING_PUNCT) for url in _scan_span_urls(prompt)}
     if any(address.rstrip(_URL_TRAILING_PUNCT) in draft_urls for address, _ in removed):
         logger.info("Optimizer rewrite redacted a URL from the draft; returning original")
         return web.json_response(
