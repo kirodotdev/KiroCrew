@@ -12,13 +12,15 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { toApiDecision } from '../../utils/approvalDecision'
-import { alreadyResolvedDecision, decisionVerdict, mintResponseId, resolvedByLine } from './sharedDecision'
+import { alreadyResolvedDecision, decisionVerdict, mintResponseId, resolvedByLine, settledElsewhereLine } from './sharedDecision'
 import { baseCommandLabel, truncateCommandLabel } from '../../utils/trustPatterns'
 import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../ApprovalModePicker'
 import type { SubagentActivity } from '../../types'
 import { i18nT } from '../../i18n/t'
 import { fmtTime } from '../../i18n/format'
 import { crewRootOf } from '../../lib/crewMode'
+import { useSharedCrewViewer, useTeamAttribution } from '../../hooks/sharedCrew/useSharedCrew'
+import { isUnknownPrincipal } from '../../api/sharedCrewUi'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -78,6 +80,11 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // signal; persisting it would fire the nudge on stale history.
   const approvalCountsRef = useRef<Record<string, number>>({})
   const [approvalNudgeSlot, setApprovalNudgeSlot] = useState<string | null>(null)
+  // A lost race names who answered only in a Crew with other people in it;
+  // alone, it still says the request was already settled.
+  const teamAttribution = useTeamAttribution()
+  const viewer = useSharedCrewViewer(teamAttribution).data
+  const viewerId = viewer && !isUnknownPrincipal(viewer) ? viewer.id : ''
   // Not over a Crew Mode conductor's worker approval card: it sits above the
   // composer, and the callout would cover its Approve / Reject.
   const crewCardShown = useAppSelector(s => !!slotId && s.dashboard.slots.some(r => crewRootOf(r) === slotId && r.pending_approval))
@@ -265,7 +272,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
         // It answered the request this tab clicked, not every row with that id.
         dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: decisionVerdict(settled), mid: clickedMid }))
         setApprovalNoticeKind('status')
-        setApprovalNotice(resolvedByLine(settled))
+        setApprovalNotice(teamAttribution ? resolvedByLine(settled, viewerId) : settledElsewhereLine(settled))
         return
       }
       // 404 means the backend no longer holds a future for this id — the turn
@@ -308,7 +315,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId).then(finish).catch(fail)
     }
-  }, [approvalId, approvalMid, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch])
+  }, [approvalId, approvalMid, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch, teamAttribution, viewerId])
 
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,

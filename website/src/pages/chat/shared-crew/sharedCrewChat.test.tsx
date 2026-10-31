@@ -10,7 +10,7 @@ import { SessionCollabStrip } from './SessionCollabStrip'
 import { PresenceChips } from './PresenceChips'
 import { DecisionAttributionList } from './DecisionAttributionList'
 import { refusalMessage, queuedReason } from './overloadCopy'
-import { alreadyResolvedDecision, resolvedByLine } from '../../../components/chat-input/sharedDecision'
+import { alreadyResolvedDecision, requestedByLine, resolvedByLine, settledElsewhereLine } from '../../../components/chat-input/sharedDecision'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 
 vi.mock('../../../api/client', () => ({
@@ -241,6 +241,49 @@ describe('shared decisions', () => {
     expect(resolvedByLine(won!)).toBe('Rejected by Bob')
     expect(alreadyResolvedDecision({ status: 404, body: '{}' })).toBeNull()
     expect(alreadyResolvedDecision({ status: 409, body: 'not json' })).toBeNull()
+  })
+
+  const local = (name: string) => person('p_local', name)
+  const byLocal = (name: string): SharedDecision => ({ ...decision('resolved', 'approved'), initiator: local(name), responder: local(name) })
+  const mode = (m: 'personal' | 'network') => ({ schema_version: 1, mode: m, crew_id: 'c1' }) as never
+  // The strip reads capabilities first; only then are the mode, viewer and
+  // decisions queries enabled. Waits that span that chain get this ceiling.
+  const CHAIN_TIMEOUT_MS = 5000
+
+  it('shows no attribution line in a personal Crew', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('personal'))
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app')] } as never)
+    const { qc } = mount(<SessionCollabStrip sessionKey="s1" />)
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'mode'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    await waitFor(() => expect(qc.getQueryData(['shared-crew', 'decisions', 's1'])).toBeDefined(), { timeout: CHAIN_TIMEOUT_MS })
+    expect(screen.queryByTestId('decision-attribution')).toBeNull()
+    expect(screen.queryByText(/local-app/)).toBeNull()
+  })
+
+  it('keeps the line in a shared Crew and reads the viewer as you', async () => {
+    vi.mocked(api.sharedCrewMode).mockResolvedValue(mode('network'))
+    vi.mocked(api.sharedCrewViewer).mockResolvedValue(local('local-app') as never)
+    vi.mocked(api.sharedCrewDecisions).mockResolvedValue({ items: [byLocal('local-app')] } as never)
+    mount(<SessionCollabStrip sessionKey="s1" />)
+    expect(await screen.findByText('Approved by you', {}, { timeout: CHAIN_TIMEOUT_MS })).toBeInTheDocument()
+    expect(screen.getByText(/asked during your turn/)).toBeInTheDocument()
+    expect(screen.queryByText(/local-app/)).toBeNull()
+  })
+
+  it.each(['local-app', 'local-startup'])('never names the local token subject %s', (name) => {
+    expect(resolvedByLine(byLocal(name))).toBe('Approved by Crew owner')
+    expect(requestedByLine(byLocal(name))).toBe("asked during Crew owner's turn")
+    expect(resolvedByLine(byLocal(name), 'p_local')).toBe('Approved by you')
+  })
+
+  it('names a teammate whose display name looks like the local token', () => {
+    const mate = { ...byLocal('local-app'), responder: { id: 'p_t', kind: 'human' as const, display: { name: 'local-app', login: 'mate@example.com', captured_at: null } } }
+    expect(resolvedByLine(mate)).toBe('Approved by local-app')
+  })
+
+  it('tells a lost race without a name', () => {
+    expect(settledElsewhereLine(decision('resolved', 'approved'))).toBe('Already approved elsewhere')
+    expect(settledElsewhereLine(decision('resolved', 'rejected'))).toBe('Already rejected elsewhere')
   })
 })
 

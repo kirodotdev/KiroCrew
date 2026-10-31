@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
@@ -33,6 +33,11 @@ vi.mock('../api/client', () => {
       resolveApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
       spawnList: vi.fn(() => Promise.resolve({ agents: [] })),
+      // A personal Crew by default: no Shared Crew capability is reported.
+      sharedCrewCapabilities: vi.fn(() => Promise.resolve(null)),
+      sharedCrewMode: vi.fn(() => Promise.resolve(null)),
+      sharedCrewPeople: vi.fn(() => Promise.resolve(null)),
+      sharedCrewViewer: vi.fn(() => Promise.resolve(null)),
     },
     ApiError: MockApiError,
   }
@@ -95,6 +100,8 @@ function stateWithApproval(meta: Record<string, unknown> = {}): Partial<RootStat
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(api.sharedCrewCapabilities).mockResolvedValue(null as never)
+  vi.mocked(api.sharedCrewMode).mockResolvedValue(null as never)
 })
 
 describe('ChatInput approval flow', () => {
@@ -482,7 +489,9 @@ describe('ChatInput orphaned approval (404)', () => {
     expect(store.getState().chat.messages[1].meta!.resolved).toBe('stale')
   })
 
-  it('a lost race adopts the winner and names who answered', async () => {
+  it('a lost race adopts the winner and names who answered in a shared Crew', async () => {
+    vi.mocked(api.sharedCrewCapabilities).mockResolvedValue({ attribution: 'available' } as never)
+    vi.mocked(api.sharedCrewMode).mockResolvedValue({ schema_version: 1, mode: 'network', crew_id: 'c1' } as never)
     const winner = {
       decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
       initiator: { id: 'p_a', kind: 'human', display: { name: 'Alice', login: '', captured_at: null } },
@@ -494,10 +503,34 @@ describe('ChatInput orphaned approval (404)', () => {
     )
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    // The approval bar reads capabilities, then the Crew mode, before it can
+    // name anyone: wait for the mode read before clicking.
+    await waitFor(() => expect(api.sharedCrewMode).toHaveBeenCalled(), { timeout: 5000 })
+    await act(async () => {})
     fireEvent.click(screen.getByText('Allow once'))
     await waitFor(() => {
       expect(screen.getByRole('status')).toHaveTextContent('Rejected by Bob')
     })
+    expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
+  })
+
+  it('a lost race in a personal Crew says it was settled, naming no one', async () => {
+    const winner = {
+      decision_id: 'approval-state:ap-123', kind: 'approval', session_key: 's1', state: 'resolved', revision: 2,
+      initiator: { id: 'p_l', kind: 'human', display: { name: 'local-app', login: '', captured_at: null } },
+      responder: { id: 'p_l', kind: 'human', display: { name: 'local-app', login: '', captured_at: null } },
+      outcome: 'rejected', resolved_at: 10,
+    }
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(
+      new ApiError(409, 'already answered', JSON.stringify({ code: 'already_resolved', decision: winner })),
+    )
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Allow once'))
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent('Already rejected elsewhere')
+    })
+    expect(screen.queryByText(/local-app/)).toBeNull()
     expect(store.getState().chat.messages[1].meta!.resolved).toBe('rejected')
   })
 

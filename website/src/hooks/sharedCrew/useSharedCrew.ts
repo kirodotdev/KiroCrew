@@ -9,7 +9,8 @@ import { useEffect } from 'react'
 import { api } from '../../api/client'
 import { noteSendRevision } from '../../api/sendRace'
 import type { CreatorFilter, SendState } from '../../api/sharedCrew'
-import { ALL_UNAVAILABLE } from '../../api/sharedCrewUi'
+import { effectiveMode, hidesTeamAttribution } from '../../api/sharedCrewMode'
+import { ALL_UNAVAILABLE, capabilityUsable, sharedAccessConfigured } from '../../api/sharedCrewUi'
 import { latestSendState, sharedCrewKeys } from './sharedCrewSocket'
 
 /** The Crew's capabilities; all unavailable until the gateway says otherwise. */
@@ -46,6 +47,22 @@ export function useSharedCrewMode(enabled = true, { fetchOnMount = true }: { fet
 
 export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {
   return useQuery({ queryKey: sharedCrewKeys.people, queryFn: () => api.sharedCrewPeople(), enabled, retry: false, refetchOnMount: fetchOnMount, retryOnMount: fetchOnMount })
+}
+
+/** Whether this Crew shows who did what (bylines, decision attribution),
+ *  decided the way the session list decides it: a personal Crew, one that
+ *  cannot attribute, or one whose mode is not known yet shows none. The read
+ *  failures are SessionCollabStrip's to show, once per chat. */
+export function useTeamAttribution(): boolean {
+  const { capabilities } = useSharedCrewCapabilities()
+  const attributes = capabilityUsable(capabilities.attribution)
+  const modeQuery = useSharedCrewMode(attributes)
+  const people = useSharedCrewPeople(attributes)
+  const mode = effectiveMode(modeQuery.data, {
+    teamPath: sharedAccessConfigured(capabilities),
+    othersSeen: (people.data?.people ?? []).some(row => !row.is_viewer),
+  })
+  return attributes && modeQuery.data !== undefined && !hidesTeamAttribution(mode)
 }
 
 export function useSharedCrewCapacity(enabled = true) {
