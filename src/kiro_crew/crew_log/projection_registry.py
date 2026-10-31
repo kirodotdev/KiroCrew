@@ -711,8 +711,8 @@ _FOLDS: Final[dict[str, _Fold]] = {
         _workstreams_render,
         bind_slot=_workstreams_bind_slot,
         affects=WORKSTREAMS_TYPES,
-        # One past the base: ``charged`` joined the state.
-        state_version=_FOLD_STATE_VERSION_BASE + 1,
+        # Two past the base: ``charged``, then each item's ``worker_instance_id``, joined the state.
+        state_version=_FOLD_STATE_VERSION_BASE + 2,
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),

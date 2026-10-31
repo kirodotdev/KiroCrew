@@ -248,6 +248,10 @@ def _workstreams_new_item(item_id: str) -> dict[str, Any]:
         "state": "open",
         "verdict": None,
         "worker_session_key": None,
+        # The crew instance a REMOTE worker runs on (empty for a local one). Kept beside
+        # the key because a peer's session key names a slot on ANOTHER gateway: it must
+        # never be looked up among this gateway's own slots.
+        "worker_instance_id": None,
         "round": 0,
         "status": None,
         "summary": "",
@@ -719,19 +723,20 @@ def _workstreams_bound_tasks(state: Mapping[str, Any]) -> dict[str, dict[str, An
     return bound
 
 
-def _workstreams_item_workers(state: Mapping[str, Any], item_id: str) -> list[str]:
-    """The worker session key of *item_id* on every board this fold holds.
+def _workstreams_item_workers(state: Mapping[str, Any], item_id: str) -> list[tuple[str, str]]:
+    """The ``(worker session key, worker instance id)`` of *item_id* on every board this fold holds.
 
-    One entry per board that carries the id, ``""`` when that board's item has no bound
-    worker, so a caller can tell "no such item" (empty list) from "on two boards" (two
-    entries) from "on one board, unbound" (``[""]``).
+    One entry per board that carries the id, ``("", "")`` when that board's item has no
+    bound worker, so a caller can tell "no such item" (empty list) from "on two boards"
+    (two entries) from "on one board, unbound" (``[("", "")]``). The instance id is
+    non-empty only for a REMOTE worker: its key names a slot on a peer gateway, not here.
 
     Reads the fold's RAW state, because the rendered value holds no session key. It does
     not re-spell the render's window (newest boards, first tasks): the step already caps
     every board's tasks, and a page can only ask about an id it drew. A card the page drew
     is therefore always found here, whatever the render's order becomes.
     """
-    workers: list[str] = []
+    workers: list[tuple[str, str]] = []
     for board_id in state["order"]:
         board = state["boards"].get(board_id)
         if board is None:
@@ -740,7 +745,13 @@ def _workstreams_item_workers(state: Mapping[str, Any], item_id: str) -> list[st
         if item is None:
             continue
         worker = item["worker_session_key"]
-        workers.append(worker if isinstance(worker, str) else "")
+        instance = item.get("worker_instance_id")
+        workers.append(
+            (
+                worker if isinstance(worker, str) else "",
+                instance if isinstance(instance, str) else "",
+            )
+        )
     return workers
 
 

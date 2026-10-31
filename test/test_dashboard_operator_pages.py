@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew import agent_panel
 from kiro_crew.dashboard.handlers import member_dashboard as routes
+from kiro_crew.dashboard.handlers import member_dashboard_names
 from kiro_crew.dashboard_templates import catalog, instance
 
 MEMBER = "Fleet Conductor"
@@ -87,7 +88,9 @@ def _env(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(routes.KiroCrewConfig, "load", staticmethod(lambda: cfg))
     _floor_monkeypatch.setattr(routes.members_mod, "member_slug", lambda name, config=None: SLUG)
     _floor_monkeypatch.setattr(routes.members_mod, "validate_slug", lambda slug: slug)
-    _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
+    _floor_monkeypatch.setattr(
+        member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [MEMBER]
+    )
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
     assert str(agent_panel.data_home()).startswith(str(tmp_path)), "not a scratch home"
     yield

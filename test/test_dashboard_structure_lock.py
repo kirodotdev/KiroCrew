@@ -24,6 +24,7 @@ from kiro_crew import members as _members_mod
 from kiro_crew.dashboard import server
 from kiro_crew.dashboard.handlers import agent_panel
 from kiro_crew.dashboard.handlers import member_dashboard as routes
+from kiro_crew.dashboard.handlers import member_dashboard_names
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.mcp_panel import _list_tools
 
@@ -81,7 +82,9 @@ def _home(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(
         routes.members_mod, "canonical_member_key", lambda name, cfg=None: name
     )
-    _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
+    _floor_monkeypatch.setattr(
+        member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [MEMBER]
+    )
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
     _floor_monkeypatch.setattr(routes, "_owner_only", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
@@ -337,7 +340,9 @@ class TestTheLockOutlivesEverythingButTheUnlock:
         cfg = SimpleNamespace(agents={renamed: SimpleNamespace(member_id=SLUG)})
         _floor_monkeypatch.setattr(routes.members_mod, "member_slug", _REAL_MEMBER_SLUG)
         _floor_monkeypatch.setattr(routes.KiroCrewConfig, "load", staticmethod(lambda: cfg))
-        _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [renamed])
+        _floor_monkeypatch.setattr(
+            member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [renamed]
+        )
         assert members_mod.slug_for_name(renamed) != SLUG, "the display name derives another slug"
         async with _client() as client:
             url = f"/api/members/{SLUG}/dashboard/lock?member={renamed.replace(' ', '+')}"

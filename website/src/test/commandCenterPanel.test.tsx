@@ -8,6 +8,10 @@ import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
 import PendingQuestionCard from '../components/PendingQuestionCard'
 import { setQuestionCard } from '../store/chatSlice'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
+import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavItem } from '../shell/nav/navRow'
+import { useLocation } from 'react-router-dom'
+import { useState } from 'react'
 
 // Set true to make the lazy Overview subtree throw on render, standing in for a
 // failed chunk import — the F1 regression drives the dashboard-only boundary.
@@ -216,6 +220,89 @@ describe('task dashboard host controls', () => {
     if (kind === 'custom') fireEvent.change(input, { target: { value: '' } })
     else fireEvent.click(screen.getByText('Stable API'))
     await waitFor(() => expect(screen.queryByText('Which contract?')).not.toBeInTheDocument())
+  })
+
+  describe('an unsent Questions answer and the app shell\'s leave guard', () => {
+    /** Reads the shell's answer to "may I leave?", the one every guarded exit asks. */
+    function Ask({ onAsk }: { onAsk: (ask: () => boolean) => void }) {
+      onAsk(useMayLeaveForNavigation())
+      return null
+    }
+    const pending = [{ slot: 'dashboard:worker', card_id: 'card-1', native: true, questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] },
+    ] }]
+    function mount(extra?: React.ReactNode) {
+      let ask: () => boolean = () => true
+      vi.mocked(api.pendingQuestions).mockResolvedValue(pending)
+      const view = renderWithProviders(
+        <NavigationLeaveGuardProvider>
+          <Ask onAsk={a => { ask = a }} />
+          <CommandCenterPanel slot="root" active />
+          {extra}
+        </NavigationLeaveGuardProvider>,
+        { store: taskStore() },
+      )
+      return { view, ask: () => ask() }
+    }
+
+    it('refuses an exit and opens the discard dialog while the answer is typed, then lets the repeat through', async () => {
+      const { ask } = mount()
+      fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+      // No answer yet: nothing to lose, nothing asked.
+      expect(ask()).toBe(true)
+      expect(screen.queryByText('Discard unsaved changes?')).not.toBeInTheDocument()
+      const input = screen.getByPlaceholderText(/type a custom answer/i)
+      fireEvent.change(input, { target: { value: 'Not sent yet' } })
+      await waitFor(() => expect(ask()).toBe(false))
+      expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument()
+      // Keeping the answer: the dialog goes, the next exit still asks.
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByText('Discard unsaved changes?')).not.toBeInTheDocument())
+      expect(ask()).toBe(false)
+      // Discarding: the repeat of the exit goes through.
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
+      await waitFor(() => expect(ask()).toBe(true))
+      // Consent covers the answer as it stood: editing it again asks again.
+      fireEvent.change(input, { target: { value: 'Not sent yet, edited' } })
+      await waitFor(() => expect(ask()).toBe(false))
+      expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument()
+      // Clearing the answer leaves nothing to lose.
+      fireEvent.change(input, { target: { value: '' } })
+      await waitFor(() => expect(ask()).toBe(true))
+    })
+
+    it('keeps the sidebar from leaving until the person agrees to lose the answer', async () => {
+      function Path() { return <span data-testid="path">{useLocation().pathname}</span> }
+      mount(<><Path /><NavItem path="/settings" label="Settings" icon={null} active={false} collapsed={false} /></>)
+      fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+      fireEvent.change(screen.getByPlaceholderText(/type a custom answer/i), { target: { value: 'Not sent yet' } })
+      const settings = await screen.findByRole('button', { name: /Settings/ })
+      fireEvent.click(settings)
+      expect(await screen.findByText('Discard unsaved changes?')).toBeInTheDocument()
+      expect(screen.getByTestId('path')).toHaveTextContent('/')
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+      await waitFor(() => expect(screen.queryByText('Discard unsaved changes?')).not.toBeInTheDocument())
+      fireEvent.click(settings)
+      await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/settings'))
+    })
+
+    it('asks nothing once the panel is gone', async () => {
+      function Hideable() {
+        const [on, setOn] = useState(true)
+        return <>{on && <CommandCenterPanel slot="root" active />}<button type="button" onClick={() => setOn(false)}>hide panel</button></>
+      }
+      let ask: () => boolean = () => true
+      vi.mocked(api.pendingQuestions).mockResolvedValue(pending)
+      renderWithProviders(
+        <NavigationLeaveGuardProvider><Ask onAsk={a => { ask = a }} /><Hideable /></NavigationLeaveGuardProvider>,
+        { store: taskStore() },
+      )
+      fireEvent.click(await screen.findByRole('radio', { name: 'Questions 1' }))
+      fireEvent.change(screen.getByPlaceholderText(/type a custom answer/i), { target: { value: 'Not sent yet' } })
+      await waitFor(() => expect(ask()).toBe(false))
+      fireEvent.click(screen.getByRole('button', { name: 'hide panel' }))
+      expect(ask()).toBe(true)
+    })
   })
 
   it.each(['failed', 'uncertain', 'accepted-dismiss-failed'])('handles a retired draft send without losing or duplicating it (%s)', async outcome => {
