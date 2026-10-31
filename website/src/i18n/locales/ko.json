@@ -15871,6 +15871,7 @@
         "collapse_folder": "폴더 접기",
         "confirm_delete_folder": "‘{{name}}’을(를) 삭제하시겠습니까? 작업의 그룹이 해제됩니다.",
         "create": "만들기",
+        "creating": "만드는 중…",
         "delete_folder": "폴더 삭제",
         "delete_folder_named": "‘{{name}}’ 삭제",
         "expand_folder": "폴더 펼치기",

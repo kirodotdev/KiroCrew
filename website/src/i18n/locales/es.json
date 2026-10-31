@@ -16428,6 +16428,7 @@
         "collapse_folder": "Contraer carpeta",
         "confirm_delete_folder": "¿Eliminar “{{name}}”? Los trabajos quedarán sin agrupar.",
         "create": "Crear",
+        "creating": "Creando…",
         "delete_folder": "Eliminar carpeta",
         "delete_folder_named": "Eliminar \"{{name}}\"",
         "expand_folder": "Expandir carpeta",

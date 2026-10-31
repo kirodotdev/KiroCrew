@@ -15876,6 +15876,7 @@
         "collapse_folder": "フォルダーを折りたたむ",
         "confirm_delete_folder": "「{{name}}」を削除しますか？ジョブはグループ解除されます。",
         "create": "作成",
+        "creating": "作成中…",
         "delete_folder": "フォルダーを削除",
         "delete_folder_named": "「{{name}}」を削除",
         "expand_folder": "フォルダーを展開",

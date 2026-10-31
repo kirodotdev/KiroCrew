@@ -7663,6 +7663,7 @@
         "collapse_folder": "Collapse folder",
         "confirm_delete_folder": "Delete “{{name}}”? Jobs will be ungrouped.",
         "create": "Create",
+        "creating": "Creating…",
         "delete_folder": "Delete folder",
         "delete_folder_named": "Delete \"{{name}}\"",
         "expand_folder": "Expand folder",

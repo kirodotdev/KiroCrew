@@ -16428,6 +16428,7 @@
         "collapse_folder": "Comprimi cartella",
         "confirm_delete_folder": "Eliminare «{{name}}»? Le attività non saranno più raggruppate.",
         "create": "Crea",
+        "creating": "Creazione…",
         "delete_folder": "Elimina cartella",
         "delete_folder_named": "Elimina \"{{name}}\"",
         "expand_folder": "Espandi cartella",

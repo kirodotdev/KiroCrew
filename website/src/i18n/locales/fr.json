@@ -16428,6 +16428,7 @@
         "collapse_folder": "Réduire le dossier",
         "confirm_delete_folder": "Supprimer « {{name}} » ? Les tâches seront dégroupées.",
         "create": "Créer",
+        "creating": "Création…",
         "delete_folder": "Supprimer le dossier",
         "delete_folder_named": "Supprimer \"{{name}}\"",
         "expand_folder": "Développer le dossier",

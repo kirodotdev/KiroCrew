@@ -16152,6 +16152,7 @@
         "collapse_folder": "फ़ोल्डर समेटें",
         "confirm_delete_folder": "“{{name}}” हटाएँ? कार्य बिना समूह के हो जाएँगे।",
         "create": "बनाएँ",
+        "creating": "बनाया जा रहा है…",
         "delete_folder": "फ़ोल्डर हटाएँ",
         "delete_folder_named": "\"{{name}}\" हटाएं",
         "expand_folder": "फ़ोल्डर फैलाएँ",

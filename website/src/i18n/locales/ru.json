@@ -16704,6 +16704,7 @@
         "collapse_folder": "Свернуть папку",
         "confirm_delete_folder": "Удалить «{{name}}»? Задания будут разгруппированы.",
         "create": "Создать",
+        "creating": "Создание…",
         "delete_folder": "Удалить папку",
         "delete_folder_named": "Удалить \"{{name}}\"",
         "expand_folder": "Развернуть папку",

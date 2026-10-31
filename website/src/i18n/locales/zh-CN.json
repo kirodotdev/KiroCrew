@@ -15876,6 +15876,7 @@
         "collapse_folder": "折叠文件夹",
         "confirm_delete_folder": "删除 “{{name}}”？任务将变为未分组。",
         "create": "创建",
+        "creating": "正在创建…",
         "delete_folder": "删除文件夹",
         "delete_folder_named": "删除\"{{name}}\"",
         "expand_folder": "展开文件夹",

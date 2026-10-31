@@ -16428,6 +16428,7 @@
         "collapse_folder": "Recolher pasta",
         "confirm_delete_folder": "Excluir “{{name}}”? As tarefas ficarão desagrupadas.",
         "create": "Criar",
+        "creating": "Criando…",
         "delete_folder": "Excluir pasta",
         "delete_folder_named": "Excluir \"{{name}}\"",
         "expand_folder": "Expandir pasta",

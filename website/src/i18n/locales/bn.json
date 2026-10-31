@@ -16152,6 +16152,7 @@
         "collapse_folder": "ফোল্ডার সংকুচিত করো",
         "confirm_delete_folder": "“{{name}}” মুছে ফেলবেন? কাজগুলো আলাদা হবে।",
         "create": "তৈরি করুন",
+        "creating": "তৈরি হচ্ছে…",
         "delete_folder": "ফোল্ডার মুছে ফেলো",
         "delete_folder_named": "\"{{name}}\" মুছুন",
         "expand_folder": "ফোল্ডার প্রসারিত করো",
