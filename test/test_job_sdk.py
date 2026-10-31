@@ -166,6 +166,14 @@ class TestHappyRun:
             # and not the result payload this guard blocks. Its presence is a
             # deliberate design decision.
             "work_observed",
+            # An SDK-minted monotonic completion order, set at a run's terminal
+            # write from a process-wide counter. Retention orders runs
+            # newest-finished-first by it rather than by the second-resolution
+            # clock, where a burst of fast runs ties. Like the lifecycle fields
+            # above it is minted by the SDK from an integer counter, never a
+            # channel a runner or caller reaches, so it is not the result payload
+            # this guard blocks.
+            "seq",
         }
 
 

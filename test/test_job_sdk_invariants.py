@@ -648,6 +648,12 @@ class TestSanitizeInvariant:
             # checkpoint, and cannot write a payload through it -- so it stays a
             # lifecycle fact the one-line backstop need not sanitize.
             "work_observed",
+            # An integer the SDK mints at a run's terminal write from a
+            # process-wide counter, so retention can order runs by completion
+            # order rather than the second-resolution clock. Minted, never a
+            # channel a runner or caller reaches, so the one-line backstop need
+            # not sanitize it.
+            "seq",
         }
         fields = set(JobRun.__dataclass_fields__)
         assert fields - sdk_minted == {"error"}
