@@ -56,6 +56,12 @@ from .cron import _recognize_session
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.memory")
 
+# PUT /api/memory/settings bounds; the Memory tab's inputs use the same ones.
+_HISTORY_IDLE_HOURS_MIN = 0.5
+_HISTORY_IDLE_HOURS_MAX = 24.0
+_HISTORY_MAX_DAYS_MIN = 7
+_HISTORY_MAX_DAYS_MAX = 365
+
 
 def memory_recall_deadline(
     handler: Callable[[web.Request], Awaitable[web.Response]],
@@ -580,16 +586,34 @@ async def api_memory_settings(request: web.Request) -> web.Response:
         # Validated BEFORE the transaction: none of it reads the config, and a
         # 400 should not have taken the lock or occupied a worker.
         updates: dict[str, Any] = {}
+        # Out-of-range values are clamped, never refused: the Memory tab's inputs
+        # carry these same bounds and clamp before sending, so both sides store
+        # and show one value. The upper clamp also keeps a non-finite float
+        # (`"inf"`) out of config.json.
         if "history_idle_hours" in body:
             try:
-                updates["history_idle_hours"] = max(0.5, float(body["history_idle_hours"]))
+                idle = float(body["history_idle_hours"])
+            except OverflowError:
+                # An integer too large for a float (`10**400`) is still a number
+                # past a bound: clamp it like `"inf"` rather than 500.
+                idle = (
+                    _HISTORY_IDLE_HOURS_MAX
+                    if body["history_idle_hours"] > 0
+                    else _HISTORY_IDLE_HOURS_MIN
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_idle_hours must be numeric"}, status=400
                 )
+            updates["history_idle_hours"] = min(
+                _HISTORY_IDLE_HOURS_MAX, max(_HISTORY_IDLE_HOURS_MIN, idle)
+            )
         if "history_max_days" in body:
             try:
-                updates["history_max_days"] = max(7, body_int(body["history_max_days"]))
+                updates["history_max_days"] = min(
+                    _HISTORY_MAX_DAYS_MAX,
+                    max(_HISTORY_MAX_DAYS_MIN, body_int(body["history_max_days"])),
+                )
             except (ValueError, TypeError):
                 return web.json_response(
                     {"error": "history_max_days must be an integer"}, status=400
