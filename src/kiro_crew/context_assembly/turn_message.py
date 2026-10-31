@@ -183,7 +183,17 @@ def build_message(
                 if is_new_session and not resumed and not needs_reinjection:
                     native_documents = provider_native_documents
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.agent_sdk.served_model_identity import crew_states_served_model
 
+    # The model the live session reports serving, on a harness whose own system
+    # prompt names none (goose). Read from the same provider accessor the
+    # dashboard's model label reads, so the two cannot disagree; ``""`` everywhere
+    # else, and while the session reports no model (``auto`` reads as ``""``).
+    served_model = (
+        str(context_provider.served_model or "")
+        if context_provider is not None and crew_states_served_model(provider_type)
+        else ""
+    )
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     hook_result = self.hooks.on_message(text)
 
@@ -359,6 +369,7 @@ def build_message(
                 steering_dirs=steering_dirs,
                 _v2_essentials=_essentials,
                 member_dispatch_mounted=member_dispatch_mounted,
+                served_model=served_model,
             )
         if session_ctx:
             # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -499,6 +510,14 @@ def build_message(
     # every follow-up from trusted dispatcher metadata.
     if not is_new_session and runtime_source:
         parts.extend(_sections.runtime_refresh_blocks(session_key or "", runtime_source))
+
+    # A live model switch keeps the conversation, so the session-start
+    # [ACTIVE MODEL] fact goes stale; every follow-up names the model serving
+    # THIS turn, as the [RUNTIME] refresh above names the interface.
+    if not is_new_session:
+        _active_model = _sections.active_model_block(served_model)
+        if _active_model:
+            parts.append(_active_model)
 
     # Post-compaction re-injection: the skills index was lost when the
     # session-start context was compacted. Re-inject it so the model can
