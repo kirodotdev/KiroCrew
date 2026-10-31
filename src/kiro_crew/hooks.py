@@ -97,10 +97,13 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 # bound here, not only in gate_tiers.
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
+    _command_matches_any,
     _operator_confirms,
     _rule_exfil,
     _rule_sensitive_bash,
     _rule_sensitive_path,
+    _spec_builtin_names,
+    _spec_command_granted,
     _tier_app_own_server,
     _tier_deny_rules,
     _tier_governance,
@@ -109,10 +112,13 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_param_paths,
     _tier_read_only,
     _tier_search_target,
+    _tier_spec_builtin_grant,
+    _tier_spec_shell_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
     _tier_write_protected,
     gate_tier_problems,
+    grant_spec_builtin,
     shell_rules,
 )
 from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
@@ -188,9 +194,13 @@ from kiro_crew.hook_runtime.stream_caps import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     ToolCall,
+    _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
     _context_matches,
+    _glob_pattern_leaves_root,
+    _granted_names,
+    _granted_patterns,
     _has_global_inline_flags,
     _host_builtin_alias,
     _is_declared_builtin_mcp_server,
@@ -199,8 +209,10 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
     _is_host_read_only_builtin,
+    _is_host_search_builtin_call,
     _normalize_tool_name,
     _note_title_only_grant_pattern,
+    _search_root_anchored,
     _tool_matches,
     event_is_spawn_run,
     hook_gate_kwargs,
@@ -496,6 +508,12 @@ class GateTier(NamedTuple):
     rules: tuple[GateRule, ...] = ()
 
 
+#: An extra condition on ``grant_spec_builtin`` (``hook_runtime/gate_tiers.py``):
+#: handed the judgement's facts and the names the call answers to, it may only
+#: NARROW the grant.
+SpecBuiltinAllow = Callable[[GateFacts, tuple[str, ...]], bool]
+
+
 _BUNDLED_AUTO_APPROVE_TOOLS: list[str] = []
 
 
@@ -742,6 +760,9 @@ class HookManager:
         mcp_identity_trusted: bool = False,
         mcp_identity_unreadable: bool = False,
         kas_builtin_ids: bool = False,
+        spec_granted_builtins: frozenset[str] = frozenset(),
+        spec_granted_commands: tuple[str, ...] = (),
+        spec_shell_allowlist: tuple[str, ...] | None = None,
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -777,6 +798,11 @@ class HookManager:
                 identity_trusted=mcp_identity_trusted,
                 identity_unreadable=mcp_identity_unreadable,
                 kas_builtin_ids=kas_builtin_ids,
+                spec_granted_builtins=frozenset(spec_granted_builtins),
+                spec_granted_commands=tuple(spec_granted_commands),
+                spec_shell_allowlist=(
+                    None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
+                ),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -860,6 +886,28 @@ _READ_ONLY_TOOL_KINDS: frozenset[str] = frozenset({"read", "fetch"})
 # unattended on a surface with no approver.
 _HOST_READ_ONLY_BUILTIN_TOOLS: frozenset[str] = frozenset(
     {"fs_read", "glob", "grep", "web_fetch", "web_search"}
+)
+
+# kiro-cli's file-search built-ins, which the interactive read-only tier approves
+# on their host-stamped identity (``_is_host_search_builtin_call``). kiro-cli stamps
+# them ``kind="search"``, a kind the tier's allow-list does not take, so without
+# this every grep or glob outside the session's folder asked, while ``fs_read`` of
+# the same file did not. A subset of ``_HOST_READ_ONLY_BUILTIN_TOOLS`` on purpose
+# (``test_host_search_builtins_are_host_read_only``): only file reads, never the
+# network built-ins.
+_HOST_SEARCH_BUILTIN_TOOLS: frozenset[str] = frozenset({"glob", "grep"})
+
+# The operations of kiro-cli's ``code`` built-in that only read: tree-sitter
+# lookups that need no language server. ``code`` as a whole can write
+# (``pattern_rewrite``, ``rename_symbol``, ``format``, ``apply_code_action``) and
+# starts language servers (``initialize_workspace``, and every LSP-backed
+# operation), so it is never a host read-only built-in; one of these operations,
+# named in the call's own arguments, is. kiro-cli stamps ``kind="read"`` on EVERY
+# ``code`` call, a rewrite included (captured live, 2.35.1), so the kind proves
+# nothing about which operation runs. Add only an operation that reads files and
+# runs nothing.
+_CODE_READ_ONLY_OPERATIONS: frozenset[str] = frozenset(
+    {"get_document_symbols", "lookup_symbols", "pattern_search", "search_symbols"}
 )
 
 # Kiro Crew's OWN read-only MCP tools, keyed by the ``(server, tool)`` pair the
@@ -1751,8 +1799,10 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("mcp-auto-deny", "deny", _tier_mcp_auto_deny),
     GateTier("search-target", "deny", _tier_search_target),
     GateTier("governance", "deny_policy", _tier_governance),
+    GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
+    GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),
     GateTier("read-only", "classify", _tier_read_only),
 )
 

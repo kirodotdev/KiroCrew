@@ -300,7 +300,9 @@ def test_the_rewrite_keeps_the_live_stores_access_control_acl(tmp_path):
 
     if shutil.which("setfacl") is None:
         pytest.skip("setfacl not installed")
-    subprocess.run(["setfacl", "-m", "u:nobody:---", str(dst)], check=True)
+    # A named entry for this run's own uid: ``nobody`` (65534) is the overflow uid
+    # inside a user namespace, which a sandboxed run cannot name in an ACL (EINVAL).
+    subprocess.run(["setfacl", "-m", f"u:{os.getuid()}:---", str(dst)], check=True)
     before = os.getxattr(dst, acl)
     ino = dst.stat().st_ino
 

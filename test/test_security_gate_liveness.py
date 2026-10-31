@@ -514,7 +514,11 @@ def _url_payload_command(n: int) -> str:
 #: every address put back must be the whole URL match that starts where it lands;
 #: plus the redactor's ``_ordered_out`` flag for a link rewritten inside a longer one.
 #: Display-time only; no redaction rule, pattern or threshold moved.
-_PACKAGE_LINE_BUDGET = 32_552
+#: Raised again for ``shell_normalizer._shell_option_run``: the nested payload reader
+#: takes the word a shell runs after the options and redirections that follow a shell's
+#: own ``-c`` (``bash -c -x '<script>'``). One forward scanner, its lazy per-position
+#: memos and the own-option-run scope; the reader only adds payloads. Re-measured.
+_PACKAGE_LINE_BUDGET = 32_714
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

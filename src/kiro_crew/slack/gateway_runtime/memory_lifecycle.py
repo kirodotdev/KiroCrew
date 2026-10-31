@@ -20,7 +20,6 @@ if TYPE_CHECKING:
         Any,
         GatewayOrchestrator,
         asyncio,
-        embed_executor,
         embedding_model_is_custom,
         get_shared_embedder,
         logger,
@@ -313,10 +312,14 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
 
 async def _repair_member_memory(self: GatewayOrchestrator) -> None:
     """Run one paced repair loop across already-open V1 and V2 stores."""
+    from kiro_crew.executors import memory_background_executor
+
     loop = asyncio.get_running_loop()
     while not self._memory_repair_stop.is_set():
         try:
-            await loop.run_in_executor(embed_executor(), self._repair_member_memory_once)
+            await loop.run_in_executor(
+                memory_background_executor(), self._repair_member_memory_once
+            )
         except asyncio.CancelledError:
             self._memory_repair_stop.set()
             raise
@@ -499,19 +502,18 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
             reconcile_store_embedding_space(store)
             return store.backfill_missing_embeddings()
 
-        # embed_executor(), NOT maintenance_executor(): pacing turns this
-        # from a ~72-minute worst case into a multi-hour one, and mc-maint is
-        # a 4-worker pool documented as "reserved for the FAST periodic
-        # sweeps + overlay rewrites" — parking one of its four slots
-        # (mostly asleep) for a working day contradicts that reservation.
-        # mc-embed is the bulkhead built for exactly this: its
-        # rationale is that embed work "queues behind ITSELF instead of
-        # starving" everything else, it has 8 workers, and the same
-        # atexit shutdown hook already covers it. Interactive embeds are
-        # unaffected either way — LlamaCppEmbedder serializes every call
-        # onto one owned inference thread, so the model lock is the
-        # bottleneck there, not a pool slot.
-        await loop.run_in_executor(embed_executor(), _wait_then_backfill)
+        # memory_background_executor(), NOT maintenance_executor(): pacing
+        # turns this from a ~72-minute worst case into a multi-hour one, and
+        # mc-maint is a 4-worker pool documented as "reserved for the FAST
+        # periodic sweeps + overlay rewrites" — parking one of its four slots
+        # (mostly asleep) for a working day contradicts that reservation. Nor
+        # mc-embed: turn context assembly runs there, and a sweep that
+        # holds one of its workers for hours is one fewer for every turn. The
+        # small mc-membg pool is shared only with consolidation, and the same
+        # atexit shutdown hook covers it.
+        from kiro_crew.executors import memory_background_executor
+
+        await loop.run_in_executor(memory_background_executor(), _wait_then_backfill)
     except asyncio.CancelledError:
         raise
     except Exception:

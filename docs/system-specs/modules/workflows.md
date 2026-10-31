@@ -781,6 +781,11 @@ Properties that matter:
   `redact_exfiltration_urls` then `redact_credentials`, recursively. Mapping keys
   are retained as-is by `WorkflowRunStore`; the HTTP and chat response redactors
   independently cover both keys and values on the way out.
+- **Strict JSON:** a non-finite float (`inf`, `-inf`, `nan`) is written as `null`,
+  both to disk and in every `/api/workflows` response, because a bare `Infinity`
+  token fails the browser's `JSON.parse`. A script reaches one through
+  `ctx.budget.remaining()` on a run without a budget. A run file that already holds
+  a bare `Infinity` still loads, and the response redactor nulls it.
 - **Injective paths:** a `run_id` is sanitized to alphanumerics plus `_`/`-` so a
   malformed id cannot traverse out of the runs dir. Because sanitizing is lossy,
   when it changes the id a 12-hex-char sha256 prefix of the original is appended,

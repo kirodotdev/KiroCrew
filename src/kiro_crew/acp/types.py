@@ -1077,6 +1077,26 @@ class AcpEvent:
     #: maps to its kiro-cli policy name. False on every other harness, whose
     #: bare ids the gate reads under their own name only.
     kas_builtin_ids: bool = False
+    #: spec_granted_builtins: on a KAS session's OWN permission request (never a
+    #: sub-session's), the built-ins the active agent's spec grants that the KAS
+    #: policy keeps at ``ask`` (``AcpSessionHandle.kas_crew_answered``). Written by
+    #: the session handle from the projection it registered, never from the
+    #: frame. The gate's ``spec-builtin-grant`` tier reads it, after every deny
+    #: tier and governance, and approves only a host-identified built-in it names.
+    #: Empty everywhere else, which grants nothing.
+    spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_granted_commands: on the same requests, the agent's
+    #: ``toolsSettings.shell.allowedCommands`` as Python regexes
+    #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The
+    #: ``spec-builtin-grant`` tier approves a shell call whose recovered command
+    #: fullmatches one. Empty everywhere else, which grants nothing.
+    spec_granted_commands: tuple[str, ...] = ()
+    #: spec_shell_allowlist: on the same requests, the only shell commands the
+    #: agent's spec lets run when it sets ``toolsSettings.shell.denyByDefault``
+    #: (``AcpSessionHandle.kas_spec_shell_allowlist``); ``None`` when it does not.
+    #: A restriction: the gate's ``spec-shell-allowlist`` tier refuses every other
+    #: shell call.
+    spec_shell_allowlist: tuple[str, ...] | None = None
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``

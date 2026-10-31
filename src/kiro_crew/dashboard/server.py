@@ -305,6 +305,8 @@ from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
     _kick_pinned_order_load,
     _kick_session_search_index,
     _own_host_warm_done,
+    _prebuild_memory_after_preparation,
+    _prebuild_memory_in_thread,
     _register_connections_warm_lifecycle,
     _register_own_host_warm,
 )

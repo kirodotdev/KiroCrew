@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from auto_improvement_member_helpers import MEMBER_BUDGET_SECS, MemberDeadline
+from tmpdir_helpers import short_tmp_path
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.acp.types import PROVIDER_LABEL_KAS
@@ -482,8 +483,19 @@ async def test_stages_use_distinct_owned_sessions_and_shared_budget(tmp_path):
     assert len(set(context.stores)) == 2
 
 
+@pytest.fixture
+def short_tmp():
+    """A test dir outside the real ``~/.kiro/crew`` (``tmpdir_helpers.short_tmp_path``).
+
+    The essential-context guard refuses any source under the real data home, and
+    ``tmp_path`` sits there when ``TMPDIR`` is an agent session's scratch dir.
+    """
+    yield from short_tmp_path("ai-members")
+
+
 @pytest.mark.asyncio
-async def test_assignments_build_real_context_from_only_their_private_store(tmp_path, monkeypatch):
+async def test_assignments_build_real_context_from_only_their_private_store(short_tmp, monkeypatch):
+    tmp_path = short_tmp
     deadline = MemberDeadline(assignments=3)
     from kiro_crew import context as context_module
     from kiro_crew.context import ContextBuilder

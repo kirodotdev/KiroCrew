@@ -91,6 +91,10 @@ class _ChatTurn:
 
     # State those functions write, or read after the turn rebinds it.
     _acquired: "bool"
+    # The embed-pool admission reservation _turn_build_prompt opened for the
+    # context build, settled in _turn_settle_debts. None until (and unless) the
+    # context-builder branch takes one; set in __init__ so every exit can read it.
+    _admission_slot: "Any"
     _activity_after_terminal: "int"
     _allocation_kwargs: "dict[str, Any]"
     _answer_text: "str"
@@ -341,6 +345,8 @@ class _ChatTurn:
         self._on_irreversibly_consumed = _on_irreversibly_consumed
         self.monitor_completion = monitor_completion
         self._current_message = _current_message
+        # No admission reservation until the context-builder branch opens one.
+        self._admission_slot = None
 
     if not TYPE_CHECKING:
 

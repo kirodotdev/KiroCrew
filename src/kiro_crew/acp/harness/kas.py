@@ -509,6 +509,20 @@ class KasHarness(MembershipHarness):
         handle.kas_auto_approved = kas_agents_mod.projected_auto_approved(
             custom_agents, active_agent
         )
+        # The built-ins the batch kept at ``ask`` that the spec granted: the
+        # session's permission requests for them are answered by Crew's gate
+        # after its own checks (``spec-builtin-grant`` tier).
+        handle.kas_crew_answered = kas_agents_mod.projected_crew_answered(
+            custom_agents, active_agent
+        )
+        handle.kas_crew_answered_commands = kas_agents_mod.projected_crew_answered_commands(
+            custom_agents, active_agent
+        )
+        # A `denyByDefault` spec's shell allowlist: the gate refuses every other
+        # shell call of this agent (`spec-shell-allowlist` tier).
+        handle.kas_spec_shell_allowlist = kas_agents_mod.projected_shell_allowlist(
+            custom_agents, active_agent
+        )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
 

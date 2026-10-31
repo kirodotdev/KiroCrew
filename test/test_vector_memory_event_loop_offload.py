@@ -282,7 +282,7 @@ class TestHandlerOffload1947:
         has_any_lesson has_episodic_text has_pending_embeddings has_stored_embeddings
         import_memory invalidate_episode_content list_by_facets load_faiss_index
         log_reject_event memory_stats migrate_from_markdown promote_episodic_patterns
-        propose_semantic_delete read_counters read_editable_history read_history_entries
+        propose_semantic_delete read_editable_history read_history_entries
         rebuild_memory_index recall reconcile_embedding_space recorded_embedding_space
         recorded_rebuild_generation replace_today_history restore_episodic rotate_events
         save_faiss_index search_episodic search_memory search_semantic seed_item_if_absent

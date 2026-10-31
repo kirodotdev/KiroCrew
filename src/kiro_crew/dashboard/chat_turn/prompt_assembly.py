@@ -35,7 +35,11 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers import _prompt_read_within_root
 from kiro_crew.dashboard.state import TURN_OPENING_INJECT_KINDS
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import (
+    EmbedAdmissionTimeout,
+    acquire_embed_admission,
+    run_in_embed_pool,
+)
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
@@ -55,6 +59,7 @@ if TYPE_CHECKING:
         _find_prompt,
         _get_skills,
         _maybe_inject_persona,
+        _MemoryUnavailable,
         context_omissions,
         embed_startup_query,
         is_sensitive_path,
@@ -80,6 +85,20 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+
+
+# How long a context-bearing turn waits to ENTER the memory embed pool before it
+# gives up and surfaces a visible error instead of waiting unbounded. Only the
+# ADMISSION wait is bounded; the build's own work (embedding, file reads) is not,
+# because the hang this guards is a saturated memory-admission semaphore where
+# other concurrent memory builds and non-recall embed-pool work hold every one of
+# its slots and the turn sits on "thinking" with no deadline. (Background
+# consolidation does not contend here -- it runs on its own memory-background
+# pool, not on the embed pool these slots gate.)
+# Sized well above a healthy build joining a busy pool yet strictly below the
+# backend's post-dispatch stall detector (``_STALE_TURN_TIMEOUT``, 90s), so a
+# saturated pool reads as a clear turn error here rather than later as a stall.
+_BUILD_ADMISSION_TIMEOUT_SECS = 60.0
 
 
 async def _session_replay_history(
@@ -602,6 +621,38 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # The difference against len(message) at build_message time is how
         # far the user's text was pushed down — its offset for split_blocks.
         _core_msg_len = len(message)
+        # Bound ONLY the wait to ENTER the memory embed pool, taken here -- just
+        # before the first one-shot input this branch consumes (the replay
+        # suppression flag in _session_replay_history, the subagent-failure
+        # drain, prev_turn_cancelled, the pending-context drain) or writes into
+        # build_message's delivery records. A saturated pool -- every slot held
+        # by concurrent memory builds and other non-recall embed-pool work
+        # (consolidation runs on its own memory-background pool, not these slots)
+        # -- would otherwise leave this turn on "thinking" with no deadline.
+        # Acquiring the slot FIRST means a timeout
+        # has consumed nothing to restore and leaves no abandoned build thread.
+        # The reservation is held across the non-pool awaits below (replay, store
+        # init, folder reads, prewarm) -- the atomicity this guards requires it,
+        # and those are bounded local work, not the unbounded admission wait. The
+        # build future takes over the slot's release once submitted, so on the
+        # success path the slot frees the moment the build finishes (before the
+        # stream); _turn_settle_debts settles the reservation on every exit, a
+        # no-op once the future already released it and the real release only on a
+        # pre-submit error (the timeout path reserved nothing). Stored straight
+        # onto the turn and never held under a bare local, so the except arms and
+        # _turn_settle_debts read the one storage cell (turn-plumbing contract).
+        try:
+            turn._admission_slot = await acquire_embed_admission(_BUILD_ADMISSION_TIMEOUT_SECS)
+        except EmbedAdmissionTimeout as exc:
+            # The pool stayed saturated past the deadline. Nothing above ran, so
+            # no input was consumed; surface the retryable memory-unavailable
+            # card the gateway already renders rather than hang. The next turn
+            # re-reads every one-shot untouched.
+            raise _MemoryUnavailable(
+                "memory_unavailable: the memory pool was busy and this turn's "
+                "context could not be prepared in time; nothing was sent -- "
+                "try again in a moment"
+            ) from exc
 
         # Record that a non-slash context-bearing turn ASSEMBLED its history
         # replay — this is the ``elif state.context_builder:`` arm, so a slash
@@ -881,6 +932,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 message,
                 _context_is_new,
                 session_key,
+                _admission_held=turn._admission_slot,
                 agent=kiro_agent or slot.agent or None,
                 resumed=_provider_has_history,
                 workspace=slot.workspace or None,
@@ -981,6 +1033,19 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     _terminal_synthetic = turn._terminal_synthetic
     session_key = turn.session_key
     state = turn.state
+    # Settle the embed-pool admission reservation _turn_build_prompt opened (if
+    # any). Release here ONLY when no build future took ownership -- a pre-submit
+    # error left the reservation open. On the success path the build was
+    # submitted, so its future owns the release (its thread can outlive a
+    # cancelled turn) and frees the slot when the build finishes; releasing here
+    # would free it while that thread still ran. The timeout path reserved
+    # nothing (slot is None). Synchronous on purpose -- _turn_settle_debts must
+    # stay suspension-free, which the slot's plain release() allows. Spelled as
+    # turn._admission_slot throughout (never a bare local) per the turn-plumbing
+    # contract.
+    if turn._admission_slot is not None and not turn._admission_slot.handed_off:
+        turn._admission_slot.release()
+        turn._admission_slot = None
     # Replay settlement belongs on the one path every turn exit crosses.
     # A clean, non-synthetic landed end_turn is the only ordinary terminal
     # whose fresh native transcript is durable enough to replace the prior

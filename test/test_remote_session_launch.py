@@ -20,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from playwright_cli_installer_helpers import _native_tool_on_path
 
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
@@ -150,9 +151,13 @@ def test_install_payload_refuses_a_file_outside_the_worker_set():
 
 def _old_guest_python_dir(tmp_path: Path) -> str:
     """A test-owned bin dir holding the guest image's Python 3.9 ``python3``."""
-    interpreter = shutil.which("python3.9")
-    if interpreter is None:
-        pytest.skip("no python3.9 on this host")
+    # A real binary, not a version-manager shim: a mise shim resolves its toolchain
+    # through HOME and, under the worker's scratch HOME, writes its own complaints to
+    # the guest command's stdout, which the worker then refuses as "too much data".
+    found = _native_tool_on_path("python3.9")
+    if found is None:
+        pytest.skip("no native python3.9 on this host")
+    interpreter = str(found)
     shim_dir = tmp_path / "py39-shim"
     shim_dir.mkdir(mode=0o700)
     shim = shim_dir / "python3"

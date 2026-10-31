@@ -21,6 +21,10 @@ it has no random path component, and ``AF_UNIX`` is not in play there.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
+from pathlib import Path
+from typing import Iterator
 
 from kiro_crew import platform_compat
 
@@ -65,3 +69,22 @@ def short_tmp_base() -> str | None:
     if root and os.path.isdir(root):
         return root
     return None if platform_compat.IS_WINDOWS else "/tmp"
+
+
+def short_tmp_path(label: str) -> Iterator[Path]:
+    """Body of a ``tmp_path`` override: a per-test dir in the short root, removed after.
+
+    For a test module whose code under test judges a path by its components, such as a
+    ``.kiro/crew`` data-home component, a credential directory name, or an owned-root
+    anchor. ``tmp_path`` follows ``TMPDIR``, and an agent session points ``TMPDIR``
+    under ``~/.kiro/crew/scratch/``, so those modules saw every test path as the data
+    home and failed in agent-driven runs while passing in CI. The short root never
+    carries such a component, so the verdict depends on the test, not on the host.
+    Use it as ``yield from short_tmp_path("<module label>")`` in a module-level
+    ``tmp_path`` fixture.
+    """
+    path = Path(tempfile.mkdtemp(prefix=SHORT_TMP_PREFIX + f"{label}-", dir=short_tmp_base()))
+    try:
+        yield path.resolve()
+    finally:
+        shutil.rmtree(path, ignore_errors=True)

@@ -15,6 +15,7 @@ import pytest
 from app_bridges_helpers import _stub_venv_probe  # noqa: F401
 from app_bridges_helpers import app_env_fixture  # noqa: F401
 from app_bridges_helpers import _make_app_source
+from tmpdir_helpers import short_tmp_path
 from turn_harness import ScriptedProvider, SlotSpec, TurnScript, run_turn
 
 from kiro_crew.acp import managed_agent_shadow
@@ -32,6 +33,13 @@ from kiro_crew.apps.agent_launch import (
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.handlers.usage import read_effective_agent
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("launch-copy")
+
 
 _APP = "pr-bulk-ops"
 _SPEC = {

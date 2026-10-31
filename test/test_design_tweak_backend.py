@@ -22,9 +22,16 @@ if sys.platform == "win32":  # pragma: no cover - platform-gated
     import _winapi
 
 from design_tweak_backend_helpers import isolated_queue_fixture  # noqa: F401
+from tmpdir_helpers import short_tmp_path
 
 from conftest import requires_symlinks
 from kiro_crew.apps.builtins.design_tweak.backend import server
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("design-tweak")
 
 
 class TestContained:

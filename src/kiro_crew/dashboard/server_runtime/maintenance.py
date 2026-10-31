@@ -384,10 +384,81 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
             await asyncio.to_thread(_reclaim_in_thread)
         except Exception:  # noqa: BLE001 -- hygiene must never take the gateway down
             logger.warning("Knowledge store orphan reclaim failed", exc_info=True)
+        # The memory prebuild follows the knowledge maintenance rather than racing
+        # it: both are O(data) CPU passes, and the one a session waits on should
+        # not share the cores with the other.
+        try:
+            await _prebuild_memory_after_preparation(state)
+        except Exception:  # noqa: BLE001 -- a warm-up must never take the gateway down
+            logger.warning("Memory prebuild failed", exc_info=True)
 
     task = asyncio.create_task(_knowledge_orphan_reclaim())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+
+async def _prebuild_memory_after_preparation(
+    state: DashboardState, *, wait_secs: float = 900.0, poll_secs: float = 1.0
+) -> None:
+    """Run the memory prebuild once memory preparation has finished, off the loop.
+
+    Before preparation is ready every store read raises ``MemoryStartupUnavailable``,
+    so a prebuild that ran then would warm nothing. The wait shields the shared
+    preparation task, so cancelling this one never cancels recovery, and it ends on
+    shutdown or after ``wait_secs``. A gateway with no
+    context builder has nothing to build and takes no thread hop.
+    """
+    from kiro_crew.memory_startup import memory_prepared, memory_startup_preparing
+
+    if getattr(state, "context_builder", None) is None:
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_secs
+    while memory_startup_preparing() and not shutdown_event.is_set():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.info("memory prebuild skipped: memory preparation is still running")
+            return
+        task = getattr(state, "memory_startup_task", None)
+        wait = min(poll_secs, remaining)
+        if task is None:
+            await asyncio.sleep(wait)
+            continue
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+        except asyncio.TimeoutError:
+            continue
+        except Exception:  # noqa: BLE001 -- the preparation reports its own failure
+            break
+    if shutdown_event.is_set() or not memory_prepared():
+        return
+    await asyncio.to_thread(_prebuild_memory_in_thread, state)
+
+
+def _prebuild_memory_in_thread(state: DashboardState) -> None:
+    """Build the default memory store's session-start reads, so restart's first sessions are warm.
+
+    Read-only and embed-free (``memory_startup_prebuild``). Skipped when the
+    gateway has no context builder or its memory has no vector store, and when the
+    memory store cannot start: the session-start build reports that itself.
+    """
+    builder = getattr(state, "context_builder", None)
+    if builder is None or shutdown_event.is_set():
+        return
+    try:
+        store = builder.memory.vector_store
+    except Exception:  # noqa: BLE001 -- an unavailable store is reported by its readers
+        logger.debug("Memory prebuild skipped: memory store unavailable", exc_info=True)
+        return
+    if store is None:
+        return
+    from kiro_crew.memory_startup_prebuild import prebuild_startup_reads
+
+    spent = prebuild_startup_reads(store, should_stop=shutdown_event.is_set)
+    logger.info(
+        "memory prebuild: %s",
+        ", ".join(f"{name} {secs * 1000:.0f} ms" for name, secs in spent.items()) or "nothing",
+    )
 
 
 def _kick_otel_crew_log_subscriber(state: DashboardState) -> None:
