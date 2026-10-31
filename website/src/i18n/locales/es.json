@@ -5810,7 +5810,8 @@
       "status_blocked": "Bloqueado",
       "status_done": "Terminado",
       "status_needs_you": "Te espera",
-      "status_on_track": "Va bien"
+      "status_on_track": "Va bien",
+      "links": "Enlaces"
     },
     "voicePlaybackNotice": {
       "failed": "No se pudo usar «{{speak}}». Revisa los ajustes de texto a voz e inténtalo de nuevo.",

@@ -5707,7 +5707,8 @@
       "status_blocked": "Blockiert",
       "status_done": "Fertig",
       "status_needs_you": "Wartet auf dich",
-      "status_on_track": "Läuft nach Plan"
+      "status_on_track": "Läuft nach Plan",
+      "links": "Links"
     },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",

@@ -5707,7 +5707,8 @@
       "status_blocked": "আটকে আছে",
       "status_done": "শেষ",
       "status_needs_you": "তোমার অপেক্ষায়",
-      "status_on_track": "ঠিকঠাক চলছে"
+      "status_on_track": "ঠিকঠাক চলছে",
+      "links": "লিংক"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” চালানো যায়নি। টেক্সট-টু-স্পিচ সেটিংস পরীক্ষা করে আবার চেষ্টা করো।",

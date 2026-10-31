@@ -5810,7 +5810,8 @@
       "status_blocked": "Bloccato",
       "status_done": "Completato",
       "status_needs_you": "Aspetta te",
-      "status_on_track": "Procede bene"
+      "status_on_track": "Procede bene",
+      "links": "Link"
     },
     "voicePlaybackNotice": {
       "failed": "«{{speak}}» non riuscito. Controlla le impostazioni «Da testo a voce» e riprova.",

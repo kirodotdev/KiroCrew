@@ -547,9 +547,11 @@ normal mate message roles and classes; older builds also wrote a deterministic
 opener row (`warm_task_brief_preparing`), which still reads as a brief row. The
 result row's `meta.brief` holds the validated, redacted fields (`status`,
 `headline`, `asked`, `remaining`, `done`, `needs_you`, `next`, `extra`, `body`,
-an optional HTML `widget`, and the goal-scoped `progress`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
+an optional HTML `widget`, the goal-scoped `progress`, and gateway-built
+`links`; an older row holds `asked`, `now`, `needs_you` and `next`) that the
 transcript draws as a fixed card; its `content` is the same brief as plain
-text, for export and any reader without the card.
+text, for export and any reader without the card, ending in the one
+gateway-written `[OPTIONS: ...]` line when choices are pending.
 Their metadata marks them only for fingerprint and model-input
 exclusion. They remain ordinary visible chat messages but are excluded from
 model replay, session-summary extraction, and their own task fingerprint. The

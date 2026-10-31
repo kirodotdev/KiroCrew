@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { defaultMessageRenderers, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { isCrewmateChatRow } from '../components/chat/crewmateBubbles'
-import WarmBriefCard, { warmBriefOf, type WarmBrief } from '../components/chat/WarmBriefCard'
+import WarmBriefCard, { warmBriefOf, warmBriefVisibleText, type WarmBrief } from '../components/chat/WarmBriefCard'
 import type { ChatMessage } from '../types'
 import { fmtMessageTime } from '../pages/chat/messageTime'
 import { searchableText, searchableTextMemo } from '../utils/searchableText'
@@ -114,7 +114,7 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', progress: null, remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', widget: '',
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', widget: '', links: [],
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
@@ -132,7 +132,7 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', progress: null, remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', widget: '',
+  done: [], needsYou: [], next: [], extra: [], body: '', widget: '', links: [],
 }
 
 describe('WarmBriefCard', () => {
@@ -192,6 +192,24 @@ describe('WarmBriefCard', () => {
     render(<WarmBriefCard brief={{ ...EMPTY, asked: '修复测试', headline: '已经复现了失败。', needsYou: ['批准推送'], next: ['应用修复'] }} />)
     expect(screen.getByTestId('warm-brief-headline')).toHaveTextContent('已经复现了失败。')
     expect(screen.getByTestId('warm-brief-needs-you')).toHaveTextContent('批准推送')
+  })
+
+  it('draws the gateway links as real links, only for a GitHub pull request', () => {
+    const b = warmBriefOf(brief({
+      headline: 'Merge #26100.',
+      links: [
+        { label: '#26100', url: 'https://github.com/kirodotdev/KiroCrew/pull/26100' },
+        { label: '#1', url: 'https://evil.example/pull/1' },
+        { label: 'click', url: 'https://github.com/o/r/pull/2' },
+        { label: '#3', url: 'javascript:alert(1)' },
+      ],
+    }))!
+    expect(b.links).toEqual([{ label: '#26100', url: 'https://github.com/kirodotdev/KiroCrew/pull/26100' }])
+    render(<WarmBriefCard brief={b} />)
+    const link = screen.getByRole('link', { name: '#26100' })
+    expect(link.getAttribute('href')).toBe('https://github.com/kirodotdev/KiroCrew/pull/26100')
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer')
+    expect(warmBriefVisibleText(b)).toContain('Links\n#26100')
   })
 
   it('a reloaded row (same meta) renders the same card', () => {

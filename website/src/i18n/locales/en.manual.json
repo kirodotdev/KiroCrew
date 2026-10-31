@@ -1592,7 +1592,8 @@
       "status_blocked": "Blocked",
       "status_done": "Done",
       "status_needs_you": "Waiting on you",
-      "status_on_track": "On track"
+      "status_on_track": "On track",
+      "links": "Links"
     },
     "filePathMenu": {
       "open_in_side_panel": "Open in side panel",

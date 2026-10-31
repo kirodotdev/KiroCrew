@@ -14,7 +14,10 @@
  * drawing that as the crewmate's card would put words in the crewmate's mouth.
  * Every field is untrusted model output grounded in an untrusted snapshot, so
  * each text field is drawn as a plain React text node: never markdown, never
- * HTML, never a link or a button. The widget is HTML and goes only into the
+ * HTML, never a link or a button. The one exception is `links`, which the
+ * gateway builds from its own live GitHub read; each is drawn only when it is
+ * a github.com pull-request URL. The buttons under the card are the chat's own
+ * option bar, read from the gateway-written `[OPTIONS:]` line in `content`. The widget is HTML and goes only into the
  * same sandboxed `WidgetFrame` a chat `<mcwidget>` uses. A row without a valid `meta.brief` (an older prose
  * brief) is not claimed here and keeps its ordinary bubble.
  */
@@ -40,6 +43,9 @@ export interface WarmBrief {
   body: string
   /** HTML for one sandboxed widget, or ''. */
   widget: string
+  /** Pull requests the gateway read live, as real links: built from the
+   *  gateway's read, never from model text, and drawn only for a GitHub PR URL. */
+  links: { label: string; url: string }[]
 }
 
 // The gateway caps every field already; these are the renderer's own bound so
@@ -49,6 +55,10 @@ const MAX_ITEMS = 4
 const MAX_DONE = 4
 const MAX_EXTRA = 2
 const MAX_BODY = 3000
+const MAX_LINKS = 5
+// The only link shape the gateway writes: a github.com pull request.
+const PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}\/pull\/\d{1,9}$/
+const PR_LABEL = /^#\d{1,9}$/
 // A widget over this is dropped whole: cut HTML would draw broken.
 const MAX_WIDGET = 8000
 const STATUSES: readonly WarmBriefStatus[] = ['on_track', 'needs_you', 'blocked', 'done']
@@ -69,6 +79,17 @@ function progressOf(value: unknown): WarmBrief['progress'] {
   const a = accepted as number
   const t = total as number
   return t > 0 && a >= 0 && a <= t ? { accepted: a, total: t } : null
+}
+
+function linksOf(value: unknown): WarmBrief['links'] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(raw => {
+      const l = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+      return { label: text(l.label), url: typeof l.url === 'string' ? l.url : '' }
+    })
+    .filter(l => PR_LABEL.test(l.label) && PR_URL.test(l.url))
+    .slice(0, MAX_LINKS)
 }
 
 function extraOf(value: unknown): WarmBrief['extra'] {
@@ -104,6 +125,7 @@ export function warmBriefOf(m: ChatMessage): WarmBrief | null {
     extra: extraOf(b.extra),
     body: typeof b.body === 'string' ? b.body.trim().slice(0, MAX_BODY) : '',
     widget: typeof b.widget === 'string' && b.widget.length <= MAX_WIDGET ? b.widget.trim() : '',
+    links: linksOf(b.links),
   }
 }
 
@@ -136,6 +158,7 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
   if (brief.done.length) lines.push(i18nT('components.warmBriefCard.done'), ...brief.done)
   if (brief.next.length) lines.push(i18nT('components.warmBriefCard.next'), ...brief.next)
   for (const section of brief.extra) lines.push(section.title, ...section.items)
+  if (brief.links.length) lines.push(i18nT('components.warmBriefCard.links'), ...brief.links.map(l => l.label))
   return lines.join('\n')
 }
 
@@ -229,6 +252,18 @@ export default function WarmBriefCard({ brief }: { brief: WarmBrief }) {
       {brief.extra.map((section, i) => (
         <Section key={i} title={section.title} list={section.items} testId="warm-brief-extra" />
       ))}
+      {brief.links.length > 0 && (
+        <div data-testid="warm-brief-links">
+          <div className={`${SECTION_LABEL} text-muted`}>{i18nT('components.warmBriefCard.links')}</div>
+          <div className="flex flex-wrap gap-x-3">
+            {brief.links.map(link => (
+              <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer" className="text-accent underline" title={link.url}>
+                {link.label}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
       {brief.widget && (
         <div className="min-w-0" data-testid="warm-brief-widget">
           <WidgetFrame html={brief.widget} title={i18nT('components.warmBriefCard.label')} />
