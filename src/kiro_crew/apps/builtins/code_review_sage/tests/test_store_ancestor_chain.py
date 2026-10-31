@@ -264,7 +264,12 @@ class TestTheWindowBetweenTheRefusalAndTheWalk(unittest.TestCase):
     """
 
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp())
+        # Outside every owned root on purpose: the second test asserts what happens
+        # with no anchor above the tree. ``mkdtemp()`` follows ``TMPDIR``, which an
+        # agent session points under ``~/.kiro/crew/scratch/`` -- inside the owned
+        # data home -- so the platform temp base would decide the outcome, not the test.
+        base = "/tmp" if os.name != "nt" and os.path.isdir("/tmp") else None
+        self.tmp = Path(tempfile.mkdtemp(prefix="kc-tmp-sage-", dir=base))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def _plant_after_the_refusal(self, mid: Path, impostor: Path, state: dict):

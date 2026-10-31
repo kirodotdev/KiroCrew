@@ -148,6 +148,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         },
     ),
     Scenario(
+        "spec-shell-allowlist",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="mkfifo /tmp/fifo",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_shell_allowlist=("touch /tmp/allowed",),
+        ),
+    ),
+    Scenario(
         "app-own-server",
         TOOL_AUTO_APPROVE,
         ToolCall(
@@ -165,6 +178,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         ToolCall(title="Running: make build", is_shell=True, command="make build"),
         config={"auto_approve_tools": ["Running: make *"]},
         flags={"identity_grant": False},
+    ),
+    Scenario(
+        "spec-builtin-grant",
+        TOOL_AUTO_APPROVE,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="make build",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_granted_builtins=frozenset({"execute_bash"}),
+        ),
     ),
     Scenario(
         "read-only",
@@ -318,6 +344,9 @@ def _install_governance(body: dict[str, Any] | None) -> None:
     from kiro_crew.config.loader import KiroCrewConfig
 
     if body is None:
+        # A scenario with no policy runs on the default context, never on a
+        # ceiling an earlier scenario judged in the same test installed.
+        ctx_mod.reset_context()
         return
     base = build_default_context(KiroCrewConfig.load())
     ctx_mod.set_context(dataclasses.replace(base, governance=parse_policy(body)))
@@ -346,8 +375,10 @@ def test_the_table_is_the_gate_order() -> None:
         ("mcp-auto-deny", "deny"),
         ("search-target", "deny"),
         ("governance", "deny_policy"),
+        ("spec-shell-allowlist", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
+        ("spec-builtin-grant", "grant"),
         ("read-only", "classify"),
     ]
     targets = next(t for t in GATE_TIERS if t.name == "targets")
@@ -518,19 +549,34 @@ def test_the_keyword_form_judges_the_same_call() -> None:
 #: Every deny scenario under each grant. The app-own-server grant applies by
 #: re-addressing the call to the builtin app's own server, so a scenario already
 #: addressed to its own MCP server is judged under the operator grant only.
-_DENY_UNDER_GRANT = [
-    pytest.param(scenario, grant, id=f"{grant}-{scenario.tier}")
-    for scenario in _DENY_SCENARIOS
-    for grant in ("operator", "app-own-server")
-    if not (grant == "app-own-server" and scenario.call.mcp_server)
-] + [
-    # A command/cmd argument deny under the operator grant. The app-own-server grant
-    # does not apply to these: it re-addresses the call to the app's MCP server, and
-    # a call that names its server has no argument scan by design (its arguments are
-    # data; test_hooks_raw_command_deny pins that), so no such call can carry both.
-    pytest.param(scenario, "operator", id=f"operator-{scenario.tier}-argument")
-    for scenario in _ARGUMENT_SCENARIOS
-]
+_DENY_UNDER_GRANT = (
+    [
+        pytest.param(scenario, grant, id=f"{grant}-{scenario.tier}")
+        for scenario in _DENY_SCENARIOS
+        for grant in ("operator", "app-own-server")
+        # The spec's shell allowlist binds the agent's own shell built-in, never a
+        # call addressed to an MCP server, so the app-own-server re-address skips it.
+        if not (
+            grant == "app-own-server"
+            and (scenario.call.mcp_server or scenario.tier == "spec-shell-allowlist")
+        )
+    ]
+    + [
+        # A command/cmd argument deny under the operator grant. The app-own-server grant
+        # does not apply to these: it re-addresses the call to the app's MCP server, and
+        # a call that names its server has no argument scan by design (its arguments are
+        # data; test_hooks_raw_command_deny pins that), so no such call can carry both.
+        pytest.param(scenario, "operator", id=f"operator-{scenario.tier}-argument")
+        for scenario in _ARGUMENT_SCENARIOS
+    ]
+    + [
+        # The KAS spec grant, on every deny scenario that is a recovered
+        # shell command: re-addressed as KAS's ``run_command`` built-in the spec grants.
+        pytest.param(scenario, "spec", id=f"spec-{scenario.tier}")
+        for scenario in _DENY_SCENARIOS
+        if scenario.call.is_shell and scenario.call.command and not scenario.call.mcp_server
+    ]
+)
 
 
 @pytest.mark.parametrize(("scenario", "grant"), _DENY_UNDER_GRANT)
@@ -541,6 +587,20 @@ def test_every_deny_beats_every_grant(scenario: Scenario, grant: str) -> None:
     grants: dict[str, Any] = {}
     if grant == "operator":
         grants["auto_approve_tools"] = ["*"]
+    elif grant == "spec":
+        call = dataclasses.replace(
+            call,
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_granted_builtins=frozenset({"execute_bash"}),
+        )
+        granted = dataclasses.replace(
+            call, title="Run Command", command="make build", spec_shell_allowlist=None
+        )
+        assert (
+            HookManager().judge(granted).tier == "spec-builtin-grant"
+        ), "the grant must approve the same call shape without the deny trigger"
     else:
         call = dataclasses.replace(
             call, mcp_server=_APP_SERVER, mcp_tool="list", identity_trusted=True
@@ -556,15 +616,16 @@ def test_every_deny_beats_every_grant(scenario: Scenario, grant: str) -> None:
     assert (verdict.action, verdict.tier) == (TOOL_DENY, scenario.tier), verdict.reason
 
 
-def test_classifier_only_drops_both_grant_tiers() -> None:
+def test_classifier_only_drops_every_grant_tier() -> None:
     """Under ``classifier_only`` a grant does not run: the operator-granted build falls
     to the classifier (not read-only, so allow) and the app's own server is not
     auto-approved -- while a provable read still is."""
     by_tier = {s.tier: s for s in TIER_SCENARIOS}
-    for tier in ("operator-grants", "app-own-server"):
+    grant_tiers = ("operator-grants", "app-own-server", "spec-builtin-grant")
+    for tier in grant_tiers:
         verdict = judge_scenario(by_tier[tier], classifier_only=True)
         assert verdict.action == TOOL_ALLOW, tier
-        assert verdict.tier not in ("operator-grants", "app-own-server"), tier
+        assert verdict.tier not in grant_tiers, tier
     verdict = judge_scenario(by_tier["read-only"], classifier_only=True)
     assert (verdict.action, verdict.read_only, verdict.tier) == (
         TOOL_AUTO_APPROVE,

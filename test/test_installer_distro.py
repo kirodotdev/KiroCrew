@@ -1041,17 +1041,28 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
         f'if kill -0 "$_rs_pid" 2>/dev/null; then echo child-alive; else echo child-dead; fi; '
         f"trap"
     )
+    # A shell cannot trap a signal that was ignored when it started (POSIX), and an
+    # ignored disposition survives exec. A run launched in the background (`cmd &`
+    # in a non-interactive shell, as agent harnesses do) starts pytest with SIGINT
+    # ignored, so the step's trap would never fire. Spawn with the default instead.
+    inherited = signal.getsignal(signal.SIGINT)
+    if inherited is signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
     # Its own session, so a timed-out run can be reaped as a group in
     # `finally` instead of leaving the sleeps behind.
-    proc = subprocess.Popen(
-        ["sh", "-c", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        cwd=tmp_path,
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            ["sh", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            cwd=tmp_path,
+            start_new_session=True,
+        )
+    finally:
+        if inherited is signal.SIG_IGN:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         # The step owns INT only from its trap takeover to its restore, and the
         # takeover happens before the fork, so the child's pid file is the

@@ -10,9 +10,16 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tmpdir_helpers import short_tmp_path
 
 from kiro_crew.apps.builtins.file_explorer import server
 from kiro_crew.sandbox import SandboxUnavailableError
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("file-explorer")
 
 
 @pytest.fixture

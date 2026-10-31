@@ -29,9 +29,17 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from tmpdir_helpers import short_tmp_path
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("home-pin")
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 

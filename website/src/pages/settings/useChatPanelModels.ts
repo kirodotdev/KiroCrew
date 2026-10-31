@@ -8,6 +8,7 @@
 import { useQuery, useMutation, type QueryClient } from '@tanstack/react-query'
 import type { DashboardConfig } from '../chat/ChatSettings'
 import { api } from '../../api/client'
+import { apiErrorCode } from '../../api/apiError'
 import { setConfigPathValue, type useOptimisticConfigPaths } from './useOptimisticConfigPaths'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
@@ -50,9 +51,21 @@ export function chatPanelConfigOpts(
       path: () => path,
       displayValue: v => v,
       applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, path, v),
-      onFailure: err => setPathSaveError(path, errMsg(err)),
+      onFailure: err => setPathSaveError(path, withOverlayReason(errMsg(err), err)),
       onSupersede: clearOwnPathError,
     })
+}
+
+/**
+ * A save refused because `config.local.json` sets the key (`config_overlay_owned`)
+ * names that file, so the row does not read as a bare "failed to save": the fix is
+ * in the overlay, not a retry. Rows whose message already carries the server's
+ * reason keep it once.
+ */
+export function withOverlayReason(message: string, err: unknown): string {
+  if (apiErrorCode(err) !== 'config_overlay_owned') return message
+  const reason = err instanceof Error ? err.message : ''
+  return reason && !message.includes(reason) ? `${message}: ${reason}` : message
 }
 
 export type ChatPanelConfigOpts = ReturnType<typeof chatPanelConfigOpts>

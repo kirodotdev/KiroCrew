@@ -483,13 +483,24 @@ class TestPushGuardSquash:
         _git(clone_dir, "config", "core.hooksPath", str(hooks))
         _write_message(clone_dir)
 
-        proc = subprocess.Popen(
-            [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
-            cwd=clone_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
+        # An ignored SIGINT survives exec, and Python keeps it ignored: a pytest run
+        # launched in the background (`cmd &` in a non-interactive shell) would hand
+        # the guard SIG_IGN, so the group Ctrl-C would kill only the hook. Spawn the
+        # guard with the default disposition, as a terminal user's guard has.
+        inherited = signal.getsignal(signal.SIGINT)
+        if inherited is signal.SIG_IGN:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, PUSH_GUARD, "--base", "main", "--squash"],
+                cwd=clone_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        finally:
+            if inherited is signal.SIG_IGN:
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             wait_until(
                 lambda: mark.exists() or proc.poll() is not None,

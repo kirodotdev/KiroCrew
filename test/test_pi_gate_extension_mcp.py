@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from playwright_cli_installer_helpers import _native_tool_on_path
 from real_adapter_gate import require_real_adapter
 
 from kiro_crew.acp.harness.pi import pi_gate_extension_path, pi_mcp_handoff_payload
@@ -72,9 +72,13 @@ console.log(JSON.stringify({ registered, notes, results }));
 
 
 def _node() -> list[str] | None:
-    node = shutil.which("node")
-    if not node:
+    # A version-manager shim resolves its toolchain through HOME, and the harness
+    # runs under a scratch HOME: a mise shim then blocks until the 60 s timeout.
+    # Take the first real node binary on PATH, as the installer tests do.
+    found = _native_tool_on_path("node")
+    if found is None:
         return None
+    node = str(found)
     version = subprocess.run(
         [node, "--version"], capture_output=True, text=True, encoding="utf-8", check=False
     ).stdout

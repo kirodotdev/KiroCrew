@@ -16,9 +16,17 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: F401 (collection marker)
+from tmpdir_helpers import short_tmp_path
 
 from kiro_crew.apps.builtins.design_tweak.backend import server
 from kiro_crew.platform_compat import IS_POSIX
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("design-tweak-devproc")
+
 
 # `os.getpgid` does not exist on Windows, so `patch("os.getpgid")` raises
 # AttributeError there rather than exercising anything. The production code

@@ -51,6 +51,7 @@ def _fg(
     ports: "list[int] | None" = None,
     pids: "dict[int, int] | None" = None,
     confined: "str | None" = None,
+    desktop: bool = False,
 ):
     """A ForegroundBackend wired to fakes. Returns (backend, spawned_argvs)."""
     from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
@@ -69,6 +70,7 @@ def _fg(
         pid_exists=lambda p: alive,
         spawn=spawn if spawn is not None else default_spawn,
         confinement=lambda: confined,
+        desktop_supervised=lambda p: desktop,
     )
     return backend, spawned
 
@@ -143,6 +145,50 @@ async def test_foreground_backend_refuses_when_confined(tmp_path):
     ok, err = await fg.restart_detached()
     assert not ok and "sandbox" in err
     assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_reports_a_desktop_supervised_gateway(tmp_path):
+    """The CLI's restart refuses the desktop app's gateway, so the backend says
+    so up front instead of spawning a restart that changes nothing."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, launcher=str(kc), desktop=True)
+    assert await fg.status() == "desktop_app_supervised"
+
+
+@pytest.mark.asyncio
+async def test_restart_of_a_desktop_supervised_gateway_names_the_app(monkeypatch, tmp_path):
+    """Restart spawns nothing, latches nothing, and names the in-app restart."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc), desktop=True)
+    monkeypatch.setattr(live_mod, "_gateway_backend", lambda: None)
+    monkeypatch.setattr(live_mod, "_live_user_unit_status", AsyncMock(return_value="no_systemd"))
+    monkeypatch.setattr(live_mod, "_foreground_backend", lambda: fg)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    res = await mod._restart_gateway()
+
+    assert res["ok"] is False
+    assert "desktop app runs this gateway" in res["error"]
+    assert "Settings → About → Restart gateway" in res["error"]
+    assert spawned == []
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+def test_default_desktop_supervised_asks_the_cli_check_for_that_port(monkeypatch):
+    from kiro_crew import cli_server_stop
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    seen = []
+
+    def probe(port, *, explicit_port):
+        seen.append((port, explicit_port))
+        return (2**22 + 1, 2**22 + 2) if port == 7777 else None
+
+    monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", probe)
+    assert gs.default_desktop_supervised(7777) is True
+    assert gs.default_desktop_supervised(7778) is False
+    assert seen == [(7777, True), (7778, True)]
 
 
 def test_default_confinement_detects_sandbox_marker(monkeypatch):
@@ -281,6 +327,9 @@ async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_
     for label, fg_kwargs in (
         ("no_marker", dict(ports=[], pids={}, launcher=None)),
         ("confined", dict(launcher=str(kc), confined="backend is sandboxed")),
+        # The CLI's restart refuses a desktop-supervised gateway, so a spawn
+        # would latch a cutover that never lands.
+        ("desktop", dict(launcher=str(kc), desktop=True)),
     ):
         _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir / label)
         monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
@@ -290,6 +339,9 @@ async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_
         res = await mod._make_live(str(wt), dry_run=False)
         assert res["ok"] is True and res["staged_only"] is True, f"{label}: {res}"
         assert res["manual_restart"] in res["notice"]
+        # Only the desktop case says to quit the app first: the CLI refuses
+        # the app's gateway while the app runs.
+        assert ("quit the app, then run" in res["notice"]) is (label == "desktop"), label
         assert spawned == []
         assert mod._MAKE_LIVE_COMMITTED is False
 

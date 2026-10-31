@@ -716,6 +716,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 | Outbound data exfiltration | LLM exfils data via `curl -d @file`, `nc < file` | Data-egress/reverse-shell command shapes (`_BASH_EXFIL_PATTERNS` / `audit_bash_exfiltration()`) are **denied at the tool-invocation gate** (`hooks.on_tool_call` + `mcp_cron`), not only advisory-audited; + `redact_exfiltration_urls()` on output |
 | Credential file permissions | `.env` readable by group/other | `chmod 600` enforced at credential load time + setup wizard |
 | SEL event forwarding leaks | Forwarded audit events contain raw credentials | `redact()` applied to all string fields before callback |
+| MCP server env on the KAS wire | A KAS session takes its agent over ACP (`_meta.kiro.customAgents` on `session/new`), so every MCP `env` value the projection keeps sits in that frame, its recordings and its logs; kiro-cli instead reads the spec off disk | `kas_agents._withhold_credential_fields` withholds `headers` and, per key, every `env` value except an edition-relayed `${NAME}` and, on a server Crew did not author, a literal `_relayable_literal` allows: exactly `true` or `false` (case-insensitive, trimmed), relayed as written. No secret is a boolean, so this holds by construction rather than by guessing which key names or value shapes carry one; earlier rounds that relayed plain words behind key-name and shape checks kept meeting credential names no list covered (`DBPASS`, `MYSQLPWD`, acronym-prefixed names). A boolean is still withheld when its key matches the shared `config.sections_agent_env.AGENT_ENV_CREDENTIAL_CLASS` (split at punctuation and camelCase) or the gateway's `is_secret_env_key` / `is_credential_env_key` prefixes, or when `external_text.redact_external_text` would change it alone or beside its key. Every other value -- numbers (a PIN is digits), words, URLs, paths, JSON, references, `secret://` -- is withheld and its key named in the log when the name is a plain word the redactor leaves alone (counted otherwise), never a value. Those values reach the server through #25362's proposed local launcher, which keeps env off the wire. `agent.env` and the shared class are unchanged. Crew's own managed servers relay no literal but `KIROCREW_HOME`. Pinned by `test/test_kas_agents_mcp_env_relay.py` |
 | Foreign-agent import widens trust | A local Codex/Claude Code/OpenClaw/Hermes (or edition-registered) config contains credentials, hooks, personas, instructions, unsafe paths, or permissive runtime/security settings | Authenticated scan/apply/state APIs + registry-validated source ids and a fixed category catalog + secret-free projections + native destination validation + merge-only writes; unsupported/secret items are reported, source trees remain untouched, and governance cannot be imported or widened |
 | Unsigned/unadmitted app install | Malicious app installs/registers via CLI, registry, or `POST /api/apps/register` with no admission control (`register_external_app` writes `enabled=True`) | Contained App Kit admission gate (`apps/admission.py`) on install/update/enable/register/registry — kill-switch `banned` (always wins) + `approved` allowlist + optional HMAC `require_signature`, fail-closed on an unreadable `app_admission.json`; absent policy admits (interim default) |
 | Implicit third-party app execution | An installed app reaches Python hooks, backend spawn, lifecycle/install shell scripts, or `openCommand` without explicit operator consent; a disabled app invokes `openCommand` | Central `apps/execution.py` decision defaults deny, accepts only JSON boolean `agent.apps_allow_third_party=true`, exempts positively identified builtins, fails closed on config errors, gates every execution chokepoint before side effects, requires enabled state for open, and SEL-audits denials |
@@ -1669,6 +1670,7 @@ continue to apply.
 - **Nested shell payloads are viewed in their own right.** A shell's `-c` argument is a *command*, and `shlex` strips only the OUTER quoting level — so `bash -c 'dd "if=/dev/zero" of=/dev/sda'` re-joins with its inner quotes intact and the `dd if=` rule still misses it, while the unquoted inner spelling (`bash -c 'rm -rf /'`) was already caught on raw text. Each literal payload is therefore walked and viewed, reusing `_nested_shell_payloads` — the same extractor the self-protection floor uses, so the `-c` / `eval` / `env -S` / herestring / `$SHELL -c` spellings and the `bash -c -- <script>` form are recognized by construction rather than re-enumerated. The walk takes **no numeric depth cap**, for the reason `_self_token_frames` records (whatever the number, one more wrapper defeats it); it terminates structurally, because a payload is carried inside ONE token of its parent and is therefore strictly shorter than the parent's source text. Only LITERAL payloads exist to walk — `eval "$CMD"` carries no visible script and stays the raw tier's job.
   - **The GLUED `-c` spelling is a separate, independent scan (#8197).** `-c` takes a value, so a getopt-convention shell (`ksh`, `zsh`) ends option parsing at the `c` and runs everything glued after it — and the reading is deliberately over-approximated for shells whose parsers keep consuming cluster letters (bash, dash), because extraction must cover the strictest interpreter the command could reach. `sh -c'rg . <fenced-root>'` reaches the walk as ONE token (`-crg . <fenced-root>`) once `shlex` strips the quotes. `_SHELL_COMMAND_FLAG_RE` anchors the whole token as a bare flag cluster, so a token carrying the payload's own characters was rejected and the payload never yielded — unexamined by every consumer of the extractor, the self-protection floor included. The companion pattern `_SHELL_COMMAND_GLUED_RE` captures the glued remainder (non-greedy, splitting at the FIRST lowercase `c`, flag letters of either case before it) instead of weakening the flag pattern where it is used for pure flag detection — and the flag pattern itself deliberately stays lowercase-only, because widening it made an uppercase-clustered decoy (`-Cc`) the first flag stop and ate the stop through which a following `--command`'s payload was found. The command flag, the herestring, and the glued spelling each get their OWN precomputed stop table (a shared table let whichever spelling came first EAT the stop through which a later spelling's payload was found), and an **every-carrier sweep** closes the within-class half for short-cluster `-c` carriers: one forward pass from the first shell token appends the payload of EVERY such carrier under the LOOSE recognition the deleted local extractor used (`_shell_c_carrier_glued`: any prefix before the first lowercase `c`, so `-1c…`, `-Cc` and a decoy like `-onoclobber` cannot eat a later carrier's stop), deduplicated against what the tables already yielded so exact-payload-list consumers are unchanged, keeping the function O(N) — each token's glued payload is extracted ONCE up front, because many shell tokens sharing one stop index would otherwise each copy the same substring (O(N·M)). **The glued split is fold-ambiguity safe** (`_shell_c_carrier_payloads`): the deny tiers lowercase input before the walk, so `-Cc'<script>'` (a real zsh/ksh spelling) folds to `-cc<script>` and a first-`c`-only split would misread the payload as `c<script>`, hiding a protected push behind one junk letter (the folded spelling can also be written directly). Which `c` took the argument is unrecoverable after the fold, so every plausible split is yielded: the first `c`, plus each consecutive-`c` run's last and second-to-last split (covering payloads whose program starts with one `c`, like `cat`/`curl`). Split positions are bounded to the last `_CARRIER_SPLIT_WINDOW` (64) characters of the leading letter region — linear without a padding bypass, because the true split's distance to the region's end is the payload's first-word length (a real program name), while padding only adds fake splits farther out whose program words are flag-letter runs matching no rule; without the bound a ~3 KB alternating-`c` token would make the candidate set quadratic and the synchronous deny scan would outlive the loop watchdog. Stated residuals: `--command` carriers stay first-stop-only (the sweep's loose recognition is scoped to short clusters; no supported shell has a `--command` option, so this is a lost over-approximation, not a bypass — and in the DENY tiers, which lowercase input first, `-Cc` folds to `-cc` and eats the `--command` stop exactly as it always has, a pre-existing residual the case-preserving protection cannot reach); herestrings keep a first-occurrence residual (`bash <<<'a' <<<'b'` yields `a`; a real shell applies the last redirect); and the sweep's carrier recognition is segment-wide rather than command-wide, so a `-c`-carrying token of a LATER pipeline stage (`sh -c 'cat log' | grep -c <pattern>`) yields a junk payload — accepted, since a junk payload re-tokenizes to text no rule routes, and over-approximation is this module's documented safe direction. A glued payload is SYNTHESIZED text (a substring, not a token), so per the synthesized-payload rule above the data-consumer exemption fails closed on it: `echo bash -c'rm -rf /'`, a pure print, is descended into and denied — the same accepted over-block direction as the herestring tail and the glued `env -S` argument. An all-alpha cluster (`-ecfoo`) is genuinely ambiguous post-tokenization — it satisfies the bare-flag reading (next token is the script) AND carries a remainder a getopt-convention shell would run — so BOTH readings are yielded. The alt-traversal pass has no local copy of this handling: extraction is the shared extractor's alone (re-run ONCE on an assignment-substituted token list when a resolved program name is a shell the shared walk could not see literally), and the alt pass keeps only what the shared extractor cannot know — assignment-resolved program names and positional-parameter binding, locating the command string through the same loose carrier recognition (`_shell_c_carrier_glued`) over `_nested_shell_payloads` so the two cannot drift.
   - **A payload carried by a data consumer is not descended into.** `echo bash -c '<script>'` prints the script, so walking it would refuse a command that runs nothing. `_data_consumer_exempt` decides this — the same guarded exemption the self-protection floor uses, so a piped evaluator (`echo … | sh`), a substitution in program position, and an `awk`/`sed` script carrying an executing construct all withdraw the exemption. This is deliberately **not** implemented as "descend only when the launcher is in command position", the narrowing suggested alongside the advisory: the launcher is *not* in command position in `sudo bash -c …`, `timeout 5 bash -c …`, `nohup …`, `ssh host …`, `xargs …` or `env FOO=1 bash -c …`, all of which execute the payload, so a position rule trades one false positive for six bypasses (`TestDenyMatchingIsQuoteNormalized::test_executor_wrappers_are_still_walked` pins all six). Because the exemption governs only whether to DESCEND, the raw tier is untouched: the unquoted mention `echo rm -rf /` stays refused exactly as it was before this view existed.
+  - **Options and redirections after `-c` do not hide the script (#25814).** A shell keeps reading options after `-c`, so `bash -c -x '<script>'` and `bash -c -o pipefail '<script>'` run `<script>`, and the outer shell strips a redirection from argv wherever it sits (`bash -c <<EOF '<script>'`, `bash -c -x <<<word '<script>'`). `_shell_option_run` finds those words in one forward scan from the `-c` carrier: it skips options (a short cluster, zsh's `-1`, a glued option+redirection such as `-x>/dev/null`, or a long `--word` like `--norc`; `--rcfile` / `--init-file` and each `-o` / `-O` take a value word) and redirections, and stops at the first plain word, which is the script. An `-o` / `-O` takes the next word as its name in both bash (each `o` in a cluster, so `-oo pipefail errexit` takes two) and a getopt shell (a cluster ending in `o`, `-xo pipefail`), while a getopt shell instead glues a mid-cluster name (`-onoclobber`); both readings are followed and their candidates unioned, the safe over-approximating direction. A redirection-shaped word whose target holds a blank or shell syntax is ambiguous once quotes are gone: it may be the script (`'2>/dev/null <cmd>'`) or a quoted target (`>'a b'`, including before `-c` and between an option and its value word), so it is yielded AND read past. `seen` bounds the scan to O(n) with no hop cap (any cap is a padding bypass). The extra word is yielded IN ADDITION to the first word after `-c`, so the reader only adds payloads and every consumer (the self-protection and git-publish floors, the deny views) sees the script a shell runs. It applies only to a `-c` carrier inside the shell word's own run (via `_run_end`, which scans the same way from the program word), so a later command's `grep -c -e '<text>'` and the arguments after a script file (`bash file -c ...`) stay data, and a shell word that is only a data consumer's argument (`echo bash -c -x '<text>'`) opens no run and keeps the first-word reading. The scan runs only when a carrier is seen, so a command with none pays nothing. Residuals: `env -S` behind a redirection or a value-taking `env` option keeps its first-word reading, as on main.
   - **The exemption is decided per OCCURRENCE and fails closed, because a payload is not necessarily a token.** `_nested_shell_payloads` also returns SYNTHESIZED text — a `sed` `e`-flag replacement, the tail of a glued herestring (`bash<<<'<script>'`), a glued `env -S` argument, an `alias` assignment — which is a substring or a re-join rather than an element of the token list. Recovering a position with `list.index` would raise `ValueError` out of the permission gate on legitimate input (`sed 's/x/y/e' notes.txt`), a crash where a security decision belongs. The exemption is therefore applied only when the payload appears as a token AND *every* occurrence sits in the argv of a data consumer; a payload with no token position cannot be proven inert and is descended into. Deciding from a single recovered index would not be sound — a short synthesized payload can also be a coincidental substring of an unrelated token, and one wrong position could wrongly exempt a payload that really executes. Every window is additionally built inside a guard, so `_deny_segment_views` cannot raise at all: a failure drops that window and leaves the raw view standing (`test_view_construction_never_raises`).
 - **No expansion — which is why `_shell_tokens` was factored OUT of `normalize_shell_command` rather than reused whole.** The view stops before `~`/`$HOME` for two reasons. Expansion is platform-dependent: it DELETES the literal `~` that `rm -rf ~.*` is authored to match, and on Windows yields a drive path (`c:\users\…`) that no POSIX-anchored rule matches — so `rm -rf "~"` would be caught on Linux by the sibling `rm -rf /.*` rule and missed on Windows. And a denied view becomes the security event log's `operation` field, so expanding here would write the operator's real home path into the audit trail on every such denial. Path IDENTITY (dot segments, `..`, `$HOME` versus the resolved home) stays with `_check_sensitive_via_normalizer` over the sensitive-path keystone — the layer that RESOLVES rather than matches. Both functions share one tokenizer, so token identity cannot drift between the argv view and the path view.
 - **An empty-elided render is ADDED as a third view, never substituted for the plain join (issue #7500).** An empty-quoted word — `""`, `''`, `$''`, `$""`, or any concatenation of them (`""''`, `""""`) — is a real argv element that the shell does hand to the program, so `_shell_tokens` is correct to keep it and the payload walk still reads argv as written. What it cannot survive is the RENDER: a single-space join turns a zero-width element into a spurious extra separator, so `rm -rf "" /home/x` rendered as `rm -rf  /home/x` and the `rm -rf /.*` rule stopped matching its own target — the destructive command ran exactly as written and only the gate was fooled. The escape was pattern-DEPENDENT, not systematic: `chmod "" 777 /etc/passwd` stayed denied because the rule that catches it (`chmod.*/etc/.*`) tolerates the extra separator, which is why the repair belongs in the render and not in individual rules. **Both whitespace shapes are emitted**, because REPLACING the plain join loses denials that existed: a rule that REQUIRES an intervening token (`rm -rf .* ./data`) matched the double-spaced view and matches neither the elided one nor the command's canonical spelling, so `r""m -rf "" ./data` was refused before and became allowed — the additive-only property this helper documents is load-bearing, not tidiness (found by the GPT 5.6 lane, reproduced against the merge-base; pinned by `test_the_elided_view_is_added_and_never_substituted`). The fix is in the RECOGNIZER: `_shell_tokens`' documented contract — argv as a POSIX shell hands it over — is unchanged, so the path normalizer's ~19 consumers see identical tokens. The self-protection floor rules are not fooled, because their argv-structural floor does not match a rendered line. Pinned by `TestEmptyArgvElementDoesNotBreakTheDenyView`.
@@ -2163,12 +2165,91 @@ enforcement and display correctly scoped:
   never surfacing as a no-op opt-out (UI success while the bound-profile gate
   still denies). This is display-only and does not widen enforcement.
 
+**KAS spec built-in grant** (`spec-builtin-grant`, the third grant row of
+`GATE_TIERS`, after `operator-grants`) — a built-in the KAS session's agent spec
+grants in `allowedTools` is auto-approved by Crew at its permission request instead
+of by a KAS allow rule. The KAS projection never relays an allow for the shell and
+filesystem families (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`): an auto-approved
+KAS call raises no `session/request_permission`, so no row of this table would run
+on it. It keeps them at `ask` and records the granted ones on the projected entry
+(`kas_permissions.crew_answered_builtins`, filtered by
+`governance.may_grant_builtin_at_gate_now`), the session handle keeps the active
+agent's set (`AcpSessionHandle.kas_crew_answered`, re-read on a KAS mode switch by
+wire id) and stamps it on the session's OWN permission events only
+(`AcpEvent.spec_granted_builtins`; a sub-session's request and a native KAS
+sub-agent's tool call run another agent's spec and carry none). The row approves only when every one of these holds: the surface
+is not `classifier_only`; the call is a KAS built-in by host-trusted identity
+(`kas_builtin_ids`, `identity_trusted`, a stamped tool id, no MCP server); one of
+its names (the stamped id, kiro-cli's short-name fold, the may-admit policy aliases
+of `policy_alias_split`, so a `fs_write` grant never approves `delete_file`, and for
+a shell call both `execute_bash` and `execute_pwsh`, which KAS stamps alike as
+`run_command`) is in
+the stamped set; `governance.may_grant_builtin_at_gate` holds for every one of those
+names under the judgement's own context snapshot (no ceiling or configured profile
+with an opinion on the tool's scopes; fail-closed); and no `confirm_tools` pattern
+names the call. The projection also leaves out of the recorded set every built-in
+whose KAS capability (`code` counts under `fs_read`, `fs_write` and `shell`) carries
+an `ask` or `deny` rule in the merged policy, whatever that rule's `match` scope,
+or an authored restriction in the RAW spec inputs
+(`kas_permissions.withhold_answered_under_authored_rules`,
+`authored_restricted_capabilities`): any non-`allow` rule in the spec's own
+`permissions` block, all three capabilities when that block is anything but a
+readable `{"rules": [...]}` with no `policies` bundle (the shapes the merge refuses
+whole), and any `toolsSettings` entry for one of these built-ins. The raw reading
+exists because a merge or a translation drops what it cannot carry; an authored
+"ask me" reaches Crew as a permission request, and the `allowedTools` grant must not
+answer it. Because it is a grant row, every deny row
+and governance have already run: the deny floor, the sensitive-path and argument
+path checks and the write-protected check still refuse a granted call, and the
+surface's post-approve checks (the name-grant shim, PreToolUse script hooks) still
+run. `may_grant_builtin_at_gate` differs from `may_skip_gate` only by omitting the
+floor clause, which exists because a static grant skips this gate; this grant is
+made inside it.
+
+The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320). The
+projection records the patterns (`kas_permissions.crew_answered_commands`, at most 64; each entry
+read by `platform/allowed_commands.py`, which keeps only literal characters,
+escaped punctuation and `.*`, the subset Rust's `regex` and Python read alike, and
+matches it in linear time without `re`, so a POSIX class cannot widen a grant and
+nested repetition cannot stall the gateway; an entry outside it, an over-long list,
+and a list the projection withholds are named in the session-start notice) only when
+`may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except `allowedCommands` itself, `kas_permissions.without_allowed_commands`, so a `deniedCommands` or `denyByDefault` beside it keeps every command prompting), the handle keeps them
+(`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
+requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
+then needs a shell call (`execute_bash` among its names, `is_shell`) whose
+host-recovered command, at most 4,096 characters, holds none of
+`; & | < > $ \` ( ) { }`, newline or carriage return, and that one entry
+matches whole, as kiro-cli anchors each entry at both ends. Every other
+condition above still holds, so a matching command the deny floor, governance or
+`confirm_tools` refuses is still refused, and a command that chains, pipes,
+redirects, groups or substitutes is never granted whatever the pattern says.
+
+**KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
+`toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
+its usable `allowedCommands` recorded as the agent's shell allowlist
+(`kas_permissions.spec_shell_allowlist`, the same subset and 64-entry bound as
+above, possibly empty) whatever the governance ceiling says, since it is a
+restriction. The handle keeps it (`AcpSessionHandle.kas_spec_shell_allowlist`,
+re-read on a mode switch) and stamps it on its own agent's requests only
+(`AcpEvent.spec_shell_allowlist`; `None` on every other request). The gate's
+`spec-shell-allowlist` row, a `deny_policy` after governance and before every
+grant, refuses a shell call (`is_shell`, or `execute_bash` among its names, with
+no MCP server behind it) unless its recovered command is plain and one entry
+matches it whole, the test the grant row above uses. As a deny it holds under
+`ToolApprovalPolicy.AUTO_APPROVE` (`permission_floor.refusal_for`), so an
+unattended job refuses an unlisted command instead of running it, and an
+interactive session refuses it at once instead of prompting. An entry outside the
+subset, or past the bound, allows nothing: the row fails closed and the
+session-start notice names `allowedCommands`. A malformed record reads as an
+empty allowlist. A listed command still prompts: the author's own
+`denyByDefault` withholds the `allowedCommands` grant, as above.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every
 deny row (deny-by-default shell, sensitive-path, sensitive-bash, exfil, the
 argument paths, write-protected-config, effective deny set, the MCP auto-deny
-globs, the file-search target, governance) and both grant rows. Position guarantees a read-only classification can never
+globs, the file-search target, governance) and every grant row. Position guarantees a read-only classification can never
 re-admit anything the deny/governance gates blocked. For a shell tool it
 auto-approves only when `command` is present and
 `security.readonly_bash.is_read_only_bash(command)` is True (deny-by-default: rejects
@@ -2233,6 +2314,36 @@ the confirm list and a deny outranking it) and the Reads-mode cases in
 `test_chat_runner_coverage_approval.py` (a Reads slot approves the core read with
 no card; a Normal slot, the same name on another server, a core write tool and an
 untrusted identity all prompt).
+
+**kiro-cli's file searches.** kiro-cli asks for a `grep`, `glob` or `code` call
+only when it reaches outside the session's folder, and its permission request
+carries no `kind`; the kind its tool_call frame states is `search` for `grep` /
+`glob` and `read` for every `code` call, a `pattern_rewrite` included (captured
+live, 2.35.1). Neither proves what runs, so on the interactive path these calls
+reached the card even where an `fs_read` of the same file did not. The
+`read-only` row's interactive branch therefore takes one more proof, before the
+kind allow-list (`hook_runtime/tool_identity._is_host_search_builtin_call`), and
+all of it must hold: a host-trusted built-in identity (`mcp_identity_trusted`, no
+server); the tool is `grep` or `glob` (`hooks._HOST_SEARCH_BUILTIN_TOOLS`, a
+subset of `_HOST_READ_ONLY_BUILTIN_TOOLS`) or `code` with an `operation` in
+`hooks._CODE_READ_ONLY_OPERATIONS` (`search_symbols`, `lookup_symbols`,
+`get_document_symbols`, `pattern_search`: tree-sitter reads that start no
+language server); a kind of `search`, `read` or none; at least one path argument,
+every one absolute (`~` allowed, no `$VAR` that expands, a drive on Windows),
+because kiro-cli resolves a relative path against the session's folder and the
+keystone against the gateway's, and the keystone expands a variable kiro-cli walks
+literally; no path argument
+CONTAINS a sensitive location (`security.path_contains_sensitive`, fail-closed on
+a stall), because a search walks every folder below its root, hidden ones
+included, so a `grep` of the home folder reads `~/.ssh` while its root names no
+credential; a `glob` pattern that is not absolute, does not start with `~` and has
+no `..` segment; and no operator `hooks.confirm_tools` pattern names the call.
+Anything that fails keeps its card. The proof sits in the last row, so every deny
+row, the file-search deny target and governance run first. It does not change
+which `allowedTools` grants a spec keeps: `grep`, `glob` and `code` are still
+withheld from that list (`governance.may_skip_gate`), because a grant there skips
+this gate, and `code` granted there rewrites files with no request at all. Pinned
+by `test_hooks_search_builtin_proof.py`.
 
 Computer-use observation tools get their own **explicit** pair in that same
 branch (`_cu_read_only_auto_approve`), keyed on the code-owned

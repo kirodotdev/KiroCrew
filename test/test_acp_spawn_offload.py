@@ -35,6 +35,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from tmpdir_helpers import short_tmp_path
 
 import kiro_crew.acp.client as client_mod
 import kiro_crew.acp.runtime as runtime_mod
@@ -42,6 +43,13 @@ from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
 from kiro_crew.testing.wait import await_until
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("spawn-offload")
+
 
 # A pid above every supported platform's pid_max: a cleanup path that signals it
 # reaches nothing on the runner (same spelling as test/test_update_provider.py).

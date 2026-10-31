@@ -526,6 +526,14 @@ to a number of seconds (clamped to 15–180) for the shell running
 `kirocrew restart`. A replacement that dies early is reported at once and is not
 helped by a longer wait: run `kirocrew logs -f` to see its startup.
 
+### `kirocrew stop` / `kirocrew restart`: "The Kiro Crew desktop app ... runs this gateway"
+
+The desktop app started this gateway and starts it again when it goes away, so
+the CLI does not kill it: a stop would be undone and a restart would race the
+app. Nothing is signalled. Restart it from the app (Settings → About → Restart
+gateway), or quit the app to stop it. After the app has quit, both commands work
+as usual.
+
 ### "Refusing to start: the Python standard library is shadowed."
 
 Kiro Crew exits with status 2 when a file or directory on the import path has

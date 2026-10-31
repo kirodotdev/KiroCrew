@@ -20,9 +20,17 @@ from unittest.mock import AsyncMock
 
 import native_skill_projection_helpers
 import pytest
+from tmpdir_helpers import short_tmp_path
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.agent_spec_format import iter_agent_spec_files
+
+
+@pytest.fixture
+def tmp_path():
+    """This module's code judges a path by its components (``tmpdir_helpers.short_tmp_path``)."""
+    yield from short_tmp_path("native-skill")
+
 
 # The shared fixtures and helpers, bound here by name: pytest registers the fixtures
 # from this namespace.

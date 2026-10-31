@@ -353,8 +353,8 @@ choice blob makes the usage line unreadable.
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
 | `kirocrew update` | Update to latest version (git fetch, pin the upstream commit, refuse a revision whose `requires-python` this venv fails, hard reset to the pinned commit + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
 | `kirocrew status` | Show runtime stats from running gateway |
-| `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. |
-| `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. |
+| `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit (a systemd `Alias=` an operator declared on their own unit), it refuses before the foreground path — exit 1, nothing signalled — printing that unit, its scope, and the scope-correct remedy (`systemctl --user stop <unit>` for a user-scope alias, `sudo systemctl stop <unit>` for system), and audits `reason=service_name_is_alias`. A stopped (`inactive`/`failed`) alias is not refused, since its down target cannot be the thing to stop. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. When the desktop app supervises this home's gateway (the `gateway.lock` holder runs from the app's `backend-dist` bundle and its first ancestor outside the bundle runs from the same app install), it refuses before the port lookup — exit 1, nothing signalled — says to quit the app, and audits `reason=desktop_app_supervised`; with `--port N` this applies only when that gateway listens on N, and `--expect-pid` (the app's own stop) is never refused. Any probe miss keeps the existing path. |
+| `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active — on Linux in whichever scope runs the unit, confirming it stays up afterwards and reporting a unit that lands in `activating (auto-restart)` as a failed restart — otherwise terminates the foreground gateway and respawns it detached). When no managed unit is active but `kirocrew.service` resolves to a RUNNING alias of another unit, it refuses before the foreground path — exit 1, nothing signalled or spawned — printing that unit, its scope, and the scope-correct remedy (`restart` verb), and audits `reason=service_name_is_alias`. A stopped alias is not refused. Pass `--port N` to bypass the service short-circuit AND the alias refusal and target a specific gateway. A gateway the desktop app supervises is refused the same way `stop` refuses it (nothing signalled or spawned, `reason=desktop_app_supervised`), naming the in-app restart (Settings → About → Restart gateway) or quitting the app first. |
 | `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. On Linux this covers both systemd scopes — the system unit (sudo) and a per-user unit (`systemctl --user`, never sudo) — and prints one line per scope saying `removed (<unit file>)`, `not installed`, `left in place (…)` (an alias, a unit running under any load state but `loaded`, or a definition that is not ours is never acted on), or `not reachable from this shell (…)`; nothing installed in either scope exits 0 with that report. In either scope the order is stop → disable → verify inactive → unlink → `daemon-reload`; a step the manager refuses (or a unit still running after `stop` returned 0) leaves the file in place and the line reads `left in place (\`… stop kirocrew.service\` failed: …; the unit file was not removed)`; a closing `daemon-reload` the manager rejects (exit non-zero) leaves the scope unfinished and out of `removed` (exit 1, so the headline never reads `stopped and removed` while the manager still holds the old definition), its line reading `removed (<path>), but \`sudo systemctl daemon-reload\` failed: …; run it by hand` (user scope: `systemctl --user daemon-reload`) — except on a host not booted with systemd, where there is no system manager to hold it; a system unit on a host without `sudo` reads `left in place (privilege unavailable: …)` while the user unit is still torn down. An alias, and a unit that is running under any load state but `loaded` (a runtime mask, an unparseable edit, a file removed under it), are refused whole before any verb: `left in place (an active unit whose load state is masked: unmask and stop it first, then run \`kirocrew service uninstall\` again)`. Every verb rests on one ownership decision: the unit is Kiro Crew's when the file holding its definition (the reported `FragmentPath`, followed through a symlink to its source) is the file the installer writes for that scope or carries the installer's marker line `Environment="KIROCREW_SERVICE_MANAGED=1"`; anything else under our name — a distribution's unit under `/usr/lib`, an operator's unit `systemctl --user link`ed under our name, a definition under another name — reads `left untouched (not installed by Kiro Crew: …)` with nothing stopped, disabled or unlinked, and exits 0. A unit of ours reached through a link loses only its link entries — `removed (the link to <source>; the linked unit file <source> itself was kept)` — and a direct file of ours is unlinked. A unit file of ours at the installer's path that the manager does not have loaded and that is not running (a file dropped without a `daemon-reload`, an unparseable edit) is removed without those verbs, in either scope; a mask of the unit name at that path (`systemctl mask`'s symlink to `/dev/null`, placed by name at exactly the path the installer writes) is ours by name and is unlinked, `removed (the mask …; kirocrew.service is unmasked)`, while a mask elsewhere (`systemctl mask --runtime`, under `/run`) is `left in place (load state masked, …)`; a system manager the shell cannot reach removes the file only on a host not booted with systemd (`/run/systemd/system` absent), and otherwise reads `left in place (the system manager is not reachable from this shell: …)`. The system scope is decided by the manager, not by the unit file: with no file at `/etc/systemd/system/kirocrew.service` the manager is still asked (an unprivileged `show`, no password prompt), so a unit of ours still loaded and running after its file was deleted under it is stopped and `daemon-reload`ed (`stopped (its unit file … was already gone, so nothing was disabled or unlinked; daemon-reload run)` — the unit is gone, so the headline reads `✅ kirocrew service stopped and removed.`), a loaded unit that is not ours (a vendor unit with no file of ours shadowing it) is left untouched and not stopped, one a `daemon-reload` left `not-found` but running is refused whole like the user scope's, and an unreachable manager on a systemd host reads `not reachable from this shell (…)` rather than `not installed`. The headline (`✅ … stopped and removed.` / `ℹ️ No kirocrew service was removed.`) follows the report's `removed` set, never a line's wording. Those `left in place` lines (exit 1 whenever a unit may still be running, or the module's own file stays at `/etc/systemd/system/kirocrew.service`; a system refusal with no file there and nothing running — an inactive alias provided from another directory — exits 0 like the user scope's), or a unit file that cannot be removed after a successful stop, are marked ⚠️ on their own scope line, the AppArmor profile is still removed, and the exit code is 1. |
 | `kirocrew service status` | Show service status. No sudo required. On Linux it names both scopes: `system scope: …` then `user scope: …`, each `not installed`, `not reachable from this shell (…)`, or the unit's `ActiveState (SubState)`, followed by the `systemctl status` block for every scope that has a unit — a scope with no unit never reads `inactive (dead)`. Exit 0 only when the unit is UP in either scope — `ActiveState` `active` (or `reloading`), what `systemctl is-active` exits 0 for; a crash-looping unit in `activating (auto-restart)` and a `failed` one exit 1 while the headline prints that state, so a script gating on the exit code reads a gateway that never started as down. macOS: `launchctl list`. |
@@ -1784,6 +1784,11 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
    `--port` explicitly (see Service Management), stop it via the service
    manager and return — without this branch, SIGTERM-by-port would be
    racing the manager's auto-restart.
+   Then, with or without `--port`, refuse a gateway the desktop app
+   supervises (`_refuse_desktop_supervised`): the app is another manager
+   and starts its gateway again after a stop. Exit 1, nothing signalled,
+   `reason=desktop_app_supervised`. With `--port N` it applies only when
+   this home's gateway listens on N; any probe miss continues below.
 2. Otherwise (no service active, or `--port` was passed explicitly to
    target a non-default dev gateway): `platform_compat.find_listening_pids(port)`
    to find PIDs — `lsof -ti TCP:{port} -sTCP:LISTEN` on POSIX, `netstat -ano`
@@ -1944,6 +1949,11 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
    immediate respawn of the loaded job) and never re-reads the plist.
 2. Otherwise (foreground gateway, no service, or `--port` passed
    explicitly to target a non-default dev gateway):
+   - First refuse a gateway the desktop app supervises, as `stop` does
+     (nothing signalled or spawned, exit 1, `reason=desktop_app_supervised`),
+     naming the in-app restart. Dev Fleet's foreground restart asks the same
+     check (`desktop_app_supervisor`) before it spawns, so it never reports a
+     restart that is then refused.
    - `platform_compat.find_listening_pids(port)` (lsof on POSIX, netstat
      on Windows) to detect a running gateway. If found — OR if the lookup
      tool is absent (`not listening_pid_tool_available()`, so a missing
@@ -1985,20 +1995,28 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
      when one is known (`_wait_gateway_ready`). Only this fork path verifies
      readiness before printing success. A replacement that exits prints
      `Replacement gateway (pid N) died immediately (exit status S)` and exits
-     1 at once. One still running at the deadline prints `Replacement gateway
-     (pid N) did not become ready within Ns. It is still running but not
-     serving port P.` and exits 1. The readiness deadline is read from the
-     environment each time the fork path runs: it defaults to 60 s because a
-     loaded install can take 25-35 s to boot; `KIROCREW_RESTART_READY_TIMEOUT`
-     overrides it, fractional values round up to whole seconds, the result is
-     clamped to 15..180 s, and an unset, non-numeric, non-finite, zero or
-     negative value falls back to the default. A set value that falls back
-     or gets clamped prints one `KIROCREW_RESTART_READY_TIMEOUT='V' ...;
-     using Ns.` line to stderr. When the deadline exceeds
-     15 s, the wait prints one `Still starting (Ns elapsed), continuing to
-     wait...` line on the first check after 15 s. The service path (step 1)
-     does not use this deadline and is unchanged. On both paths, the
-     token-URL wait after a successful restart keeps its fixed 15 s budget.
+     1 at once. It says `Nothing is serving port P` only when a probe of
+     `/api/ready` gets no HTTP answer; when the port still answers HTTP (even
+     a 404 from an unrelated server), it prints `Replacement gateway (pid N)
+     exited at once (exit status S). Port P still answers HTTP.` without
+     claiming the listener is a gateway, names the live `gateway.lock` holder
+     when the lock names one, and calls it the desktop app when it runs from
+     the `backend-dist` bundle (`_died_replacement_message`). Exit code and
+     audit record are the same in both cases. One still running at the
+     deadline prints `Replacement gateway (pid N) did not become ready within
+     Ns. It is still running but not serving port P.` and exits 1. The
+     readiness deadline is read from the environment each time the fork path
+     runs: it defaults to 60 s because a loaded install can take 25-35 s to
+     boot; `KIROCREW_RESTART_READY_TIMEOUT` overrides it, fractional values
+     round up to whole seconds, the result is clamped to 15..180 s, and an
+     unset, non-numeric, non-finite, zero or negative value falls back to the
+     default. A set value that falls back or gets clamped prints one
+     `KIROCREW_RESTART_READY_TIMEOUT='V' ...; using Ns.` line to stderr. When
+     the deadline exceeds 15 s, the wait prints one `Still starting (Ns
+     elapsed), continuing to wait...` line on the first check after 15 s. The
+     service path (step 1) does not use this deadline and is unchanged. On
+     both paths, the token-URL wait after a successful restart keeps its
+     fixed 15 s budget.
 3. SEL audit event logged with `via=service` or `via=fork pid=<n>` so
    the audit trail distinguishes the two paths.
 

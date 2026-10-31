@@ -29,6 +29,11 @@
     "tool_search",
     "web_fetch"
   ],
+  "remote": {
+    "_note": "Built-ins the engine serves through its remote tool wrapper rather than registering locally (acp-server.js class with `static idPrefix=\"remote_\"`, id `${idPrefix}${name}`, TOOL_TAG_MAP web_search -> [web, @builtin]). The allowlist matcher compares a spec entry against this prefixed id, so a spec's kiro-cli `web_search` mounts nothing unless the projection spells `remote_web_search`. Read in the KAS bundles kiro-cli 2.32.0 through 2.37.0 ship (@kiro/agent 0.66.43 - 0.66.70).",
+    "recorded": "2026-10-30",
+    "ids": ["remote_web_search"]
+  },
   "permission_tool_id": {
     "execute_bash": "run_command",
     "execute_pwsh": "run_command"

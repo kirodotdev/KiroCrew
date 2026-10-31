@@ -148,7 +148,7 @@ trick. State what would need to change and let the user edit it.
 The refusal is about what the action would DO — move a local file's contents off
 this host — not about how it is written, so it must not be re-spelled. The rule
 matches the request shape: `-d @file`, `--data-binary @file`,
-`--data-urlencode @file`, `-F field=@file`, `--upload-file`, `wget --post-file`,
+`--data-urlencode @file`, `-F field=@file`, `wget --post-file`,
 and `/dev/tcp/` redirects. A form that got past it would mean the control was
 defeated rather than satisfied, so those bytes must not leave through you by any
 route.

@@ -300,6 +300,8 @@ class TestProviderConversionPreservesIdentity:
             tool_name="monitor_start",
             mcp_server_name="kirocrew-core",
             is_shell=True,
+            kas_builtin_ids=True,
+            spec_granted_builtins=frozenset({"execute_bash"}),
         )
         out = AcpProvider._to_llm_event(src)
         dropped = [
