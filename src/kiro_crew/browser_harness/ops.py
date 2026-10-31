@@ -414,13 +414,19 @@ async def _point(ctx: OpContext, args: dict[str, Any], ref_key: str, x_key: str,
     return x, y
 
 
-async def _wait_for_commit(ctx: OpContext, token: str, target: str | None) -> dict[str, Any]:
+async def _wait_for_commit(
+    ctx: OpContext, token: str, target: str | None, start_href: str = ""
+) -> dict[str, Any]:
     """Wait for a navigation started by ``goto``/``back`` to actually commit.
 
-    Two settle signals: the stamp being gone proves a NEW document committed
-    (``readyState`` alone reads ``complete`` on the OLD document at once), and
-    the href matching covers a same-document navigation (``#section``) where the
-    stamp survives. Bounded by both the clock and an iteration count so an
+    Three settle signals: the stamp being gone proves a NEW document committed
+    (``readyState`` alone reads ``complete`` on the OLD document at once); the
+    href matching the target covers a same-document ``goto`` (``#section``)
+    where the stamp survives; and the href moving off *start_href* while the
+    stamp survives covers a same-document history step (``back`` after a
+    fragment or ``pushState``) and a target Chromium canonicalized. The old
+    document's href changes only by a same-document navigation, so a move off
+    it is a commit. Bounded by both the clock and an iteration count so an
     injected constant clock still terminates.
     """
     deadline = ctx.now() + NAV_SETTLE_S
@@ -439,7 +445,8 @@ async def _wait_for_commit(ctx: OpContext, token: str, target: str | None) -> di
         new_doc = state.get("stale") != token
         href = str(state.get("href", ""))
         last = f"{ready}{' (still old doc)' if not new_doc else ''} {href}"
-        if (new_doc or (target is not None and href == target)) and ready in (
+        same_doc_moved = bool(start_href) and bool(href) and href != start_href
+        if (new_doc or (target is not None and href == target) or same_doc_moved) and ready in (
             "interactive",
             "complete",
         ):
@@ -447,6 +454,15 @@ async def _wait_for_commit(ctx: OpContext, token: str, target: str | None) -> di
     return refusal(
         "nav_timeout", f"navigation did not commit within {NAV_SETTLE_S:g}s (last: {last})"
     )
+
+
+async def _href_now(ctx: OpContext) -> str:
+    """The current document's href, or ``""`` when the page cannot say."""
+    try:
+        state = await _page(ctx, "state")
+    except Exception:  # noqa: BLE001 - an unreadable page just loses this signal
+        return ""
+    return str(state.get("href", "")) if isinstance(state, dict) else ""
 
 
 def _stamp_token(ctx: OpContext) -> str:
@@ -469,10 +485,11 @@ async def _navigate(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         await _page(ctx, "stamp", token)
     except Exception:  # noqa: BLE001 - an unstampable old page still navigates
         logger.debug("navigate: could not stamp the old document", exc_info=True)
+    start_href = await _href_now(ctx)
     started = await ctx.helper("goto", url=url)
     if isinstance(started, dict) and started.get("errorText"):
         return refusal("nav_error", str(started["errorText"]))
-    committed = await _wait_for_commit(ctx, token, url)
+    committed = await _wait_for_commit(ctx, token, url, start_href)
     if not committed["ok"]:
         return committed
     refused = await _refuse_committed_url(ctx, committed["url"])
@@ -519,10 +536,11 @@ async def _back(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     await _step(ctx, "Go back")
     token = _stamp_token(ctx)
     await _page(ctx, "stamp", token)
+    start_href = await _href_now(ctx)
     went = await _page(ctx, "back")
     if not isinstance(went, dict) or not went.get("ok"):
         return refusal("no_history", "no previous page in history")
-    committed = await _wait_for_commit(ctx, token, None)
+    committed = await _wait_for_commit(ctx, token, None, start_href)
     if not committed["ok"]:
         return committed
     refused = await _refuse_committed_url(ctx, committed["url"])

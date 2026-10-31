@@ -191,8 +191,9 @@ def test_navigate_stamps_goes_and_waits_for_the_new_document(fake: FakeBrowser) 
     fake.helpers["goto"] = {"frameId": "F", "loaderId": "L"}
     out = run(ops.run_op("navigate", {"url": "https://example.com/"}, fake.ctx()))
     assert out == {"ok": True, "url": "https://example.com/", "title": "New"}
-    assert fake.helper_names()[:2] == ["js", "goto"]
-    assert fake.calls[1] == ("goto", {"url": "https://example.com/"})
+    # stamp, then the starting href, then goto.
+    assert fake.helper_names()[:3] == ["js", "js", "goto"]
+    assert fake.calls[2] == ("goto", {"url": "https://example.com/"})
     assert fake.page_methods()[0] == "stamp"
     assert "state" in fake.page_methods()
     assert fake.page_methods()[-1] == "consoleMessages"  # the hook is armed on the new page
@@ -266,8 +267,43 @@ def test_back_uses_history_and_waits_for_commit(fake: FakeBrowser) -> None:
     fake.page["back"] = {"ok": True}
     out = run(ops.run_op("back", {}, fake.ctx()))
     assert out["ok"] is True and out["url"] == "https://prev.example/"
-    assert fake.page_methods()[:2] == ["stamp", "back"]
+    assert fake.page_methods()[:3] == ["stamp", "state", "back"]
     assert all(h == "js" for h in fake.helper_names())
+
+
+@pytest.mark.parametrize(
+    "before, after", [("https://x/#b", "https://x/#a"), ("https://x/app/2", "https://x/app/1")]
+)
+def test_back_within_the_same_document_commits_when_the_href_moves(
+    fake: FakeBrowser, before: str, after: str
+) -> None:
+    """A fragment or pushState step back keeps the document (and its stamp): the
+    href moving off where it started is the commit, not a ten-second timeout."""
+    where = {"href": before}
+    stamped = {"tok": ""}
+
+    def stamp(tok: str) -> bool:
+        stamped["tok"] = tok
+        return True
+
+    def back() -> dict[str, Any]:
+        where["href"] = after
+        return {"ok": True}
+
+    fake.page.update(
+        stamp=stamp,
+        back=back,
+        state=lambda: {
+            "readyState": "complete",
+            "stale": stamped["tok"],
+            "href": where["href"],
+            "title": "X",
+        },
+    )
+    start = fake.clock
+    out = run(ops.run_op("back", {}, fake.ctx()))
+    assert out == {"ok": True, "url": after, "title": "X"}
+    assert fake.clock - start < ops.NAV_SETTLE_S / 2
 
 
 def test_back_with_no_history_is_refused(fake: FakeBrowser) -> None:
