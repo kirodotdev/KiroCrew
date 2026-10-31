@@ -29,6 +29,9 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
+  // A settled runtime read: Download and "Open in new tab" wait for it, and a
+  // failed one adds its own notice beside the ones these tests read.
+  queryClient.setQueryData(['tailwind-runtime'], '/*settled*/')
   localStorage.clear()
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:zzq-widget')
   // The frame mints a gateway document instead of building a blob for itself.

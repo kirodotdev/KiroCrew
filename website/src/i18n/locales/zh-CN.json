@@ -9209,7 +9209,8 @@
       "retry": "重试",
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为产物",
-      "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消"
+      "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消",
+      "runtime_unavailable": "无法读取样式脚本，因此“在新标签页中打开”和“下载”可能会显示无样式的小组件。"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -11076,7 +11077,8 @@
       "activity_failed_to_load": "活动记录加载失败",
       "sync_status_unavailable": "同步状态不可用",
       "more": "更多",
-      "more_actions": "更多操作"
+      "more_actions": "更多操作",
+      "runtime_unavailable": "无法读取样式脚本，因此下载的文件打开时可能没有样式。"
     },
     "artifactPopoutFrame": {
       "artifact": "产物",

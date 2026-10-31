@@ -9349,7 +9349,8 @@
       "retry": "Wiederholen",
       "save_failed": "Speichern fehlgeschlagen",
       "star_as_artifact": "Als Artefakt markieren",
-      "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen"
+      "starred_as_click_to_remove": "Markiert als „{{name}}“ — klicken, um die Markierung zu entfernen",
+      "runtime_unavailable": "Das Styling-Skript konnte nicht gelesen werden, daher zeigen „In neuem Tab öffnen“ und „Herunterladen“ dieses Widget möglicherweise ohne Styling."
     },
     "widgetPlaceholder": {
       "generating": "wird erstellt…"
@@ -11241,7 +11242,8 @@
       "activity_failed_to_load": "Aktivität konnte nicht geladen werden",
       "sync_status_unavailable": "Synchronisierungsstatus nicht verfügbar",
       "more": "Mehr",
-      "more_actions": "Weitere Aktionen"
+      "more_actions": "Weitere Aktionen",
+      "runtime_unavailable": "Das Styling-Skript konnte nicht gelesen werden, daher öffnet sich die heruntergeladene Datei möglicherweise ohne Styling."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefakt",
