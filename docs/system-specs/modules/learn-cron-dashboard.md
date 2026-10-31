@@ -4329,7 +4329,7 @@ text button. The Mates page (`/members`) is a writer too, through the SAME
 editor: the centred identity pill opens the Profile card (`CrewProfilePanel`), and
 its pencil ("Edit member"), Permissions and Model entries open `CrewEditorModal` in
 place, driven by the shared `useCrewEditor` state machine, so a save is the same
-`PUT /api/agents/{name}` (and a delete the same `DELETE`) the crew manager sends; one
+`PUT /api/agents/{name}` or `PUT /api/agents` (name in body, the proxy-safe form for crew names whose percent-encoded path segment would be normalised by a proxy — see PR #19981) (and a delete the same `DELETE`) the crew manager sends; one
 write path, reached from two surfaces (see [crew-mode.md](crew-mode.md)). The page's
 faces stay plain faces (no scrim, badge, text "Edit avatar" button or first-run
 chip), because it is a chat surface and those read as an oversized control inside a
