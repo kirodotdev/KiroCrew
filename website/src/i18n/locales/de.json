@@ -6571,7 +6571,8 @@
       "split_right_d": "Nach rechts teilen (⌘D)",
       "type_to_filter": "Zum Filtern tippen…",
       "earlier_conversation_show": "Neu anfangen um {{time}} · Frühere Nachrichten zeigen ({{count}})",
-      "earlier_conversation_hide": "Neu anfangen um {{time}} · Frühere Nachrichten ausblenden (nicht mehr erinnert)"
+      "earlier_conversation_hide": "Neu anfangen um {{time}} · Frühere Nachrichten ausblenden (nicht mehr erinnert)",
+      "preparing_catch_up": "Zusammenfassung wird vorbereitet…"
     },
     "cliPanel": {
       "copied": "Kopiert",

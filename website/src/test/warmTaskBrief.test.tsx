@@ -73,9 +73,9 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({
       asked: 'a'.repeat(900), headline: 'n', remaining: 'r'.repeat(900),
       done: ['1', '2', 3, '4', '5', '6'],
-      needs_you: ['x', 2, '', null, 'y', 'z', 'w'], next: 'not a list',
+      needs_you: ['x', 2, '', null, 'y', 'z', 'w', 'v'], next: 'not a list',
       extra: [
-        { title: 'Risk', items: ['a', 'b', 'c', 'd'] },
+        { title: 'Risk', items: ['a', 'b', 'c', 'd', 'e'] },
         { title: '', items: ['dropped'] },
         { title: 'Empty', items: [] },
         'not a section',
@@ -86,9 +86,9 @@ describe('warm task brief transcript rows', () => {
     expect(b.asked.length).toBe(240)
     expect(b.remaining.length).toBe(240)
     expect(b.done).toEqual(['1', '2', '4', '5'])
-    expect(b.needsYou).toEqual(['x', 'y', 'z'])
+    expect(b.needsYou).toEqual(['x', 'y', 'z', 'w'])
     expect(b.next).toEqual([])
-    expect(b.extra).toEqual([{ title: 'Risk', items: ['a', 'b', 'c'] }, { title: 'Cost', items: ['one run'] }])
+    expect(b.extra).toEqual([{ title: 'Risk', items: ['a', 'b', 'c', 'd'] }, { title: 'Cost', items: ['one run'] }])
   })
 
   it.each([

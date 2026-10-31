@@ -6685,7 +6685,8 @@
       "split_right_d": "Dividir a la derecha (⌘D)",
       "type_to_filter": "Escribe para filtrar…",
       "earlier_conversation_show": "Empezar de cero a las {{time}} · Mostrar mensajes anteriores ({{count}})",
-      "earlier_conversation_hide": "Empezar de cero a las {{time}} · Ocultar mensajes anteriores (ya no los recuerda)"
+      "earlier_conversation_hide": "Empezar de cero a las {{time}} · Ocultar mensajes anteriores (ya no los recuerda)",
+      "preparing_catch_up": "Preparando tu resumen…"
     },
     "cliPanel": {
       "copied": "Copiado",
