@@ -851,9 +851,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _WS_DIR_OUTSIDE_HOME,
         _cli_validated_workspace_dst,
         _CliConflict,
+        _dir_identity,
         _handle_workspace,
         _locked_config_write,
         _ws_dir_composed,
         _ws_dir_error,
+        _ws_dir_in_use,
         _ws_dir_resolves_inside_home,
     )
