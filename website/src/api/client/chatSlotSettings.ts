@@ -22,6 +22,17 @@ import type {
  *  explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
+/** What `GET /api/terminal/kiro-cli/{slot}` answers. `code` names why the chat
+ *  cannot open in kiro-cli; `agent_without_spec` is the chat's agent when kiro-cli
+ *  has no file for it and opens with its own default agent. */
+export interface KiroCliAvailability {
+  available: boolean
+  code?: string
+  reason?: string
+  agent?: string
+  agent_without_spec?: string
+}
+
 /** A session's turn time limit as `/api/chat/slots/{slot}/turn-timeout` reports it. */
 export interface SlotTurnTimeout {
   secs: number | null
@@ -155,6 +166,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
     chatSlotProject: (slot: string, project: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j) as Promise<{ ok?: boolean; project?: string }>,
+    /** Whether the chat can open in kiro-cli in the terminal ("Open in kiro-cli"),
+     *  and with which agent. Owner-only; the open itself is the terminal socket. */
+    chatSlotKiroCli: (slot: string) =>
+      get('/api/terminal/kiro-cli/' + encodeURIComponent(slot)).then(j) as Promise<KiroCliAvailability>,
   }
 
   return { selection }

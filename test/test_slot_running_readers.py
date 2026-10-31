@@ -162,6 +162,13 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),
+                # Open in kiro-cli refuses a reserved slot through
+                # _switch_target_busy before it hands the session to a terminal,
+                # and again after re-planning, with no await before the hold.
+                ("handlers/kiro_cli_launch.py", "prepare_kiro_cli_launch"),
+                # Its availability route answers busy through the same
+                # _switch_target_busy read, so the menu and the route agree.
+                ("handlers/kiro_cli_launch.py", "_turn_in_flight"),
                 # A crewmate's worker reload waits for a reserved worker slot the
                 # same way, through _switch_target_busy.
                 ("crewmate_worker_reload.py", "_is_busy"),

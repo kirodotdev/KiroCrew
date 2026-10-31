@@ -128,11 +128,13 @@ const registry = vi.hoisted(() => ({
   displaced: { value: false },
   invalidCwd: { value: false },
   wrongMachine: { value: false },
+  kiroCliRefusal: { value: undefined as string | undefined },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
   useTerminalWrongMachine: vi.fn<() => boolean>(),
+  useTerminalKiroCliRefusal: vi.fn<() => string | undefined>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
@@ -140,6 +142,7 @@ registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.va
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
+registry.useTerminalKiroCliRefusal.mockImplementation(() => registry.kiroCliRefusal.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -303,6 +306,7 @@ beforeEach(() => {
   registry.displaced.value = false
   registry.invalidCwd.value = false
   registry.wrongMachine.value = false
+  registry.kiroCliRefusal.value = undefined
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   touch.value = false
@@ -335,7 +339,7 @@ describe('CliPanel mount', () => {
     expect(fit.fit).toHaveBeenCalled()
     // The fifth and sixth arguments are the remote-workspace slot and the chat
     // a local shell belongs to; this bare panel has neither.
-    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined, undefined)
+    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined, undefined, undefined)
     // A visible pane takes focus. open() has just measured the cell, so no
     // re-measure toggle follows it (that would render every row twice more).
     expect(term.focusCalls).toBe(1)
@@ -641,6 +645,59 @@ describe('CliPanel disconnected banner', () => {
     // Every redial meets the same refusal, so no Reconnect; the hand-off stays.
     expect(screen.queryByRole('button', { name: RECONNECT_LABEL })).toBeNull()
     expect(within(banner).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
+  })
+
+  it('says why kiro-cli did not open for the chat, and offers Reconnect to try again', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_busy'
+    const { sessionId } = mount()
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.kiro_cli_refused_message', {
+      reason: i18nT('components.sessionActionsMenu.reload_blocked_running'),
+    }))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('says Crew could not write the agent copy, not a bare "unavailable"', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_launch_spec'
+    mount()
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_launch_spec')
+    expect(reason).toContain('~/.kiro/agents')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.kiro_cli_refused_message', { reason }))
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.kiro_cli_blocked_unavailable'),
+    )
+  })
+
+  it('says the chat is still starting, not "turn running", when no turn runs', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_starting'
+    mount()
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_starting')
+    expect(reason).not.toBe('components.sessionActionsMenu.kiro_cli_blocked_starting')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.kiro_cli_refused_message', { reason }))
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.reload_blocked_running'),
+    )
+    expect(banner).not.toHaveTextContent(
+      i18nT('components.sessionActionsMenu.kiro_cli_blocked_unavailable'),
+    )
+  })
+
+  it('says Crew could not update the session file, not a bare "unavailable"', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.kiroCliRefusal.value = 'kiro_cli_session_file'
+    mount()
+    const reason = i18nT('components.sessionActionsMenu.kiro_cli_blocked_session_file')
+    expect(reason).toContain('~/.kiro/sessions/cli')
+    expect(screen.getByTestId('cli-panel-disconnected')).toHaveTextContent(
+      i18nT('components.cliPanel.kiro_cli_refused_message', { reason }),
+    )
   })
 
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {

@@ -130,6 +130,10 @@ class _TerminalSession:
     # that chat to a session environment retires the shell, so input typed into
     # it cannot keep reaching the gateway after the chat moved.
     chat_slot: str = ""
+    # The chat session key whose kiro-cli conversation this PTY runs ("Open in
+    # kiro-cli"), else "". The session's teardown releases that hold
+    # (kiro_cli_handoff), which is what lets the chat run turns again.
+    kiro_cli_session_key: str = ""
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

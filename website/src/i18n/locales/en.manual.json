@@ -2241,7 +2241,8 @@
       "touch_select_done": "Range selected — tap Copy",
       "use_here": "Use terminal here",
       "use_starting_directory": "Use terminal starting directory",
-      "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again."
+      "use_starting_directory_hint": "Opens a new shell in the server's configured terminal directory (dashboard.terminal.cwd, otherwise the server's home directory). The failed command is not sent again.",
+      "kiro_cli_refused_message": "kiro-cli did not open for this chat ({{reason}}). Reconnect to try again."
     },
     "codeBlock": {
       "add_comment": "Add comment",
@@ -3301,7 +3302,24 @@
       "mute": "Mute this session",
       "unmute": "Unmute this session",
       "mute_failed": "Couldn't mute this session",
-      "unmute_failed": "Couldn't unmute this session"
+      "unmute_failed": "Couldn't unmute this session",
+      "open_in_kiro_cli": "Open in kiro-cli",
+      "open_in_kiro_cli_tooltip": "Continue this conversation in kiro-cli in the terminal. This chat pauses until kiro-cli exits.",
+      "open_in_kiro_cli_default_agent": "Opens with kiro-cli's default agent. {{agent}} has no agent file kiro-cli can load.",
+      "kiro_cli_check_failed": "Couldn't check kiro-cli",
+      "kiro_cli_blocked_no_session": "no conversation yet",
+      "kiro_cli_blocked_no_log": "conversation log missing",
+      "kiro_cli_blocked_no_project": "project folder missing",
+      "kiro_cli_blocked_not_installed": "kiro-cli not installed",
+      "kiro_cli_blocked_already_open": "already open",
+      "kiro_cli_blocked_unavailable": "unavailable",
+      "kiro_cli_blocked_terminals_full": "terminal tabs full",
+      "kiro_cli_blocked_project_agent": "project has its own kiro-cli config",
+      "kiro_cli_blocked_ended": "kiro-cli has ended",
+      "kiro_cli_blocked_launch_spec": "Crew couldn't write a temporary agent copy to ~/.kiro/agents",
+      "kiro_cli_blocked_record": "Crew couldn't save its note of this open in its data folder",
+      "kiro_cli_blocked_session_file": "Crew couldn't update this chat's session file in ~/.kiro/sessions/cli",
+      "kiro_cli_blocked_starting": "agent still starting"
     },
     "sessionGridView": {
       "fork_child_session": "Fork {{name}} (child session)",
