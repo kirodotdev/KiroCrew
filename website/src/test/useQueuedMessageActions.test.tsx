@@ -306,6 +306,41 @@ describe('useQueuedMessageActions — cancel', () => {
   })
 })
 
+describe('useQueuedMessageActions — cancel of a server-written entry', () => {
+  const serverWritten = (queueId: string, kind: string, content: string): ChatMessage =>
+    ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId, kind } }) as ChatMessage
+  const WAKE_TEXT = '[Webhook wake]\nresource changed: crux://reviews/CR-9\n[End of webhook wake]'
+
+  /** A host composer holding a half-typed draft; a restore merges into it. */
+  function composer() {
+    const box = { draft: 'half-typed reply' }
+    const restoreDraft = vi.fn((text: string) => { box.draft = `${text}\n${box.draft}` })
+    return { box, restoreDraft }
+  }
+
+  it.each([
+    ['resource_wake', WAKE_TEXT],
+    ['mcp_app_message', '[MCP app message from "demo"]\nclicked\n[End of MCP app message]'],
+  ])('a queued %s is cancelled on the server and leaves the composer draft exactly as it was', (kind, text) => {
+    const { box, restoreDraft } = composer()
+    const rows = [serverWritten('q1', kind, text), queued('q2', 'then deploy')]
+    const { get, store } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(box.draft).toBe('half-typed reply')
+    expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
+    expect(queueIdsIn(store)).toEqual(['q2'])
+  })
+
+  it('the person\'s own queued message still moves back into the composer on cancel', () => {
+    const { box, restoreDraft } = composer()
+    const { get } = renderActions({ rows: [serverWritten('q1', 'resource_wake', WAKE_TEXT), queued('q2', 'then deploy')], restoreDraft })
+    act(() => { get().onCancel('q2') })
+    expect(restoreDraft).toHaveBeenCalledWith('then deploy', [], undefined)
+    expect(box.draft).toBe('then deploy\nhalf-typed reply')
+  })
+})
+
 describe('useQueuedMessageActions — edit', () => {
   it('trims, updates the card optimistically, and PATCHes the trimmed text', async () => {
     const { get, store } = renderActions({})

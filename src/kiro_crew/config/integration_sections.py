@@ -22,7 +22,13 @@ from kiro_crew.computer_use.types import (
 )
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
-from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list, field_default
+from kiro_crew.config.fields import (
+    _meta,
+    _safe_bool,
+    _safe_dict,
+    _safe_list,
+    field_default,
+)
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
@@ -396,6 +402,43 @@ class ComputerUseConfig:
 
 
 @dataclass
+class McpResourceSubscriptionsConfig:
+    """``mcp_gateway.resource_subscriptions``: sessions holding MCP resource subscriptions.
+
+    ``rfc-mcp-resource-subscriptions.md`` §4.6 and §4.8. ``enabled`` decides at
+    broker start whether the service runs at all, so it needs a restart; a
+    subscribe also reads it per call, so turning it off refuses the next one at
+    once. ``max_pinned_backends`` is read per call from the live snapshot.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Resource Subscriptions",
+            "Let a session keep an MCP resource subscription after its kiro-cli "
+            "exits. Kiro Crew then holds one gateway connection per session and "
+            "server for it. Off, every subscribe is refused and stored "
+            "subscriptions are not resumed. Takes effect after a restart; a "
+            "subscribe made after turning it off is refused at once. Default "
+            "False -- opt-in.",
+            restart=True,
+        ),
+    )
+    max_pinned_backends: int = field(
+        default=16,
+        metadata=_meta(
+            "Pinned Backends Cap",
+            "How many shared MCP backends resource subscriptions may keep "
+            "resident at once. A held backend is never evicted, so without a cap "
+            "holders could fill max_backends and refuse backends to sessions that "
+            "hold no subscription. Counts backends, not sessions: sessions with "
+            "one server configuration share one backend. A subscribe that would "
+            "pin one more is refused with a reason. Default 16.",
+        ),
+    )
+
+
+@dataclass
 class McpGatewayConfig:
     """Sidecar MCP broker daemon — shares MCP backends across sessions."""
 
@@ -737,6 +780,13 @@ class McpGatewayConfig:
             "Env override: KIROCREW_MCP_SPILL_THRESHOLD. Read by the MCP broker "
             "when it starts, like every other field of this section.",
             restart=True,
+        ),
+    )
+    resource_subscriptions: McpResourceSubscriptionsConfig = field(
+        default_factory=McpResourceSubscriptionsConfig,
+        metadata=_meta(
+            "Resource Subscriptions",
+            "MCP resource subscriptions a session keeps after its kiro-cli exits.",
         ),
     )
 

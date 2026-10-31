@@ -195,7 +195,6 @@ src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_gateway/app_call.py
 src/kiro_crew/mcp_gateway/apps.py
-src/kiro_crew/mcp_gateway/backend.py
 src/kiro_crew/mcp_gateway/breaker.py
 src/kiro_crew/mcp_gateway/claim.py
 src/kiro_crew/mcp_gateway/evaluate.py

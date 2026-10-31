@@ -4354,7 +4354,11 @@
         "pool_identity_env": [],
         "prewarm_count": 0,
         "read_buffer_limit_bytes": 67108864,
-        "response_spill_threshold_bytes": 262144
+        "response_spill_threshold_bytes": 262144,
+        "resource_subscriptions": {
+          "enabled": false,
+          "max_pinned_backends": 16
+        }
       }
     },
     {
@@ -4754,6 +4758,52 @@
       "enumValues": null,
       "defaultValue": 262144,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Subscriptions",
+      "help": "MCP resource subscriptions a session keeps after its kiro-cli exits.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "max_pinned_backends": 16
+      }
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Resource Subscriptions",
+      "help": "Let a session keep an MCP resource subscription after its kiro-cli exits. Kiro Crew then holds one gateway connection per session and server for it. Off, every subscribe is refused and stored subscriptions are not resumed. Takes effect after a restart; a subscribe made after turning it off is refused at once. Default False -- opt-in.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false,
+      "requiresRestart": true
+    },
+    {
+      "path": "mcp_gateway.resource_subscriptions.max_pinned_backends",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pinned Backends Cap",
+      "help": "How many shared MCP backends resource subscriptions may keep resident at once. A held backend is never evicted, so without a cap holders could fill max_backends and refuse backends to sessions that hold no subscription. Counts backends, not sessions: sessions with one server configuration share one backend. A subscribe that would pin one more is refused with a reason. Default 16.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 16
     },
     {
       "path": "mcp",

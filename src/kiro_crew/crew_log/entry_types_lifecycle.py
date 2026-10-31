@@ -48,6 +48,7 @@ ACTOR_VALUES: tuple[str, ...] = (
     "cron",
     "autonudge",
     "subagent",
+    "resource",
     "gateway",
     "other",
 )

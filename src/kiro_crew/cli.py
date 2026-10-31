@@ -463,6 +463,7 @@ def main() -> None:
     cli_parser_gateway.register_setup_parser(sub)
     cli_parser_gateway.register_manifest_parser(sub)
     cli_parser_agent.register_cron_parser(sub)
+    cli_parser_agent.register_resource_subs_parser(sub)
     cli_parser_agent.register_spawn_parser(sub)
     cli_parser_agent.register_run_parser(sub, _jail_opts)
     cli_parser_admin.register_snapshot_parser(sub)
@@ -873,6 +874,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _cron
 
         _cron(args)
+    elif args.command == "resource-subs":
+        from kiro_crew.cli_resource_subs import resource_subs
+
+        resource_subs(args)
     elif args.command == "spawn":
         from kiro_crew.cli_commands import _spawn
 

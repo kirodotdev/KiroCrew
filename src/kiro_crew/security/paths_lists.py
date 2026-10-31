@@ -712,6 +712,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # credential store. One directory rule covers the store, its lock file and
     # every temp file — the same treatment ``profiles`` and ``run`` already get.
     "webhooks",
+    # Holder records carry server-defined URIs and choose restored session/server pairs.
+    "mcp-resource-subscriptions",
     # Pinned installer provenance authorizes an executable to receive staged
     # Kiro identity credentials. Agent reads/writes must not be able to replace
     # this trust decision.

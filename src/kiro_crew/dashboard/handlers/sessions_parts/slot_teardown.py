@@ -30,6 +30,48 @@ from kiro_crew.messaging.link import canonical_key
 logger = logging.getLogger("kiro_crew.dashboard.handlers.sessions")
 
 
+def slot_owns_session(state: DashboardState, session_key: str, context: str) -> bool:
+    """Fail safe when any current slot owns or cannot resolve *session_key*."""
+    canonical_session_key = canonical_key(session_key)
+    for current_slot in tuple(state._slots.values()):
+        try:
+            if canonical_key(effective_session_key(current_slot)) == canonical_session_key:
+                return True
+        except Exception:
+            logger.warning(
+                "History delete: current slot session owner unreadable for %s; "
+                "preserving destructive cleanup",
+                context,
+                exc_info=True,
+            )
+            return True
+    return False
+
+
+def runtime_owns_session(state: DashboardState, session_key: str, context: str) -> bool:
+    """Fail safe when a slot or SessionManager runtime still owns the key.
+
+    *context* names what is being removed, for the log. A slot key is recycled,
+    so a removal that runs after its owner scan re-checks with this.
+    """
+    if slot_owns_session(state, session_key, context):
+        return True
+    canonical_session_key = canonical_key(session_key)
+    try:
+        manager_keys = state.sessions.session_keys()
+        return any(
+            canonical_key(manager_key) == canonical_session_key for manager_key in manager_keys
+        )
+    except Exception:
+        logger.warning(
+            "History delete: current SessionManager owners unreadable for %s; "
+            "preserving cron ownership",
+            context,
+            exc_info=True,
+        )
+        return True
+
+
 async def _remove_slot_for_history_key(
     state: DashboardState,
     key: str,
@@ -77,40 +119,10 @@ async def _remove_slot_for_history_key(
     target_session_generation = claim.session_generation
 
     def live_slot_owns_session(session_key: str) -> bool:
-        """Fail safe when any current slot owns or cannot resolve *session_key*."""
-        canonical_session_key = canonical_key(session_key)
-        for current_slot in tuple(state._slots.values()):
-            try:
-                if canonical_key(effective_session_key(current_slot)) == canonical_session_key:
-                    return True
-            except Exception:
-                logger.warning(
-                    "History delete: current slot session owner unreadable for %s; "
-                    "preserving destructive cleanup",
-                    key,
-                    exc_info=True,
-                )
-                return True
-        return False
+        return slot_owns_session(state, session_key, key)
 
     def live_runtime_owns_session(session_key: str) -> bool:
-        """Fail safe when a slot or SessionManager runtime still owns the key."""
-        if live_slot_owns_session(session_key):
-            return True
-        canonical_session_key = canonical_key(session_key)
-        try:
-            manager_keys = state.sessions.session_keys()
-            return any(
-                canonical_key(manager_key) == canonical_session_key for manager_key in manager_keys
-            )
-        except Exception:
-            logger.warning(
-                "History delete: current SessionManager owners unreadable for %s; "
-                "preserving cron ownership",
-                key,
-                exc_info=True,
-            )
-            return True
+        return runtime_owns_session(state, session_key, key)
 
     if slot:
         cancelled = state.cancel_questions_for_slot(slot.key)
@@ -268,6 +280,28 @@ async def _remove_slot_for_history_key(
                 key,
                 ", ".join(released),
             )
+    await _retire_deleted_subscriptions(key, live_runtime_owns_session)
+
+
+async def _retire_deleted_subscriptions(key: str, owned: Callable[[str], bool]) -> None:
+    """A deleted conversation keeps no MCP resource subscription (RFC §4.7).
+
+    A session key a live slot or runtime still owns keeps its subscriptions, as
+    its cron jobs are kept above. Bounded and fail-soft: the row is already gone.
+    """
+    # Call-time: keeps the gateway out of this import graph.
+    from kiro_crew.mcp_gateway.resource_subscriptions import (
+        retire_sessions_with_stems,
+        retire_within_bound,
+    )
+
+    stems = set(transcript_stems(key)) | {transcript_stem(key)}
+    try:
+        await retire_within_bound(retire_sessions_with_stems(stems, keep=owned), key)
+    except Exception:
+        logger.warning(
+            "History delete: resource subscription removal failed for %s", key, exc_info=True
+        )
 
 
 #: How long the delete funnel waits for the teardown entry to land before taking

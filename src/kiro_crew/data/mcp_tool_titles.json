@@ -85,7 +85,10 @@
     "pod_ls": "List pods",
     "issue_radar_crew_read": "Read crew progress",
     "issue_radar_crew_record": "Log crew progress",
-    "browser": "Drive browser"
+    "browser": "Drive browser",
+    "resource_subscribe": "Subscribe to resource",
+    "resource_subscriptions": "List resource subscriptions",
+    "resource_unsubscribe": "Unsubscribe from resource"
   },
   "kirocrew-dashboard": {
     "chat_folder_tree": "Read folder tree",

@@ -541,7 +541,7 @@ describe('injectOpensTurn – which inject rows begin a turn of their own', () =
 
   it('classifies every stamped kind, and the table is the union', () => {
     // A kind missing here fails to compile, so this pins the VALUES only.
-    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true })
+    expect(INJECT_KIND_OPENS_TURN).toEqual({ cron: true, mcp_app: true, resource: true, synthesis: true, recovery: false, user_replay: false, automation_notice: true })
     for (const [kind, opens] of Object.entries(INJECT_KIND_OPENS_TURN)) expect(injectOpensTurn(row({ injectKind: kind })), kind).toBe(opens)
   })
 

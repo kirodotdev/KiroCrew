@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
+        DashboardState,
         GatewayManager,
         GatewayOrchestrator,
         GatewaySpec,
         KiroCrewConfig,
         LaunchApprovals,
+        SessionManager,
         asyncio,
         contextlib,
         filter_target_env,
@@ -259,6 +261,98 @@ async def _init_mcp_gateway(
     )
     if await manager.start():
         self._mcp_gateway_manager = manager
+        # Holders for stored MCP resource subscriptions restore once ``run`` marks the
+        # gateway ready, after ``start_dashboard`` and its open-tab restore have
+        # returned, so the startup closure check reads a final ``open_slots_restored``.
+        # On a gateway with no dashboard restore, or with an unknowable open-tab
+        # registry, the flag stays False and every dashboard key is kept: absence is
+        # never closure. With the default-off switch, even the module import stays
+        # off the boot path.
+        if cfg_gw.resource_subscriptions.enabled:
+            ready = getattr(self, "_mcp_launch_approval_ready", None)
+            if ready is None:
+                ready = asyncio.Event()
+                self._mcp_launch_approval_ready = ready
+
+            async def _start_resource_subscriptions() -> None:
+                await ready.wait()  # type: ignore[union-attr]  # narrowed above
+                from kiro_crew.mcp_gateway.resource_subscriptions import start_active_service
+
+                try:
+
+                    async def _session_is_closed(session_key: str) -> bool:
+                        # Absence is missing evidence, never closure: the open-tab
+                        # restore skips tabs past its budget without recording them,
+                        # so a key retires only on a readable persisted ``closed``
+                        # flag, which proves the close committed, and only while no
+                        # slot or runtime carries it.
+                        state = self.dashboard_state
+                        sessions = self.sessions
+                        if (
+                            not session_key.startswith("dashboard:")
+                            or state is None
+                            or sessions is None
+                            or not state.open_slots_restored
+                        ):
+                            return False
+                        slot_name = session_key.removeprefix("dashboard:")
+                        try:
+                            from kiro_crew.dashboard.chat_utils import effective_session_key
+                            from kiro_crew.dashboard.handlers.change_cards import (
+                                slot_closure_recorded,
+                            )
+
+                            def carried(
+                                live_state: DashboardState, live_sessions: SessionManager
+                            ) -> bool:
+                                return (
+                                    live_state.slot_exists(slot_name)
+                                    or any(
+                                        effective_session_key(slot) == session_key
+                                        for slot in live_state._slots.values()
+                                    )
+                                    or live_sessions.has_session(session_key)
+                                )
+
+                            if carried(state, sessions):
+                                return False
+                            # The closure read awaits a disk hop; a tab reopened
+                            # meanwhile carries the key again and keeps it.
+                            closed = await slot_closure_recorded(state, slot_name)
+                            return closed and not carried(state, sessions)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            logger.exception(
+                                "mcp-gateway: could not verify whether resource-subscription "
+                                "session %s is closed",
+                                session_key,
+                            )
+                            return False
+
+                    service = await start_active_service(
+                        lambda: manager.socket_path,
+                        lambda: (live.snapshot() or self._cfg).mcp_gateway.resource_subscriptions,
+                        session_is_closed=_session_is_closed,
+                        backend_spawn_wait_secs=cfg_gw.spawn_queue_wait_secs,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("mcp-gateway: resource subscriptions did not start")
+                    return
+                # The service's events become session wakes. Same task, so the
+                # dispatcher starts only with the switch on and stops with the broker.
+                from kiro_crew.dashboard.resource_wakes import run_dispatcher
+
+                await run_dispatcher(service, lambda: self.dashboard_state)
+
+            subscription_task = asyncio.create_task(
+                _start_resource_subscriptions(), name="mcp-resource-subscriptions-start"
+            )
+            self._mcp_resource_subscription_task = subscription_task
+            self._background_tasks.add(subscription_task)
+            subscription_task.add_done_callback(self._background_tasks.discard)
         # App installs and enables write agent specs after this rewrite; this is
         # how they reach the overlay without a restart. The hook lives exactly as
         # long as the broker: ``_stop_mcp_broker`` clears it.
@@ -399,6 +493,19 @@ async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
     from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
 
     set_overlay_refresher(None)
+    subscription_task = getattr(self, "_mcp_resource_subscription_task", None)
+    self._mcp_resource_subscription_task = None
+    if subscription_task is not None:
+        if not subscription_task.done():
+            subscription_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await subscription_task
+        from kiro_crew.mcp_gateway.resource_subscriptions import stop_active_service
+
+        try:
+            await stop_active_service()
+        except Exception:
+            logger.exception("mcp-gateway: resource subscription holders did not stop cleanly")
     mgr = self._mcp_gateway_manager
     self._mcp_gateway_manager = None
     if mgr is not None:

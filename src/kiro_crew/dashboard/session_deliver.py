@@ -27,10 +27,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 #: Who sent the text. ``automation`` is a monitor loop's wake, ``cron`` a cron
-#: job's notification, ``app`` an embedded MCP App's message.
+#: job's notification, ``app`` an embedded MCP App's message, ``resource`` a
+#: wake for an MCP resource subscription (rfc-mcp-resource-subscriptions §4.9.2).
 ORIGIN_AUTOMATION = "automation"
 ORIGIN_CRON = "cron"
 ORIGIN_APP = "app"
+ORIGIN_RESOURCE = "resource"
 #: Another session's ``session_send``: its row is a ``user`` row, written by the
 #: steer or the queue-or-run path like a typed message, and never the human stamp.
 ORIGIN_PEER = "peer"
@@ -48,15 +50,18 @@ QUEUE_FULL = "queue_full"
 class Origin:
     """The sender of a delivery and what its row names.
 
-    ``label`` is the cron job or app label the row shows; ``nudge`` is the
-    ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row carries.
-    Build one with :func:`cron`, :func:`app` or :func:`automation`.
+    ``label`` is the cron job, app or MCP server label the row shows; ``nudge``
+    is the ``meta.nudge`` (``{"cycle", "loop_id"}``) an automation wake's row
+    carries; ``subscription`` is the resource subscription a ``resource`` wake is
+    for. Build one with :func:`cron`, :func:`app`, :func:`resource` or
+    :func:`automation`.
     """
 
     kind: str
     label: str = ""
     nudge: dict | None = None
     steer: bool = False
+    subscription: str = ""
 
 
 def cron(label: str) -> Origin:
@@ -75,6 +80,10 @@ def peer(*, steer: bool) -> Origin:
 
 def app(label: str) -> Origin:
     return Origin(ORIGIN_APP, label=label)
+
+
+def resource(server: str, subscription_id: str) -> Origin:
+    return Origin(ORIGIN_RESOURCE, label=server, subscription=subscription_id)
 
 
 def automation(cycle: int, loop_id: str) -> Origin:
@@ -131,11 +140,11 @@ async def deliver(
 ) -> str:
     """Deliver *text* from *origin* into *slot*; return a ``DELIVERED_*`` outcome.
 
-    Idle slot: a cron or app message is queued and the queue drain starts it
-    (:func:`_deliver_idle`); a slot that is closing or the gateway is shutting
+    Idle slot: a cron, app or resource message is queued and the queue drain
+    starts it (:func:`_deliver_idle`); a slot that is closing or the gateway is shutting
     down answers :data:`NOT_DELIVERED` and the caller falls back. Running slot: an
     automation wake is steered into the turn (its row is the same nudge row,
-    written by ``steer_into_running_turn``), and a cron or app message is queued
+    written by ``steer_into_running_turn``), and a cron, app or resource message is queued
     behind it with a ``queued`` card, so an injection never starts a second
     turn. An idle automation wake returns :data:`NOT_DELIVERED`: that turn is the
     autonudge fire's own path (``_fire_dashboard_nudge``), which owns its
@@ -167,18 +176,21 @@ async def _deliver_idle(
     admission: dict | None,
     evict_oldest: bool,
 ) -> str:
-    """The idle-slot half of :func:`deliver` for a cron or app message.
+    """The idle-slot half of :func:`deliver` for a cron, app or resource message.
 
     The message is queued as the running-slot half queues it, then the queue
     drain starts it, so it takes the checks every queued message takes before
     its turn: memory preparation still running, a Stop being resolved, a sign-in
     hold and an entry already waiting ahead of it. When one of them refuses, the
-    card waits for the next drain. A slot that is closing, was replaced while
-    this waited for its lock, or receives the message during gateway shutdown
-    takes nothing: its queued card would not survive this process, so the caller
-    falls back as for a gone session.
+    card waits for the next drain. When a sweep drops this message's entry while
+    another entry starts, the answer is :data:`DELIVERED_QUEUED`, so the caller
+    finds the entry gone from the queue as when nothing started. A slot that is
+    closing, was replaced while this waited for its lock, or receives the message
+    during gateway shutdown takes nothing: its queued card would not survive this
+    process, so the caller falls back as for a gone session.
     """
     from kiro_crew.dashboard.chat_runner import (
+        _STARTED_QUEUE_IDS,
         _gateway_shutdown_requested,
         _start_next_queued_turn,
         idle_slot_admits_drain,
@@ -191,15 +203,23 @@ async def _deliver_idle(
             or _gateway_shutdown_requested(state)
         ):
             return NOT_DELIVERED
+        ids_before = {item["id"] for item in slot._queue}
         outcome = _queue_entry(state, slot, text, origin, admission, evict_oldest)
         if outcome != DELIVERED_QUEUED or not idle_slot_admits_drain(state, slot):
             return outcome
+        own_ids = {item["id"] for item in slot._queue} - ids_before
+        started_ids: list[str] = []
+        collecting = _STARTED_QUEUE_IDS.set(started_ids)
         slot._turn_admission_reserved = True
         try:
             started = await _start_next_queued_turn(state, slot)
         finally:
             slot._turn_admission_reserved = False
-    return DELIVERED_TURN if started else DELIVERED_QUEUED
+            _STARTED_QUEUE_IDS.reset(collecting)
+        own_entry_dropped = own_ids.isdisjoint(started_ids) and own_ids.isdisjoint(
+            item["id"] for item in slot._queue
+        )
+    return DELIVERED_TURN if started and not own_entry_dropped else DELIVERED_QUEUED
 
 
 async def _deliver_running(
@@ -242,7 +262,7 @@ def _queue_entry(
     admission: dict | None,
     evict_oldest: bool,
 ) -> str:
-    """Queue a cron or app message as a card and return the delivery outcome."""
+    """Queue a cron, app or resource message as a card and return the delivery outcome."""
     if origin.kind == ORIGIN_CRON:
         from kiro_crew.dashboard.cron_inject import queue_cron_notification
 
@@ -304,6 +324,29 @@ def _queue_entry(
             text,
             "msg msg-queued",
             meta={"kind": MCP_APP_MESSAGE_KIND, "appLabel": origin.label, "queueId": qid},
+        )
+        return DELIVERED_QUEUED
+    if origin.kind == ORIGIN_RESOURCE:
+        from kiro_crew.dashboard.chat_utils_injected_rows import (
+            RESOURCE_WAKE_KIND,
+            resource_inject_row,
+        )
+        from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+
+        if len(slot._queue) >= MAX_LIVE_QUEUE_ENTRIES:
+            return QUEUE_FULL
+        # As an app message: the identity rides the entry meta beside the
+        # containment stamp, so the drain can build the row and re-check the stamp.
+        identity = resource_inject_row(origin.label, origin.subscription)[2]
+        identity.pop("injectKind")
+        qid = slot.queue_append(
+            text, kind=RESOURCE_WAKE_KIND, meta={**identity, **(admission or {})}
+        )
+        slot.append(
+            "queued",
+            text,
+            "msg msg-queued",
+            meta={"kind": RESOURCE_WAKE_KIND, **identity, "queueId": qid},
         )
         return DELIVERED_QUEUED
     raise ValueError(f"unknown delivery origin: {origin.kind!r}")
