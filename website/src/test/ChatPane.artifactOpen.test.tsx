@@ -103,8 +103,8 @@ function makeStore(slotKey: string) {
   })
 }
 
-async function renderPane(slotKey: string, extraProps: Record<string, unknown> = {}) {
-  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: MESSAGES, running: false, has_more: false, total: MESSAGES.length })
+async function renderPane(slotKey: string, extraProps: Record<string, unknown> = {}, messages = MESSAGES) {
+  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages, running: false, has_more: false, total: messages.length })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore(slotKey)
   await act(async () => {
@@ -145,6 +145,15 @@ describe('ChatPane artifact open (issue #18320)', () => {
       agentLocked: true,
       crewmate: { name: 'atlas', label: 'Atlas' },
     })
+    fireEvent.click(screen.getByTestId('artifact-link'))
+    expect(onArtifactOpen).toHaveBeenCalledWith('cr-queue')
+  })
+
+  it('a note row opens the artifact through the host handler', async () => {
+    const onArtifactOpen = vi.fn()
+    await renderPane('pane-artifact-note', { onArtifactOpen }, [
+      { role: 'inject', content: 'Queue updated: /artifacts/cr-queue', cls: '', ts: '2026-10-09T03:00:10Z' },
+    ])
     fireEvent.click(screen.getByTestId('artifact-link'))
     expect(onArtifactOpen).toHaveBeenCalledWith('cr-queue')
   })
