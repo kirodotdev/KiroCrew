@@ -577,7 +577,9 @@ worktree removal never blocks the gateway event loop.
   for a gateway predating the per-listener file — the shared slot is one per data
   home, so a live second gateway leaves it naming the other generation
 - `runtime.recent_journal(cfg, name, n)` — journalctl tail (blocking, offloaded)
-- `provision.has_venv(path)` / `provision.has_dist(path)` — filesystem checks (offloaded)
+- `provision.has_venv(path)` / `provision.has_dist(path)` — "present AND built
+  from the artifact's current build input" checks (offloaded): a filesystem probe
+  gated by a per-checkout provenance stamp (see *Build-state provenance* below)
 
 All blocking pod operations are offloaded via `asyncio.get_running_loop().run_in_executor(
 subprocess_executor(), ...)` to avoid blocking the gateway event loop.
@@ -2116,9 +2118,70 @@ things:
 | `_POD_IMPORTED` | the `kiro_crew.pod` modules imported, so its platform-neutral helpers are callable | the import succeeded (any platform) |
 | `_POD_AVAILABLE` | pods can actually **run** here | Linux with `systemctl` on PATH, or macOS with `launchctl` on PATH |
 
-Build state (`prov.has_venv` / `prov.has_dist`, plain filesystem checks) is computed
+Build state (`prov.has_venv` / `prov.has_dist`) is computed
 on every platform, outside the pod-runnable gate, so a host without a runnable pod
 backend still reports which worktrees are built.
+
+#### Build-state provenance
+
+`has_venv` / `has_dist` (and the internal `_has_node_modules` guard) mean
+**present AND built from the artifact's current build input**, not merely
+present. Each is keyed on the **build input**, not on HEAD, so a commit that
+changes no input leaves the artifact current and does not force a needless
+rebuild:
+
+| artifact | build input | where the built-from id is recorded |
+|---|---|---|
+| `venv` | `pyproject.toml` + `setup.cfg` oids (deps are dynamic: `pyproject.toml` sets `dynamic = ["dependencies"]` and the real `install_requires`/extras live in `setup.cfg`) | the manifest below |
+| `node_modules` | `website/package-lock.json` + `website/package.json` blob oids (`npm ci` installs exactly the lockfile, and refuses one that disagrees with `package.json`) | the manifest below |
+| `dist` | `HEAD:website` tree oid | the EXISTING `build-id.json` the dist already carries (see below) |
+
+**The dist reuses the frontend's own fingerprint — it does NOT get a manifest
+key.** `website/vite.config.ts`'s `buildIdPlugin` already writes the `HEAD:website`
+tree id as `websiteTree` into the dist's `build-id.json` on every `vite build`
+(provision's own and the Dev Fleet sync's), and
+`frontend._write_build_source_fingerprint` writes the same id beside a synced
+dist. `has_dist` reads that record through
+`dashboard.stale_bundle_guard.read_dist_tree`, the one reader of the dist's build
+stamps (`build-id.json`, then `kirocrew-build-source.txt`), passing the
+worktree's own dist directory, and compares it to the checkout's current
+`HEAD:website`. A second manifest record would drift: the sync path stages a
+fresh dist by `vite build` without touching the manifest, so a manifest-stamped
+dist would read stale after every sync.
+
+For the venv and `node_modules`, each build step captures its input oid BEFORE
+building and, on success, stamps it into a per-checkout manifest; the presence
+check compares that stamp to the input's current oid. Capturing before the build
+means a revision that advances during the build leaves the artifact correctly
+stale rather than certified against the post-build HEAD.
+
+- **matches the input oid** → provisioned (the common fast path);
+- **absent or mismatched** → not provisioned, so the next provision rebuilds once
+  and re-records. An existing git worktree provisioned before the manifest
+  existed has no stamp, so its venv and `node_modules` read not-provisioned until
+  its next provision. This closes the stale-artifact gap: any operation that rewrites
+  a build input (a rebase or sync pulling a `package-lock.json` bump, an `Advance`
+  re-run past its early-return) changes that input's oid, and the probe reports
+  the artifact stale instead of booting a pod on it;
+- **input unresolvable** (not a git checkout — a tarball install, a test fixture
+  — or no trusted `git`) → the probe defers to presence-only, so a tree with no
+  resolvable revision keeps reporting what it actually has.
+
+The venv/`node_modules` manifest lives INSIDE the git directory (`git rev-parse
+--git-path kirocrew-provision.json`, a per-worktree private path), not in the
+working tree, so it is invisible to `git status` / `_rebase_locked` / "Prune
+merged" with no ignore rule — and a worktree whose revision predates this change
+is never dirtied by a provision. A stamp or clear rewrites the manifest from a
+strict read: only a missing manifest reads as empty, so a manifest that exists
+but cannot be read is left as it is rather than replaced by one that has lost the
+other artifacts' stamps. `git` is resolved to a trusted absolute
+executable (`platform_compat.trusted_git_bin`, run under `hardened_git_env`),
+never the service PATH, which leads with agent-writable directories; an untrusted
+or absent `git` makes the input unresolvable (presence-only), it is never spawned.
+
+Staleness is observable from the tree alone (recorded id vs input oid), with no
+revision range the caller must hold, so a later probe can re-inspect an artifact
+an earlier run left stale.
 
 `GET /api/fleet` reports host support so the UI can explain itself rather than
 offering controls that fail:

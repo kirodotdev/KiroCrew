@@ -1009,6 +1009,18 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # timeout, stdin closed, stderr discarded.
         "pod/provision.py::_uv_found_python",
         "pod/provision.py::_run",
+        # Build-state provenance probes: fixed `git -C <checkout> rev-parse
+        # HEAD:<pathspec>` / `rev-parse --git-path <const>` list-argv (no
+        # shell=True) with git PINNED via trusted_git_bin (fixed system dirs,
+        # never PATH; absent trusted git → return None, no spawn) under
+        # code_fingerprint.hardened_git_env (no planted config). The pathspec is
+        # a module constant from _ART_INPUTS / _PROVENANCE_FILE, never agent
+        # input; `-C` is the checkout the Dev Fleet view already enumerates,
+        # never a request- or agent-supplied path. Read-only — the output is an
+        # object id compared against a stamp to decide build staleness. Same
+        # shape as dashboard/stale_bundle_guard.py::_backend_website_tree above.
+        "pod/provision.py::_resolve_oid",
+        "pod/provision.py::_manifest_path",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
         "pod/runtime.py::recent_journal",

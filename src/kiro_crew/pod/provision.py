@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+import json
 import os
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ import threading
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.code_fingerprint import hardened_git_env
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.env import find_node_tool, node_augmented_path, resolve_uv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
@@ -334,13 +336,271 @@ def dist_dir(checkout: Path) -> Path:
     return checkout / "src" / "kiro_crew" / "static" / "dist"
 
 
+#: Per-checkout provenance manifest for the artifacts git does NOT already
+#: fingerprint — the venv and ``node_modules``. The dist is deliberately absent:
+#: ``website/vite.config.ts``'s ``buildIdPlugin`` already stamps ``HEAD:website``
+#: into ``dist/build-id.json`` on every ``vite build`` (and
+#: ``frontend._write_build_source_fingerprint`` writes the same id beside a
+#: synced dist), so :func:`has_dist` reads that existing record rather than a
+#: third one that would drift. The manifest lives INSIDE the git directory
+#: (``git rev-parse --git-path``), not the working tree, so it is invisible to
+#: ``git status``/``_rebase_locked``/"Prune merged" with no ignore rule — a
+#: worktree whose revision predates this change is never dirtied by provision.
+_PROVENANCE_FILE = "kirocrew-provision.json"
+
+#: Manifest artifact keys, each mapped to the git pathspec whose oid IS its build
+#: input. Staleness keys on the INPUT, not on HEAD, so a commit that changes
+#: neither input leaves the artifacts current and does not force a needless
+#: rebuild. The venv is an editable install whose dependency set is DYNAMIC —
+#: ``pyproject.toml`` declares ``dynamic = ["dependencies", ...]`` and the actual
+#: ``install_requires`` / extras live in ``setup.cfg`` — so both files are inputs
+#: and a dependency bump in ``setup.cfg`` restales the venv. ``node_modules`` is
+#: determined by ``website/package-lock.json`` AND ``website/package.json``: ``npm
+#: ci`` installs exactly the lockfile, but the ``npm install --no-package-lock``
+#: fallback resolves ``package.json`` directly, so a dependency added there
+#: without a lockfile bump must still restale the deps. A source edit under
+#: ``website/`` that touches neither manifest does not throw the deps away.
+_ART_VENV = "venv"
+_ART_NODE_MODULES = "node_modules"
+_ART_INPUTS: dict[str, tuple[str, ...]] = {
+    _ART_VENV: ("pyproject.toml", "setup.cfg"),
+    _ART_NODE_MODULES: ("website/package-lock.json", "website/package.json"),
+}
+
+
+def _git_exe() -> str:
+    """Resolve ``git`` to a TRUSTED absolute executable, never through the
+    inherited ``PATH``.
+
+    The Dev Fleet gateway's service PATH leads with agent-writable directories
+    (a worktree venv, ``~/.local/bin``), and ``_build_fleet`` calls ``has_venv``
+    / ``has_dist`` on every poll — so a bare ``git`` here would let an agent that
+    planted a ``git`` shim run code in the credential-bearing standard tier.
+    ``trusted_git_bin`` resolves only an executable inside a fixed system/Homebrew
+    bin dir (the same seam ``stale_bundle_guard`` and ``code_fingerprint`` use);
+    when it finds none the probe treats the revision as unresolvable (see
+    :func:`_resolve_oid`) rather than spawning an untrusted one.
+    """
+    return platform_compat.trusted_git_bin() or ""
+
+
+def _resolve_inputs(checkout: Path, pathspecs: tuple[str, ...]) -> str | None:
+    """Combine the oids of several build-input pathspecs into one stamp, or None
+    when ANY of them cannot be resolved.
+
+    An artifact whose build reads more than one tracked path (the editable venv
+    reads both ``pyproject.toml`` and ``setup.cfg``) is current only when EVERY
+    input is unchanged, so the stamp is the ordered join of each input's oid. If
+    any input is unresolvable (non-git tree, untracked), the whole stamp is None
+    and the caller falls back to presence-only — never a partial stamp that could
+    match by coincidence."""
+    oids = []
+    for spec in pathspecs:
+        oid = _resolve_oid(checkout, spec)
+        if oid is None:
+            return None
+        oids.append(oid)
+    return " ".join(oids)
+
+
+def _resolve_oid(checkout: Path, pathspec: str) -> str | None:
+    """The git object id of ``HEAD:<pathspec>`` in *checkout*, or None when it
+    cannot be resolved.
+
+    For a directory pathspec this is the TREE oid; for a file it is that blob's
+    oid. Either changes exactly when the tracked content it names changes — the
+    artifact's real build input.
+
+    ``None`` is NOT "stale": it means staleness is unknowable (not a git
+    checkout, no trusted git, or the path is untracked at HEAD), so the presence
+    checks fall back to presence-only rather than hiding a good artifact. A
+    tarball install and a test fixture both land here. Git runs under
+    ``hardened_git_env`` so a planted repo/global config cannot steer it.
+    """
+    git = _git_exe()
+    if not git:
+        return None
+    try:
+        out = subprocess.run(  # nosec B603 - trusted absolute git, argv list, no shell
+            [git, "-C", str(checkout), "rev-parse", f"HEAD:{pathspec}"],
+            capture_output=True,
+            timeout=10,
+            env=hardened_git_env(),
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    oid = out.stdout.strip()
+    return oid or None
+
+
+def _manifest_path(checkout: Path) -> Path | None:
+    """Where this checkout's provenance manifest lives: a per-worktree private
+    file inside the git directory, resolved via ``git rev-parse --git-path`` so a
+    linked worktree gets its OWN file (the git dir is per-worktree; the object
+    store it points at is shared). None when *checkout* is not a git tree."""
+    git = _git_exe()
+    if not git:
+        return None
+    try:
+        out = subprocess.run(  # nosec B603 - trusted absolute git, argv list, no shell
+            [git, "-C", str(checkout), "rev-parse", "--git-path", _PROVENANCE_FILE],
+            capture_output=True,
+            timeout=10,
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    p = out.stdout.strip()
+    if not p:
+        return None
+    # --git-path yields a path relative to the checkout's cwd for a relative git
+    # dir; anchor it on the checkout so a later read from a different cwd agrees.
+    path = Path(p)
+    return path if path.is_absolute() else (checkout / path)
+
+
+def _read_provenance(checkout: Path) -> dict[str, str]:
+    """The stamped build-input oids for this checkout, keyed by artifact.
+
+    A missing or unreadable manifest reads as ``{}`` — an absent stamp, which the
+    matchers treat as "not provisioned from this input". Never raises: a corrupt
+    manifest must not take down a presence probe the Fleet view calls on every
+    poll."""
+    path = _manifest_path(checkout)
+    if path is None:
+        return {}
+    try:
+        return _read_provenance_for_update(path)
+    except OSError:
+        return {}
+
+
+def _read_provenance_for_update(path: Path) -> dict[str, str]:
+    """The manifest at *path* as the base of a rewrite.
+
+    Only a MISSING file reads as ``{}``; any other read error raises, so the
+    caller abandons the rewrite instead of publishing an empty manifest over
+    the other artifacts' stamps after a transient ``EACCES``/``EIO``. A corrupt
+    (unparseable) manifest also reads as ``{}``: it carries no stamp anyone can
+    match, so rewriting it loses nothing."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _stamp_artifact(checkout: Path, artifact: str, input_oid: str | None) -> None:
+    """Record, in the manifest, the build-input oid *artifact* was built from.
+
+    ``input_oid`` is captured by the caller BEFORE the build runs and passed in,
+    so a revision that advances during a multi-minute build leaves the artifact
+    correctly stale rather than certified against the post-build HEAD. ``None``
+    (the input could not be resolved) writes nothing: a tree with no resolvable
+    input has no provenance to record, and the matchers fall back to
+    presence-only there anyway.
+
+    Best-effort: a stamp that cannot be written is not a build failure, it only
+    costs the next probe a re-provision (an absent stamp reads as stale). The
+    manifest is read-modify-written so stamping one artifact never drops
+    another's, and an unreadable manifest is left alone rather than replaced."""
+    if input_oid is None:
+        return
+    path = _manifest_path(checkout)
+    if path is None:
+        return
+    try:
+        data = _read_provenance_for_update(path)
+        data[artifact] = input_oid
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_artifact(checkout: Path, artifact: str) -> None:
+    """Drop *artifact*'s manifest entry, so it reads as not-provisioned until a
+    build succeeds and re-stamps it.
+
+    Called BEFORE the first mutating build step, so an install interrupted
+    part-way (``npm ci`` after ``tsc`` is already present, an in-place venv
+    rebuild) cannot leave the PRIOR stamp vouching for the half-overwritten tree.
+    Without this, returning to the earlier input and retrying would find the old
+    stamp still matching and skip the repair. Best-effort and only touches this
+    one key; a manifest that cannot be rewritten just leaves the stamp, which at
+    worst costs a spurious rebuild (an absent stamp reads as stale, never as
+    falsely-current)."""
+    path = _manifest_path(checkout)
+    if path is None:
+        return
+    try:
+        data = _read_provenance_for_update(path)
+        if artifact not in data:
+            return
+        del data[artifact]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _is_current(checkout: Path, artifact: str) -> bool:
+    """True when *artifact*'s stamp matches its build input's current oid.
+
+    - input unresolvable -> True: staleness is unknowable (non-git tree, no
+      trusted git), so defer to the caller's presence check rather than hide a
+      real artifact.
+    - stamp absent or mismatched -> False: the artifact's build input moved since
+      the build, so it belongs to an earlier input. The next provision re-runs
+      once and stamps the current input oid, and it is correct from then on.
+    """
+    want = _resolve_inputs(checkout, _ART_INPUTS[artifact])
+    if want is None:
+        return True
+    return _read_provenance(checkout).get(artifact) == want
+
+
 def has_venv(checkout: Path) -> bool:
     binp = venv_bin(checkout)
-    return binp.exists() and os.access(binp, os.X_OK)
+    return binp.exists() and os.access(binp, os.X_OK) and _is_current(checkout, _ART_VENV)
 
 
 def has_dist(checkout: Path) -> bool:
-    return dist_dir(checkout).is_dir()
+    """True when the served ``static/dist`` is present AND built from the
+    checkout's current ``website/`` tree.
+
+    Staleness reuses the identity the frontend build already records — the
+    ``website/`` tree id in ``dist/build-id.json`` / ``kirocrew-build-source.txt``
+    read by ``dashboard.stale_bundle_guard.read_dist_tree``, the one reader of
+    those stamps — compared to ``HEAD:website``. That same
+    record is written by a Dev Fleet sync's ``vite build``, so a synced dist is
+    recognised as current with no second manifest to keep in step. Either side
+    unknown (no build stamp, or no trusted git / non-git tree) falls back to
+    presence-only, exactly as ``dashboard/stale_bundle_guard`` does, so a dist
+    that predates this record is never hidden."""
+    # Imported here, not at module top: the guard module pulls in the dashboard
+    # handler stack, which the provisioning CLI path never otherwise loads.
+    from kiro_crew.dashboard.stale_bundle_guard import read_dist_tree
+
+    dist = dist_dir(checkout)
+    if not dist.is_dir():
+        return False
+    want = _resolve_oid(checkout, "website")
+    built = read_dist_tree(dist)
+    if want is None or built is None:
+        return True  # cannot verify → presence-only
+    return built[0] == want
 
 
 def _pump(stream, tail: "collections.deque[str] | None") -> None:
@@ -607,7 +867,11 @@ def _ensure_venv_uv(checkout: Path, uv: str, py: str) -> bool:
     ]
     if _run_uv(install, checkout) != 0:
         return False
-    return has_venv(checkout)
+    # Presence only, NOT has_venv: the provenance stamp is written by the CALLER
+    # after this returns true, so gating on it here would read False on every git
+    # checkout and send a perfectly good uv venv down the pip fallback.
+    binp = venv_bin(checkout)
+    return binp.exists() and os.access(binp, os.X_OK)
 
 
 def _run_uv(cmd: list[str], checkout: Path) -> int:
@@ -652,10 +916,23 @@ def ensure_venv(checkout: Path) -> bool:
         )
         return False
     venv_dir = checkout / ".venv"
+    # Capture the build input (pyproject.toml's oid) BEFORE building, so a
+    # revision that advances during the install stamps the input the venv was
+    # actually built from, never a later one.
+    venv_input = _resolve_inputs(checkout, _ART_INPUTS[_ART_VENV])
+    # Invalidate any prior stamp BEFORE the first mutating step: an in-place venv
+    # rebuild interrupted part-way must not leave the old stamp certifying the
+    # half-overwritten venv on a later retry (F4).
+    _clear_artifact(checkout, _ART_VENV)
     uv = _find_uv()
     if uv:
         if _ensure_venv_uv(checkout, uv, py):
-            return True
+            _stamp_artifact(checkout, _ART_VENV, venv_input)
+            # Revalidate: if a rebase changed pyproject.toml/setup.cfg DURING the
+            # uv build, the stamp (the pre-build input) fails to match the current
+            # input, so has_venv is False and we must report that rather than a
+            # bare True — otherwise the caller starts a pod on a venv already stale.
+            return has_venv(checkout)
         _say("[provision] uv provisioning failed — falling back to python -m venv + pip")
     _say(f"[provision] creating venv for {checkout.name} (one-time, ~1 min)…")
     if _run([py, "-m", "venv", str(venv_dir)], checkout) != 0:
@@ -683,14 +960,26 @@ def ensure_venv(checkout: Path) -> bool:
         )
         if _run([str(pip), "install", "--editable", str(checkout)], checkout) != 0:
             return _fail()
+    _stamp_artifact(checkout, _ART_VENV, venv_input)
     return has_venv(checkout)
 
 
 def _has_node_modules(website: Path) -> bool:
-    """True when ``website/`` already has installed npm deps (with ``tsc``), so the
-    install step can be skipped on the fast idempotent path. ``tsc`` is the build's
-    key binary; its presence stands in for "deps are installed"."""
-    return (website / "node_modules" / ".bin" / "tsc").exists()
+    """True when ``website/`` already has installed npm deps (with ``tsc``) built
+    from the current ``website/package-lock.json``, so the install step can be
+    skipped on the fast idempotent path. ``tsc`` is the build's key binary; its
+    presence stands in for "deps are installed".
+
+    The provenance check compares against the CHECKOUT's
+    ``website/package-lock.json`` oid (the checkout is ``website``'s parent),
+    because ``npm ci`` installs exactly the lockfile — a lockfile bump pulled in
+    by a rebase/sync is the only source change that invalidates the installed
+    deps, and a source edit under ``website/`` that leaves the lockfile untouched
+    does not. An unresolvable input defers to presence-only (see
+    :func:`_is_current`)."""
+    return (website / "node_modules" / ".bin" / "tsc").exists() and _is_current(
+        website.parent, _ART_NODE_MODULES
+    )
 
 
 def ensure_node_modules(website: Path) -> bool:
@@ -712,8 +1001,22 @@ def ensure_node_modules(website: Path) -> bool:
         return False
     env = _npm_env()
     _say("[provision] installing website npm deps (node_modules missing)…")
+    # Capture the input (the package-lock.json oid) BEFORE installing, so a
+    # concurrent rebase during the install cannot certify these deps against a
+    # later lockfile.
+    node_input = _resolve_inputs(website.parent, _ART_INPUTS[_ART_NODE_MODULES])
+    # Invalidate any prior stamp BEFORE the first mutating step: an install
+    # interrupted after tsc is present but before success must not leave the old
+    # stamp certifying the half-written node_modules on a later retry (F4).
+    _clear_artifact(website.parent, _ART_NODE_MODULES)
     if _run([npm, "ci"], website, env) == 0:
-        return True
+        _stamp_artifact(website.parent, _ART_NODE_MODULES, node_input)
+        # Revalidate the INPUT: a lockfile change DURING the install leaves the
+        # stamp stale, so report _is_current rather than a bare True (same
+        # reasoning as the uv venv path) — the build must not continue on deps
+        # already stale. (_is_current, not _has_node_modules: we are re-checking
+        # the captured input's freshness, not re-probing the tree npm just wrote.)
+        return _is_current(website.parent, _ART_NODE_MODULES)
     _say(
         "[provision] `npm ci` failed (lockfile drift?) — falling back to "
         "`npm install --no-package-lock` (non-mutating: won't rewrite the "
@@ -721,7 +1024,8 @@ def ensure_node_modules(website: Path) -> bool:
     )
     if _run([npm, "install", "--no-package-lock"], website, env) != 0:
         return _fail()
-    return True
+    _stamp_artifact(website.parent, _ART_NODE_MODULES, node_input)
+    return _is_current(website.parent, _ART_NODE_MODULES)
 
 
 def build_dist(checkout: Path) -> bool:
@@ -773,6 +1077,9 @@ def build_dist(checkout: Path) -> bool:
     elif dst.is_dir():
         shutil.rmtree(dst)
     shutil.copytree(src_dist, dst)
+    # No manifest stamp for the dist: `npm run build` above already wrote
+    # dist/build-id.json's websiteTree, which has_dist reads. copytree staged it
+    # into the served dist along with the bundle.
     return has_dist(checkout)
 
 
