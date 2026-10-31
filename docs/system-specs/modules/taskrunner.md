@@ -757,7 +757,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/plan/cancel` | Cancel planning |
 | POST | `/api/taskrunner/from-chat` | Create or update a plan from chat-provided steps |
 | DELETE | `/api/taskrunner/{task_id}` | Delete finished run from memory + disk |
-| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project |
+| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project (`name` must be a string, else 400; trimmed; blank is 400 here and no change on the `PUT /api/projects/{id}` alias) |
 | PATCH | `/api/taskrunner/{task_id}/tasks/{index}` | Edit a pending task |
 | PUT | `/api/taskrunner/{task_id}/plan` | Replace the planned task list |
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |

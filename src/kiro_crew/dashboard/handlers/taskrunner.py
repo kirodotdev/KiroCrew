@@ -714,6 +714,16 @@ async def api_taskrunner_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def parse_run_name(value: object) -> tuple[str | None, str | None]:
+    """Return ``(value.strip(), None)`` for a string run name, else ``(None, error)``.
+
+    The trimmed name may be empty; each caller keeps its own rule for that.
+    """
+    if not isinstance(value, str):
+        return None, "name must be a string"
+    return value.strip(), None
+
+
 async def api_taskrunner_rename(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/name — rename a task run."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.rename")
@@ -730,7 +740,9 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     if data_err is not None:
         return data_err
     assert data is not None  # read_bounded_json returns (dict, None) on success
-    name = data.get("name", "").strip()
+    name, name_err = parse_run_name(data.get("name", ""))
+    if name is None:
+        return web.json_response({"error": name_err, "code": "invalid_name"}, status=400)
     if not name:
         return web.json_response({"error": "name required"}, status=400)
     run.name = name

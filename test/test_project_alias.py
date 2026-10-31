@@ -250,6 +250,90 @@ class TestProjectHandlers:
             await api_project_update(req)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body", ["xnamex", ["name"], 7, None], ids=["string", "list", "number", "null"]
+    )
+    async def test_update_rejects_non_object_body_with_coded_400(self, body):
+        """A JSON body that is not an object is a client error, not a 500."""
+        run = _make_run("r1")
+        runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
+        runner._runs = {"r1": run}
+        req = _make_request(
+            _make_app(runner=runner), method="PUT", match_info={"id": "r1"}, json_body=body
+        )
+        if body is None:
+            req.json = AsyncMock(return_value=None)
+        resp = await api_project_update(req)
+        assert resp.status == 400
+        assert json.loads(resp.body) == {
+            "error": "body must be a JSON object",
+            "code": "body_not_object",
+        }
+        assert run.name == "Test Run"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "name", [42, None, ["a"], {"a": 1}], ids=["int", "null", "list", "dict"]
+    )
+    async def test_update_rejects_non_string_name_with_coded_400(self, name):
+        run = _make_run("r1")
+        runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
+        runner._runs = {"r1": run}
+        req = _make_request(
+            _make_app(runner=runner),
+            method="PUT",
+            match_info={"id": "r1"},
+            json_body={"name": name},
+        )
+        resp = await api_project_update(req)
+        assert resp.status == 400
+        assert json.loads(resp.body) == {"error": "name must be a string", "code": "invalid_name"}
+        assert run.name == "Test Run"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "stored"),
+        [("  New  ", "New"), ("n" * 5000, "n" * 5000)],
+        ids=["padded", "long"],
+    )
+    async def test_update_trims_name_and_keeps_long_names(self, sent, stored):
+        run = _make_run("r1")
+        runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
+        runner._runs = {"r1": run}
+        req = _make_request(
+            _make_app(runner=runner),
+            method="PUT",
+            match_info={"id": "r1"},
+            json_body={"name": sent},
+        )
+        resp = await api_project_update(req)
+        assert resp.status == 200
+        assert run.name == stored
+        runner._apersist_runs.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body", [{}, {"name": ""}, {"name": "   "}], ids=["no-name", "empty", "blank"]
+    )
+    async def test_update_without_a_usable_name_changes_nothing(self, body):
+        run = _make_run("r1")
+        runner = MagicMock()
+        runner._apersist_runs = AsyncMock()
+        runner._runs = {"r1": run}
+        req = _make_request(
+            _make_app(runner=runner), method="PUT", match_info={"id": "r1"}, json_body=body
+        )
+        resp = await api_project_update(req)
+        assert resp.status == 200
+        assert run.name == "Test Run"
+        runner._apersist_runs.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_delete_success(self):
         runner = MagicMock()
         runner.delete_run = AsyncMock(return_value=True)
