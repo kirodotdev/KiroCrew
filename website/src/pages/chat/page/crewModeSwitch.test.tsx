@@ -11,9 +11,9 @@ import { createTestStore } from '../../../test/helpers'
 import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
-import { crewModePreviewOn } from '../../../test/crewModePreview'
-import { dropPanelViews, type ViewKind } from '../../../hooks/usePanelTabs'
-import { closeActivityPanel } from '../../../store/chatSlice'
+import { crewModePreviewOn, turnOnCrewModePreview } from '../../../test/crewModePreview'
+import { __resetPanelTabs, dropPanelViews, openPanelView, type ViewKind } from '../../../hooks/usePanelTabs'
+import { closeActivityPanel, openActivityPanel } from '../../../store/chatSlice'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
@@ -137,6 +137,49 @@ describe('useCrewModeSwitch turning Ultra Mode off', () => {
     act(() => { hook.result.current.turnOffCrewMode?.() })
     await act(async () => { pending[3].resolve(true) })
     expect(store.getState().chat.activityOpen).toBe(false)
+  })
+})
+
+describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  it('closes the panel it opened and drops the Crew and Dashboard tabs', async () => {
+    const { hook, pending, store } = setup()
+    expect(store.getState().chat.activityOpen).toBe(false)
+    act(() => { hook.result.current.turnOnCrewMode() })
+    expect(store.getState().chat.activityOpen).toBe(true)
+    await act(async () => { pending[0].resolve(false) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'], { focus: null, over: ['workers'] })
+    expect(store.getState().chat.activityOpen).toBe(false)
+    expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+
+  it('keeps a Dashboard tab and an open panel the person had before', async () => {
+    const { hook, pending, store } = setup()
+    openPanelView('a', 'command-center')
+    act(() => { store.dispatch(openActivityPanel()) })
+    act(() => { hook.result.current.turnOnCrewMode() })
+    await act(async () => { pending[0].resolve(false) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers'], { focus: 'command-center', over: ['workers'] })
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('leaves the panel open when the person moved to another chat before the switch failed', async () => {
+    const { hook, pending, store } = setup()
+    act(() => { hook.result.current.turnOnCrewMode() })
+    hook.rerender({ slot: plain('b') })
+    await act(async () => { pending[0].resolve(false) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'], { focus: null, over: ['workers'] })
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('touches nothing when the switch lands', async () => {
+    const { hook, pending, store } = setup()
+    act(() => { hook.result.current.turnOnCrewMode() })
+    await act(async () => { pending[0].resolve(true) })
+    expect(dropPanelViews).not.toHaveBeenCalled()
+    expect(store.getState().chat.activityOpen).toBe(true)
   })
 })
 

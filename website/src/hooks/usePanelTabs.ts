@@ -634,12 +634,25 @@ export function offerPanelView(slotKey: string | null, kind: ViewKind): void {
   })
 }
 
-/** remove views a turned-off Ultra Mode put on a strip. */
-export function dropPanelViews(slotKey: string | null, kinds: readonly ViewKind[]): void {
+/** What *slotKey*'s strip holds now: its tab ids and the tab in front. Read
+ *  before a change that may have to be undone (a failed Ultra Mode turn-on). */
+export function panelStripOf(slotKey: string | null): { ids: readonly string[], activeId: string | null } {
+  const b = store[bucketKey(slotKey)] ?? EMPTY_BUCKET
+  return { ids: b.tabs.map(t => t.id), activeId: b.activeId }
+}
+
+/** remove views a turned-off (or failed) Ultra Mode put on a strip. When the tab
+ *  in front goes, or is one of `restore.over` (a tab the caller itself put in
+ *  front), `restore.focus` comes back to the front if it is still there; a tab
+ *  in front that went falls back to the first tab. */
+export function dropPanelViews(slotKey: string | null, kinds: readonly ViewKind[], restore?: { focus: string | null, over: readonly ViewKind[] }): void {
   mutateSlot(bucketKey(slotKey), b => {
     const tabs = b.tabs.filter(t => !(kinds as readonly string[]).includes(t.id))
-    if (tabs.length === b.tabs.length) return b
-    return { tabs, activeId: b.activeId && tabs.some(t => t.id === b.activeId) ? b.activeId : (tabs[0]?.id ?? null) }
+    const keep = (id: string | null) => !!id && tabs.some(t => t.id === id)
+    const refocus = !!restore && keep(restore.focus) && (!keep(b.activeId) || (restore.over as readonly (string | null)[]).includes(b.activeId))
+    const activeId = refocus ? restore!.focus : keep(b.activeId) ? b.activeId : (tabs[0]?.id ?? null)
+    if (tabs.length === b.tabs.length && activeId === b.activeId) return b
+    return { tabs, activeId }
   })
 }
 
