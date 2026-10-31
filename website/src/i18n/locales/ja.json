@@ -6457,7 +6457,8 @@
       "split_right_d": "右に分割 (⌘D)",
       "type_to_filter": "フィルタリングするには入力…",
       "earlier_conversation_show": "{{time}} にリセットして再開 · 以前のメッセージを表示 ({{count}})",
-      "earlier_conversation_hide": "{{time}} にリセットして再開 · 以前のメッセージを隠す (もう覚えていません)"
+      "earlier_conversation_hide": "{{time}} にリセットして再開 · 以前のメッセージを隠す (もう覚えていません)",
+      "preparing_catch_up": "まとめを準備しています…"
     },
     "cliPanel": {
       "copied": "コピーしました",

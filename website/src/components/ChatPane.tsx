@@ -20,6 +20,7 @@ import { filterCrewmateChat, withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { crewmateFollowUps } from './chat/crewmateChips'
 import { AWAITING_REPLY_ACTIVITY, useCrewmateAwaitingReply } from './chat/useCrewmateAwaitingReply'
 import CrewmateLiveActivity from './chat/CrewmateLiveActivity'
+import type { PillActivity } from '../pages/members/pillActivity'
 import { useUnreadLanding } from './chat/useUnreadLanding'
 import ErrorNotice from './ErrorNotice'
 import StatusNotice from './StatusNotice'
@@ -324,6 +325,10 @@ export default function ChatPane({
   // indicator a turn shows, but is not a turn: the composer stays idle.
   const preparing = !!paneSlot?.preparing
   const crewmateTyping = crewmateLive || awaitingReply || preparing
+  // The only background message today is the warm catch-up (warm_task_brief.py).
+  // Resolved per render, not as a module constant, so the caption follows a
+  // language switch; the held caption compares by content, not identity.
+  const preparingActivity: PillActivity = { kind: 'working', text: i18nT('components.chatPane.preparing_catch_up') }
   // The composer agrees with the typing bubble: from the person's Send it is
   // busy (Stop while empty), not idle, though the answering turn's first frame
   // can be seconds away. `busy` alone is the store's word, and the store has
@@ -900,7 +905,9 @@ export default function ChatPane({
                     // Before the answering turn runs there is no live reading
                     // to name (the slot's status record is the last turn's),
                     // so the caption says it is working on it.
-                    activity={crewmateLive ? liveActivity : AWAITING_REPLY_ACTIVITY}
+                    // The gateway preparing the warm catch-up says so; the
+                    // finished message then lands where the bubble was.
+                    activity={crewmateLive ? liveActivity : preparing && !awaitingReply ? preparingActivity : AWAITING_REPLY_ACTIVITY}
                     streamingText={messages[messages.length - 1]?.role === 'streaming' && streamState === 'streaming'}
                     streamTick={
                       messages[messages.length - 1]?.role === 'streaming'
@@ -910,6 +917,7 @@ export default function ChatPane({
                   />
                 )
                 : (
+                  <>
                   <ChatFooter
                     statusLabel={paneEnvironmentStart}
                     running={running || !!paneSlot?.running || preparing}
@@ -922,6 +930,12 @@ export default function ChatPane({
                         : 0
                     }
                   />
+                  {preparing && !crewmateLive && (
+                    <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
+                      {i18nT('components.chatPane.preparing_catch_up')}
+                    </div>
+                  )}
+                  </>
                 )}
               </>
             ),

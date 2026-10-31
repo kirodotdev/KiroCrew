@@ -4499,7 +4499,8 @@
       "split_down": "Split down",
       "split_right": "Split right",
       "split_right_d": "Split right (⌘D)",
-      "type_to_filter": "Type to filter…"
+      "type_to_filter": "Type to filter…",
+      "preparing_catch_up": "Preparing your catch-up…"
     },
     "cliPanel": {
       "copy_selection": "Copy selection"
