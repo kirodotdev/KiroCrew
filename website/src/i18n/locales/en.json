@@ -340,7 +340,10 @@
         "header_addressing_review": "ADDR REV",
         "header_awaiting_merge": "AWAIT MRG",
         "header_resolved": "RESOLVED",
-        "page_label": "Auto Triage Pipeline"
+        "page_label": "Auto Triage Pipeline",
+        "load_failed": "Could not load the pipeline",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "global": {
         "unattributed_label": "EVENTS WITHOUT A REPOSITORY",
@@ -3648,7 +3651,10 @@
           "up": "Up",
           "use_recent_project": "Use recent project {{path}}",
           "use_this_folder": "Use this folder",
-          "use_this_folder_path": "Use this folder: {{path}}"
+          "use_this_folder_path": "Use this folder: {{path}}",
+          "load_failed": "Could not list this folder",
+          "load_failed_unknown": "The read failed without a reason.",
+          "retry": "Retry"
         },
         "settingsModal": {
           "cancel": "Cancel",
@@ -7902,7 +7908,10 @@
         "recenter": "Recenter",
         "start_physics": "Physics",
         "pause_physics": "Pause",
-        "graph_region_label": "Knowledge entity graph"
+        "graph_region_label": "Knowledge entity graph",
+        "load_failed": "Could not load the knowledge graph",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "sourceGroup": {
         "next": "Next →",
@@ -8647,7 +8656,10 @@
         "no_memory_data_to_visualize_add_preferences_proj": "No memory data to visualize. Add preferences, projects, or lessons first.",
         "refresh": "Refresh",
         "search_memory_nodes": "Search memory nodes",
-        "search_nodes": "Search nodes…"
+        "search_nodes": "Search nodes…",
+        "load_failed": "Could not load the memory graph",
+        "load_failed_unknown": "The read failed without a reason.",
+        "retry": "Retry"
       },
       "memoryTab": {
         "actions": "Actions",

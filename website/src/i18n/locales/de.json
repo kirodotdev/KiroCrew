@@ -663,7 +663,10 @@
         "header_addressing_review": "REVIEW",
         "header_awaiting_merge": "MERGE-WARTEN",
         "header_resolved": "ERLEDIGT",
-        "page_label": "Auto-Triage-Pipeline"
+        "page_label": "Auto-Triage-Pipeline",
+        "load_failed": "Pipeline konnte nicht geladen werden",
+        "load_failed_unknown": "Das Lesen ist ohne Angabe eines Grundes fehlgeschlagen.",
+        "retry": "Erneut versuchen"
       },
       "global": {
         "unattributed_label": "EREIGNISSE OHNE REPOSITORY",
@@ -5043,7 +5046,10 @@
           "up": "Nach oben",
           "use_recent_project": "Zuletzt verwendetes Projekt {{path}} verwenden",
           "use_this_folder": "Diesen Ordner verwenden",
-          "use_this_folder_path": "Diesen Ordner verwenden: {{path}}"
+          "use_this_folder_path": "Diesen Ordner verwenden: {{path}}",
+          "load_failed": "Dieser Ordner konnte nicht aufgelistet werden",
+          "load_failed_unknown": "Das Lesen ist ohne Angabe eines Grundes fehlgeschlagen.",
+          "retry": "Erneut versuchen"
         },
         "settingsModal": {
           "cancel": "Abbrechen",
@@ -14430,7 +14436,10 @@
         "recenter": "Neu zentrieren",
         "start_physics": "Physik",
         "pause_physics": "Pause",
-        "graph_region_label": "Wissens-Entitätsgraph"
+        "graph_region_label": "Wissens-Entitätsgraph",
+        "load_failed": "Wissensgraph konnte nicht geladen werden",
+        "load_failed_unknown": "Das Lesen ist ohne Angabe eines Grundes fehlgeschlagen.",
+        "retry": "Erneut versuchen"
       },
       "sourceGroup": {
         "items_added_directly": "Direkt hinzugefügte Elemente",
@@ -15124,7 +15133,10 @@
         "partial_notice": "Hier ist nur ein Teil deiner Erinnerungen dargestellt, daher findet die Suche nur diese Knoten.",
         "refresh": "Aktualisieren",
         "search_memory_nodes": "Erinnerungsknoten suchen",
-        "search_nodes": "Knoten suchen…"
+        "search_nodes": "Knoten suchen…",
+        "load_failed": "Erinnerungsgraph konnte nicht geladen werden",
+        "load_failed_unknown": "Das Lesen ist ohne Angabe eines Grundes fehlgeschlagen.",
+        "retry": "Erneut versuchen"
       },
       "memoryTab": {
         "actions": "Aktionen",

@@ -648,7 +648,10 @@
         "header_addressing_review": "レビュー対応",
         "header_awaiting_merge": "マージ待ち",
         "header_resolved": "解決済み",
-        "page_label": "自動トリアージパイプライン"
+        "page_label": "自動トリアージパイプライン",
+        "load_failed": "パイプラインを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "global": {
         "unattributed_label": "リポジトリのないイベント",
@@ -4953,7 +4956,10 @@
           "up": "上へ",
           "use_recent_project": "最近のプロジェクト {{path}} を使用",
           "use_this_folder": "このフォルダーを使用",
-          "use_this_folder_path": "このフォルダーを使用：{{path}}"
+          "use_this_folder_path": "このフォルダーを使用：{{path}}",
+          "load_failed": "このフォルダーの一覧を取得できませんでした",
+          "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+          "retry": "再試行"
         },
         "settingsModal": {
           "cancel": "キャンセル",
@@ -14191,7 +14197,10 @@
         "recenter": "中央に戻す",
         "start_physics": "物理演算",
         "pause_physics": "一時停止",
-        "graph_region_label": "ナレッジエンティティグラフ"
+        "graph_region_label": "ナレッジエンティティグラフ",
+        "load_failed": "ナレッジグラフを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "sourceGroup": {
         "items_added_directly": "直接追加されたアイテム",
@@ -14870,7 +14879,10 @@
         "partial_notice": "ここにはメモリの一部だけが表示されているため、検索ではこれらのノードしか見つかりません。",
         "refresh": "更新",
         "search_memory_nodes": "メモリノードを検索",
-        "search_nodes": "ノードを検索…"
+        "search_nodes": "ノードを検索…",
+        "load_failed": "メモリグラフを読み込めませんでした",
+        "load_failed_unknown": "理由が示されないまま読み込みに失敗しました。",
+        "retry": "再試行"
       },
       "memoryTab": {
         "actions": "アクション",

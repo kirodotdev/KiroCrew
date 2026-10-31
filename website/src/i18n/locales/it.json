@@ -678,7 +678,10 @@
         "header_addressing_review": "REVISIONE",
         "header_awaiting_merge": "ATTESA UNIONE",
         "header_resolved": "RISOLTO",
-        "page_label": "Pipeline di auto-triage"
+        "page_label": "Pipeline di auto-triage",
+        "load_failed": "Impossibile caricare la pipeline",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "global": {
         "unattributed_label": "EVENTI SENZA REPOSITORY",
@@ -5043,7 +5046,10 @@
           "up": "Su",
           "use_recent_project": "Usa il progetto recente {{path}}",
           "use_this_folder": "Usa questa cartella",
-          "use_this_folder_path": "Usa questa cartella: {{path}}"
+          "use_this_folder_path": "Usa questa cartella: {{path}}",
+          "load_failed": "Impossibile elencare questa cartella",
+          "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+          "retry": "Riprova"
         },
         "settingsModal": {
           "cancel": "Annulla",
@@ -14669,7 +14675,10 @@
         "recenter": "Ricentra",
         "start_physics": "Fisica",
         "pause_physics": "Pausa",
-        "graph_region_label": "Grafo delle entità di conoscenza"
+        "graph_region_label": "Grafo delle entità di conoscenza",
+        "load_failed": "Impossibile caricare il grafo della conoscenza",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "sourceGroup": {
         "items_added_directly": "Elementi aggiunti direttamente",
@@ -15378,7 +15387,10 @@
         "partial_notice": "Qui è mostrata solo una parte della tua memoria, quindi la ricerca trova solo questi nodi.",
         "refresh": "Aggiorna",
         "search_memory_nodes": "Cerca tra i nodi della memoria",
-        "search_nodes": "Cerca tra i nodi…"
+        "search_nodes": "Cerca tra i nodi…",
+        "load_failed": "Impossibile caricare il grafo della memoria",
+        "load_failed_unknown": "La lettura non è riuscita senza indicare un motivo.",
+        "retry": "Riprova"
       },
       "memoryTab": {
         "actions": "Azioni",

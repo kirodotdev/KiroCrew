@@ -648,7 +648,10 @@
         "header_addressing_review": "리뷰 대응",
         "header_awaiting_merge": "병합 대기",
         "header_resolved": "해결됨",
-        "page_label": "자동 분류 파이프라인"
+        "page_label": "자동 분류 파이프라인",
+        "load_failed": "파이프라인을 불러올 수 없습니다",
+        "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
+        "retry": "다시 시도"
       },
       "global": {
         "unattributed_label": "리포지토리가 없는 이벤트",
@@ -4953,7 +4956,10 @@
           "up": "상위 폴더",
           "use_recent_project": "최근 프로젝트 {{path}} 사용",
           "use_this_folder": "이 폴더 사용",
-          "use_this_folder_path": "이 폴더 사용: {{path}}"
+          "use_this_folder_path": "이 폴더 사용: {{path}}",
+          "load_failed": "이 폴더의 목록을 불러올 수 없습니다",
+          "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
+          "retry": "다시 시도"
         },
         "settingsModal": {
           "cancel": "취소",
@@ -14191,7 +14197,10 @@
         "recenter": "다시 가운데로",
         "start_physics": "물리 시뮬레이션",
         "pause_physics": "일시정지",
-        "graph_region_label": "지식 엔티티 그래프"
+        "graph_region_label": "지식 엔티티 그래프",
+        "load_failed": "지식 그래프를 불러올 수 없습니다",
+        "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
+        "retry": "다시 시도"
       },
       "sourceGroup": {
         "items_added_directly": "직접 추가한 항목",
@@ -14870,7 +14879,10 @@
         "partial_notice": "여기에는 메모리의 일부만 표시되므로 검색은 이 노드들만 찾습니다.",
         "refresh": "새로 고침",
         "search_memory_nodes": "메모리 노드 검색",
-        "search_nodes": "노드 검색…"
+        "search_nodes": "노드 검색…",
+        "load_failed": "메모리 그래프를 불러올 수 없습니다",
+        "load_failed_unknown": "이유 없이 읽기에 실패했습니다.",
+        "retry": "다시 시도"
       },
       "memoryTab": {
         "actions": "작업",

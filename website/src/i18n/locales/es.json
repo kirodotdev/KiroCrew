@@ -678,7 +678,10 @@
         "header_addressing_review": "REVISIÓN",
         "header_awaiting_merge": "ESPERA FUSIÓN",
         "header_resolved": "RESUELTO",
-        "page_label": "Pipeline de auto-triaje"
+        "page_label": "Pipeline de auto-triaje",
+        "load_failed": "No se pudo cargar el pipeline",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "global": {
         "unattributed_label": "EVENTOS SIN REPOSITORIO",
@@ -5043,7 +5046,10 @@
           "up": "Subir",
           "use_recent_project": "Usar el proyecto reciente {{path}}",
           "use_this_folder": "Usar esta carpeta",
-          "use_this_folder_path": "Usar esta carpeta: {{path}}"
+          "use_this_folder_path": "Usar esta carpeta: {{path}}",
+          "load_failed": "No se pudo listar esta carpeta",
+          "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+          "retry": "Reintentar"
         },
         "settingsModal": {
           "cancel": "Cancelar",
@@ -14669,7 +14675,10 @@
         "recenter": "Recentrar",
         "start_physics": "Física",
         "pause_physics": "Pausar",
-        "graph_region_label": "Grafo de entidades de conocimiento"
+        "graph_region_label": "Grafo de entidades de conocimiento",
+        "load_failed": "No se pudo cargar el grafo de conocimiento",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "sourceGroup": {
         "items_added_directly": "Elementos añadidos directamente",
@@ -15378,7 +15387,10 @@
         "partial_notice": "Aquí solo se muestra una parte de tu memoria, así que la búsqueda solo encuentra estos nodos.",
         "refresh": "Actualizar",
         "search_memory_nodes": "Buscar nodos de memoria",
-        "search_nodes": "Buscar nodos…"
+        "search_nodes": "Buscar nodos…",
+        "load_failed": "No se pudo cargar el grafo de memoria",
+        "load_failed_unknown": "La lectura falló sin indicar el motivo.",
+        "retry": "Reintentar"
       },
       "memoryTab": {
         "actions": "Acciones",

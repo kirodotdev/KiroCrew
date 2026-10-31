@@ -693,7 +693,10 @@
         "header_addressing_review": "РЕВЬЮ",
         "header_awaiting_merge": "ЖДЁТ СЛИЯНИЯ",
         "header_resolved": "РЕШЕНО",
-        "page_label": "Конвейер авто-триажа"
+        "page_label": "Конвейер авто-триажа",
+        "load_failed": "Не удалось загрузить конвейер",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "global": {
         "unattributed_label": "СОБЫТИЯ БЕЗ РЕПОЗИТОРИЯ",
@@ -5132,7 +5135,10 @@
           "up": "Вверх",
           "use_recent_project": "Использовать недавний проект {{path}}",
           "use_this_folder": "Использовать эту папку",
-          "use_this_folder_path": "Использовать эту папку: {{path}}"
+          "use_this_folder_path": "Использовать эту папку: {{path}}",
+          "load_failed": "Не удалось получить список этой папки",
+          "load_failed_unknown": "Чтение не удалось, причина не указана.",
+          "retry": "Повторить"
         },
         "settingsModal": {
           "cancel": "Отмена",
@@ -14908,7 +14914,10 @@
         "recenter": "Центрировать",
         "start_physics": "Физика",
         "pause_physics": "Пауза",
-        "graph_region_label": "Граф сущностей знаний"
+        "graph_region_label": "Граф сущностей знаний",
+        "load_failed": "Не удалось загрузить граф знаний",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "sourceGroup": {
         "items_added_directly": "Добавлено напрямую",
@@ -15632,7 +15641,10 @@
         "partial_notice": "Здесь показана только часть твоей памяти, поэтому поиск находит только эти узлы.",
         "refresh": "Обновить",
         "search_memory_nodes": "Поиск узлов памяти",
-        "search_nodes": "Поиск узлов…"
+        "search_nodes": "Поиск узлов…",
+        "load_failed": "Не удалось загрузить граф памяти",
+        "load_failed_unknown": "Чтение не удалось, причина не указана.",
+        "retry": "Повторить"
       },
       "memoryTab": {
         "actions": "Действия",

@@ -11,7 +11,9 @@ import {
   queueSummary, laneTimelineRows, phaseHeader, phaseCaption,
   EDITING_SLOT_CAP, type FabricLane, type QueueSummary, type TimelineRow, type DwellParts,
 } from '../lib/fabric'
-import { Card, PageHeader, StatCard, IconButton, EmptyState as UIEmptyState } from '../../../../components/ui'
+import { Btn, Card, PageHeader, StatCard, IconButton, EmptyState as UIEmptyState } from '../../../../components/ui'
+import ErrorNotice from '../../../../components/ErrorNotice'
+import { errMessage } from '../../../../utils/thunkError'
 import { i18nT } from '../../../../i18n/t'
 import { useReducedMotion } from '../../../../hooks/useReducedMotion'
 import { fmtUnit } from '../../../../i18n/format'
@@ -278,10 +280,27 @@ function PipelineDashboard({ repo }: { repo: RepoRef }) {
         <QueueSummaryCards summary={summary} hasData={lanes.length > 0} />
 
         {/* THE LANE BOARD — one compact card per item, then its right-sized track. */}
+        {/* A failed read is not an idle queue. With no lanes in hand the notice
+            takes the empty card's place; over a board from an earlier read it
+            sits above it, so stale lanes are not passed off as live. */}
+        {fabricQuery.isError && (
+          <Card className="mb-0 flex flex-col items-start gap-2" data-testid="atp-fabric-error">
+            <ErrorNotice
+              askAgent
+              title={i18nT('apps.autoTriagePipeline.pipeline.load_failed')}
+              message={errMessage(fabricQuery.error) || i18nT('apps.autoTriagePipeline.pipeline.load_failed_unknown')}
+              messagePlacement="below"
+              className="w-full"
+            />
+            <Btn disabled={fabricQuery.isFetching} onClick={() => void fabricQuery.refetch()}>
+              {i18nT('apps.autoTriagePipeline.pipeline.retry')}
+            </Btn>
+          </Card>
+        )}
         {loading && lanes.length === 0 ? (
           <Card><LaneBoardSkeleton /></Card>
         ) : lanes.length === 0 ? (
-          <EmptyState />
+          fabricQuery.isError ? null : <EmptyState />
         ) : (
           <LaneBoard
             lanes={lanes}
