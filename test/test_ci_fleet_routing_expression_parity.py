@@ -289,8 +289,11 @@ _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
 # merge_group-triggered workflows with no fleet route: the queue's required
-# check (a hosted poll), the OIDC content scan (a reusable-workflow call) and
-# the hosted Python client suite.
+# check (a poll), the OIDC content scan (a reusable-workflow call) and the Python
+# client suite. "No fleet route" is what this list means, and it is the only
+# thing it means: the poll and the client suite both carry the
+# `kirocrew-runners` group's label in this repository, so a group label does not
+# remove an entry from this list.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",

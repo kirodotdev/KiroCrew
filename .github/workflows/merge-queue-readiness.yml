@@ -27,10 +27,12 @@ name: Merge Queue Readiness
 # readiness status had not been published yet. A workflow that never fires on
 # pull_request creates no check run on a pull request head at all.
 #
-# Hosted runner, deliberately. This job polls; it runs no tests, so it does not
+# No fleet route, deliberately. This job polls; it runs no tests, so it does not
 # need the fleet's size, and the fleet's webhook admits jobs by actor and
-# workflow shape this file has no measured history with. The poll budget below
-# starts when the job starts, so hosted runner queue time does not eat into it.
+# workflow shape this file has no measured history with. In this repository it
+# takes the `kirocrew-runners` group's label; in a fork it stays on a hosted
+# runner (the `readiness` job below says why). The poll budget below starts
+# when the job starts, so runner queue time does not eat into it.
 # The budget is the polled lanes' own ceiling, not their typical time: a CI run
 # is ~25-30 minutes on the fleet, but ci.yml's longest `needs` chain of job
 # caps is 190 minutes (changes and await-fast-gate in parallel 15 ->
@@ -40,8 +42,11 @@ name: Merge Queue Readiness
 # to go green. The 200-minute budget is that chain plus slack for the shards'
 # own pickup.
 # test_ci_fleet_routing_expression_parity.py holds the budget above that sum. Keep the ruleset's
-# merge-queue "status check timeout" at 240 minutes or more: this budget plus a
-# slow hosted pickup.
+# merge-queue "status check timeout" at 240 minutes or more: this budget plus
+# the job's pickup. In this repository that pickup waits on the group's
+# capped definition, so it draws on the same 40-minute margin between the
+# 200-minute budget and the 240-minute timeout, and how much of that margin it
+# uses is unmeasured.
 #
 # Only a verdict fails the group, and the first verdict is final: a run that
 # concluded without success fails the group on the tick that reads it, with no
@@ -76,7 +81,50 @@ jobs:
     # The job name IS the check name the ruleset requires. Renaming it silently
     # stops satisfying branch protection for every queued pull request.
     name: PR Readiness
-    runs-on: ubuntu-latest
+    # In THIS repository this poll takes the `kirocrew-runners` group's own
+    # runner instead of the shared standard pool, whose concurrency is shared
+    # enterprise-wide. Targeted by LABEL rather than `group:`: a group belongs
+    # to the kirodotdev organization, and a fork that enables its own merge
+    # queue runs this same workflow, where a `group:` it cannot reach would
+    # queue until the 24-hour auto-cancel. A larger runner changes nothing
+    # about this job's posture -- still a GitHub-hosted ephemeral VM, still
+    # `actions: read` and `contents: read` and nothing else.
+    #
+    # READ THIS BEFORE TREATING IT AS A LIKE-FOR-LIKE SWAP. This job is not a
+    # test lane. It sleeps and lists runs once a tick, so a faster runner
+    # finishes it no sooner, and its 200-minute poll budget starts when the
+    # job starts, so queue time never counted against it. What the group buys
+    # is its slot-hours off the shared standard pool. What it COSTS is a slot
+    # held for the whole poll -- a 36-minute median at the time of the move --
+    # on a capped definition that the jobs it polls also need. The queue
+    # builds up to 40 groups at once (`max_entries_to_build`), so up to 40
+    # sleeping polls can hold a fifth of the 200-slot cap while their own
+    # polled lanes queue for what is left. Because `name:` above is the check
+    # the ruleset requires, every minute either side spends waiting for a slot
+    # is a merge group waiting with it.
+    #
+    # That contention fails CLOSED rather than deadlocking. Three bounds end
+    # the wait: the poll's 200-minute budget and the 205-minute job cap once
+    # the job runs, and the ruleset's 240-minute status-check timeout while it
+    # is still queued. Each ends it by failing or ejecting the group. The one
+    # an operator sees first is poll-budget exhaustion naming a slow lane, and
+    # both outcomes read like flaky ejections rather than a capacity problem.
+    #
+    # What makes it a trade rather than a defect: five of the six polled
+    # workflows already reach this group. `client-py.yml` and
+    # `internal-content-scan.yml` (through `internal-content-scan-gate.yml`'s
+    # reusable call) carry the label unconditionally in this repository, and
+    # `ci.yml`, `fast-gate.yml` and `build.yml` reach it on their actor-miss
+    # leg; only `main-ratchet-audit.yml` stays hosted. Several `ci.yml` jobs
+    # reach it with no fleet branch at all, so every merge group already waits
+    # on this cap, and this adds one more waiter rather than creating the
+    # exposure.
+    #
+    # ROLLBACK IS FIRST, NOT LAST. If merge groups start timing out, or the
+    # definition is at `maximum_runners`, restore `runs-on: ubuntu-latest` on
+    # this line before diagnosing anything else -- ahead of every other
+    # group-targeted site, because this one gates the queue itself.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Above the poll's TOTAL_BUDGET below, so the step's own error names the
     # slow lane rather than the job cap cutting it off.
     timeout-minutes: 205
@@ -116,7 +164,7 @@ jobs:
           # coverage-combine 15 -> coverage-gate 10) plus slack for the
           # shards' own pickup. The ruleset's merge-queue
           # status-check timeout has to stay at 240 minutes or more so that
-          # this budget plus a slow hosted pickup fits inside it.
+          # this budget plus the job's own pickup fits inside it.
           APPEAR_BUDGET=300
           TOTAL_BUDGET=12000
           # One runs listing per tick serves all six workflows, and the tick is

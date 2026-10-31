@@ -189,8 +189,8 @@ Three structural facts explain most of the rest:
   variable. Enabling the queue is a
   ruleset change (`protected-branches`, "Require merge queue"), not a workflow
   change, with `max_entries_to_build` 40, `max_entries_to_merge` 1 (one PR per
-  main commit) and a status-check timeout of 240 minutes (the 180-minute poll
-  plus a slow hosted pickup). The poll never reruns a lane, for the reason
+  main commit) and a status-check timeout of 240 minutes (the 200-minute poll
+  plus the poll job's own pickup). The poll never reruns a lane, for the reason
   given above: a rerun holds every group queued behind the failing one, and a
   build depth beyond ~40 does not shorten the queue.
 - **A red macOS leg on main pages the PR's author.** Those two legs are the
@@ -1176,7 +1176,8 @@ apart from `pr-readiness.yml`'s own `readiness` job: the rest are not polled by
 `pr-readiness.yml` or `merge-queue-readiness.yml`, and none fires on
 `pull_request` or `merge_group`. The rollback rule still covers them. The
 `readiness` job does hold every merge -- see **PR Readiness reaches the group by
-LABEL** below, and roll that one back first.)
+LABEL** below; the first line to restore, ahead of it, is the one in **The merge
+queue's own poll reaches the group by LABEL**.)
 `pr-readiness.yml` resolves them all through one per-lane loop:
 `claude-review.yml`, `codex-review.yml`, `design-review.yml`, `ux-review.yml`,
 `first-principles-review.yml` and CodeQL sit in `workflow_specs` on the
@@ -1360,8 +1361,9 @@ the truth table alone would not catch it: that table derives its expected value
 from the expression under test, so a change editing the constant and the
 workflow together carries the expectation along and passes.
 
-**PR Readiness reaches the group by LABEL too, and it is the one site whose own
-queueing holds every merge.** `pr-readiness.yml`'s `readiness` job keeps its
+**PR Readiness reaches the group by LABEL too, and its own queueing holds every
+merge.** It is one of two such sites; the other is the merge queue's own poll,
+below. `pr-readiness.yml`'s `readiness` job keeps its
 CodeBuild fleet route -- a same-repository `pull_request_target` run from a
 listed actor -- and changed only what happens when the fleet does not admit the
 run, so it carries the same `_GROUP_THEN_HOSTED_TAIL` as the twenty above and the
@@ -1396,8 +1398,9 @@ lengthening hold window as the rollback trigger rather than waiting for a wrong
 verdict to be acted on.
 
 Rollback is the fleet-preserving recipe the twenty above use, and **this is the
-line to restore first** when the group is at its cap, because every merge is
-behind it: drop the middle branch so the expression's tail is `|| 'ubuntu-latest'
+line to restore second** when the group is at its cap -- every merge is behind
+it, but the merge queue's own poll below is behind it in turn, so that one goes
+back first: drop the middle branch so the expression's tail is `|| 'ubuntu-latest'
 }}` again, and in `_CANONICAL_READINESS_EXPR` REPLACE `_GROUP_THEN_HOSTED_TAIL`
 with the literal `"|| 'ubuntu-latest' }}"` -- deleting it rather than replacing
 it leaves the constant ending at `format(...)` with no tail at all.
@@ -1405,6 +1408,54 @@ Unlike the three `_CANONICAL_PUSH_EXPR` sites, this policy has one site, so the
 revert is per site and per policy at once. `test_readiness_route_truth_table`
 pins all three destinations as literals rather than reading them off the
 expression, so the revert has to edit the expectation on purpose.
+
+**The merge queue's own poll reaches the group by LABEL, and it is the one site
+to roll back before any other.** `merge-queue-readiness.yml`'s `readiness` job
+carries no fleet route at all, so its line is the plain conditional label and a
+revert is the whole-line restore to `runs-on: ubuntu-latest` rather than the
+fleet-preserving recipe. It keeps its entry in
+`_MERGE_GROUP_HOSTED_WORKFLOWS` in
+`test/test_ci_fleet_routing_expression_parity.py`, because that list means "no
+fleet route" and a group label does not change that; no test pins the line
+itself.
+
+Two things make it unlike every other site here. It is a POLL, not a test lane:
+it sleeps and lists runs once a tick, so a larger runner finishes it no sooner,
+and its 200-minute poll budget starts when the job starts, so queue time never
+counted against it. What the group gets is its slot-hours off the
+enterprise-shared standard pool, and what the group pays is a slot held for the
+whole poll -- a 36-minute median over the hundred runs before the move, all of
+them `merge_group`, as measured at the time of the move.
+
+And its `name:` IS the check the ruleset requires, so a minute spent waiting for
+a slot is a merge group waiting with it. It queues for the same cap as
+`pr-readiness.yml`'s `readiness`; the difference is how long each HOLDS a slot
+once it has one: that job's sampled median is 8 seconds, this one's is 36
+minutes. With `max_entries_to_build` at 40, up to 40 sleeping polls can hold a
+fifth of the 200-slot cap while the jobs they poll queue for what is left.
+
+That contention fails closed rather than deadlocking. Three bounds end the wait:
+the poll's 200-minute budget and the 205-minute job cap once the job runs, and
+the ruleset's 240-minute status-check timeout while it is still queued. Each
+ends it by failing or ejecting the group, and both outcomes look like flaky
+ejections. **Poll-budget exhaustion is the rollback trigger** an operator
+actually sees: restore this line before diagnosing anything else, ahead of the
+twenty fleet-fallback sites and ahead of `pr-readiness.yml`'s.
+
+What keeps it a trade rather than a defect is that the exposure predates it:
+five of the six polled workflows already reach this group. `client-py.yml` and
+`internal-content-scan.yml` (reached through `internal-content-scan-gate.yml`'s
+reusable call) carry the label unconditionally in this repository, and
+`ci.yml`, `fast-gate.yml` and `build.yml` reach it on their actor-miss leg;
+only `main-ratchet-audit.yml` stays hosted. Several `ci.yml` jobs reach it with
+no fleet branch at all, so every merge group already waits on this cap, and this
+line adds one more waiter. **The group's own queue depth for a
+merge-group tick has not been measured**; read it from the jobs API filtered on
+`runner_group_name` as **Capacity** below asks before adding further
+merge-path load. The adjacent decision about `main-ratchet-audit.yml`'s fallback
+is unchanged and still open, and this line does not move it: what holds that one
+is the dedicated pinned assertion named above, not this poll's behaviour, even
+though the issue tracking it was filed on the latter reason.
 
 **The PR-time sites reach the group by LABEL instead, because they can execute
 somewhere the group does not exist.** `client-py.yml`'s `test`,
