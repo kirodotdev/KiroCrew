@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_config_text
+from kiro_crew.dashboard.handlers.knowledge_access import _task_registry
 from kiro_crew.dashboard.handlers.knowledge_agent_context import (
     add_agent_document_route,
     search_for_context,
@@ -62,7 +64,7 @@ from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.extractor import EntityExtractor
-from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.ingestion import IngestionPipeline, reclaim_interrupted_ingest_jobs
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.sync import SyncScheduler
@@ -81,6 +83,40 @@ def _create_embedder(app):
     if not isinstance(cfg, dict):
         cfg = {}
     return create_embedder_from_config(cfg)
+
+
+async def _reclaim_interrupted_ingest_jobs(app: web.Application) -> None:
+    """Start the sweep of source-ingest jobs a previous gateway left 'processing'.
+
+    A startup hook that only schedules: the sweep scans ``ingestion_jobs``, whose
+    size grows with history, so it runs as a tracked background task and startup
+    does not wait for it. The boot cutoff taken in ``setup_knowledge_routes`` is
+    what keeps a job this process starts in the meantime out of it.
+    """
+    task = asyncio.create_task(_run_ingest_job_reclaim(app))
+    tasks = _task_registry(app, "_bg_tasks")
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+async def _run_ingest_job_reclaim(app: web.Application) -> None:
+    """Mark source-ingest jobs from before the boot cutoff 'abandoned', off the loop.
+
+    A failure is logged and dropped: the rows only misreport, they hold no lock
+    and gate no ingest.
+    """
+    store = app["state"].knowledge_store
+    try:
+        moved = await asyncio.to_thread(
+            reclaim_interrupted_ingest_jobs,
+            store,
+            created_before=app["_knowledge_ingest_boot_ts"],
+        )
+    except Exception:
+        logger.warning("could not reclaim interrupted knowledge ingest jobs", exc_info=True)
+        return
+    if moved:
+        logger.info("Marked %d interrupted knowledge ingest job(s) abandoned", moved)
 
 
 # ---------- Source Watcher ----------
@@ -287,6 +323,12 @@ def setup_knowledge_routes(app: web.Application) -> None:
         )
         app["knowledge_pipeline"] = pipeline
         app["knowledge_sync"] = SyncScheduler(store=store, pipeline=pipeline, connectors=connectors)
+        # Settle the job rows a previous gateway left 'processing'. The sweep runs
+        # in the background; the cutoff is taken here, before the app serves a
+        # request or any hook below starts an ingest, so no job of this process
+        # can fall under it.
+        app["_knowledge_ingest_boot_ts"] = datetime.now().isoformat()
+        app.on_startup.append(_reclaim_interrupted_ingest_jobs)
         # Start source watcher (auto-watches local_file sources)
         app.on_startup.append(_start_watcher_async)
         # Start artifact ingest watcher (no-op unless auto-ingest is enabled)
