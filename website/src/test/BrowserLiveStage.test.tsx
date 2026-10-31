@@ -210,6 +210,10 @@ describe('full screen', () => {
     expect(request).toHaveBeenCalled()
     expect(screen.getByTestId('browser-live-stage')).toHaveAttribute('data-fullscreen', 'true')
     expect(btn).toHaveAttribute('aria-label', i18next.t('pages.chat.browserLiveStage.exit_full_screen'))
+    // A narrow screen keeps the steps under the picture; only md and up put them beside it.
+    const body = screen.getByTestId('browser-live-stage-body')
+    expect(body).toHaveClass('flex-col', 'md:flex-row')
+    expect(body).not.toHaveClass('flex-row')
     // Bring back hides in full screen (Esc and Exit full screen are the ways out).
     expect(screen.queryByTestId('browser-live-stage-bring-back')).toBeNull()
     await act(async () => { fireEvent.click(btn) })

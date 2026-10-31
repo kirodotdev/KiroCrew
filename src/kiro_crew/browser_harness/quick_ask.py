@@ -1321,6 +1321,11 @@ async def _recheck(top: PageProbe, ask: QuickAsk) -> tuple[PageProbe, int, list[
             info = await fprobe.inspect(b.node, ctx)
             if target_problem(b.role, info):
                 raise AskError(ORIGIN_CHANGED)
+            # The person confirmed the label the sheet showed. A page that has since
+            # rewritten the same button ("Buy for $5" -> "Buy for $500") is asking
+            # something else, so the answer no longer applies to it.
+            if b.role == "action" and clean_text(info.get("text"), BUTTON_TEXT_MAX) != ask.button:
+                raise AskError(ORIGIN_CHANGED)
             infos.append(info)
         if ask.owner:
             rects = [tuple(float(v) for v in i["rect"]) for i in infos]

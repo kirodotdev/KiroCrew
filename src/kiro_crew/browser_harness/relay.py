@@ -39,6 +39,7 @@ port at all.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import itertools
 import json
@@ -179,12 +180,30 @@ async def pipe_upstream_from_fds(read_fd: int, write_fd: int) -> PipeUpstream:
 
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader(limit=PIPE_MESSAGE_LIMIT)
-    await loop.connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), os.fdopen(read_fd, "rb", buffering=0)
-    )
-    write_transport, write_protocol = await loop.connect_write_pipe(
-        asyncio.streams.FlowControlMixin, os.fdopen(write_fd, "wb", buffering=0)
-    )
+    # Wrapped before the first await, so each fd has exactly one owner from here:
+    # its file object, then the transport that adopts that same object. Closing the
+    # objects on failure is idempotent and never closes a reused fd number.
+    files: list[Any] = []
+    try:
+        files.append(os.fdopen(read_fd, "rb", buffering=0))
+        files.append(os.fdopen(write_fd, "wb", buffering=0))
+        read_transport, _ = await loop.connect_read_pipe(
+            lambda: asyncio.StreamReaderProtocol(reader), files[0]
+        )
+        files.append(read_transport)
+        write_transport, write_protocol = await loop.connect_write_pipe(
+            asyncio.streams.FlowControlMixin, files[1]
+        )
+    except BaseException:
+        for owned in reversed(files):
+            with contextlib.suppress(Exception):
+                owned.close()
+        if len(files) < 2:
+            # fdopen itself failed: close the raw fds nothing wrapped yet.
+            for fd in (read_fd, write_fd)[len(files) :]:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        raise
     writer = asyncio.StreamWriter(write_transport, write_protocol, None, loop)
     return PipeUpstream(reader, writer)
 

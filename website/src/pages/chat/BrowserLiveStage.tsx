@@ -286,7 +286,9 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
         </div>
       )}
 
-      <div className={`flex-1 min-h-0 flex ${fs.on ? 'flex-row' : 'flex-col'}`}>
+      {/* Fullscreen puts the steps beside the picture only when there is room
+          for both (md and up); a narrow screen keeps them stacked below it. */}
+      <div className={`flex-1 min-h-0 flex ${fs.on ? 'flex-col md:flex-row' : 'flex-col'}`} data-testid="browser-live-stage-body">
         <div className="flex-1 min-h-0 min-w-0 flex flex-col">
           {/* Picture */}
           <div className="flex-1 min-h-0 flex p-2.5">
@@ -387,7 +389,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
         </div>
 
         {showSteps && recording && (
-          <div className={fs.on ? 'w-[320px] shrink-0 border-l border-border flex flex-col min-h-0' : 'max-h-[34%] shrink-0 border-t border-border flex flex-col min-h-0'}>
+          <div className={fs.on ? 'max-h-[34%] shrink-0 border-t border-border flex flex-col min-h-0 md:max-h-none md:w-[320px] md:border-t-0 md:border-l' : 'max-h-[34%] shrink-0 border-t border-border flex flex-col min-h-0'}>
             <div className="px-3 pt-2 pb-1 text-[12px] font-semibold text-text-strong">
               {i18nT('pages.chat.browserLiveStage.steps_n', { count: recording.events.length })}
             </div>

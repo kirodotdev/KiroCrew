@@ -720,7 +720,12 @@ class HarnessSupervisor:
             # keeps only its own.
             for fd in (to_browser_r, from_browser_w):
                 os.close(fd)
-        upstream = await pipe_upstream_from_fds(from_browser_r, to_browser_w)
+        try:
+            upstream = await pipe_upstream_from_fds(from_browser_r, to_browser_w)
+        except BaseException:
+            # pipe_upstream_from_fds has closed the gateway's two ends already.
+            await _stop_unowned(proc)
+            raise
         return proc, upstream
 
     async def _launch_chromium_port(
@@ -730,16 +735,19 @@ class HarnessSupervisor:
         port_file = profile / DEVTOOLS_PORT_FILE
         await asyncio.to_thread(port_file.unlink, missing_ok=True)
         proc = await self._spawn([*argv, _CHROMIUM_PORT_ARG], env=dict(self._env()), pipes=False)
-        deadline = time.monotonic() + CHROMIUM_START_TIMEOUT_SECS
-        while time.monotonic() < deadline:
-            url = await _devtools_ws_url(profile)
-            if url is not None:
-                return proc, url
-            if proc.returncode is not None:
-                break
-            await asyncio.sleep(_POLL_SECS)
-        await _stop_process(proc)
-        raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
+        try:
+            deadline = time.monotonic() + CHROMIUM_START_TIMEOUT_SECS
+            while time.monotonic() < deadline:
+                url = await _devtools_ws_url(profile)
+                if url is not None:
+                    return proc, url
+                if proc.returncode is not None:
+                    break
+                await asyncio.sleep(_POLL_SECS)
+            raise BrowserUnavailable("Kiro's Chromium did not open its debugging port")
+        except BaseException:
+            await _stop_unowned(proc)
+            raise
 
     def _env(self) -> Mapping[str, str]:
         return self._base_env if self._base_env is not None else os.environ
@@ -773,15 +781,20 @@ class HarnessSupervisor:
         proc = await self._spawn(
             [str(python), "-I", "-m", "browser_harness.daemon"], env=env, pipes=False
         )
-        deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECS
-        while time.monotonic() < deadline:
-            if await self._ipc_ping():
-                return proc
-            if proc.returncode is not None:
-                raise BrowserUnavailable(f"the Harness daemon exited with code {proc.returncode}")
-            await asyncio.sleep(_POLL_SECS)
-        await _stop_process(proc)
-        raise BrowserUnavailable("the Harness daemon did not start in time")
+        try:
+            deadline = time.monotonic() + DAEMON_START_TIMEOUT_SECS
+            while time.monotonic() < deadline:
+                if await self._ipc_ping():
+                    return proc
+                if proc.returncode is not None:
+                    raise BrowserUnavailable(
+                        f"the Harness daemon exited with code {proc.returncode}"
+                    )
+                await asyncio.sleep(_POLL_SECS)
+            raise BrowserUnavailable("the Harness daemon did not start in time")
+        except BaseException:
+            await _stop_unowned(proc)
+            raise
 
     async def _start_worker(self, handle: HarnessHandle) -> asyncio.subprocess.Process:
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -790,10 +803,15 @@ class HarnessSupervisor:
         env = await asyncio.to_thread(self._daemon_env, handle.relay.url)
         worker_py = Path(__file__).with_name("helper_worker.py")
         proc = await self._spawn([str(state.python), "-I", str(worker_py)], env=env, pipes=True)
-        reply = await _worker_request(proc, {"id": 0, "ping": True}, WORKER_START_TIMEOUT_SECS)
-        if not reply.get("ok"):
-            await _stop_process(proc)
-            raise BrowserUnavailable(str(reply.get("error") or "the helper worker did not start"))
+        try:
+            reply = await _worker_request(proc, {"id": 0, "ping": True}, WORKER_START_TIMEOUT_SECS)
+            if not reply.get("ok"):
+                raise BrowserUnavailable(
+                    str(reply.get("error") or "the helper worker did not start")
+                )
+        except BaseException:
+            await _stop_unowned(proc)
+            raise
         return proc
 
     async def _spawn(
@@ -992,6 +1010,27 @@ async def _stop_process(proc: asyncio.subprocess.Process | None) -> None:
         await platform_compat.terminate_and_reap(proc, grace=_STOP_GRACE_SECS)
     except Exception:  # noqa: BLE001 - a child that will not die is logged, not raised
         logger.debug("browser harness child did not stop cleanly", exc_info=True)
+
+
+async def _stop_unowned(proc: asyncio.subprocess.Process) -> None:
+    """Stop a child its launcher spawned but never handed to its caller.
+
+    Runs from an ``except BaseException`` while a cancellation (a disconnect, a
+    gateway shutdown) may be unwinding the launcher, so the stop is shielded: a
+    second cancellation cannot leave the child running with its profile lock, its
+    window and, on Windows, its debugging endpoint. The stop always runs to the
+    end before this returns, and a cancellation that arrived meanwhile is raised
+    afterwards rather than dropped.
+    """
+    task = asyncio.ensure_future(_stop_process(proc))
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def _worker_request(

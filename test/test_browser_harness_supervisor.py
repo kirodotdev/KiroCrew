@@ -639,3 +639,107 @@ async def test_a_daemon_started_before_the_worker_failed_is_stopped(
     assert daemon in stopped
     assert relay.closed
     assert sup.status()["connection"] == supervisor.ERROR
+
+
+class _Child:
+    """A spawned child as the launchers see it: alive until stopped."""
+
+    returncode: int | None = None
+    stdin = None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launcher", ["port", "daemon"])
+async def test_a_launch_cancelled_mid_start_stops_the_child_it_spawned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launcher: str
+) -> None:
+    """A disconnect or shutdown that cancels a start must not leave the child running.
+
+    Until a launcher returns, it is the only owner of what it spawned: the caller
+    never got the process, so nobody else could stop it.
+    """
+    sup = HarnessSupervisor(tmp_path, base_env={"PATH": "/usr/bin"})
+    child = _Child()
+    stopped: list[object] = []
+    waiting = asyncio.Event()
+
+    async def _spawn(argv: list[str], **kw: Any) -> Any:
+        return child
+
+    async def _never(*_a: Any, **_k: Any) -> Any:
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def _stop(proc: Any) -> None:
+        stopped.append(proc)
+
+    sup._spawn = _spawn  # type: ignore[method-assign]
+    monkeypatch.setattr(supervisor, "_stop_process", _stop)
+    if launcher == "port":
+        monkeypatch.setattr(supervisor, "_devtools_ws_url", _never)
+        task = asyncio.ensure_future(sup._launch_chromium_port(["chromium"], tmp_path))
+    else:
+        sup._shutdown_stray_daemon = lambda: asyncio.sleep(0)  # type: ignore[method-assign]
+        sup._daemon_env = lambda _url: {}  # type: ignore[method-assign]
+        sup._ipc_ping = _never  # type: ignore[method-assign]
+        task = asyncio.ensure_future(sup._start_daemon(Path("python"), "ws://relay"))
+    await asyncio.wait_for(waiting.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stopped == [child]
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_unowned_stop_waits_for_it_then_is_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop finishes before the launcher unwinds, and the cancel is not dropped."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    done: list[bool] = []
+
+    async def _slow_stop(_proc: Any) -> None:
+        started.set()
+        await release.wait()
+        done.append(True)
+
+    monkeypatch.setattr(supervisor, "_stop_process", _slow_stop)
+    task = asyncio.ensure_future(supervisor._stop_unowned(_Child()))  # type: ignore[arg-type]
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done(), "returned before the child was stopped"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert done == [True]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the pipe upstream is POSIX-only")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["connect_read_pipe", "connect_write_pipe"])
+async def test_a_pipe_upstream_that_fails_closes_both_gateway_ends(
+    monkeypatch: pytest.MonkeyPatch, fail_at: str
+) -> None:
+    import os
+
+    from kiro_crew.browser_harness import relay as relay_mod
+
+    to_r, to_w = os.pipe()
+    from_r, from_w = os.pipe()
+    loop = asyncio.get_running_loop()
+
+    async def _boom(*_a: Any, **_k: Any) -> Any:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(loop, fail_at, _boom)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await relay_mod.pipe_upstream_from_fds(from_r, to_w)
+        for fd in (from_r, to_w):
+            with pytest.raises(OSError):
+                os.fstat(fd)
+    finally:
+        for fd in (to_r, from_w):
+            os.close(fd)

@@ -875,6 +875,18 @@ async def test_confirm_on_a_covered_button_clicks_nothing() -> None:
     assert page.clicks() == []
 
 
+async def test_confirm_on_a_button_whose_label_changed_clicks_nothing() -> None:
+    """The person confirmed the label the sheet showed; a rewritten button is a new ask."""
+    page = FakePage()
+    page.add("e2", tag="button", text="Buy for $5")
+    _hub, _rec, ask = await _asked(
+        page, {"kind": "confirm", "targets": ["action=e2"], "reason": "Buy", "summary": "Pay"}
+    )
+    page.nodes[page.refs["e2"]]["text"] = "Buy for $500"
+    assert (await _answer({"ask_id": ask.id, "action": "confirm"}))[1]["error"] == "origin_changed"
+    assert page.clicks() == []
+
+
 # ── human_check: the scoped takeover ────────────────────────────────────────
 
 
