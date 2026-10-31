@@ -173,7 +173,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_runtime": tuple("""
         _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
         kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
-        _disarm_process_alarm_before_exec reexec_launcher reexec_python_module
+        _disarm_process_alarm_before_exec _rearm_process_alarm_after_failed_exec
+        reexec_launcher reexec_python_module
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
         is_windows_on_arm BUNDLED_BACKEND_DIST_DIRNAME is_bundled_interpreter

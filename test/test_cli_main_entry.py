@@ -219,7 +219,7 @@ class TestSeedDispatch:
         mock_gateway = MagicMock(side_effect=lambda **_kw: order.append("gateway") or object())
         with (
             patch(
-                "kiro_crew.dashboard.loop_watchdog.disarm_inherited_alarm",
+                "kiro_crew.cli.disarm_inherited_alarm",
                 side_effect=lambda: order.append("disarm") or True,
             ) as disarm,
             patch("kiro_crew.cli_server._gateway", mock_gateway),
