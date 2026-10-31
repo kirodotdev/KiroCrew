@@ -1798,7 +1798,8 @@
         "highlight_7": "Los pods corren en Linux (systemd --user) y macOS (launchd) — pero el pod de macOS no tiene un límite de memoria/CPU aplicado; Activar prepara el puntero en todas las plataformas, y el reinicio automático requiere una unidad systemd --user o un LaunchAgent de macOS; la vista de flota, el estado del PR, la sincronización, el rebase y la purga funcionan en cualquier plataforma",
         "page_label": "Dev Fleet",
         "use_case_1": "Gestiona los worktrees de funciones de Kiro Crew y pods de vista previa aislados sin alterar el gateway en producción.",
-        "configuration_1": "Apunta la app a un checkout de Kiro Crew; las acciones de PR necesitan gh autenticado, mientras que los pods requieren systemd --user en Linux o launchd en macOS y deben aprovisionarse primero."
+        "configuration_1": "Apunta la app a un checkout de Kiro Crew; las acciones de PR necesitan gh autenticado, mientras que los pods requieren systemd --user en Linux o launchd en macOS y deben aprovisionarse primero.",
+        "highlight_8": "Un worktree fijado a la release estable más reciente, para levantar un pod con una build publicada junto a tu rama; nunca cambia el canal desde el que se actualiza tu propia instalación"
       }
     },
     "designTweak": {
@@ -14060,7 +14061,36 @@
       "orphan_pods_label": "Homes de pods huérfanos: {{value}}",
       "total_disk_used_by_running_pod_homes": "Disco total usado por los homes de pods en ejecución",
       "pod_homes_left_on_disk_with_no_live_pod": "Homes de pods que quedan en disco sin un pod activo",
-      "disk_usage_unavailable": "Uso de disco no disponible"
+      "disk_usage_unavailable": "Uso de disco no disponible",
+      "creating": "Creando…",
+      "release_channel_unpublished": "Aún no se ha obtenido ninguna release {{lane}} — Crear obtiene la más reciente",
+      "release_channel_create_fetches": "Crear obtiene las etiquetas de release {{lane}} y hace checkout de la más reciente en modo detached",
+      "release_channel_no_release": "no está en una release",
+      "release_channel_version_unknown": "versión desconocida",
+      "release_channel_unresolved_short": "No se pudo resolver el canal de releases {{lane}}",
+      "no_worktree_yet": "aún sin worktree",
+      "not_applicable_short": "n/d",
+      "release_channel_has_no_pr": "Un worktree de release está en detached sobre una etiqueta, así que no tiene pull request",
+      "release_channel_create_failed": "No se pudo crear el worktree del canal de releases",
+      "release_channel_create_run_lost": "Se perdió la ejecución de la creación (el gateway se reinició) — actualiza la flota antes de volver a intentarlo",
+      "create_worktree": "Crear worktree",
+      "release_channel_created": "Worktree {{lane}} creado en {{ref}} — siguiente: {{action}}",
+      "release_channel_would_create_at": "Crear hace checkout de la release {{lane}} más reciente, {{version}}, en modo detached",
+      "release_channel_pinned_at": "Fijado al canal de releases {{lane}} en {{ref}}",
+      "release_channel_unresolved": "No se pudo resolver el canal de releases {{lane}}: {{error}}",
+      "release_channel_on_older_release": "En {{version}}; la punta del canal {{lane}} ahora es {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · última {{tip}}",
+      "release_channel_on_release_tip_unknown": "En {{version}}; no se pudo resolver la punta del canal {{lane}}",
+      "release_channel_on_no_release": "No está en una etiqueta de release {{lane}}; la punta del canal es {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "No está en una etiqueta de release {{lane}} y no se pudo resolver la punta del canal",
+      "release_channel_version_unknown_title": "No se pudo leer la release en la que está este checkout {{lane}}; mira el aviso debajo de la fila",
+      "release_channel_name_taken_by_branch": "{{name}} está reservado para el worktree de release {{lane}}, pero este checkout está en una rama. Para liberar el nombre, renombra o elimina el checkout: Purgar fusionados lo elimina en cuanto su PR se fusiona, o ejecuta `git worktree move` / `git worktree remove` en una shell",
+      "reserved_name_on_a_branch": "En una rama, así que la release {{lane}} no puede usar este nombre — renómbralo o elimínalo para liberarlo",
+      "release_rows_measured_by_version": "Las filas de release se miden por versión — mira la insignia",
+      "no_worktree_yet_create_checks_out": "Aún sin worktree — Crear hace checkout de {{version}}",
+      "rows_pending_one": "{{count}} worktree · {{pending}} por crear",
+      "rows_pending_many": "{{count}} worktrees · {{pending}} por crear",
+      "rows_pending_other": "{{count}} worktrees · {{pending}} por crear"
     },
     "developer": {
       "agentBackendTab": {

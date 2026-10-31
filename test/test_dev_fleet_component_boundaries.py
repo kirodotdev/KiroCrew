@@ -11,16 +11,19 @@ import pytest
 
 from kiro_crew.apps.builtins.dev_fleet import (
     fleet_state,
+    fleet_state_release_channel,
     http_api,
     live,
     live_leases,
     live_plan,
     live_service,
+    release_channel_pin,
     repository,
     runtime,
     server,
     worktree_ops,
     worktree_ops_pods,
+    worktree_ops_release,
     worktree_ops_removal,
     worktree_ops_sync,
 )
@@ -29,6 +32,8 @@ _COMPONENTS = (
     runtime,
     repository,
     live,
+    release_channel_pin,
+    fleet_state_release_channel,
     fleet_state,
     worktree_ops,
     http_api,
@@ -37,7 +42,12 @@ _RANK = {component.__name__.rsplit(".", 1)[-1]: rank for rank, component in enum
 #: The owner modules a component's code moved to, read with it: same rank, same rules.
 _COMPONENT_OWNERS = {
     live: (live_leases, live_service, live_plan),
-    worktree_ops: (worktree_ops_sync, worktree_ops_pods, worktree_ops_removal),
+    worktree_ops: (
+        worktree_ops_sync,
+        worktree_ops_pods,
+        worktree_ops_removal,
+        worktree_ops_release,
+    ),
 }
 _RANK.update(
     {
@@ -233,6 +243,11 @@ def test_route_manifest_and_http_adapter_ownership_are_stable() -> None:
         ("POST", "/api/pod/provision", "api_dev_fleet_pod_provision"),
         ("POST", "/api/pod/provision/dismiss", "api_dev_fleet_pod_provision_dismiss"),
         ("POST", "/api/rebase", "api_dev_fleet_rebase"),
+        (
+            "POST",
+            "/api/release-channel/create",
+            "api_dev_fleet_release_channel_create",
+        ),
         # NOT here: /api/restart-gateway and /api/make-live. They touch the live-target
         # pointer (or its cutover latch), which is masked from this sandboxed backend and
         # every child it spawns; the gateway process serves them under

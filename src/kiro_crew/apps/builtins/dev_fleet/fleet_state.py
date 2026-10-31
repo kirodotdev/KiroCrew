@@ -12,7 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.apps.builtins.dev_fleet import git_facts, live, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import (
+    fleet_state_release_channel,
+    git_facts,
+    live,
+    repository,
+    runtime,
+)
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import is_link_or_junction
@@ -561,6 +567,12 @@ _FLEET_INFLIGHT: asyncio.Task[dict] | None = None
 # reaped by the first build that started after them.
 _FLEET_EPOCH = 0
 _FLEET_TOMBSTONES: dict[str, int] = {}
+# The epoch of the latest worktree ADOPTION (`_fleet_adopted`), the mirror image of a
+# tombstone. A rebuild that started before an adoption read git before the worktree
+# existed, so storing its result would publish a snapshot WITHOUT the row the
+# mutation just created -- and a `fresh=1` request coalescing onto that build would
+# be answered with it. A build compares this against its own start and re-reads.
+_FLEET_ADOPTED_EPOCH = 0
 
 
 def _drop_worktrees(data: dict, names: set[str]) -> dict:
@@ -575,13 +587,44 @@ def _drop_worktrees(data: dict, names: set[str]) -> dict:
     kept = [w for w in wts if w.get("name") not in names]
     if len(kept) == len(wts):
         return data
-    return {**data, "worktrees": kept}
+    out = {**data, "worktrees": kept}
+    # The release channel is published as its own key, built from the same discovery
+    # as the rows. Dropping the row it was adopted from without demoting the key
+    # would publish a channel that claims a worktree the rows do not carry, and the
+    # page reads `worktree` to decide whether Create is offered -- so the operator
+    # would see neither the row nor the control that brings it back until a later
+    # rebuild. Demote to the placeholder shape `_release_channel` builds: no tree,
+    # no currency, and `version` back to the tip Create would check out.
+    channel = out.get("release_channel")
+    if isinstance(channel, dict) and channel.get("worktree") in names:
+        out["release_channel"] = {
+            **channel,
+            "worktree": None,
+            "at_tip": None,
+            "version": channel.get("tip_version"),
+            "version_unknown": False,
+        }
+    elif isinstance(channel, dict) and channel.get("name") in names:
+        # The OTHER holder of the reserved name: a branch checkout, recorded as
+        # `name_taken_by_branch` with no `worktree`. One directory is one row, so the
+        # dropped row was the occupant; a flag left set hides Create until a rebuild.
+        out["release_channel"] = {**channel, "name_taken_by_branch": False}
+    return out
 
 
 async def _fleet_build() -> dict:
     global _FLEET_TOMBSTONES
     started = _FLEET_EPOCH
     data = await _build_fleet()
+    if _FLEET_ADOPTED_EPOCH > started:
+        # A worktree was adopted while this build ran, so the git state it read
+        # predates a row that now exists. A removal mid-build is repaired by
+        # subtraction below; an addition has nothing to subtract, so read again. Once:
+        # a second adoption landing inside the re-read is left to the zeroed
+        # timestamp `_fleet_adopted` set, which schedules the next rebuild behind the
+        # snapshot rather than looping here for as long as adoptions keep landing.
+        started = _FLEET_EPOCH
+        data = await _build_fleet()
     # Removals that landed DURING this build are invisible to it — the git state
     # it read predates them. Re-apply them so a slow build cannot put back a row
     # an eviction already removed.
@@ -628,6 +671,21 @@ def _fleet_forget(name: str) -> None:
     data = _FLEET_CACHE["data"]
     if isinstance(data, dict):
         _FLEET_CACHE["data"] = _drop_worktrees(data, {name})
+    _FLEET_CACHE["ts"] = 0.0
+
+
+def _fleet_adopted() -> None:
+    """Mark that a worktree was just created, so no older build can hide it.
+
+    The counterpart of `_fleet_forget` for the one mutation that ADDS a row. Bumping
+    the epoch tells a build already in flight that its snapshot predates the new
+    worktree (`_fleet_build` re-reads); zeroing the timestamp schedules the rebuild
+    for a caller that only reads the cache. Nothing is evicted: there is no stale
+    row to drop, only a missing one to pick up.
+    """
+    global _FLEET_EPOCH, _FLEET_ADOPTED_EPOCH
+    _FLEET_EPOCH += 1
+    _FLEET_ADOPTED_EPOCH = _FLEET_EPOCH
     _FLEET_CACHE["ts"] = 0.0
 
 
@@ -1439,6 +1497,11 @@ async def _build_fleet() -> dict:
         "main_repo": runtime._redact(repository._repo()),
         "main_repo_inferred": repository.MAIN_REPO_INFERRED,
         "base_branch": repository.BASE_BRANCH,
+        # The release channel, whether or not its worktree exists yet. See
+        # _release_channel for why this is not an extra `worktrees` row. Fed the RAW
+        # discovery entries, not the built rows: a row's `path` has been through
+        # `_redact` for display, and a redacted path is not safe to hand to git.
+        "release_channel": await fleet_state_release_channel._release_channel(worktrees),
         "build_pending": _build_pending(),
         "gateway_service_active": await live._gateway_service_active(),
         # Non-null while a cutover is staged but not yet running: the UI renders a
@@ -1716,6 +1779,7 @@ __all__ = (
     "_DISK_EPOCH",
     "_DISK_TTL",
     "_FLEET_CACHE",
+    "_FLEET_ADOPTED_EPOCH",
     "_FLEET_EPOCH",
     "_FLEET_INFLIGHT",
     "_FLEET_TOMBSTONES",
@@ -1752,6 +1816,7 @@ __all__ = (
     "_fetch_pr_status",
     "_fleet_build",
     "_fleet_cached",
+    "_fleet_adopted",
     "_fleet_forget",
     "_fleet_rebuild_task",
     "_fleet_refresh",

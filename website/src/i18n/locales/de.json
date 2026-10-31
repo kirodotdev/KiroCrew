@@ -1978,7 +1978,8 @@
         "highlight_7": "Pods laufen unter Linux (systemd --user) und macOS (launchd) — der macOS-Pod hat allerdings keine erzwungene Speicher-/CPU-Obergrenze; „Live schalten“ setzt den Zeiger auf jeder Plattform, ein automatischer Neustart braucht eine systemd --user-Unit oder einen macOS-LaunchAgent; Flottenansicht, PR-Status, Synchronisieren, Rebasen und Bereinigen funktionieren auf jeder Plattform",
         "page_label": "Dev Fleet",
         "use_case_1": "Verwalte Kiro-Crew-Feature-Worktrees und isolierte Vorschau-Pods, ohne das Live-Gateway zu verändern.",
-        "configuration_1": "Verweise die App auf einen Checkout von Kiro Crew; PR-Aktionen benötigen ein authentifiziertes gh, Pods benötigen systemd --user unter Linux oder launchd unter macOS und müssen zuerst provisioniert werden."
+        "configuration_1": "Verweise die App auf einen Checkout von Kiro Crew; PR-Aktionen benötigen ein authentifiziertes gh, Pods benötigen systemd --user unter Linux oder launchd unter macOS und müssen zuerst provisioniert werden.",
+        "highlight_8": "Ein Worktree, der auf das neueste stabile Release fixiert ist, damit du einen ausgelieferten Build neben deinem Branch als Pod starten kannst; welcher Channel deine eigene Installation aktualisiert, ändert sich dadurch nie"
       }
     },
     "fileExplorer": {
@@ -13826,7 +13827,35 @@
       "orphan_pods_label": "Verwaiste Pod-Homes: {{value}}",
       "total_disk_used_by_running_pod_homes": "Gesamter von laufenden Pod-Homes genutzter Speicher",
       "pod_homes_left_on_disk_with_no_live_pod": "Pod-Homes auf der Festplatte ohne aktiven Pod",
-      "disk_usage_unavailable": "Speicherbelegung nicht verfügbar"
+      "disk_usage_unavailable": "Speicherbelegung nicht verfügbar",
+      "creating": "Wird erstellt…",
+      "release_channel_unpublished": "Noch kein {{lane}}-Release geholt — Erstellen holt das neueste",
+      "release_channel_create_fetches": "Erstellen holt die {{lane}}-Release-Tags und checkt das neueste detached aus",
+      "release_channel_no_release": "nicht auf einem Release",
+      "release_channel_version_unknown": "Version unbekannt",
+      "release_channel_unresolved_short": "Der {{lane}}-Release-Channel konnte nicht aufgelöst werden",
+      "no_worktree_yet": "noch kein Worktree",
+      "not_applicable_short": "k. A.",
+      "release_channel_has_no_pr": "Ein Release-Worktree ist detached auf einem Tag und hat daher keinen Pull Request",
+      "release_channel_create_failed": "Der Release-Channel-Worktree konnte nicht erstellt werden",
+      "release_channel_create_run_lost": "Die Erstellung ging verloren (Gateway neu gestartet) — Fleet aktualisieren, dann erneut versuchen",
+      "create_worktree": "Worktree erstellen",
+      "release_channel_created": "{{lane}}-Worktree auf {{ref}} erstellt — nächster Schritt: {{action}}",
+      "release_channel_would_create_at": "Erstellen checkt das neueste {{lane}}-Release, {{version}}, detached aus",
+      "release_channel_pinned_at": "Auf den {{lane}}-Release-Channel bei {{ref}} fixiert",
+      "release_channel_unresolved": "Der {{lane}}-Release-Channel konnte nicht aufgelöst werden: {{error}}",
+      "release_channel_on_older_release": "Auf {{version}}; die Spitze des {{lane}}-Channels ist jetzt {{tip}}",
+      "release_channel_version_behind_tip": "{{version}} · neueste {{tip}}",
+      "release_channel_on_release_tip_unknown": "Auf {{version}}; die Spitze des {{lane}}-Channels konnte nicht aufgelöst werden",
+      "release_channel_on_no_release": "Nicht auf einem {{lane}}-Release-Tag; die Spitze des Channels ist {{tip}}",
+      "release_channel_on_no_release_tip_unknown": "Nicht auf einem {{lane}}-Release-Tag, und die Spitze des Channels konnte nicht aufgelöst werden",
+      "release_channel_version_unknown_title": "Das Release, auf dem dieser {{lane}}-Checkout liegt, konnte nicht gelesen werden – siehe den Hinweis unter der Zeile",
+      "release_channel_name_taken_by_branch": "{{name}} ist für den {{lane}}-Release-Worktree reserviert, aber dieser Checkout liegt auf einem Branch. Um den Namen freizugeben, benenne den Checkout um oder entferne ihn: Zusammengeführte bereinigen entfernt ihn, sobald sein PR zusammengeführt ist, oder führe `git worktree move` / `git worktree remove` in einer Shell aus",
+      "reserved_name_on_a_branch": "Auf einem Branch, daher kann das {{lane}}-Release diesen Namen nicht nutzen — benenne ihn um oder entferne ihn, um ihn freizugeben",
+      "release_rows_measured_by_version": "Release-Zeilen werden nach Version gemessen — siehe das Badge",
+      "no_worktree_yet_create_checks_out": "Noch kein Worktree — Erstellen checkt {{version}} aus",
+      "rows_pending_one": "{{count}} Worktree · {{pending}} zu erstellen",
+      "rows_pending_other": "{{count}} Worktrees · {{pending}} zu erstellen"
     },
     "developer": {
       "agentBackendTab": {

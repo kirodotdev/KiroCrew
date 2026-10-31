@@ -11,7 +11,14 @@ from pathlib import Path
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, repository, runtime, worktree_ops
+from kiro_crew.apps.builtins.dev_fleet import (
+    fleet_state,
+    live,
+    release_channel_pin,
+    repository,
+    runtime,
+    worktree_ops,
+)
 from kiro_crew.apps.proxy_auth import raw_request_target
 
 # --- standalone backend config ---
@@ -141,6 +148,16 @@ async def api_dev_fleet_run(request: web.Request) -> web.Response:
             else None
         )
     if snap:
+        # An in-process run (``runtime._start_task_run``) ends with its result dict
+        # on the record. Every string in it -- an ``error`` quoting a path, the
+        # ``path`` itself, a ref -- is scrubbed HERE, where it leaves the process,
+        # the same way the output lines are. The owner that wrote the result carries
+        # no redactor of its own; this route is the registered egress for it.
+        result = snap.get("result")
+        if isinstance(result, dict):
+            snap["result"] = {
+                k: runtime._redact(v) if isinstance(v, str) else v for k, v in result.items()
+            }
         return web.json_response(snap)
     return web.json_response({"error": "unknown run id"}, status=404)
 
@@ -157,33 +174,53 @@ async def api_dev_fleet_disk(request: web.Request) -> web.Response:
     return web.json_response(await fleet_state._disk())
 
 
-def _audited(tool_name: str):
+def _audited(tool_name: str, *, static_target: str = ""):
     """Audit every Dev Fleet mutation via SEL, exactly once per request.
 
     The decision is made at the single response boundary of the handler:
     2xx -> success, 4xx -> denied, 5xx/exception -> failure.  Target
     worktree name is read from the JSON body without consuming the stream
     (handlers re-parse independently); values are redacted before logging.
+
+    ``static_target`` is for a route whose target is not in the request at all: the
+    release-channel mutation acts on one known worktree and takes no body, so the
+    object it touches is a constant. Passing it here keeps the trail naming a real
+    target instead of the empty string a body scan would produce, and a route that
+    declares it never consults the body -- a client cannot influence what its own
+    mutation is recorded against. Every other route reads the worktree fields named
+    inline below.
     """
 
     def _decorate(handler):
         async def _wrapped(request: web.Request) -> web.Response:
-            target = ""
+            target = static_target
             try:
-                if request.content_length and request.can_read_body:
+                if not static_target and request.content_length and request.can_read_body:
                     raw = await request.read()  # cached; handler .json() re-reads it
                     try:
                         parsed = json.loads(raw)
                         if isinstance(parsed, dict):
+                            # Worktree fields only, in order, spelled here rather than
+                            # behind a name: a channel field admitted into this chain
+                            # would let a body name the channel as the target of a
+                            # mutation that never touched it, and the release-channel
+                            # route takes no body at all -- it declares a
+                            # ``static_target``.
                             t = parsed.get("name") or parsed.get("names") or parsed.get("path")
                             if isinstance(t, str):
                                 target = t
                             elif isinstance(t, list):
                                 target = ",".join(str(x) for x in t[:20])
                     except (ValueError, TypeError):
-                        target = ""
+                        # `target` was never reassigned, so it still holds the value set
+                        # before the block. Re-assigning `static_target` here would
+                        # write the same value it already has on every reachable route:
+                        # a route declaring one skips this block entirely via `if not
+                        # static_target`, and a route without one has
+                        # `target == static_target == ""`.
+                        pass
             except Exception:
-                target = ""
+                pass
             try:
                 resp = await handler(request)
             except Exception as exc:
@@ -505,6 +542,79 @@ async def api_dev_fleet_rebase(request: web.Request) -> web.Response:
     return await _pod_name_action(request, worktree_ops._rebase)
 
 
+def _release_channel_outcome(result: dict | None) -> tuple[str, str]:
+    """``(outcome, error)`` for the audit entry of a finished create run.
+
+    The same split ``_audited`` applies at a response boundary, applied to the run's
+    result dict instead: ``ok`` is a success, a ``code`` in
+    ``_RELEASE_CHANNEL_REFUSALS`` is a state the caller can act on and is recorded as
+    ``denied``, anything else -- an unexpected git failure, or no result at all because
+    the run raised or was cancelled at shutdown -- is a ``failure``.
+    """
+    if result is None:
+        return "failure", "run ended without a result"
+    if result.get("ok"):
+        return "success", ""
+    refused = result.get("code") in worktree_ops._RELEASE_CHANNEL_REFUSALS
+    error = runtime._redact(str(result.get("error", "")))[:200] or str(result.get("code", ""))
+    return ("denied" if refused else "failure"), error
+
+
+def _audit_release_channel_result(result: dict | None) -> None:
+    """Record how the create run ENDED, in the same trail that recorded its start."""
+    outcome, error = _release_channel_outcome(result)
+    runtime._sel().log_tool_invocation(
+        session_key="api",
+        source="api",
+        tool_name="dev_fleet_release_channel_create_result",
+        tool_kind="dev_fleet",
+        outcome=outcome,
+        resources=release_channel_pin.WORKTREE_NAME,
+        error=error,
+    )
+
+
+@_audited("dev_fleet_release_channel_create", static_target=release_channel_pin.WORKTREE_NAME)
+async def api_dev_fleet_release_channel_create(request: web.Request) -> web.Response:
+    """Start materializing the release channel's detached worktree. Empty body.
+
+    Answers ``202 {ok: true, run_id}`` as soon as the create is RUNNING, not when it
+    is done: the fetch, ``worktree add``, populate and ``worktree move`` it performs
+    carry timeouts in the minutes, and the app proxy that fronts this backend drops a
+    request at 30 seconds -- a route that awaited the create could never deliver its
+    result. The caller polls ``/api/run?id=<run_id>`` and reads ``result`` once the
+    run's ``status`` has left ``running``.
+
+    A refusal that needs no run to decide -- the tree exists, the name is ambiguous,
+    another operation on the name is in flight -- is still answered here, as a 409
+    with its ``code``: a state the caller can act on. ``busy`` for a create already
+    running also carries that run's id, so a page that lost its own attaches to it.
+
+    Two audit entries per create: ``_audited`` records this ADMISSION (2xx is "the
+    run started", a 409 is ``denied``), and ``_audit_release_channel_result`` records
+    how the run ended, on the run's own terminal state, with the same split a
+    synchronous response would have had.
+    """
+    started = await worktree_ops._release_channel_create_start(
+        on_finish=_audit_release_channel_result
+    )
+    if started.get("ok"):
+        return web.json_response(started, status=202)
+    refused = started.get("code") in worktree_ops._RELEASE_CHANNEL_REFUSALS
+    # A dict LITERAL with its ``code`` key spelled here, not a hoisted variable: the
+    # error-code contract gate reads the body off the call, and ``run_id`` rides
+    # along as ``None`` when no run is in flight rather than being added after.
+    return web.json_response(
+        {
+            "ok": False,
+            "code": started.get("code"),
+            "error": started.get("error"),
+            "run_id": started.get("run_id"),
+        },
+        status=409 if refused else 500,
+    )
+
+
 # =============================================================================
 # HMAC Proxy Middleware (fail-closed)
 # =============================================================================
@@ -654,6 +764,7 @@ __all__ = (
     "api_dev_fleet_prune_run",
     "api_dev_fleet_prune_status",
     "api_dev_fleet_rebase",
+    "api_dev_fleet_release_channel_create",
     "api_dev_fleet_run",
     "api_dev_fleet_sync",
     "api_dev_fleet_worktree",
