@@ -224,7 +224,9 @@ ask is never brought back);
 `changes_since_away` (item reports, decisions and closes after the away
 anchor, and session-ledger events after it, each with its source (worker
 report, conductor decision, work ledger or session ledger) and `HH:MM`
-time); `transcript_since_owner` (the
+time; a PR's live state is not listed here, since the read cannot tell when
+it merged, and stays in `live_prs`);
+`live_prs`; `transcript_since_owner` (the
 owner's last genuine message and every turn since, whole; over budget the
 oldest drop first); `open_items` (open items, and terminal ones that changed
 while the owner was away, questions and blocked first); `goal` (conductor
@@ -232,9 +234,20 @@ goal, else session-ledger goal, else the owner's newest message);
 `goal_progress`; and `owner_recent_messages` (the owner's last three genuine
 messages, which pick the reply language and the script of the fixed lines).
 
-The prompt allows merged, green, approved or conflict states only from a
-change newer than the away time; anything else is written as "not checked
-since HH:MM" with the time of the newest report or message that states it.
+The live read covers only pull requests the open asks name, at most five,
+through the structured monitor's GitHub probe (`GitHubPullRequestProvider`).
+A PR's repository comes only from ledger data or a full PR URL: each open
+question or blocked item's own PR (its `pr`, or its acceptance's `pr`, in its
+acceptance's `repo`), then every `https://github.com/<owner>/<repo>/pull/<n>`
+URL in the pending ask's text and choices and in those items' text. A bare
+`#N` or a written `owner/repo#N` is never resolved to a repository, so it is
+not read. PR links in the card and buttons for the pending choices come in
+follow-up changes. Each answer
+is cached in process for 15 minutes. Every entry carries `read_at`, or
+`checked: false` with `not_checked_since` (the last good read, or `never`).
+The prompt allows merged, green, approved or conflict states only from
+`live_prs` or a change newer than the away time; anything else is written as
+"not checked since HH:MM".
 
 The prompt asks for parts in order: the goal, what changed since the owner
 left (each fact with source and time), numbered asks (what, why only the
@@ -261,6 +274,11 @@ redacted before and after whitespace is collapsed and `**` dropped, then
 control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any bracket form) are
 defanged, then the field is capped.
 
+The gateway post-checks the result: any pull-request number (a PR URL,
+`owner/repo#N`, or a bare `#N` or `PR#N`, matched with ASCII boundaries, so a
+CJK letter next to the number is a boundary) in a model-written field that neither the prompt's input nor the original
+request named fails the result, and the
+fixed failure line posts instead.
 The result is one mate message: `meta.brief` holds the fields and `content`
 holds the same brief as labelled plain text. The transcript draws `meta.brief`
 as a fixed card (`WarmBriefCard`) that renders every field as a plain text
