@@ -36,6 +36,46 @@ too.
 
 ## Common Issues
 
+### Claude models missing on Windows when using a proxy
+
+On Windows, Kiro Crew may show fewer models than Kiro IDE or
+Kiro Web, even when signed in with the same Kiro account.
+
+If Claude models appear in Kiro IDE only when a VPN or proxy
+is enabled, check whether Kiro Crew and its Gateway inherit
+the same proxy configuration.
+
+For an HTTP-compatible local proxy, try this workaround:
+
+1. Enable your proxy and identify its local HTTP port.
+2. Fully exit Kiro Crew, including the system tray instance
+   and any existing Gateway process.
+3. Open PowerShell and run:
+
+```powershell
+$env:HTTP_PROXY = "http://127.0.0.1:10080"
+$env:HTTPS_PROXY = "http://127.0.0.1:10080"
+$env:NO_PROXY = "localhost,127.0.0.1"
+
+$crew = "$env:LOCALAPPDATA\Programs\KiroCrew\KiroCrew.exe"
+Start-Process -FilePath $crew
+```
+
+Replace `10080` with your own HTTP or mixed proxy port.
+A SOCKS-only proxy may require different configuration.
+
+After launching Crew, refresh the model list and verify that
+the desired Claude model can actually respond.
+
+These environment variables apply to the launched process
+and its children, not globally to future desktop launches.
+An existing Gateway may need to be stopped first.
+
+This workaround restored Claude Opus 5.5 on one Windows 11
+installation with Kiro Pro. It does not establish the
+underlying root cause and may not resolve every model
+entitlement issue.
+
 ### The default kiro-cli backend is not on PATH
 
 `agent.provider` is fixed to ACP, while `agent.acp_backend` selects the ACP
