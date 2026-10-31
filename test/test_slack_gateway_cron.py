@@ -876,6 +876,8 @@ class TestCronFailurePaths:
         job.last_failure_at = 0.0
         job.consecutive_failures = 0
         job.auto_paused = False
+        job.auto_pause_limit.return_value = 5
+        job.alert_after_limit.return_value = 1
         job._acp_retried = False
 
         with patch(
@@ -951,6 +953,8 @@ class TestCronFailurePaths:
         job.last_failure_at = time.time()
         job.consecutive_failures = 1
         job.auto_paused = False
+        job.auto_pause_limit.return_value = 5
+        job.alert_after_limit.return_value = 1
         job._acp_retried = False
 
         with patch(

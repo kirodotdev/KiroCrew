@@ -99,6 +99,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("timeout", int, min_val=0, max_val=3600),
         FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
         FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),
+        FieldSpec("alert_after_failures", int, min_val=1, max_val=_AUTO_PAUSE_MAX),
     ],
     custom_validator=_validate_cron_add_requires_message_or_script,
 )
@@ -196,6 +197,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("timeout", int, min_val=0, max_val=3600),
             FieldSpec("timeout_secs", int, min_val=1, max_val=86400),
             FieldSpec("auto_pause_after_failures", int, min_val=0, max_val=_AUTO_PAUSE_MAX),
+            FieldSpec("alert_after_failures", int, min_val=1, max_val=_AUTO_PAUSE_MAX),
         ],
     ),
     "cron_remove": CRON_REMOVE_SCHEMA,

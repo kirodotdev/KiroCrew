@@ -2667,7 +2667,10 @@
       "chat_folder_was_deleted": "The folder this job filed into was deleted. Pick another, or save to leave runs unfiled.",
       "auto_pause_after_failures": "Auto-pause after N failures in a row",
       "auto_pause_after_failures_description": "0 means never pause. From the 5th failure in a row, a job set to 0 or above 5 waits 5 minutes before its next run, doubling up to an hour.",
-      "auto_pause_after_failures_invalid": "The auto-pause limit must be a whole number from 0 to 10000."
+      "auto_pause_after_failures_invalid": "The auto-pause limit must be a whole number from 0 to 10000.",
+      "alert_after_failures": "Send the failure message after N failures in a row",
+      "alert_after_failures_description": "1 sends it on the first failed run. Earlier failures still ring the dashboard bell; a policy denial and the run that auto-pauses the job always send it.",
+      "alert_after_failures_invalid": "The alert threshold must be a whole number from 1 to 10000."
     },
     "jobLogsView": {
       "failed_to_load_history": "Failed to load history"

@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import cli_help
 from kiro_crew.cli_arg_types import non_negative_int, positive_int
-from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
+    _AUTO_PAUSE_MAX,
+    _AUTO_PAUSE_THRESHOLD,
+)
 
 if TYPE_CHECKING:
     _Commands = argparse._SubParsersAction[argparse.ArgumentParser]
@@ -32,6 +36,11 @@ _AUTO_PAUSE_AFTER_HELP = (
     f"above {_AUTO_PAUSE_THRESHOLD}, from the {_AUTO_PAUSE_THRESHOLD}th consecutive "
     "failure each further run waits 5 minutes, doubling per failure up to "
     "one hour, until it succeeds or reaches a nonzero limit)"
+)
+_ALERT_AFTER_HELP = (
+    f"Consecutive failed runs before the failure message is sent (1..{_AUTO_PAUSE_MAX}, "
+    f"default {_ALERT_AFTER_DEFAULT}). The dashboard bell still records every failure; "
+    "policy denials and the run that auto-pauses the job always alert"
 )
 
 # Helper for commands with examples
@@ -183,6 +192,13 @@ Examples:
         help=_AUTO_PAUSE_AFTER_HELP,
     )
     cron_add.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
+    )
+    cron_add.add_argument(
         "--model",
         dest="model",
         default="",
@@ -258,6 +274,13 @@ Examples:
         dest="auto_pause_after_failures",
         default=None,
         help=_AUTO_PAUSE_AFTER_HELP,
+    )
+    cron_update.add_argument(
+        "--alert-after",
+        type=int,
+        dest="alert_after_failures",
+        default=None,
+        help=_ALERT_AFTER_HELP,
     )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")

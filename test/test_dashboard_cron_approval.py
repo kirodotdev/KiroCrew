@@ -297,6 +297,7 @@ class TestCronListFields:
         mock_job.minimal_context = False
         mock_job.persistent_session = True
         mock_job.auto_pause_after_failures = 5
+        mock_job.alert_after_failures = 1
         mock_job.schedule = CronSchedule(kind="every", every_secs=300)
         mock_job.last_run_ts = None
         mock_job.last_result = None

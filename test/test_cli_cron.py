@@ -46,6 +46,7 @@ def _add_job_kwargs(**overrides):
         timeout=0,
         timeout_secs=0,
         auto_pause_after_failures=None,
+        alert_after_failures=None,
     )
     kwargs.update(overrides)
     return kwargs

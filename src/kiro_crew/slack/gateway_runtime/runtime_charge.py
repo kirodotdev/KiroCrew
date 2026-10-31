@@ -204,6 +204,21 @@ def _charge_failure(job: CronJob, _hand_over_streak: bool) -> None:
     job.record_failure()
 
 
+def _streak_after_charge(job: CronJob, charges: bool, _hand_over_streak: bool) -> int:
+    """The counter :func:`_charge_failure` will leave, read before it runs.
+
+    The failure path decides what to deliver before it charges, so it needs the
+    count the charge is about to produce, hand-over included. A run that charges
+    nothing leaves the counter where it is.
+    """
+    if not charges:
+        return job.consecutive_failures
+    base = job.consecutive_failures
+    if _hand_over_streak:
+        base = max(base, _AUTO_PAUSE_THRESHOLD - 1)
+    return base + 1
+
+
 async def _inject_with_retry(
     self: GatewayOrchestrator,
     info: SubagentInfo,

@@ -620,6 +620,27 @@ state the alert exists to prevent.
   every fire. The SEL `downstream_service` names the channel namespace that
   actually took it, so the audit trail does not read "slack" for a Telegram
   delivery.
+- **A per-job threshold holds the first failures on the bell.** `alert_after_failures`
+  (1..`_AUTO_PAUSE_MAX`, default `_ALERT_AFTER_DEFAULT` = 1, read through
+  `CronJob.alert_after_limit()`, validated by `validate_alert_after_failures`; `0`
+  is refused because `silent` already means never) is how many consecutive failed
+  runs it takes before either surface delivers. `_failure_alert_due` is the one
+  spelling both callers run before the duplicate check: below the threshold the
+  bell still rings (title `Cron: <name> (failure N of M)`) but neither
+  leg is attempted and the dedup anchor does not move, so the failure that reaches
+  the threshold alerts even with an identical reason. A held failure writes a
+  `cron_failure_alert_held` audit row.
+- **What bypasses the threshold.** A policy denial, a `silent` job (it reaches
+  nobody either way and keeps its own path), and the run that reaches
+  `auto_pause_limit()`. The streak is floored at 1, so a run the counter does not
+  charge still alerts on the default. It is `consecutive_failures` after the count
+  in `_alert_cron_failure`, and `_streak_after_charge` (the count the pending charge
+  will leave, hand-over included) in `_cron_single_failure`, whose held path still
+  charges the run.
+- **Where it is set.** Set through `cron_add` / `cron_update`,
+  `kirocrew cron add/update --alert-after`, `PATCH /api/crons/{id}` (400 code
+  `invalid_alert_after_failures`) and the Schedule page edit form; `crons.json`
+  carries the key only when it differs from the default.
 
 ### Per-Job Timezone
 

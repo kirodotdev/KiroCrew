@@ -495,6 +495,10 @@ from kiro_crew.slack.gateway_runtime.cron_dispatch import (
     claim_vet_bound,
     cron_job_env_without_reserved,
 )
+from kiro_crew.slack.gateway_runtime.cron_failure import (
+    _failure_alert_due,
+    _log_held_alert,
+)
 from kiro_crew.slack.gateway_runtime.cron_fire import (
     _annotate_model_downgrade,
     _cron_extra_env,
@@ -552,6 +556,7 @@ from kiro_crew.slack.gateway_runtime.runtime_charge import (
     _apply_gate_verdict,
     _charge_failure,
     _cron_failure_attribution,
+    _streak_after_charge,
 )
 from kiro_crew.slack.gateway_runtime.service_boot import (
     _PROFILE_PROJECTION_POLL_S,
