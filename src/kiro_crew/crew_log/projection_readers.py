@@ -269,8 +269,10 @@ def _read_workers_locked(slot: str, key: "tuple[str, str]", *, cold: bool = True
     return Projection(name=WORKERS_FOLD_NAME, seq=own.last_seq, value=value, revision=revision)
 
 
-def workstream_item_workers(slot: str, item_id: str) -> "list[str]":
-    """The worker session key bound to *item_id* on each board *slot*'s workstreams page draws.
+def workstream_item_workers(slot: str, item_id: str) -> "list[tuple[str, str]]":
+    """``(worker session key, worker instance id)`` bound to *item_id* on each board *slot* draws.
+
+    One pair per board of the workstreams page; the instance id is non-empty for a remote worker.
 
     The server-side half of opening a worker from its card: the page holds only an alias
     and an item id, so the key is looked up here, in the raw fold state the page's own read

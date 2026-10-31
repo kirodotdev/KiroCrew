@@ -25,7 +25,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from typing import Any, Callable, Final, Mapping, NamedTuple
+from typing import Any, Callable, Final, Mapping
 
 from aiohttp import web
 
@@ -35,14 +35,13 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import conditional_get
 from kiro_crew.dashboard.handlers import member_dashboard_fields
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.member_dashboard_names import NameRefusal, resolve_names
 from kiro_crew.dashboard.handlers.member_dashboard_render import _render
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
-    _member_names_for_slug,
     _member_thread_slot,
 )
 from kiro_crew.dashboard_templates import catalog, instance
-from kiro_crew.members import MemberSlugError
 from kiro_crew.platform.context import redact_code_via_context, redact_via_context
 
 logger = logging.getLogger(__name__)
@@ -78,14 +77,6 @@ def _name_unsafe(name: str) -> bool:
     return bool(name) and redact_via_context(name) != name
 
 
-class NameRefusal(NamedTuple):
-    """Why a (slug, member) pair named no dashboard: code, sentence, status."""
-
-    code: str
-    message: str
-    status: int = 400
-
-
 async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     """``(slug, member)`` for this request, or the refusal: the app gate, then :func:`resolve_names`."""
     denied = await _deny_app_caller(request, "members.dashboard")
@@ -97,34 +88,6 @@ async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     if isinstance(resolved, NameRefusal):
         return _bad(resolved.code, resolved.message, status=resolved.status)
     return resolved
-
-
-async def resolve_names(slug: str, member: str) -> tuple[str, str] | NameRefusal:
-    """``(slug, canonical member)`` or the refusal; also used by the board's ``open``."""
-    try:
-        members_mod.validate_slug(slug)
-    except MemberSlugError:
-        return NameRefusal("invalid_member_slug", "invalid member slug")
-    if not members_mod.is_dispatchable_member_name(member):
-        return NameRefusal("missing_member", "member query parameter required")
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    # The ROSTER's spelling (`atlas` is `Atlas`), resolved ONCE before either check so the
-    # slug check and the roster check ask about the same name.
-    member = members_mod.canonical_member_key(member, cfg)
-    try:
-        if members_mod.member_slug(member, cfg) != slug:
-            return NameRefusal("member_slug_mismatch", "member does not match slug")
-    except MemberSlugError:
-        return NameRefusal("member_slug_mismatch", "member does not match slug")
-    if member not in cfg.agents:
-        return NameRefusal("member_not_found", "no Bot for this slug", 404)
-    if _member_names_for_slug(cfg, slug) != [member]:
-        return NameRefusal(
-            "dashboard_slug_ambiguous",
-            "multiple crews share this slug; their dashboards would be ambiguous",
-            409,
-        )
-    return slug, member
 
 
 def _dashboard_slot(member: str, slug: str) -> str:

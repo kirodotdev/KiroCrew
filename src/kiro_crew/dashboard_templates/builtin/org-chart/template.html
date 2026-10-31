@@ -262,6 +262,7 @@
         open_busy: 'Another chat is still opening. Try again in a moment.',
         open_declined: 'Not opened yet. Answer the prompt on screen, then click again.',
         open_untied: 'Not opened yet. Click Open worker chat again.',
+        open_remote: 'This worker runs on another instance, so its chat can\u2019t be opened here.',
         open_unavailable_title: 'Not available in this window: open this page in the main window.',
         open_stale_title: 'Not available yet: this card is out of date. Try again in a minute.',
         open_ended_title: 'Not available: this worker\u2019s chat has ended.',
@@ -315,6 +316,7 @@
         open_busy: '\u53e6\u4e00\u4e2a\u804a\u5929\u6b63\u5728\u6253\u5f00\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002',
         open_declined: '\u5c1a\u672a\u6253\u5f00\u3002\u8bf7\u5148\u56de\u5e94\u5c4f\u5e55\u4e0a\u7684\u63d0\u793a\uff0c\u7136\u540e\u518d\u70b9\u4e00\u6b21\u3002',
         open_untied: '\u672a\u80fd\u6253\u5f00\u3002\u8bf7\u518d\u70b9\u4e00\u6b21\u201c\u6253\u5f00\u6267\u884c\u8005\u804a\u5929\u201d\u3002',
+        open_remote: '\u8be5\u6267\u884c\u8005\u8fd0\u884c\u5728\u53e6\u4e00\u4e2a\u5b9e\u4f8b\u4e0a\uff0c\u65e0\u6cd5\u5728\u8fd9\u91cc\u6253\u5f00\u5b83\u7684\u804a\u5929\u3002',
         open_unavailable_title: '\u672c\u7a97\u53e3\u4e0d\u53ef\u7528\uff1a\u8bf7\u5728\u4e3b\u7a97\u53e3\u6253\u5f00\u4eea\u8868\u76d8\u3002',
         open_stale_title: '\u6682\u4e0d\u53ef\u7528\uff1a\u8fd9\u5f20\u5361\u7247\u5df2\u8fc7\u671f\u3002\u8bf7\u4e00\u5206\u949f\u540e\u518d\u8bd5\u3002',
         open_ended_title: '\u6682\u4e0d\u53ef\u7528\uff1a\u8be5\u6267\u884c\u8005\u7684\u804a\u5929\u5df2\u7ed3\u675f\u3002',
@@ -943,7 +945,7 @@
     var OPEN_NOTE = { worker_closed: 'open_ended', item_not_found: 'open_stale',
                       ambiguous_item: 'open_ambiguous', open_unavailable: 'open_unavailable',
                       open_busy: 'open_busy', open_declined: 'open_declined',
-                      open_untied: 'open_untied' };
+                      open_untied: 'open_untied', open_remote: 'open_remote' };
     /* Notes after which a click cannot work yet, so the button stays inert while they show. */
     var INERT_NOTES = ['open_ended', 'open_ambiguous', 'open_stale', 'open_unavailable'];
     function openSession(itemId) {

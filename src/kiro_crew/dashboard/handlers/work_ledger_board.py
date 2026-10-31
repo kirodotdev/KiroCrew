@@ -946,6 +946,8 @@ async def _open_worker_session(
     dashboard's own slot, the state the page was drawn from, and finds the item there
     (:func:`~kiro_crew.crew_log.projection_readers.workstream_item_workers`). An id on more
     than one board is refused 409 ``ambiguous_item``: the alias cannot break the tie.
+    A worker bound from another instance is refused 409 ``open_remote`` before any local
+    slot is looked up: its key names a slot on that instance, not here.
 
     The caller is the dashboard owner (the route's gate ran before this), and the owner's
     browser already holds every session key on the gateway through ``/api/chat/slots``, so
@@ -1002,10 +1004,22 @@ async def _open_worker_session(
             "this item id is on more than one board; open the session from the sidebar",
             409,
         )
-    worker_key = workers[0]
+    worker_key, worker_instance = workers[0]
     if not worker_key:
         return _refuse_open(
             caller, label, item_id, "no_worker_bound", "this item has no bound worker to open", 409
+        )
+    if worker_instance:
+        # A REMOTE worker: its key names a slot on a peer gateway. Resolved here it would
+        # either find nothing (a live worker reported as closed) or find an unrelated local
+        # slot that happens to share the key, so it is refused before any local lookup.
+        return _refuse_open(
+            caller,
+            label,
+            item_id,
+            "open_remote",
+            "this item's worker runs on another instance; its chat cannot be opened here",
+            409,
         )
     worker = _find_slot(state, worker_key)
     if worker is None:

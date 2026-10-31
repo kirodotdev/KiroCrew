@@ -21,6 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import agent_panel
 from kiro_crew.dashboard.handlers import member_dashboard as routes
+from kiro_crew.dashboard.handlers import member_dashboard_names
 from kiro_crew.dashboard_templates import catalog, instance
 
 SLUG = "fleet-conductor"
@@ -75,7 +76,9 @@ def _home(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(
         routes.members_mod, "canonical_member_key", lambda name, cfg=None: name
     )
-    _floor_monkeypatch.setattr(routes, "_member_names_for_slug", lambda cfg, slug: [MEMBER])
+    _floor_monkeypatch.setattr(
+        member_dashboard_names, "_member_names_for_slug", lambda cfg, slug: [MEMBER]
+    )
     _floor_monkeypatch.setattr(routes, "_deny_app_caller", _none)
     _floor_monkeypatch.setattr(routes, "_owner_only", _none)
     _floor_monkeypatch.setattr(routes, "_write_session", lambda slug, member: "")
