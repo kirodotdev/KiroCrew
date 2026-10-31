@@ -692,6 +692,28 @@ export const subagentReducers = {
   /** One coalesced ~1s frame carrying the latest delta per agent (scale
    *  plumbing — replaces per-event tool/stalled/retrying frames when many
    *  agents run). Field presence decides what to apply; latest wins. */
+  /** Mark every active subagent in the slot as parent-stopped.  The processes
+   *  keep running (Stop-all is a separate verb) but the UI dims the cards and
+   *  shows a 'parent stopped' label so the UX matches the [Stopped] badge.
+   *  Agents live in slotActivity[slot].subagents when the slot is NOT active,
+   *  and in state.subagents (the flat map) when it IS active -- mark both. */
+  sseParentStopped(state: ChatState, action: PayloadAction<{ slot: string }>) {
+    if (isUnsafeKey(action.payload.slot)) return
+    const key = safeKey(action.payload.slot)
+    // Mark in slotActivity (non-active slots store agents here).
+    const saSubs = state.slotActivity[key]?.subagents
+    if (saSubs) {
+      for (const a of Object.values(saSubs)) {
+        if (isActiveSubagent(a)) a.parentStopped = true
+      }
+    }
+    // Mark in the flat map (the active slot stores agents here, not in slotActivity).
+    if (key === state.activeSlot && state.subagents) {
+      for (const a of Object.values(state.subagents)) {
+        if (isActiveSubagent(a)) a.parentStopped = true
+      }
+    }
+  },
   sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
     for (const u of action.payload.updates || []) {
       const a = upsertSlotSub(state, u.slot, u.id)

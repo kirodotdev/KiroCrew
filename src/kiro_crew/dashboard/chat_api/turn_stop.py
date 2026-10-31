@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -853,15 +854,23 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     # press — as the owner's dashboard press. This route is the only layer
     # holding the request the token rode on; the same value the deny checks
     # just authorized against is the one recorded.
-    return web.json_response(
-        await stop_slot_turn(
-            state,
-            slot,
-            force=force,
-            cancel_key=cancel_key,
-            source=f"app:{request_app}" if request_app else "dashboard",
-        )
+    result = await stop_slot_turn(
+        state,
+        slot,
+        force=force,
+        cancel_key=cancel_key,
+        source=f"app:{request_app}" if request_app else "dashboard",
     )
+    # Tell the frontend to dim subagent cards whose parent turn just stopped.
+    # The processes keep running (Stop-all is a separate verb) but the user
+    # sees them as orphaned so the UX matches the [Stopped] badge.
+    try:
+        state.broadcast_ws("parent_stopped", {"slot": name})
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "parent_stopped broadcast failed for %s", name, exc_info=True,
+        )
+    return web.json_response(result)
 
 
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
