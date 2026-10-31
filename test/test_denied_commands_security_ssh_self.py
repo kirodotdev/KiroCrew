@@ -718,6 +718,84 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh 127.0.0.? id") == self._RULE
         assert _denied_by("ssh remo?e.example.com id") is None
 
+    def test_cron_schedule_in_a_comment_is_inert(self):
+        # A cron schedule is two ``*`` words in a row, which the floor
+        # otherwise reads as a glob verb plus a glob operand and refuses as
+        # ``ssh *``.  Text after a live ``#`` is a COMMENT the shell never runs,
+        # so a schedule quoted there is not a dial.  (The ALLOW rows flip to
+        # refused if ``_strip_inert_shell_text`` is removed -- the property this
+        # test pins.)  An EXECUTED glob is never exempt, so a real self dial
+        # BEFORE a trailing comment stays refused, and a ``#`` that does not
+        # open a word is not a comment.
+        for cmd in (
+            "# 0 9 * * 1",
+            "ls  # 0 9 * * 1",
+            "echo hi  # */5 * * * * backup",
+            "crontab -l  # 0 0 * * 0 weekly",
+        ):
+            assert _denied_by(cmd) is None, cmd
+        for cmd in (
+            # A real self dial is refused even with a trailing comment: the
+            # comment strips only the inert tail, not the executed command.
+            "ssh localhost id  # runs at 0 9 * * 1",
+            "scp f.txt localhost:/x  # 0 9 * * 1",
+            # A bare schedule typed as a command line is still refused: no
+            # ``#`` opens, so nothing is stripped.
+            "* *",
+            "0 9 * * 1",
+            # A ``#`` glued after ``)`` or a backtick, or inside a ``$( )`` whose
+            # nested quotes a flat scan misreads, is NOT a live comment -- a
+            # parenthesis or backtick bails the carve-out, so the executed dial
+            # after it stays refused.
+            "echo $(true)# ; ssh localhost id",
+            "echo `true`# ; ssh localhost id",
+            'echo "$(echo "x # y")" ; ssh localhost id',
+        ):
+            assert _denied_by(cmd) == self._RULE, cmd
+
+    def test_cron_schedule_in_a_quoted_data_heredoc_is_inert(self):
+        # The BODY of a QUOTED-tag here-document fed to a data consumer
+        # (``cat``/``tee`` ...) is delivered verbatim on a file descriptor and
+        # never word-split, globbed or run, so a schedule there is not a dial.
+        # (The ALLOW rows flip to refused if the carve-out is removed.)
+        # Everything the shell could still EXECUTE is refused: an unquoted tag
+        # (expansion is live), an executor command reading the body, and a body
+        # piped onward.
+        for cmd in (
+            "cat > /tmp/f <<'EOF'\n0 9 * * 1 /opt/job\nEOF",
+            'cat > /tmp/f <<"EOF"\n*/5 * * * * backup\nEOF',
+            "tee /tmp/cron <<'CRON'\n30 2 1 * * /opt/report.sh\nCRON",
+            "cat <<'EOF' > /tmp/f\n0 9 * * 1 job\nEOF",
+            "cat <<-'EOF'\n\t0 9 * * 1 job\n\tEOF",
+        ):
+            assert _denied_by(cmd) is None, cmd
+        for cmd in (
+            # Unquoted tag: parameter/command substitution is live in the body,
+            # so it stays refused.
+            "cat <<EOF\n0 9 * * 1 job\nEOF",
+            # An executor reads the body as a program.
+            "bash <<'EOF'\n0 9 * * 1\nEOF",
+            "<<'EOF' sh\n0 9 * * 1\nEOF",
+            # Piped onward: the body becomes a command for the next stage.
+            "cat <<'EOF' | sh\n0 9 * * 1\nEOF",
+            # A bare schedule and a real self dial typed as command lines.
+            "* *",
+            "*/5 * * * *",
+            "ssh localhost id",
+            # A redirect dup (``2>&1``) must not be read as the end of the
+            # command before the pipe: the body is still piped to ``sh``.
+            "cat <<'EOF' 2>&1 | sh\nssh localhost id\nEOF",
+            # A ``\\``-newline continuation keeps the pipe on the same command.
+            "cat <<'EOF' \\\n| sh\nssh localhost id\nEOF",
+            # A here-doc owned inside a process substitution, a command
+            # substitution, or fed to ``source <(...)`` runs its body -- a
+            # parenthesis bails the carve-out, so each stays refused.
+            "cat <<'EOF' > >(sh)\nssh localhost id\nEOF",
+            "x=$(cat <<'EOF'\nssh localhost id\nEOF\n)",
+            "source <(cat <<'EOF'\nssh localhost id\nEOF\n)",
+        ):
+            assert _denied_by(cmd) == self._RULE, cmd
+
     def test_fold_ambiguous_flag_does_not_hide_the_destination(self, monkeypatch):
         # ``-C`` (compression, valueless) folds onto value-taking
         # ``-c`` (cipher).  After folding the letter is AMBIGUOUS, so the

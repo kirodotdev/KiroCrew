@@ -614,7 +614,14 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#: Raised by 217, from 33,523, for the inert-text carve-out in
+#: ``argv_floor_ssh``: before the ssh-self operand walk, a ``#`` comment and the
+#: body of a quoted-tag here-doc owned by a top-level data-consumer command are
+#: dropped, so a cron schedule (two ``*`` words) quoted in one is not read as
+#: ``ssh *``. A soundness gate, the comment and here-doc readers and their note;
+#: no executed glob is exempted, so the floor refuses a schedule typed as a
+#: command line, and a line holding a parenthesis or backtick is left untouched.
+_PACKAGE_LINE_BUDGET = 33_740
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

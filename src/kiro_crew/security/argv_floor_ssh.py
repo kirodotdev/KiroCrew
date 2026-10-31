@@ -895,6 +895,223 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
+# ── Inert-text carve-out ──
+# A cron SCHEDULE is two ``*`` words in a row, which the floor reads as a glob
+# verb (a ``*`` basename can fnmatch ``ssh``) followed by a glob operand (a
+# ``*`` can match a file named after this host).  So any text holding ``* *``
+# -- every schedule -- would read as an ssh dial, even with no ssh-family verb.
+#
+# The floor still refuses a schedule the shell actually RUNS as a command:
+# exempting an EXECUTED glob line can reopen a real self dial (a planted
+# ``localhost/5`` / a file named for this host turns ``*/5 * * * *`` into ``ssh``
+# to loopback).  This carve-out exempts NO executed glob.  It only keeps the
+# floor from reading two spans the shell never word-splits, globs or runs:
+#
+#   * a ``#`` COMMENT, from the ``#`` to the end of its line.  ``_opens_comment``
+#     fires only where a ``#`` starts a word (honouring quotes and line
+#     continuations), so a ``#`` inside quotes or glued into a word stays.
+#   * the BODY of a QUOTED-tag here-document (``cat > f <<'EOF' … EOF``) whose
+#     owning simple command is a data consumer (``_DATA_CONSUMER_PROGRAMS``) and
+#     is not piped onward.  A quoted tag disables expansion, so the body is
+#     delivered verbatim on a file descriptor, and a data consumer reads it as
+#     data.  An UNQUOTED tag (``<<EOF`` -- expansion), an executor command
+#     (``bash <<'EOF'``, ``<<'EOF' sh``), or a pipeline onward (``<<'EOF' | sh``)
+#     is refused, because there the body can become a command.
+#
+# Neither span is a glob the shell runs.  A schedule typed as a bare command
+# line (``0 9 * * 1``) is still refused.
+#
+# SOUNDNESS GATE: a parenthesis or a backtick on the line makes this static
+# reading unsound -- the shell re-enters command and quoting context inside
+# ``$( )``, ``<( )``, ``>( )``, a backtick and a ``( )`` subshell/group, where a
+# ``#`` glued after ``)`` or a nested quote is NOT what a flat scan reads.  So
+# the carve-out does not touch a command line that holds any ``(``, ``)`` or
+# backtick: its inert text stays read, which only keeps a refusal.  A cron line
+# in a comment or a plain data here-doc carries none of these; a schedule on a
+# line that also has a substitution or subshell is the documented residual.
+_CARVE_OUT_UNSAFE_CHARS = frozenset("()`")
+
+
+def _strip_inert_shell_text(text: str) -> str:
+    """*text* with ``#`` comments and data-only quoted-tag here-doc bodies removed.
+
+    Both are spans the shell neither word-splits, globs nor executes, so dropping
+    them before the operand walk cannot hide a real self dial -- it only stops a
+    schedule quoted in a comment or a data here-doc from being read as ``ssh *``.
+    Left-to-right, quote-aware: each scan restarts at *pos*, which always sits at
+    shell quote-state 0 (start of text, or just past a newline / a handled span).
+    Any parenthesis or backtick anywhere bails the whole pass (see the gate note).
+    """
+    if "#" not in text and "<<" not in text:
+        return text
+    if any(ch in _CARVE_OUT_UNSAFE_CHARS for ch in text):
+        return text
+    out: list[str] = []
+    pos = 0
+    while pos < len(text):
+        chunk = text[pos:]
+        comment_at: "int | None" = None
+        heredoc_at: "int | None" = None
+        for step in _shell_normalizer._iter_shell_chars(chunk):
+            if not step.active:
+                continue
+            off = step.offset
+            if step.char == "#" and _comment_opens_here(chunk, off):
+                comment_at = off
+                break
+            if (
+                chunk.startswith("<<", off)
+                and not chunk.startswith("<<<", off)
+                and chunk[off - 1 : off] != "<"
+            ):
+                heredoc_at = off
+                break
+        if comment_at is None and heredoc_at is None:
+            out.append(chunk)
+            break
+        if comment_at is not None and (heredoc_at is None or comment_at < heredoc_at):
+            out.append(chunk[:comment_at])
+            newline = chunk.find("\n", comment_at)
+            if newline < 0:
+                break  # the comment runs to the end of the text
+            pos += newline  # keep the newline; it ends the comment
+            continue
+        assert heredoc_at is not None
+        consumed, kept = _strip_one_heredoc(chunk, heredoc_at)
+        out.append(kept)
+        if consumed is None:
+            break  # the here-doc (or a malformed ``<<``) runs to the end of the text
+        pos += consumed
+    return "".join(out)
+
+
+def _comment_opens_here(chunk: str, off: int) -> bool:
+    """True if the ``#`` at *chunk*[*off*] starts a COMMENT (the caller's ``#`` is live).
+
+    A ``#`` comments only at a word start.  The preceding live character must be a
+    blank or a command separator (``;`` ``&`` ``|``), or the ``#`` must start the
+    text -- NOT a word character (``a#b``), and NOT a redirection operator
+    (``<#f`` / ``>#f`` name a file ``#f``, so the rest of the line is still a
+    command).  ``(``, ``)`` and backtick are ruled out by the soundness gate.  A
+    preceding real newline opens a comment, but a ``\\``-newline line continuation
+    glues the ``#`` into the previous word, so it does not.
+    """
+    if off == 0:
+        return True
+    prev = chunk[off - 1]
+    if prev in " \t;&|":
+        return True
+    if prev == "\n":
+        return chunk[off - 2 : off - 1] != "\\"
+    return False
+
+
+# Characters that end the here-doc delimiter WORD when live (unquoted): the shell
+# reads the word up to the next operator or blank.
+_HEREDOC_TAG_BREAK = frozenset(" \t\n;|&<>()`")
+
+
+def _find_real_newline(text: str, start: int) -> int:
+    """The first newline at/after *start* that ENDS a line -- not a ``\\``-newline
+    line continuation (an odd run of backslashes before it), which the shell folds
+    away before it reads the here-doc body.  ``-1`` when there is none."""
+    i = text.find("\n", start)
+    while i != -1:
+        back = i - 1
+        slashes = 0
+        while back >= 0 and text[back] == "\\":
+            slashes += 1
+            back -= 1
+        if slashes % 2 == 0:
+            return i
+        i = text.find("\n", i + 1)
+    return -1
+
+
+def _strip_one_heredoc(chunk: str, op: int) -> "tuple[int | None, str]":
+    """Handle one ``<<`` at *chunk*[*op*]; return (chars consumed, text to keep).
+
+    The consumed count advances the scan past the here-doc's body and closing
+    tag.  The carve-out applies only to a QUOTED tag whose owning command is one
+    top-level simple command that is a data consumer -- then the body and closing
+    tag are dropped and only the introducing line is kept.  Otherwise everything
+    (body included) is kept so the floor still reads it.  ``None`` consumed means
+    the span runs to the end of the text (an unterminated body, or a malformed
+    ``<<``), and the caller stops.
+    """
+    j = op + 2
+    dash = chunk[j : j + 1] == "-"
+    if dash:
+        j += 1
+    while j < len(chunk) and chunk[j] in " \t":
+        j += 1
+    tag_end = j
+    for step in _shell_normalizer._iter_shell_chars(chunk[j:]):
+        if step.active and step.char in _HEREDOC_TAG_BREAK:
+            break
+        tag_end = j + step.offset + len(step.text)
+    raw_tag = chunk[j:tag_end]
+    tag = re.sub(r"[\"'\\]", "", raw_tag)
+    if not tag:
+        return op + 2, chunk[: op + 2]  # malformed ``<<`` with no delimiter
+    quoted = any(ch in raw_tag for ch in "\"'\\")
+    # The body starts after the introducing line's REAL newline; a ``\``-newline
+    # continuation keeps the introducing line going (``<<'EOF' \`` + nl + ``| sh``).
+    newline = _find_real_newline(chunk, tag_end)
+    if newline < 0:
+        return None, chunk  # no body line at all; keep as-is to the end
+    body_start = newline + 1
+    # Find the closing tag line, so the scan can step past the body either way.
+    k = body_start
+    term_end: "int | None" = None
+    while k <= len(chunk):
+        line_nl = chunk.find("\n", k)
+        line = chunk[k : line_nl if line_nl >= 0 else len(chunk)]
+        if (line.lstrip("\t") if dash else line) == tag:
+            term_end = line_nl + 1 if line_nl >= 0 else len(chunk)
+            break
+        if line_nl < 0:
+            break  # unterminated body: it runs to the end of the text
+        k = line_nl + 1
+    introducing_line = _shell_normalizer._shell_join_continuations(chunk[:newline])
+    strip = quoted and _heredoc_owner_is_data_consumer(introducing_line)
+    if not strip:
+        keep_end = term_end if term_end is not None else len(chunk)
+        return (None if term_end is None else keep_end), chunk[:keep_end]
+    # Drop the body and the closing tag; keep the introducing line (still scanned).
+    return (term_end if term_end is not None else None), chunk[:body_start]
+
+
+def _heredoc_owner_is_data_consumer(line: str) -> bool:
+    """True if *line* is ONE top-level simple command that is a data consumer.
+
+    *line* is the whole introducing line, continuations already folded.  It must
+    be a single simple command -- no live ``|``, ``;``, ``&``, ``&&`` or ``||``
+    token (``_ends_argv``) -- carrying exactly one here-doc operator, whose
+    program word (skipping leading ``VAR=`` assignments) is in
+    ``_DATA_CONSUMER_PROGRAMS`` and is not disqualified (an ``awk`` that can
+    ``system()``, a substitution in program position).  A pipeline onward, a
+    second command, an executor program (``bash``), or the ``<<`` token itself in
+    program position (``<<'EOF' sh``) all fail closed here.
+    """
+    tokens = _shell_normalizer._self_tokens(line)
+    if not tokens:
+        return False
+    if any(_ends_argv(tok) for tok in tokens):
+        return False  # a separator means more than one simple command / a pipeline
+    heredocs = sum(
+        1
+        for tok in tokens
+        if (stripped := tok.strip("\"'")).startswith("<<") and not stripped.startswith("<<<")
+    )
+    if heredocs != 1:
+        return False
+    if _shell_normalizer._data_consumer_command_disqualified(tokens):
+        return False
+    programs = _shell_normalizer._argv_programs(tokens)
+    return bool(programs) and programs[0] in _shell_normalizer._DATA_CONSUMER_PROGRAMS
+
+
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -940,6 +1157,11 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # Drop the spans the shell never word-splits, globs or runs -- a ``#`` comment
+    # and a data-only quoted-tag here-doc body -- so a cron schedule
+    # quoted in one is not read as ``ssh *``.  No executed glob is exempted; see the
+    # carve-out note above ``_strip_inert_shell_text``.
+    text_lower = _strip_inert_shell_text(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
