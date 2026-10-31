@@ -83,6 +83,7 @@ from kiro_crew.browser_harness.budgets import (
 )
 from kiro_crew.browser_harness.decide import BrowserDecisions
 from kiro_crew.browser_harness.governance import (
+    DASHBOARD_SURFACE_KEY,
     DENIED_CODE,
     DENIED_TEXT,
     HOST_KEY,
@@ -159,11 +160,61 @@ def _ledgered_targets(supervisor: Any) -> list[str]:
     return list(relay.agent_targets()) if relay is not None else []
 
 
+def caller_checked_call(supervisor: Any, caller_key: str) -> Any:
+    """``supervisor.call`` that first asks the ceiling for *caller_key*.
+
+    ``HarnessSupervisor.call`` asks it with the engine's own empty key, so a profile
+    bound to the caller's surface is not consulted there. This asks it before every
+    helper the op runs, so a deny in that profile stops the op at its next step even
+    when it landed while the op waited for :data:`_OP_LOCK`.
+    """
+
+    async def _call(helper: str, **kwargs: Any) -> Any:
+        if await browse_denied_async(caller_key, audit=False):
+            # The same stop every other refusal of this deny schedules.
+            stop_running_harness()
+            raise BrowsingDenied()
+        return await supervisor.call(helper, **kwargs)
+
+    return _call
+
+
+class _GatedRelay:
+    """The stream's relay as :class:`FrameOps` sees it: each CDP send asks the ceiling.
+
+    Frame reads and writes go straight to the relay rather than through a helper, so
+    without this a click inside a cross-origin frame would run under a deny until
+    the op's next helper. Both keys are asked: the engine's own and the caller's.
+    """
+
+    def __init__(self, relay: Any, caller_key: str) -> None:
+        self._relay = relay
+        self._caller_key = caller_key
+
+    async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+        if await browse_denied_async(HOST_KEY, audit=False) or await browse_denied_async(
+            self._caller_key, audit=False
+        ):
+            stop_running_harness()
+            raise BrowsingDenied()
+        return await self._relay.send(method, params, sid)
+
+
 def build_context(
-    session_key: str, supervisor: Any, hub: LiveHub | None = None
+    session_key: str,
+    supervisor: Any,
+    hub: LiveHub | None = None,
+    *,
+    caller_key: str | None = None,
 ) -> harness_ops.OpContext:
-    """Bind the gateway's supervisor, relay and live hub to one caller's session."""
+    """Bind the gateway's supervisor, relay and live hub to one caller's session.
+
+    *caller_key* is the caller's own runtime session key, which governance binds on;
+    *session_key* is the card's normalized key. With it, every helper re-asks the
+    ceiling for that caller (:func:`caller_checked_call`).
+    """
     hub = hub if hub is not None else get_live_hub()
+    helper = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
 
     def _step(label: str) -> Any:
         return hub.step(session_key, label)
@@ -189,10 +240,10 @@ def build_context(
         return hub.record_op(session_key, op, args, result, mark, loop=True)
 
     def _frames() -> Any:
-        return frame_ops(hub, session_key)
+        return frame_ops(hub, session_key, caller_key=caller_key)
 
     return harness_ops.OpContext(
-        helper=supervisor.call,
+        helper=helper,
         step=_step,
         in_control=_in_control,
         agent_targets=_agent_targets,
@@ -206,11 +257,12 @@ def build_context(
     )
 
 
-def frame_ops(hub: LiveHub, key: str) -> Any:
+def frame_ops(hub: LiveHub, key: str, *, caller_key: str | None = None) -> Any:
     """The cross-origin frames of *key*'s tab, through its live stream's session.
 
     ``None`` unless a stream runs on the tab the session is bound to: the frames'
-    child sessions hang off that stream (``browser_harness.frames``).
+    child sessions hang off that stream (``browser_harness.frames``). With
+    *caller_key*, every CDP send asks the ceiling first (:class:`_GatedRelay`).
     """
     from kiro_crew.browser_harness.frames import FrameOps
 
@@ -221,7 +273,8 @@ def frame_ops(hub: LiveHub, key: str) -> Any:
         return None
     if stream.target_id != hub.target_of(key):
         return None
-    return FrameOps(stream.relay, stream.session_id, registry, harness_ops.WALKER_SOURCE)
+    relay = stream.relay if caller_key is None else _GatedRelay(stream.relay, caller_key)
+    return FrameOps(relay, stream.session_id, registry, harness_ops.WALKER_SOURCE)
 
 
 def committed_url_allowed(url: str) -> bool:
@@ -321,7 +374,7 @@ def _open_turn(hub: LiveHub, key: str) -> None:
         hub.turn_started(key, uuid.uuid4().hex)
 
 
-async def _bind_target(hub: LiveHub, key: str, supervisor: Any) -> str:
+async def _bind_target(hub: LiveHub, key: str, supervisor: Any, call: Any = None) -> str:
     """Point the daemon's current tab at THIS session's own tab before an op runs.
 
     The daemon has one current tab and every chat shares the daemon, so without
@@ -331,21 +384,22 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any) -> str:
     current tab if no other session owns it, else opens a tab of its own. Called
     under :data:`_OP_LOCK`, so the switch and the op that follows are one step.
     """
+    call = supervisor.call if call is None else call
     ledgered = set(_ledgered_targets(supervisor))
-    tab = await supervisor.call("current_tab")
+    tab = await call("current_tab")
     current = ""
     if isinstance(tab, dict):
         current = str(tab.get("targetId") or tab.get("target_id") or "")
     mine = hub.target_of(key)
     if mine and mine in ledgered:
         if current != mine:
-            await supervisor.call("switch_tab", target=mine, activate=False)
+            await call("switch_tab", target=mine, activate=False)
         return mine
     owner = hub.owner_of_target(current) if current else None
     if current and current in ledgered and owner in (None, key):
         hub.bind_target(key, current)
         return current
-    created = await supervisor.call("new_tab", url="about:blank")
+    created = await call("new_tab", url="about:blank")
     target = str(created or "")
     if not target:
         raise RuntimeError("the browser opened no tab for this session")
@@ -353,7 +407,9 @@ async def _bind_target(hub: LiveHub, key: str, supervisor: Any) -> str:
     return target
 
 
-async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> dict[str, Any] | None:
+async def follow_current_tab(
+    hub: LiveHub, key: str, supervisor: Any, *, caller_key: str | None = None
+) -> dict[str, Any] | None:
     """Point the session's stream at the daemon's current tab; update the address pill.
 
     One cheap IPC call (``current_tab``) per op. A new target (first op, ``tabs
@@ -364,8 +420,9 @@ async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> dict[st
     relay = getattr(supervisor, "relay", None)
     if relay is None:
         return None
+    call = supervisor.call if caller_key is None else caller_checked_call(supervisor, caller_key)
     try:
-        tab = await supervisor.call("current_tab")
+        tab = await call("current_tab")
     except Exception:  # noqa: BLE001 - the card is best-effort beside the op
         logger.debug("browser live: current_tab failed", exc_info=True)
         return None
@@ -387,7 +444,9 @@ async def follow_current_tab(hub: LiveHub, key: str, supervisor: Any) -> dict[st
         logger.debug("browser live: current tab %s belongs to %s, not streamed", target, owner)
         return None
     if url != "about:blank":
-        refused = await harness_ops._refuse_committed_url(build_context(key, supervisor, hub), url)
+        refused = await harness_ops._refuse_committed_url(
+            build_context(key, supervisor, hub, caller_key=caller_key), url
+        )
         if refused is not None:
             await hub.stop_stream(key)
             hub.page_changed(key, url="about:blank", title="")
@@ -472,7 +531,7 @@ async def api_browser_op(request: web.Request) -> web.Response:
                 "error": "browsing is not set up on this host; install it from Settings -> Browser",
             }
         )
-    ctx = build_context(key, supervisor, hub)
+    ctx = build_context(key, supervisor, hub, caller_key=session_key)
     # The optional decision-model hooks (``browser.step``), keyed by the caller's own
     # session key -- the identity the gate samples and governance binds on, not the
     # card's slot key. They ask the gate first and run the op exactly as written
@@ -498,6 +557,11 @@ async def api_browser_op(request: web.Request) -> web.Response:
             {"ok": False, "code": "browser_busy", "error": "another chat is using the browser"}
         )
     try:
+        # The route's first check may be a whole queued op old by now: ask again for
+        # the caller before anything reaches the browser, the credential refresh too.
+        denied = await _denied_after_op(request, session_key)
+        if denied is not None:
+            return web.json_response(denied)
         if op in _NAVIGATING_OPS:
             await _refresh_credentials(supervisor)
         # The per-session fence is shared with the person's Take over (LiveHub.claim):
@@ -506,7 +570,9 @@ async def api_browser_op(request: web.Request) -> web.Response:
         # inside is then the whole story.
         async with hub.op_fence(key):
             mark = hub.op_mark(key)
-            result = await _fenced_op(request, hub, key, supervisor, ctx, op, args, budget)
+            result = await _fenced_op(
+                request, hub, key, supervisor, ctx, op, args, budget, caller_key=session_key
+            )
     finally:
         _OP_LOCK.release()
     if result is _HELD:
@@ -631,11 +697,15 @@ async def _fenced_op(
     op: str,
     args: dict[str, Any],
     budget: float,
+    *,
+    caller_key: str = DASHBOARD_SURFACE_KEY,
 ) -> dict[str, Any] | object:
     """Bind, run, follow -- under both locks.
 
     Returns the op's result, or :data:`_HELD` (the person claimed before the op
     touched the page) or :data:`_INTERRUPTED` (the claim cut the op short).
+    *caller_key* is the caller's runtime session key, which every helper, frame send
+    and closing check asks the ceiling for.
     """
     if hub.in_control(key):
         # Before any tab switch: the person holds this session's tab.
@@ -650,20 +720,21 @@ async def _fenced_op(
             "ask_pending", "a quick ask is waiting for the user; wait for its outcome"
         )
     try:
-        await asyncio.wait_for(_bind_target(hub, key, supervisor), timeout=OP_TIMEOUT_S)
+        await asyncio.wait_for(_bind_target(hub, key, supervisor, ctx.helper), timeout=OP_TIMEOUT_S)
         if hub.in_control(key):
             # A claim landed during the bind; the op has not touched the page yet.
             return _HELD
         if op == "ask":
             # A quick ask binds to the card's own stream: make sure one runs on the
             # tab just bound, then put the ask on the card (it never runs ``run_op``).
-            refused = await follow_current_tab(hub, key, supervisor)
+            refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key)
             if refused is not None:
+                _audit(request, "denied", str(refused.get("code") or ""))
                 return refused
             from kiro_crew.dashboard.handlers.browser_ask import run_ask
 
             result = await asyncio.wait_for(run_ask(hub, key, args), timeout=OP_TIMEOUT_S)
-            denied = await _denied_after_op(request)
+            denied = await _denied_after_op(request, caller_key)
             if denied is not None:
                 return denied
             _audit(request, "allowed")
@@ -684,32 +755,46 @@ async def _fenced_op(
         _audit(request, "error", "timeout")
         return {"ok": False, "code": "timeout", "error": f"{op} ran past {budget:g}s"}
     except BrowsingDenied:
-        # A deny landed mid-op: the engine has stopped (``HarnessSupervisor.call``).
+        # A deny landed mid-op: the check that raised it has scheduled the stop
+        # (``HarnessSupervisor.call``, ``caller_checked_call``, ``_GatedRelay``).
         _audit(request, "denied", DENIED_CODE)
         return harness_ops.refusal(DENIED_CODE, DENIED_TEXT)
     except Exception as exc:  # noqa: BLE001 - a helper or the daemon raised
         logger.warning("browser op %s failed: %s", op, exc)
         _audit(request, "error", type(exc).__name__)
         return {"ok": False, "code": "browser_error", "error": _safe(exc)}
-    denied = await _denied_after_op(request)
+    denied = await _denied_after_op(request, caller_key)
+    if denied is not None:
+        return denied
+    if not hub.in_control(key):
+        refused = await follow_current_tab(hub, key, supervisor, caller_key=caller_key)
+        if refused is not None:
+            _audit(request, "denied", str(refused.get("code") or ""))
+            return refused
+    # Once more after the follow's own helpers, so the answer never reports success
+    # under a ceiling that denied while it ran.
+    denied = await _denied_after_op(request, caller_key)
     if denied is not None:
         return denied
     _audit(request, "allowed")
-    if not hub.in_control(key):
-        refused = await follow_current_tab(hub, key, supervisor)
-        if refused is not None:
-            return refused
     return result
 
 
-async def _denied_after_op(request: web.Request) -> dict[str, Any] | None:
+async def _denied_after_op(
+    request: web.Request, caller_key: str = DASHBOARD_SURFACE_KEY
+) -> dict[str, Any] | None:
     """The refusal when a deny landed while an op ran, else ``None``.
 
     For an op that caught the refusal itself (a reflex loop reads a refused helper as
     an unreadable page) or one whose deny landed after its last helper: the answer
-    still says why it stopped, and the browser stops too.
+    still says why it stopped, and the browser stops too. It asks for the engine's
+    own key and for *caller_key*, the caller's runtime session key, which is the
+    only one a surface-bound profile answers to; the route's first check stops the
+    browser on that deny as well (``browse_refusal``).
     """
-    if not await browse_denied_async(HOST_KEY, audit=False):
+    if not await browse_denied_async(HOST_KEY, audit=False) and not await browse_denied_async(
+        caller_key, audit=False
+    ):
         return None
     stop_running_harness()
     _audit(request, "denied", DENIED_CODE)

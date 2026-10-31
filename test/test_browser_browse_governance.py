@@ -266,6 +266,143 @@ async def test_a_deny_mid_op_answers_policy_denied(monkeypatch, ceiling) -> None
     assert await _code(resp) == gov.DENIED_CODE
 
 
+class _CallerSup:
+    """A supervisor whose helpers are recorded; the engine's own key never denies.
+
+    ``deny_at`` names the helper whose arrival flips the caller's profile to deny.
+    """
+
+    def __init__(self, deny: dict[str, bool], deny_at: str = "", relay: Any = None) -> None:
+        self.helpers: list[str] = []
+        self.deny = deny
+        self.deny_at = deny_at
+        self.relay = relay
+
+    def status(self) -> dict[str, Any]:
+        return {"browser": None}
+
+    async def call(self, helper: str, **kwargs: Any) -> Any:
+        self.helpers.append(helper)
+        if helper == self.deny_at:
+            self.deny["on"] = True
+        if helper == "current_tab":
+            return {"targetId": "T1", "url": "about:blank"}
+        if helper == "new_tab":
+            return "T1"
+        return {"ok": True}
+
+
+@pytest.fixture
+def caller_deny(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A deny in the profile bound to ``slack:x`` only, switched by ``state["on"]``.
+
+    Also records every browser stop and audit row the op route writes.
+    """
+    state: dict[str, Any] = {"on": False, "stops": [], "audits": []}
+
+    async def _denied(session_key: str = gov.DASHBOARD_SURFACE_KEY, *, audit: bool = True) -> bool:
+        return session_key == "slack:x" and state["on"]
+
+    import kiro_crew.dashboard.handlers.browser_policy as policy
+
+    monkeypatch.setattr(browser_ops, "browse_denied_async", _denied)
+    monkeypatch.setattr(policy, "browse_denied_async", _denied)
+    monkeypatch.setattr(browser_ops, "stop_running_harness", lambda: state["stops"].append(1))
+    monkeypatch.setattr(policy, "stop_running_harness", lambda: state["stops"].append(1))
+    monkeypatch.setattr(
+        browser_ops, "_audit", lambda request, outcome, error="": state["audits"].append(outcome)
+    )
+    return state
+
+
+async def _post_op(monkeypatch: pytest.MonkeyPatch, sup: _CallerSup) -> web.Response:
+    async def _sup(hub: Any, key: str) -> Any:
+        return sup
+
+    monkeypatch.setattr(browser_ops, "_supervisor", _sup)
+    body = {"op": "snapshot", "args": {}, "session_key": "slack:x"}
+    return await browser_ops.api_browser_op(_internal("/api/browser/op", body))
+
+
+@pytest.mark.asyncio
+async def test_a_caller_deny_while_the_op_waited_for_the_lock_runs_no_helper(
+    monkeypatch, caller_deny
+) -> None:
+    """The route's first check passed; the caller's own profile denies by the time the
+    op holds the lock. Nothing in the browser runs, it stops, and the answer says why."""
+    sup = _CallerSup(caller_deny)
+
+    class _LockTakenAfterTheDeny:
+        """The op's wait for the lock, during which the caller's profile denies."""
+
+        async def acquire(self) -> bool:
+            caller_deny["on"] = True
+            return True
+
+        def release(self) -> None:
+            return None
+
+    monkeypatch.setattr(browser_ops, "_OP_LOCK", _LockTakenAfterTheDeny())
+    resp = await _post_op(monkeypatch, sup)
+    assert await _code(resp) == gov.DENIED_CODE
+    assert sup.helpers == [], "no helper runs under the caller's deny"
+    assert caller_deny["stops"] and "allowed" not in caller_deny["audits"]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_deny_mid_op_stops_it_at_its_next_helper(monkeypatch, caller_deny) -> None:
+    """Each helper re-asks the caller's own profile, not only the engine's empty key."""
+    sup = _CallerSup(caller_deny, deny_at="snapshot")
+
+    async def _two_steps(op: str, args: Any, ctx: Any) -> Any:
+        await ctx.helper("snapshot")
+        await ctx.helper("click")
+        return {"ok": True}
+
+    monkeypatch.setattr(browser_ops.harness_ops, "run_op", _two_steps)
+    resp = await _post_op(monkeypatch, sup)
+    assert await _code(resp) == gov.DENIED_CODE
+    assert "snapshot" in sup.helpers and "click" not in sup.helpers
+    assert caller_deny["stops"], "the browser stops on the caller's deny too"
+    assert "allowed" not in caller_deny["audits"]
+
+
+@pytest.mark.asyncio
+async def test_a_caller_deny_after_the_last_helper_is_not_answered_as_success(
+    monkeypatch, caller_deny
+) -> None:
+    """A deny that lands after the op's own helpers: the follow's helper is refused
+    and the answer is ``policy_denied``, with no ``allowed`` row."""
+    sup = _CallerSup(caller_deny, relay=MagicMock())
+
+    async def _done_then_deny(op: str, args: Any, ctx: Any) -> Any:
+        caller_deny["on"] = True
+        return {"ok": True}
+
+    monkeypatch.setattr(browser_ops.harness_ops, "run_op", _done_then_deny)
+    resp = await _post_op(monkeypatch, sup)
+    assert await _code(resp) == gov.DENIED_CODE
+    assert sup.helpers == ["current_tab", "new_tab"], "the follow's current_tab never ran"
+    assert "allowed" not in caller_deny["audits"]
+
+
+@pytest.mark.asyncio
+async def test_a_frame_send_under_a_caller_deny_never_reaches_the_relay(caller_deny) -> None:
+    sent: list[str] = []
+
+    class _Relay:
+        async def send(self, method: str, params: dict[str, Any], sid: str) -> Any:
+            sent.append(method)
+            return {}
+
+    relay = browser_ops._GatedRelay(_Relay(), "slack:x")
+    await relay.send("Runtime.evaluate", {}, "S1")
+    caller_deny["on"] = True
+    with pytest.raises(gov.BrowsingDenied):
+        await relay.send("Runtime.evaluate", {}, "S1")
+    assert sent == ["Runtime.evaluate"] and caller_deny["stops"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("denied", [True, False])
 async def test_an_op_whose_start_another_caller_stopped_says_why(

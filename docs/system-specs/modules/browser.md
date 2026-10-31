@@ -1012,7 +1012,13 @@ Hand back, Close and Disconnect stay open, because each only ends something. A
 refusal is 403 `policy_denied`, and the first one also stops a browser that is
 still running. The engine itself reads the ceiling with no surface (the policy);
 a surface-bound profile is enforced where the caller is known (the shim, the op
-route with the shim's session key, and the owner routes on `dashboard:ui`). The
+route with the shim's session key, and the owner routes on `dashboard:ui`). The op
+route asks for that session key again once it holds the browser lock (before the
+credential refresh), before every helper the op runs (`browser_ops.caller_checked_call`),
+before every CDP send into a cross-origin frame (`browser_ops._GatedRelay`, which asks
+the engine's key as well) and before it answers, so a deny in the caller's own profile
+that lands while the op is queued or running ends it with `policy_denied` and stops the
+browser, as the route's first refusal does. The
 dashboard reads `browse_enabled` from `GET /api/dashboard/config`: Settings →
 Browser and the live card then show "Browsing is turned off by your
 organization's policy" with no install or takeover control. Computer use is not
