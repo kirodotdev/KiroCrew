@@ -1043,7 +1043,7 @@ class TestReadEndpoint:
             assert resp.status == 404
             body = await resp.json()
         # Same body an unknown key answers.
-        assert body == {"error": "not found"}
+        assert body == {"error": "not found", "code": "steering_not_found"}
         reads = [
             c
             for c in sel_mock.log_tool_invocation.call_args_list
