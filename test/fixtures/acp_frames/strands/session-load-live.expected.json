@@ -1,0 +1,171 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      }
+    },
+    "agent_version": "0.0.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-02",
+        "text": "I'll call the probe tool."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I'll call the probe tool.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "probe_codeword",
+        "tool_call_id": "tooluse_strands01",
+        "tool_kind": "other",
+        "wire_title": "probe_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_strands01",
+        "tool_output": "DENIED: Kiro Crew did not approve 'mcp__probe__codeword'",
+        "tool_output_bytes": 56,
+        "tool_output_digest": "ede6b7f02e52236f91bc2e2658ca282b6ea3909134167f97b6e2247be6bb85bc",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-03",
+        "text": "The first call was denied. Per your instruction, retrying exactly once."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The first call was denied. Per your instruction, retrying exactly once.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "probe_codeword",
+        "tool_call_id": "tooluse_strands02",
+        "tool_kind": "other",
+        "wire_title": "probe_codeword"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tooluse_strands02",
+        "tool_final": true,
+        "tool_output": "tangerine-42",
+        "tool_output_bytes": 12,
+        "tool_output_digest": "97f42a964cc23ac07aa1f3e17d127e3e69a6baeb9c04d55a6a4be384ed66d960",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "strands-message-04",
+        "text": "The codeword is **tangerine-42**.\n\nThe first call was denied (\"Kiro Crew did not approve 'mcp__probe__codeword'\"); the single retry you authorized succeeded."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The codeword is **tangerine-42**.\n\nThe first call was denied (\"Kiro Crew did not approve 'mcp__probe__codeword'\"); the single retry you authorized succeeded.",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "t"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "t",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "angerine-42"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "angerine-42",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]
