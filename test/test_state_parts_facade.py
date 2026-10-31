@@ -424,6 +424,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_created_by": ("value", "''"),
     "_attribution": ("value", "None"),
     "_created_by_sid": ("value", "''"),
+    "_crew_dispatch_notice_turn_gen": ("value", "-1"),
     "_crew_log_opened_sid": ("value", "''"),
     "_crew_log_pending_channel": ("value", "False"),
     "_crew_log_previous_from_mapping": ("value", "False"),

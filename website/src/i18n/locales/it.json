@@ -12004,6 +12004,10 @@
         "blocked": "Bloccato",
         "warning": "Avviso"
       },
+      "crewDispatchNotice": {
+        "openCrewTab": "Apri la scheda Crew",
+        "text": "Sono stati avviati dei membri del crew: compaiono nella scheda Crew del pannello laterale, non nell'elenco delle sessioni."
+      },
       "compactionCard": {
         "after_turn": "Contesto al {{pct}}, oltre la soglia di compattazione automatica del {{limit}}: la chat verrà riassunta al termine di questo turno",
         "no_summary": "Completato: nessun riepilogo da mostrare",

@@ -11654,6 +11654,10 @@
         "blocked": "ブロック済み",
         "warning": "警告"
       },
+      "crewDispatchNotice": {
+        "openCrewTab": "Crew タブを開く",
+        "text": "crew メンバーを開始しました。crew メンバーはセッション一覧ではなく、サイドパネルの Crew タブに表示されます。"
+      },
       "compactionCard": {
         "after_turn": "コンテキスト {{pct}}（自動圧縮のしきい値 {{limit}} を超過）— このターンの終了後にチャットを要約します",
         "no_summary": "完了 — 表示する要約はありません",

@@ -139,6 +139,13 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   // prev/next navigation and click-to-dismiss, so the shared hook supplies only
   // the gesture math while the page keeps those interactions.
   const dialogRef = useRef<HTMLDivElement | null>(null)
+  // A stable ref, so the dialog takes focus once, when it opens. An inline ref
+  // is a new function each render and ran again on every prev/next, pulling
+  // focus off the arrow button the user had just pressed.
+  const attachDialog = useCallback((el: HTMLDivElement | null) => {
+    dialogRef.current = el
+    el?.focus()
+  }, [])
   const imgRef = useRef<HTMLImageElement | null>(null)
   const reduceMotion = useReducedMotion()
   // A finished pinch or double-tap synthesises a click; without suppression it
@@ -171,6 +178,16 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   // one screenshot is never inherited by the next (mirrors DiagramLightbox's
   // reset on `svg` change).
   useEffect(() => { reset() }, [selected, reset])
+
+  // Next or Previous unmounts when the set of visible shots past it runs out:
+  // the user stepped to an end (`selected`), or a shot failed to load and was
+  // hidden (`failedCount`, `screensKey`). Removing the focused button drops
+  // focus to <body>, and the dialog's own onKeyDown owns Escape and the
+  // arrows, so hand focus back to the dialog in that case only.
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog && !dialog.contains(document.activeElement)) dialog.focus()
+  }, [selected, failedCount, screensKey])
 
   // Re-clamp the pan after a zoom change: the pannable box is a function of the
   // zoom, so shrinking back toward fit must pull an out-of-range pan back in.
@@ -345,10 +362,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
               if (e.key === 'ArrowLeft' && prevVisible !== undefined) setSelected(prevVisible)
             }}
             tabIndex={-1}
-            ref={el => {
-              dialogRef.current = el
-              el?.focus()
-            }}
+            ref={attachDialog}
             role="dialog"
             aria-modal="true"
           >

@@ -399,7 +399,33 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         if note:
             result["patrol_note"] = note
         await _add_worker_capabilities(request, state, result)
+        _write_crew_dispatch_notice(state, _read_session_key(request), result)
     return web.json_response(result)
+
+
+def _write_crew_dispatch_notice(
+    state: "DashboardState", caller_session_key: str, result: dict
+) -> None:
+    """Write the one-per-turn Crew Mode dispatch notice into the conductor's chat.
+
+    Only a Crew Mode root conductor whose child landed in a turned-on tree earns
+    one, and only the first dispatch of its current person turn (the helper
+    gates both). A member's own sub-dispatch, a plain-chat dispatch and a failed
+    or dry-run dispatch all write nothing -- the last two never reach this block.
+    """
+    from kiro_crew.dashboard.crew_dispatch_notice import maybe_write_dispatch_notice
+
+    # The create already committed; the notice is extra. Resolving the caller
+    # slot off `state` must never fault the route -- a stub or slotless state
+    # (as the member-gate contract passes) is a safe no-op, matching the other
+    # post-create hooks (`own_worker_note`).
+    try:
+        caller_key = sc.caller_slot_key(state, caller_session_key)
+        caller_slot = state.get_slot(caller_key) if caller_key else None
+    except Exception:  # noqa: BLE001 - the dispatch already happened; the notice is extra
+        return
+    if caller_slot is not None:
+        maybe_write_dispatch_notice(state, caller_slot, result)
 
 
 async def _add_worker_capabilities(

@@ -858,6 +858,19 @@ describe('AppDetailPage — uncovered surfaces', () => {
     await waitFor(() => expect(uninstallApp).toHaveBeenCalledWith(NAME, true))
   })
 
+  it('focuses the uninstall dialog once, so ticking Keep data keeps focus on the checkbox', async () => {
+    const box = await openUninstall()
+    expect(document.activeElement).toBe(box)
+
+    // A re-render (here the checkbox's own state change) must not pull focus
+    // back to the dialog box: the user's Tab position would reset each time.
+    const keep = within(box).getByRole('checkbox', { name: /keep app data/i })
+    keep.focus()
+    fireEvent.click(keep)
+    expect(keep).not.toBeChecked()
+    expect(document.activeElement).toBe(keep)
+  })
+
   it('dismisses the uninstall dialog on Escape', async () => {
     const box = await openUninstall()
 

@@ -313,6 +313,7 @@ class _ChatSlot:
         "_acp_client",
         "_last_turn_awaiting_permission",
         "_last_turn_children_announced",
+        "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
         "_owed_segment_cut",
         "_native_subagent_tracker",
@@ -549,6 +550,12 @@ class _ChatSlot:
     _acp_client: None
     _last_turn_awaiting_permission: bool
     _last_turn_children_announced: bool
+    #: The ``_turn_generation`` a Crew Mode dispatch notice was last written for
+    #: (``crew_dispatch_notice``). One notice per person turn: the first
+    #: successful ``session_create`` of a turn stamps this, and the rest of that
+    #: turn's dispatches see the generation already stamped and write nothing.
+    #: ``-1`` means none written yet; in-memory only, so a restart starts fresh.
+    _crew_dispatch_notice_turn_gen: int
     _question_pending: dict[str, dict]
 
     # Initialised by state_parts/slot_ladder.py.

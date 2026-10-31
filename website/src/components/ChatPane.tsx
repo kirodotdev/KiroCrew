@@ -112,6 +112,7 @@ export default function ChatPane({
   openSideChat,
   leading,
   onFileOpen,
+  onOpenCrewTab,
   onArtifactOpen,
   busyMode = 'split',
   crewmate,
@@ -636,7 +637,12 @@ export default function ChatPane({
     // picker inserts it, relative to that project.
     project: () => paneSlot?.project,
   })
-  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume })
+  // The Crew Mode dispatch-notice reveal is the host's single `onOpenCrewTab`
+  // (one reveal path: switch to the card's slot so the panel it opens is that
+  // chat's, select Workers, open the dock, close Find). It is threaded down from
+  // ChatPage so a split pane uses the SAME reveal as the single-chat surface,
+  // with no second copy here.
+  const { listMessages, renderers } = useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume })
 
   // The composer dock floats over the bottom of the scroller (ChatPage's
   // layout, shared measurement): `dockH` is what the scroller pays below its

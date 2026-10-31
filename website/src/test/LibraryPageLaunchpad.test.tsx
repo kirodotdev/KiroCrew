@@ -432,6 +432,22 @@ describe('LibraryPage — action dispatch', () => {
       expect(uninstallApp).toHaveBeenCalledWith('secretary', true, false, []))
   })
 
+  it('focuses the uninstall dialog once, so ticking Keep data keeps focus on the checkbox', async () => {
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
+    expect(document.activeElement).toBe(dialog)
+
+    // A re-render (here the checkbox's own state change) must not pull focus
+    // back to the dialog box: the user's Tab position would reset each time.
+    const keep = within(dialog).getByLabelText('Keep app data')
+    keep.focus()
+    fireEvent.click(keep)
+    expect(keep).not.toBeChecked()
+    expect(document.activeElement).toBe(keep)
+  })
+
   it('Uninstall is absent from the menu for a lifecycle-locked app', async () => {
     listApps.mockResolvedValue([
       installedApp('pets', 'Pets', { origin: 'builtin', lifecycle: 'locked' }),

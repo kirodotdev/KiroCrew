@@ -11654,6 +11654,10 @@
         "blocked": "차단됨",
         "warning": "경고"
       },
+      "crewDispatchNotice": {
+        "openCrewTab": "Crew 탭 열기",
+        "text": "crew 멤버가 시작되었습니다. crew 멤버는 세션 목록이 아니라 사이드 패널의 Crew 탭에 표시됩니다."
+      },
       "compactionCard": {
         "after_turn": "컨텍스트 {{pct}}, 자동 압축 임계값 {{limit}} 초과 — 이 턴이 끝나면 채팅이 요약됩니다",
         "no_summary": "완료 — 표시할 요약 없음",

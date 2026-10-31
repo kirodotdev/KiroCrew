@@ -186,7 +186,7 @@ function HookForm({ hook, onSave, onCancel }: {
       <CardTitle>{hook ? i18nT('pages.hooksPage.edit_hook') : i18nT('pages.hooksPage.new_hook_2')} <InfoTip text={i18nT('pages.hooksPage.script_hooks_fire_shell_commands_on_chat_lifecyc')} /></CardTitle>
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input placeholder={i18nT('pages.hooksPage.hook_name')} aria-label={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
           <SimpleSelect
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
@@ -223,7 +223,7 @@ function HookForm({ hook, onSave, onCancel }: {
           />
         </div>
         <div>
-          <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
+          <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} aria-label={i18nT('pages.hooksPage.command')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           {/* The shared Input is `flex-1 min-w-0`, i.e. `flex-basis: 0%`, so its
@@ -241,7 +241,7 @@ function HookForm({ hook, onSave, onCancel }: {
               events have no payload yet. Offering the field would be a form that
               cannot save. Timeout stays — Test honours it. */}
           {!dormantMark(event) && (
-            <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} value={matcher} onChange={e => setMatcher(e.target.value)} />
+            <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} aria-label={i18nT('pages.hooksPage.matcher')} value={matcher} onChange={e => setMatcher(e.target.value)} />
           )}
           {!isToolHook && !dormantMark(event) && (
             <SimpleSelect
@@ -261,7 +261,7 @@ function HookForm({ hook, onSave, onCancel }: {
           )}
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>
-            <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
+            <Input type="number" min={1} max={300} className="w-16" aria-label={i18nT('pages.hooksPage.timeout')} value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
             <span>{i18nT('pages.hooksPage.s')}</span>
           </div>
         </div>

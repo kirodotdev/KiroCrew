@@ -12004,6 +12004,10 @@
         "blocked": "Bloqueado",
         "warning": "Aviso"
       },
+      "crewDispatchNotice": {
+        "openCrewTab": "Abrir a aba Crew",
+        "text": "Foram iniciados membros do crew: eles aparecem na aba Crew do painel lateral, não na lista de sessões."
+      },
       "compactionCard": {
         "after_turn": "Contexto em {{pct}}, acima do limite de compactação automática de {{limit}} — o chat será resumido ao fim deste turno",
         "no_summary": "Concluído — sem resumo para mostrar",

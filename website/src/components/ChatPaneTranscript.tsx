@@ -19,10 +19,11 @@ import type { ChatPaneProps } from './ChatPaneProps'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
+  onOpenCrewTab?: (slot: string) => void
   crewmate?: CrewmateIdentity
   crewmateTranscript: TranscriptRendererOptions['crewmateTranscript']
   onSessionOpen?: (key: string) => void
@@ -67,6 +68,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       // Attachment cards / @mention chips open through the host's file viewer
       // (#9487); without it they render without an opener.
       onFileOpen,
+      onOpenCrewTab,
       crewmate,
       crewmateTranscript,
       // Session links resolve through the SAME renderer path the single-chat
@@ -82,7 +84,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       continuing,
       onContinue,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
   )
   const renderers = useMemo(
     () => (foldBefore

@@ -498,6 +498,11 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # ceiling cut the turn (kirocrew.turn.timeout.cause).
     self._last_turn_awaiting_permission = False
     self._last_turn_children_announced = False
+    # No Crew Mode dispatch notice written on this slot yet. Stamped with the
+    # ``_turn_generation`` whenever one is written, so a turn's later dispatches
+    # write no second notice (crew_dispatch_notice.py). -1 never equals a real
+    # generation, so the first dispatch of the first turn always writes.
+    self._crew_dispatch_notice_turn_gen = -1
     # Agent questions this slot has not answered yet, keyed by the ask's
     # identity: ``{card_id: {"ts": float, "blocking": bool}}``, empty when the
     # agent is not waiting on anything.
