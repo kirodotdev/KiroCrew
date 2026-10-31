@@ -50,6 +50,7 @@ from kiro_crew.security import redact
 from kiro_crew.sel import sel
 from kiro_crew.skills import remove_retired_conductor_skill
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import USER_ID_RE
 
 
@@ -117,8 +118,16 @@ def _manifest(alias: str | None = None, output: str | None = None, url: bool = F
         print(hint)
     elif output:
         out = Path(output)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(rendered, encoding="utf-8")
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(rendered, encoding="utf-8")
+        except OSError as exc:
+            # A directory at the path, a file where a folder should be or a
+            # read-only target: one line, not a traceback.
+            shown = safe_terminal_line(str(output))
+            reason = safe_terminal_line(str(exc.strerror or exc))
+            print(f"❌ Could not write {shown}: {reason}", file=sys.stderr)
+            sys.exit(1)
         print(f"✅ Manifest written to {output} (name: KiroCrew-{alias})")
         print(hint)
     else:

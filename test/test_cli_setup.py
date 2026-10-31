@@ -368,6 +368,24 @@ class TestManifest:
             _manifest(alias="carol", output=str(out_file))
         assert out_file.exists()
 
+    @pytest.mark.parametrize("target", ["a-directory", "a-file/out.yaml"])
+    def test_unwritable_output_is_one_error_line(self, tmp_path, capsys, target):
+        (tmp_path / "a-directory").mkdir()
+        (tmp_path / "a-file").write_text("", encoding="utf-8")
+        out_file = tmp_path / target
+        with self._patch_template("name: KiroCrew-{{ALIAS}}\n"):  # brand-ok
+            from kiro_crew.cli_setup import _manifest
+
+            try:
+                with pytest.raises(SystemExit) as exc_info:
+                    _manifest(alias="erin", output=str(out_file))
+            except OSError as exc:
+                pytest.fail(f"a raw {type(exc).__name__} escaped instead of an error line: {exc}")
+        assert exc_info.value.code == 1
+        err_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+        assert len(err_lines) == 1
+        assert err_lines[0].startswith(f"❌ Could not write {out_file}: ")
+
     def test_exits_when_template_missing(self):
         mock_resource = MagicMock()
         mock_resource.joinpath.return_value.read_text.side_effect = FileNotFoundError
