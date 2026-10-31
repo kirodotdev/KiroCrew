@@ -37,6 +37,18 @@ _TRANSCRIPT_CACHE_MAX = 256
 _TRANSCRIPT_CACHE_IDLE_TTL = 600.0
 _IDLE_SWEEP_SECS = 60.0
 
+#: Byte budget of the parsed-transcript cache (``ConversationLog._msg_cache``).
+#: An entry count alone does not bound it: one transcript can be 25,800 rows,
+#: and a test gateway on a real data home held ~210 MiB there after opening 15
+#: long sessions. Each entry is weighed at :data:`_PARSED_BYTES_PER_FILE_BYTE`
+#: times its file size; past the budget the least recently used entries go, and
+#: a transcript heavier than the whole budget is not cached (each full read of
+#: it parses the file, as on a cold cache).
+_TRANSCRIPT_CACHE_MAX_BYTES = 32 * 1024 * 1024
+#: Retained bytes of a parsed transcript per byte of its file: 1.58-2.34 on
+#: the five largest transcripts of one real data home (35-91 MiB files).
+_PARSED_BYTES_PER_FILE_BYTE = 2
+
 _idle_caches: "weakref.WeakSet[_LRUCache]" = weakref.WeakSet()
 _idle_sweeper_lock = threading.Lock()
 _idle_sweeper: threading.Thread | None = None
@@ -160,6 +172,10 @@ class _LRUCache(Generic[_V]):
     ``maxsize <= 0`` disables bounding (behaves like an ordinary dict) so a
     caller can opt out without a code-path split.
 
+    ``max_weight > 0`` with a ``weigh`` function adds a second bound: the summed
+    weight of the entries. Past it the least-recently-used entries are evicted,
+    and a value heavier than ``max_weight`` on its own is not stored at all.
+
     Thread safety: the same :class:`ConversationLog` instance is touched from
     the event loop *and* from worker threads (``chat_persistence`` flush /
     restore, ``chat_regenerate`` / ``chat_rewind`` via ``asyncio.to_thread``,
@@ -176,10 +192,21 @@ class _LRUCache(Generic[_V]):
     another locked method, so the lock is never re-entered.
     """
 
-    def __init__(self, maxsize: int = _TRANSCRIPT_CACHE_MAX, *, idle_ttl: float = 0.0) -> None:
+    def __init__(
+        self,
+        maxsize: int = _TRANSCRIPT_CACHE_MAX,
+        *,
+        idle_ttl: float = 0.0,
+        max_weight: int = 0,
+        weigh: "Callable[[_V], int] | None" = None,
+    ) -> None:
         self._maxsize = maxsize
         self._data: "OrderedDict[str, _V]" = OrderedDict()
         self._lock = threading.Lock()
+        self._max_weight = max_weight if weigh is not None else 0
+        self._weigh = weigh
+        self._weights: dict[str, int] = {}
+        self._total_weight = 0
         #: Seconds an entry may sit unread before the idle sweeper drops it;
         #: 0 keeps entries until LRU pressure evicts them. Stamps are kept in
         #: the same LRU order as ``_data``, so the oldest entry is always first.
@@ -187,6 +214,11 @@ class _LRUCache(Generic[_V]):
         self._stamps: dict[str, float] = {}
         if idle_ttl > 0:
             _register_idle_cache(self)
+
+    def _forget(self, key: str) -> None:
+        """Drop *key*'s stamp and weight; the caller holds the lock and removes the value."""
+        self._stamps.pop(key, None)
+        self._total_weight -= self._weights.pop(key, 0)
 
     def _touch(self, key: str) -> None:
         if self._idle_ttl > 0:
@@ -203,7 +235,7 @@ class _LRUCache(Generic[_V]):
                 if self._stamps.get(key, 0.0) > cutoff:
                     break  # LRU order: everything after this is newer
                 del self._data[key]
-                self._stamps.pop(key, None)
+                self._forget(key)
                 dropped += 1
         return dropped
 
@@ -223,19 +255,28 @@ class _LRUCache(Generic[_V]):
             return self._data[key]
 
     def __setitem__(self, key: str, value: _V) -> None:
+        weight = self._weigh(value) if self._max_weight > 0 and self._weigh else 0
         with self._lock:
+            if key in self._data:
+                del self._data[key]
+                self._forget(key)
+            if self._max_weight > 0 and weight > self._max_weight:
+                return  # heavier than the whole budget: never resident
             self._data[key] = value
-            self._data.move_to_end(key)
             self._touch(key)
-            # Evict least-recently-used entries until within the bound.
-            if self._maxsize > 0:
-                while len(self._data) > self._maxsize:
-                    old, _ = self._data.popitem(last=False)
-                    self._stamps.pop(old, None)
+            if self._max_weight > 0:
+                self._weights[key] = weight
+                self._total_weight += weight
+            # Evict least-recently-used entries until within both bounds.
+            while (self._maxsize > 0 and len(self._data) > self._maxsize) or (
+                self._max_weight > 0 and self._total_weight > self._max_weight
+            ):
+                old, _ = self._data.popitem(last=False)
+                self._forget(old)
 
     def pop(self, key: str, default: _V | None = None) -> _V | None:
         with self._lock:
-            self._stamps.pop(key, None)
+            self._forget(key)
             return self._data.pop(key, default)
 
     def pop_prefix(self, prefix: str) -> None:
@@ -249,7 +290,7 @@ class _LRUCache(Generic[_V]):
             doomed = [k for k in self._data if isinstance(k, str) and k.startswith(prefix)]
             for key in doomed:
                 del self._data[key]
-                self._stamps.pop(key, None)
+                self._forget(key)
 
     def __contains__(self, key: object) -> bool:
         with self._lock:
@@ -263,6 +304,13 @@ class _LRUCache(Generic[_V]):
         with self._lock:
             self._data.clear()
             self._stamps.clear()
+            self._weights.clear()
+            self._total_weight = 0
+
+    def total_weight(self) -> int:
+        """Summed weight of the resident entries (0 without a weight bound)."""
+        with self._lock:
+            return self._total_weight
 
 
 class _SearchTextCache(Generic[_V]):

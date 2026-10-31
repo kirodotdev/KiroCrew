@@ -70,8 +70,10 @@ from kiro_crew.history_append import (  # noqa: F401 - facade re-exports
 )
 from kiro_crew.history_cache import (
     _METADATA_CACHE_MAX,
+    _PARSED_BYTES_PER_FILE_BYTE,
     _TRANSCRIPT_CACHE_IDLE_TTL,
     _TRANSCRIPT_CACHE_MAX,
+    _TRANSCRIPT_CACHE_MAX_BYTES,
     HistoryCacheCoordinator,
     _FileChangeCacheEntry,
     _LRUCache,
@@ -423,8 +425,14 @@ class ConversationLog:
         # parsed-transcript working set without limit. Eviction is
         # least-recently-used and deterministic; writes invalidate per-key via
         # _invalidate_cache so a stale entry can never outlive a file change.
+        # Also bounded by bytes: entry [0] is the file's CacheIdentity, whose
+        # [2] is its size, so the weight is the file size times the measured
+        # parse ratio (see _TRANSCRIPT_CACHE_MAX_BYTES).
         self._msg_cache: _LRUCache[tuple[CacheIdentity, int, list[dict]]] = _LRUCache(
-            cache_max, idle_ttl=_TRANSCRIPT_CACHE_IDLE_TTL
+            cache_max,
+            idle_ttl=_TRANSCRIPT_CACHE_IDLE_TTL,
+            max_weight=_TRANSCRIPT_CACHE_MAX_BYTES,
+            weigh=lambda entry: entry[0][2] * _PARSED_BYTES_PER_FILE_BYTE,
         )
         #: ``(identity, gen, meta)`` — like the search memos, entries record the
         #: invalidation generation and a warm hit requires both fields to
