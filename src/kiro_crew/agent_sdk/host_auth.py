@@ -469,8 +469,8 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # The Strands CLI stores no credential of its own: its config keeps provider
         # settings and strips every key name (``normalizeStoredProviderEnvironment``
         # deletes the ``PROVIDER_CREDENTIAL_KEYS``). A key reaches it from the process
-        # environment, which Crew fills from its own vault (``agent.strands_env``), and
-        # Bedrock otherwise rides the standard AWS chain.
+        # environment, which Crew fills from its own vault (``agent.strands_env``). The
+        # standard AWS chain is no route: the mask hides ``~/.aws`` from the child.
         credential_leaves=(),
         home_override_env_vars=(),
         # Nothing spared: the routing is ``VERIFIED_GATE_EXTENSION`` (enforced), so the
@@ -483,17 +483,16 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # environment").
         adapter_own_leaves=(),
         sign_in_remedy=(
-            "The Strands harness reaches its model with the provider settings Kiro Crew "
-            "holds for it. Save a key under Settings → Secrets and map it in "
-            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
-            "OPENAI_API_KEY, GEMINI_API_KEY, AWS_BEARER_TOKEN_BEDROCK, ...). Bedrock "
-            "also works through the standard AWS credential chain."
+            "Set the provider and its key in Settings → Agent Harness → Strands, under "
+            "Model provider; the key is kept in Settings → Secrets and mapped in "
+            "agent.strands_env. Kiro Crew hides ~/.aws from the agent, so Bedrock "
+            "needs a Bedrock API key and its region."
         ),
         signed_out_message=(
-            "The Strands harness has no model credential. Save a key under Settings > "
-            "Secrets and map it in `agent.strands_env` (for example "
-            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`), or set up AWS "
-            "credentials for Bedrock, then start a new chat."
+            "The Strands harness has no model credential. Set the provider and its key "
+            "in Settings > Agent Harness > Strands, under Model provider (the key is "
+            "kept in Settings > Secrets); Bedrock needs a Bedrock API key and its "
+            "region. Then start a new chat."
         ),
         # Its credential is not the host's: a kiro-cli logout cannot bear on it.
         host_logout_retires_children=False,

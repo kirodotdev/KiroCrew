@@ -408,6 +408,14 @@ def build_preview(
         label = snapshot.get("label") or p.get("setting_id") or p.get("path")
         if snapshot.get("store") == STORE_DASHBOARD and snapshot.get("key") in DASHBOARD_LIST_KEYS:
             raise _fail("list_setting", f"'{label}' is a list; pass 'op' and one 'item'")
+        if _setting_risk_key(p, snapshot) == "agent.strands_env":
+            # Its PATCH is a keyed change, not a replacement, so a card's whole-map
+            # after and its whole-map undo would not do what the card shows. Set
+            # in Settings > Agent Harness, one variable at a time.
+            raise _fail(
+                "setting_not_editable",
+                "agent.strands_env is set in Settings > Agent Harness > Strands, one key at a time",
+            )
         if before == p["value"]:
             raise _fail("no_change", f"'{label}' already has that value")
         out["title"] = f"Change {label}"

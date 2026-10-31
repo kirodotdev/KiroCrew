@@ -119,6 +119,7 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     CHILD_ENV_DEFAULT_MAX,
     CHILD_ENV_DEFAULT_MIN,
     CHILD_ENV_DEFAULT_NAMES,
+    STRANDS_ENV_NAMES,
     STRANDS_PROVIDER_CHOICES,
     _agent_env_denied,
     _agent_env_entry_refusal,
@@ -130,6 +131,8 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     coerce_child_env_defaults,
     coerce_deepseek_env,
     deepseek_env_plaintext_keys,
+    merge_strands_env_patch,
+    validate_strands_env_patch,
 )
 from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     _AVATAR_EXPRESSION_AXES,
