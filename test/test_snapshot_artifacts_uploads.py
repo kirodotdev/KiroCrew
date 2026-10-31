@@ -236,7 +236,6 @@ class TestAnAliasInEitherTreeIsRefused:
         skipped = _manifest(bundle, tmp_path)["skipped"]
         assert any("alias.txt" in (e.get("path") or "") for e in skipped), skipped
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_a_hardlink_inside_a_tree_is_screened(self, tmp_path, monkeypatch):
         home = _home(tmp_path, monkeypatch)
         os.link(home / "telemetry_salt", home / "artifacts" / "alias.txt")
@@ -269,7 +268,6 @@ class TestAnAliasInEitherTreeIsRefused:
         assert not list(out.glob("*.tar.gz"))
         assert not (tmp_path / "refused" / "secrets.txt").exists()
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX hardlink semantics")
     def test_a_hardlink_refuses_the_replace_instead_of_deleting_the_only_copy(
         self, tmp_path, monkeypatch, capsys
     ):

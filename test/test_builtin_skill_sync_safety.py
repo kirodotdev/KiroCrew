@@ -724,7 +724,6 @@ class TestVerificationBounds:
         assert _skill_tree_fingerprint(a) is None
         assert skills_mod._trees_stat_equal(a, a) is False
 
-    @pytest.mark.skipif(os.name == "nt", reason="hardlink semantics differ")
     def test_hardlinked_file_is_unprovable(self, tmp_path: Path) -> None:
         # A hardlink planted at a walked name aliases an inode that may live
         # anywhere (e.g. a credential file); the descriptor-pinned reader
