@@ -213,6 +213,21 @@ def test_unproved_namespace_gui_and_task_scheduler_jobs_stay_hosted(workflow, na
     assert "linux_runner" not in runs_on and "windows_runner" not in runs_on
 
 
+def test_namespace_sandbox_lane_takes_the_larger_runner_group(jobs):
+    """The sandbox lane pins WHICH hosted VM it asks for, not just that it is hosted.
+
+    The group serves one Linux image and follows `latest`, so this lane names no
+    version. The two verification steps are what make that safe: a kernel that
+    stops granting the namespaces fails the job by name, rather than letting
+    every `userns_available()`-guarded test skip and the gate go green.
+    """
+    job = jobs["backend-test-sandbox"]
+    assert job["runs-on"] == _GROUP_LINUX_ELSE_HOSTED
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert "unshare --mount --map-root-user true" in runs
+    assert any("userns_available()" in run for run in runs)
+
+
 def test_private_namespace_lane_is_the_only_e2e_step_left_hosted(jobs):
     """`e2e` runs on the fleet; the hosted lane owns namespace-only setup.
 
