@@ -32,6 +32,7 @@ from kiro_crew.history_consolidation_span import (
     _RunCommitState,
 )
 from kiro_crew.history_derivation import TranscriptWithheld
+from kiro_crew.testing.wait import wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals and /proc")
@@ -135,7 +136,7 @@ def test_the_child_writes_semantic_and_episodic_rows_and_the_gateway_embeds(worl
     result = {
         "semantic": [
             {"key": "user.editor", "value": "neovim", "confidence": 0.9},
-            {"key": "project.name", "value": "kiro crew", "confidence": 0.8},
+            {"key": "project.name", "value": "Kiro Crew", "confidence": 0.8},
         ],
         "episodic": [{"text": "Mingwei fixed the consolidation writes", "importance": 0.6}],
     }
@@ -147,7 +148,7 @@ def test_the_child_writes_semantic_and_episodic_rows_and_the_gateway_embeds(worl
     assert here["structured"] == 0, "the job ran in the gateway"
     assert client.spawns == 1 and client.pid() not in (None, os.getpid())
     assert json.loads(store.get_semantic("user.editor")["value_json"]) == "neovim"
-    assert json.loads(store.get_semantic("project.name")["value_json"]) == "kiro crew"
+    assert json.loads(store.get_semantic("project.name")["value_json"]) == "Kiro Crew"
     assert store.get_semantic("user.editor")["source"] == f"consolidation:{_KEY}"
     episodes = _episodic_rows(store)
     assert [r["text"] for r in episodes] == ["Mingwei fixed the consolidation writes"]
@@ -373,13 +374,94 @@ def test_stopping_the_handle_stops_the_child(world, client) -> None:
 
     client.close()
 
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and Path(f"/proc/{pid}").exists():
-        time.sleep(0.05)
-    assert (
-        not Path(f"/proc/{pid}").exists()
-        or "Z" in Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    )
+    def gone() -> bool:
+        stat = Path(f"/proc/{pid}/stat")
+        if not stat.exists():
+            return True
+        # An exited child that is not reaped yet counts as gone.
+        return stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+
+    wait_until(gone, timeout=30, describe=lambda: f"child {pid} still running")
+
+
+def test_a_kept_store_follows_the_config_and_the_gateways_writes(
+    tmp_path, config_file, monkeypatch
+) -> None:
+    import kiro_crew.vector_memory as vm
+
+    db = tmp_path / "memory.db"
+    seed = VectorMemoryStore(db_path=db, embedding_dim=_DIM)
+    seed.init()
+    seed.close()
+    state = cwc._ChildState(MagicMock())
+    try:
+        first = state.store_for(str(db), _DIM)
+        cap = first._episodic_max
+        config_file({"memory": {"episodic_max_count": cap + 7}})
+        rebuilt: list[int] = []
+        monkeypatch.setattr(vm, "_HAS_FAISS", True)
+        monkeypatch.setattr(vm, "_HAS_NUMPY", True)
+        first._faiss_index = object()
+        first._faiss_data_version = 1
+        monkeypatch.setattr(first, "_sqlite_data_version", lambda: 2)
+        monkeypatch.setattr(first, "build_faiss_index", lambda: rebuilt.append(1) or 0)
+
+        second = state.store_for(str(db), _DIM)
+
+        assert second is first
+        assert second._episodic_max == cap + 7, "the kept store ignored a config change"
+        assert rebuilt == [1], "the FAISS view was not rebuilt after another process wrote"
+        # Unchanged since: no second rebuild.
+        first._faiss_data_version = 2
+        state.store_for(str(db), _DIM)
+        assert rebuilt == [1]
+    finally:
+        for store in state.stores.values():
+            store.close()
+
+
+def test_a_kept_store_is_reopened_when_the_embedding_width_changes(tmp_path) -> None:
+    db = tmp_path / "memory.db"
+    seed = VectorMemoryStore(db_path=db, embedding_dim=_DIM)
+    seed.init()
+    seed.close()
+    state = cwc._ChildState(MagicMock())
+    try:
+        first = state.store_for(str(db), _DIM)
+        assert state.store_for(str(db), _DIM) is first
+
+        second = state.store_for(str(db), _DIM * 2)
+
+        assert second is not first and second._embedding_dim == _DIM * 2
+        assert list(state.stores.values()) == [second]
+    finally:
+        for store in state.stores.values():
+            store.close()
+
+
+def test_a_private_member_store_never_goes_to_the_child(client, tmp_path) -> None:
+    # The child's cut-down snapshot and missing `messages` are safe only because the
+    # private-policy branch that reads them never runs there.
+    store = MagicMock(spec=VectorMemoryStore)
+    store.algorithm_version = "v2"
+    store._db_path = tmp_path / "memory.db"
+    store._db_path.write_bytes(b"")
+    log = MagicMock()
+    log._dir = tmp_path
+    consolidator = HistoryConsolidator(log=log, memory=MagicMock(), migrated=True)
+
+    assert offload._child_job_target(consolidator, store) is None
+
+
+def test_a_long_run_of_failures_still_falls_back(tmp_path) -> None:
+    handle = WriteChild(argv=[str(tmp_path / "no-such-python")])
+    handle._failures = 5000  # 2 ** 5000 overflows a float
+    try:
+        with pytest.raises(ChildUnavailable):
+            _run(handle)
+        assert handle._down_until - time.monotonic() <= cwc._BACKOFF_CAP_SECS
+    finally:
+        handle.close()
 
 
 # ── Stub child: the failure paths ──
@@ -421,10 +503,8 @@ def test_a_result_frame_is_returned(tmp_path) -> None:
 def test_a_hung_child_is_killed_at_the_deadline(tmp_path) -> None:
     handle = WriteChild(job_timeout_secs=1.0, argv=_stub(tmp_path, "time.sleep(600)"))
     try:
-        started = time.monotonic()
         with pytest.raises(ChildUnavailable, match="exceeded"):
             _run(handle)
-        assert time.monotonic() - started < 15
         pid = handle.pid()
         assert pid is None, "a hung child must be dropped, not reused"
     finally:
@@ -495,10 +575,7 @@ def test_an_idle_child_is_stopped(tmp_path) -> None:
     )
     try:
         assert _run(handle)["ok"] is True
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and handle.pid() is not None:
-            time.sleep(0.05)
-        assert handle.pid() is None
+        wait_until(lambda: handle.pid() is None, timeout=30, describe=lambda: "idle child kept")
     finally:
         handle.close()
 

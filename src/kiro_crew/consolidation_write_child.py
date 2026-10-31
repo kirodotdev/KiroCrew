@@ -91,8 +91,10 @@ _CHILD_MODULE = "kiro_crew.consolidation_write_child"
 #: Longest one job may run from the moment the child starts it. The pass's own
 #: ceiling on inline embedding is 60 s; the rest is local SQLite work.
 JOB_TIMEOUT_SECS = 600.0
-#: Longest a caller waits for the child to finish a job queued ahead of it.
-QUEUE_WAIT_SECS = 600.0
+#: Longest a caller waits for the child to finish a job queued ahead of it. The
+#: gateway keeps renewing the consolidation lease while the caller waits, and a
+#: caller that gives up writes in the gateway, so this only bounds the wait.
+QUEUE_WAIT_SECS = 120.0
 #: Longest the child may take to import and report ready.
 _READY_TIMEOUT_SECS = 60.0
 #: A child that has run no job for this long is stopped; the next job respawns it.
@@ -251,7 +253,9 @@ class WriteChild:
             if self._conn is conn:
                 self._conn = None
             self._failures += 1
-            delay = min(_BACKOFF_CAP_SECS, _BACKOFF_BASE_SECS * 2 ** (self._failures - 1))
+            # Clamp the exponent: the counter only resets on a completed job, so it
+            # can grow without bound while the child keeps failing to start.
+            delay = min(_BACKOFF_CAP_SECS, _BACKOFF_BASE_SECS * 2 ** min(self._failures - 1, 16))
             self._down_until = time.monotonic() + delay
         logger.warning(
             "Consolidation write child failed (%s); the gateway writes instead, "
@@ -462,6 +466,18 @@ class _ChildState:
 
     def store_for(self, db_path: str, embedding_dim: int | None) -> Any:
         store = self.stores.pop(db_path, None)
+        if (
+            store is not None
+            and isinstance(embedding_dim, int)
+            and getattr(store, "_embedding_dim", embedding_dim) != embedding_dim
+        ):
+            # The gateway moved to an embedding model of another width. A kept store
+            # would build its FAISS view and score at the old one, so reopen it.
+            try:
+                store.close()
+            except Exception:  # noqa: BLE001 - replaced either way
+                logger.debug("Could not close a store of the previous width", exc_info=True)
+            store = None
         if store is None:
             from kiro_crew.config.loader import KiroCrewConfig
             from kiro_crew.memory_stores import named_store_of_db
@@ -478,6 +494,8 @@ class _ChildState:
                 store = VectorMemoryStore(path, config=cfg, embedding_dim=dim)
             store.init()
             self._route_embeds(store)
+        else:
+            self._refresh(store)
         self.stores[db_path] = store  # most recently used last
         while len(self.stores) > _CHILD_STORE_CAP:
             oldest = next(iter(self.stores))
@@ -486,6 +504,27 @@ class _ChildState:
             except Exception:  # noqa: BLE001 - closing a store we are done with
                 logger.debug("Could not close an idle store", exc_info=True)
         return store
+
+    @staticmethod
+    def _refresh(store: Any) -> None:
+        """Bring a store kept from an earlier job up to date with the gateway.
+
+        The gateway's store follows ``config.json`` through a watcher and re-reads
+        its FAISS view when another process has written. This child has neither, so
+        both happen here before each job: the ``memory.*`` thresholds (the episodic
+        cap and dedupe threshold decide what a write tombstones) and the FAISS
+        index, which the episodic dedupe searches. SQLite's ``data_version`` moves
+        only for writes made by OTHER connections, so a rebuild happens only after
+        the gateway or another process wrote, never for this child's own writes.
+        """
+        from kiro_crew import vector_memory as vm
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        store.reconfigure(KiroCrewConfig.load())
+        if not (vm._HAS_FAISS and vm._HAS_NUMPY):
+            return
+        if store._faiss_index is None or store._faiss_data_version != store._sqlite_data_version():
+            store.build_faiss_index()
 
     def _route_embeds(self, store: Any) -> None:
         """Send every embedding the store asks for to the gateway's embedder."""
