@@ -366,14 +366,18 @@ class TestValidateSemantic:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "user_explicit")
         assert mock_log.called
         # The documented contrast is VALUE_EMPTY auditable where VALUE_SIZE is not, so pin both
         # here rather than leaving the refusal half to a sibling test on another code.
-        with patch.object(store, "_log_event") as mock_log_size:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log_size:
             store.log_reject_event(SemanticRejectCode.VALUE_SIZE, "pref.os", None, "user_explicit")
         assert not mock_log_size.called
+        assert [(e["event_type"], e["memory_key"]) for e in store.get_events()] == [
+            ("value_empty", "pref.os")
+        ]
+        assert store.get_rejection_stats() == {"value_empty": 1}
 
 
 class TestLogRejectEvent:
@@ -382,27 +386,37 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "bad.key", "v", "user_explicit")
             mock_log.assert_called_once_with(
                 "allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit"
             )
+        [event] = store.get_events()
+        assert (
+            event["event_type"],
+            event["memory_type"],
+            event["memory_key"],
+            event["old_value"],
+            event["new_value"],
+            event["source"],
+        ) == ("allowlist_reject", "semantic", "bad.key", None, "v", "user_explicit")
 
     def test_non_auditable_code_skipped(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(SemanticRejectCode.KEY_FORMAT, "x", "v", "user_explicit")
             mock_log.assert_not_called()
+        assert store.get_events() == []
 
     def test_value_json_preferred_over_str(self, tmp_path: Path, opened) -> None:
         from unittest.mock import patch
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             store.log_reject_event(
                 SemanticRejectCode.INJECTION,
                 "pref.x",
@@ -413,6 +427,12 @@ class TestLogRejectEvent:
             mock_log.assert_called_once_with(
                 "injection_blocked", "semantic", "pref.x", None, '{"k": "v"}', "user_explicit"
             )
+        [event] = store.get_events()
+        assert (event["event_type"], event["memory_key"], event["new_value"]) == (
+            "injection_blocked",
+            "pref.x",
+            '{"k": "v"}',
+        )
 
     def test_repeated_non_security_reject_audits_once_per_cause(
         self, tmp_path: Path, opened
@@ -422,7 +442,7 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.VALUE_EMPTY, "pref.general", None, "promotion"
@@ -430,9 +450,10 @@ class TestLogRejectEvent:
         assert mock_log.call_count == 1, "the repeating refusal audited once per pass"
         # A different cause on the same key is a different defect and must still be audited,
         # which is what keeps the dedupe from hiding real findings.
-        with patch.object(store, "_log_event") as mock_other_cause:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_other_cause:
             store.log_reject_event(SemanticRejectCode.ALLOWLIST, "pref.general", "v", "promotion")
         assert mock_other_cause.call_count == 1, "a second cause on the same key was suppressed"
+        assert store.get_rejection_stats() == {"value_empty": 1, "allowlist_reject": 1}
 
     def test_repeated_preexisting_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """The dedupe must not reach ALLOWLIST or CONFIDENCE: get_rejection_stats counts them
@@ -442,10 +463,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         for code in (SemanticRejectCode.ALLOWLIST, SemanticRejectCode.CONFIDENCE):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 for _ in range(3):
                     store.log_reject_event(code, "pref.general", "v", "promotion")
             assert mock_log.call_count == 3, f"{code.value} was deduped and lost per-attempt counts"
+        assert store.get_rejection_stats() == {"allowlist_reject": 3, "low_confidence": 3}
 
     def test_repeated_security_reject_audits_every_attempt(self, tmp_path: Path, opened) -> None:
         """Negative control on the dedupe's scope: the security trail must keep every attempt."""
@@ -453,12 +475,13 @@ class TestLogRejectEvent:
 
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
-        with patch.object(store, "_log_event") as mock_log:
+        with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
             for _ in range(3):
                 store.log_reject_event(
                     SemanticRejectCode.INJECTION, "pref.x", "payload", "consolidation:s"
                 )
         assert mock_log.call_count == 3, "deduping reached a security code and lost audit rows"
+        assert store.get_rejection_stats() == {"injection_blocked": 3}
 
     def test_audited_reject_set_is_bounded(self, tmp_path: Path, opened) -> None:
         """Bounded oldest-first, so an evicted pair audits again rather than the set growing."""
@@ -467,10 +490,11 @@ class TestLogRejectEvent:
         store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
         store.init()
         with patch("kiro_crew.vector_memory._MAX_AUDITED_REJECTS", 0):
-            with patch.object(store, "_log_event") as mock_log:
+            with patch.object(store, "_log_event", wraps=store._log_event) as mock_log:
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
                 store.log_reject_event(SemanticRejectCode.VALUE_EMPTY, "pref.os", None, "promotion")
         assert mock_log.call_count == 2
+        assert store.get_rejection_stats() == {"value_empty": 2}
 
 
 class TestConflictResolution:
