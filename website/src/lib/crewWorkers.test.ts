@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, mergeCrewWorkers } from './crewWorkers'
+import { CREW_GROUP_LABEL_KEY, CREW_GROUP_ORDER, CREW_GROUP_TONE, crewSubDispatcher, crewWorkerGroup, crewWorkerGroupOfRow, groupCrewWorkers, orderUnderDispatcher, summarizeCrewWorkers , liveCrewWorkers, mergeCrewWorkers, crewRowCounts } from './crewWorkers'
 import type { CrewWorker } from '../types'
 
 describe('crewWorkers', () => {
@@ -99,5 +99,22 @@ describe('crewWorkers', () => {
     const w = (group: CrewWorker['group']) => ({ key: group, title: '', agent: '', status: 'idle', group, last_activity: '', ledger_item: '', created_by: '' }) as CrewWorker
     expect(summarizeCrewWorkers([w('done'), w('with_conductor'), w('approval'), w('waiting')]))
       .toEqual({ groups: ['approval', 'with_conductor', 'waiting', 'done'], approval: 1, done: 1, total: 4 })
+  })
+
+  it('counts a root row\'s workers as working, waiting and needs you, zero buckets left out', () => {
+    // Mixed: a question with the conductor counts as working; done is not counted.
+    // Needs you first: a narrow row drops the last count, never the urgent one.
+    expect(crewRowCounts(['approval', 'working', 'with_conductor', 'waiting', 'done'])).toEqual([
+      { bucket: 'needs_you', group: 'approval', count: 1 },
+      { bucket: 'working', group: 'working', count: 2 },
+      { bucket: 'waiting', group: 'waiting', count: 1 },
+    ])
+    expect(crewRowCounts(['waiting', 'approval', 'approval'])).toEqual([
+      { bucket: 'needs_you', group: 'approval', count: 2 },
+      { bucket: 'waiting', group: 'waiting', count: 1 },
+    ])
+    // No workers, or every worker finished: nothing to show.
+    expect(crewRowCounts([])).toEqual([])
+    expect(crewRowCounts(['done', 'done'])).toEqual([])
   })
 })
