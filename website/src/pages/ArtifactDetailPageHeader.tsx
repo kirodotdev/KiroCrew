@@ -290,14 +290,14 @@ export function ArtifactDetailPageHeader({
   popout: boolean
 }) {
   const {
-    slug, navigate, confirm, renaming, setRenaming, nameDraft, setNameDraft, selectedVersion,
+    slug, navigate, confirm, renaming, nameDraft, setNameDraft, selectedVersion,
     setSelectedVersion, editing, previewDuringEdit, setPreviewDuringEdit, readingWidth, toggleReadingWidth,
     saving, saveConflict, showPublish, setShowPublish, addingTag, setAddingTag, newTag, setNewTag, ime,
   } = stateRead
   const { versionsQuery, versions, isCurrent, editable, dirty, usesIframe } = documentRead
   const {
     addTag, removeTag, pinning, togglePin, changingKind, changeKind, titleButtonRef, startRenaming,
-    commitRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
+    commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave, handleSnapshotLive,
   } = editorRead
   const { guardCommentDraft } = composerRead
   const {
@@ -324,9 +324,9 @@ export function ArtifactDetailPageHeader({
             aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
             onChange={(e) => setNameDraft(e.target.value)}
             {...ime.bindEnter({
-              onEnter: () => void commitRename(),
-              onEscape: () => setRenaming(false),
-              onBlur: () => void commitRename(),
+              onEnter: () => void commitRename(true),
+              onEscape: cancelRename,
+              onBlur: () => void commitRename(false),
             })}
             className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
           />
