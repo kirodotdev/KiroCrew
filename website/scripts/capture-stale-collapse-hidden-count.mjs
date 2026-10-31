@@ -85,14 +85,18 @@ async function main() {
       if (!/\b2\b/.test(headerText)) throw new Error(`folder header does not show 2: ${JSON.stringify(headerText)}`)
       const label = (await expander.innerText()).trim()
       if (!label.startsWith('Show 1 sleeping session')) throw new Error(`unexpected expander text: ${JSON.stringify(label)}`)
+      // The explanation is an instant tip now, not a native title.
       const title = await expander.getAttribute('title')
-      if (title !== 'Not used in over 7d. Click to show.') throw new Error(`unexpected title: ${JSON.stringify(title)}`)
+      if (title !== null) throw new Error(`unexpected native title: ${JSON.stringify(title)}`)
 
       await shoot(page, header, `01-${theme}-collapsed`)
 
       if (theme === 'dark') {
         await expander.hover()
-        await page.waitForTimeout(1200) // native title tooltips are not painted by headless Chromium; the hover state itself is.
+        const tip = page.locator('[role="tooltip"]')
+        await tip.waitFor({ state: 'visible', timeout: 5_000 })
+        const tipText = await tip.innerText()
+        if (!tipText.includes('Sleeping sessions are still open')) throw new Error(`unexpected tooltip: ${JSON.stringify(tipText)}`)
         await shoot(page, header, `02-${theme}-hover`)
 
         await expander.click()
