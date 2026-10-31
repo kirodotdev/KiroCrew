@@ -5599,7 +5599,6 @@
       "more_waiting": "{{count}}개 더",
       "needs_you": "확인이 필요해요",
       "next": "다음 단계",
-      "no_count": "아직 셀 수 없어요",
       "progress": "진행",
       "progress_count": "{{total}}개 중 {{accepted}}개 완료",
       "remaining": "남은 일",
@@ -6461,7 +6460,8 @@
       "split_right_d": "오른쪽으로 분할 (⌘D)",
       "type_to_filter": "입력하여 필터링…",
       "earlier_conversation_show": "{{time}}에 새로 시작 · 이전 메시지 보기 ({{count}})",
-      "earlier_conversation_hide": "{{time}}에 새로 시작 · 이전 메시지 숨기기 (더 이상 기억하지 않음)"
+      "earlier_conversation_hide": "{{time}}에 새로 시작 · 이전 메시지 숨기기 (더 이상 기억하지 않음)",
+      "preparing_catch_up": "요약을 준비하고 있어요…"
     },
     "cliPanel": {
       "copied": "복사됨",

@@ -1587,7 +1587,6 @@
       "more_waiting": "{{count}} more",
       "needs_you": "Needs you",
       "next": "Next",
-      "no_count": "No count yet",
       "progress": "Progress",
       "progress_count": "{{accepted}} of {{total}} done",
       "remaining": "Left",

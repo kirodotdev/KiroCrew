@@ -95,11 +95,12 @@ _OLD_GOAL_DONE = tuple(_item("accepted", day) for day in range(1, 6))
         (None, (_item("open", 1), _item("open", 2)), None),
         (None, (_item("accepted", 1), _item("open", 2), _item("abandoned", 3)), None),
         (None, (_item("accepted", 1), _item("accepted", 2)), None),
-        # A readable header that never recorded a goal counts every item.
+        # A board that never recorded a goal spans every goal it ever had:
+        # no count, since "1 of 3" would read as progress on today's work.
         (
             _goal(goal_version=0, created_total=3, goal_items_base=0),
             (_item("accepted", 1), _item("open", 2), _item("abandoned", 3)),
-            (1, 3),
+            None,
         ),
         # A new goal after five accepted items: only its own two count.
         (
@@ -148,8 +149,8 @@ _OLD_GOAL_DONE = tuple(_item("accepted", day) for day in range(1, 6))
             (_item("accepted", 1), {"state": "open", "created_at": ""}),
             (1, 2),
         ),
-        # A queue board that never recorded a goal counts every item.
-        (_goal(goal_version=0, created_total=5, goal_items_base=0), _OLD_GOAL_DONE, (5, 5)),
+        # A queue board that never recorded a goal has no count either.
+        (_goal(goal_version=0, created_total=5, goal_items_base=0), _OLD_GOAL_DONE, None),
     ],
 )
 def test_progress_counts_the_current_goal_never_the_model(record, items, expected):
@@ -197,7 +198,7 @@ def test_over_long_fields_and_lists_are_capped():
     assert len(brief.needs_you) == warm_task_brief._MAX_ITEMS
     assert all(len(item) == warm_task_brief._MAX_ITEM_CHARS for item in brief.needs_you)
     # Non-strings and blanks are dropped before the item cap is taken.
-    assert brief.next == ("d", "e", "f")
+    assert brief.next == ("d", "e", "f", "g")
     assert len(brief.extra) == warm_task_brief._MAX_EXTRA_SECTIONS
     (title, items), second = brief.extra
     assert len(title) == warm_task_brief._MAX_EXTRA_TITLE_CHARS
@@ -406,7 +407,7 @@ def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
         {
             "headline": "Almost there 🎉",
             "body": "You asked for a green nightly.\n\n\n- two fixes in\n- one to go\n"
-            + "x\n" * 40,
+            + "x\n" * 60,
         }
     )
     brief = warm_task_brief._parse_result(raw, "Fix the nightly", (2, 3))
@@ -419,7 +420,7 @@ def test_a_free_form_body_keeps_its_lines_and_replaces_the_quoted_request():
     assert warm_task_brief._brief_text(brief, "en").startswith(
         "On track: Almost there 🎉\nProgress: 2 of 3 done\nYou asked for a green nightly.\n\n- two"
     )
-    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 900}))
+    long = warm_task_brief._parse_result(json.dumps({"headline": "x", "body": "y " * 2000}))
     assert long is not None and len(long.body) == warm_task_brief._MAX_BODY_CHARS
 
 
@@ -454,7 +455,6 @@ def test_the_prompt_asks_for_words_only_and_leaves_progress_and_waiting_to_the_g
             history_key="h",
             original_request="Fix it",
             fingerprint="f",
-            transcript="",
             session_state={},
             conductor=None,
             work_items=(),

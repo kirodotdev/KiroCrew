@@ -106,11 +106,16 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
     assert "which wait on the owner" in prompts[0]
     assert "Ship the welcome in Crew Mode" in prompts[0]
     assert "Which layout?" in prompts[0]
-    result = slot.rows[-1]["meta"]
-    assert result["brief"]["progress"] == {"accepted": 1, "total": 2}
+    result = slot.rows[-1]
+    # RC7: a board with no recorded goal counts every item it ever had, so the
+    # brief shows no count rather than one that reads like today's progress.
+    assert "progress" not in result["meta"]["brief"]
+    assert '"goal_progress": null' in prompts[0]
     # The gateway lists what waits on the owner from the ledger, not the model.
-    assert result["brief"]["waiting"] == [{"title": "Add the panel", "ask": "Which layout?"}]
-    assert result["brief"]["waiting_total"] == 1
+    assert result["meta"]["brief"]["waiting"] == [
+        {"title": "Add the panel", "ask": "Which layout?"}
+    ]
+    assert result["meta"]["brief"]["waiting_total"] == 1
 
     # Leave and come back again with nothing changed: the claim holds, no spend.
     await _hide_for(state, 1, slot.key, 45 * 60)

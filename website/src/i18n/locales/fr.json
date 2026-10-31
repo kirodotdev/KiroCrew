@@ -5805,7 +5805,6 @@
       "more_waiting": "{{count}} de plus",
       "needs_you": "À toi de jouer",
       "next": "Ensuite",
-      "no_count": "Pas encore de décompte",
       "progress": "Avancement",
       "progress_count": "{{accepted}} sur {{total}} terminées",
       "remaining": "Reste",
@@ -6689,7 +6688,8 @@
       "split_right_d": "Diviser vers la droite (⌘D)",
       "type_to_filter": "Saisir pour filtrer…",
       "earlier_conversation_show": "Repartir à zéro à {{time}} · Afficher les messages précédents ({{count}})",
-      "earlier_conversation_hide": "Repartir à zéro à {{time}} · Masquer les messages précédents (plus en mémoire)"
+      "earlier_conversation_hide": "Repartir à zéro à {{time}} · Masquer les messages précédents (plus en mémoire)",
+      "preparing_catch_up": "Je prépare ton récapitulatif…"
     },
     "cliPanel": {
       "copied": "Copié",

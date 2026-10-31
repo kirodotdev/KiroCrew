@@ -5908,7 +5908,6 @@
       "more_waiting": "Ещё {{count}}",
       "needs_you": "Нужно от тебя",
       "next": "Дальше",
-      "no_count": "Пока нечего считать",
       "progress": "Прогресс",
       "progress_count": "Готово {{accepted}} из {{total}}",
       "remaining": "Осталось",
@@ -6803,7 +6802,8 @@
       "split_right_d": "Разделить вправо (⌘D)",
       "type_to_filter": "Введите для фильтрации…",
       "earlier_conversation_show": "Начать заново в {{time}} · Показать прошлые сообщения ({{count}})",
-      "earlier_conversation_hide": "Начать заново в {{time}} · Скрыть прошлые сообщения (он их больше не помнит)"
+      "earlier_conversation_hide": "Начать заново в {{time}} · Скрыть прошлые сообщения (он их больше не помнит)",
+      "preparing_catch_up": "Готовлю сводку…"
     },
     "cliPanel": {
       "copied": "Скопировано",

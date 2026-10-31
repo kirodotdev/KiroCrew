@@ -78,7 +78,7 @@ which restates what a member's DM session carries in its context.
 | `website/src/components/crew/crewEditorSections.ts` | The `CrewPaneKey` names and section facts `useCrewEditor` keeps for its deep links and dirty tracking. No dashboard editor renders a Routing, template or Capabilities pane from it, so `triggers` has no editing surface |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A mate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
-| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return trigger, 30-minute away time from the in-memory last-on-screen time with a durable chat-history fallback, durable task-fingerprint claims, two ordinary mate summary messages, one bounded background call, and stale-result suppression |
+| `src/kiro_crew/dashboard/warm_task_brief.py` | Owner-return trigger, 30-minute away time from the in-memory last-on-screen time with a durable chat-history fallback, durable task-fingerprint claims, one ordinary mate message (a fixed quiet line, or one bounded background call over sectioned inputs from `warm_task_brief_inputs.py`), and stale-result suppression |
 | `website/src/pages/chat/CrewmateMessage.tsx` | One mate message in its chat: the bubble alone, placed by its run position (no author line, no avatar gutter) |
 
 Crew creation reports `409 agent_exists` for both an existing name and a

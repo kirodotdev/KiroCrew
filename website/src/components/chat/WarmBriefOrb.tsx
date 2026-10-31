@@ -3,6 +3,7 @@
  * height is the gateway's `accepted / total`, brighter as it fills, with
  * sparkles once full, and the things waiting on the owner floating above it as
  * plain text cards. A fixed component fed by gateway data: the model never draws it.
+ * With no count (no goal, or a goal with no items) only the cards show.
  *
  * Every card text is untrusted and drawn as a plain text node that wraps. The
  * first {@link SHOWN} cards show; the rest fold behind one "N more" toggle, so
@@ -40,7 +41,7 @@ export default function WarmBriefOrb({
   const folded = cards.length - shown.length + (open ? 0 : unlisted)
   const count = progress
     ? i18nT('components.warmBriefCard.progress_count', { accepted: progress.accepted, total: progress.total })
-    : i18nT('components.warmBriefCard.no_count')
+    : null
   return (
     <div className="wb-orb-wrap" data-testid="warm-brief-orb">
       {cards.length > 0 && (
@@ -69,26 +70,27 @@ export default function WarmBriefOrb({
           {i18nT('components.warmBriefCard.unlisted', { count: unlisted })}
         </div>
       )}
-      {progress ? (
-        <div
-          className="wb-orb"
-          style={{ ['--wb-level' as string]: String(level) }}
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={progress.total}
-          aria-valuenow={progress.accepted}
-          aria-label={`${i18nT('components.warmBriefCard.progress')}: ${count}`}
-          data-level={level}
-        >
-          <div className="wb-orb-liquid" />
-          {full && SPARKS.map(([x, y, delay], i) => (
-            <i key={i} className="wb-orb-spark" data-testid="warm-brief-spark" style={{ left: `${x}%`, top: `${y}%`, animationDelay: `${delay}s` }} />
-          ))}
-        </div>
-      ) : (
-        <div className="wb-orb" role="img" aria-label={count} data-level={0} />
+      {/* No count means no orb: an empty sphere says nothing the owner can use. */}
+      {progress && (
+        <>
+          <div
+            className="wb-orb"
+            style={{ ['--wb-level' as string]: String(level) }}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={progress.total}
+            aria-valuenow={progress.accepted}
+            aria-label={`${i18nT('components.warmBriefCard.progress')}: ${count}`}
+            data-level={level}
+          >
+            <div className="wb-orb-liquid" />
+            {full && SPARKS.map(([x, y, delay], i) => (
+              <i key={i} className="wb-orb-spark" data-testid="warm-brief-spark" style={{ left: `${x}%`, top: `${y}%`, animationDelay: `${delay}s` }} />
+            ))}
+          </div>
+          <span className="text-[12px] leading-4 tabular-nums text-muted" data-testid="warm-brief-progress-count">{count}</span>
+        </>
       )}
-      <span className="text-[12px] leading-4 tabular-nums text-muted" data-testid="warm-brief-progress-count">{count}</span>
     </div>
   )
 }

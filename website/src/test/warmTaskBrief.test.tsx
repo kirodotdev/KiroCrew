@@ -74,9 +74,9 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({
       asked: 'a'.repeat(900), headline: 'n', remaining: 'r'.repeat(900),
       done: ['1', '2', 3, '4', '5', '6'],
-      needs_you: ['x', 2, '', null, 'y', 'z', 'w'], next: 'not a list',
+      needs_you: ['x', 2, '', null, 'y', 'z', 'w', 'v'], next: 'not a list',
       extra: [
-        { title: 'Risk', items: ['a', 'b', 'c', 'd'] },
+        { title: 'Risk', items: ['a', 'b', 'c', 'd', 'e'] },
         { title: '', items: ['dropped'] },
         { title: 'Empty', items: [] },
         'not a section',
@@ -87,9 +87,9 @@ describe('warm task brief transcript rows', () => {
     expect(b.asked.length).toBe(240)
     expect(b.remaining.length).toBe(240)
     expect(b.done).toEqual(['1', '2', '4', '5'])
-    expect(b.needsYou).toEqual(['x', 'y', 'z'])
+    expect(b.needsYou).toEqual(['x', 'y', 'z', 'w'])
     expect(b.next).toEqual([])
-    expect(b.extra).toEqual([{ title: 'Risk', items: ['a', 'b', 'c'] }, { title: 'Cost', items: ['one run'] }])
+    expect(b.extra).toEqual([{ title: 'Risk', items: ['a', 'b', 'c', 'd'] }, { title: 'Cost', items: ['one run'] }])
   })
 
   it.each([
@@ -452,13 +452,32 @@ describe('the catch-up orb', () => {
     expect(screen.getByTestId('warm-brief-unlisted')).toHaveTextContent('7 more not listed')
   })
 
-  it('a new crewmate with no count: a quiet seed orb, no progress bar', () => {
-    render(<WarmBriefCard brief={orbOf({ status: 'on_track' })} />)
+  it('a no-goal board with nothing waiting: no orb, no caption, only the status and headline', () => {
+    const { container } = render(<WarmBriefCard brief={orbOf({ status: 'on_track' })} />)
+    expect(screen.queryByTestId('warm-brief-orb')).toBeNull()
+    expect(screen.queryByTestId('warm-brief-progress')).toBeNull()
+    expect(container.querySelector('.wb-orb')).toBeNull()
+    expect(screen.getByTestId('warm-brief-status')).toHaveAttribute('data-status', 'on_track')
+  })
+
+  it('a no-goal board with waiting items: the cards, the fold and the status tag, but no orb', () => {
+    const many = Array.from({ length: 4 }, (_, i) => ({ title: `Item ${i + 1}`, ask: `Do ${i + 1}` }))
+    const b = orbOf({ status: 'needs_you', waiting: many, waiting_total: 4 })
+    const { container } = render(<WarmBriefCard brief={b} />)
+    expect(cardTexts()).toEqual(['Item 1Do 1', 'Item 2Do 2', 'Item 3Do 3'])
+    expect(screen.getByTestId('warm-brief-more')).toHaveTextContent('1 more')
+    expect(screen.getByTestId('warm-brief-status')).toHaveAttribute('data-status', 'needs_you')
+    expect(container.querySelector('.wb-orb')).toBeNull()
     expect(screen.queryByRole('progressbar')).toBeNull()
-    expect(screen.getByRole('img', { name: 'No count yet' })).toBeInTheDocument()
-    expect(level()).toBe(0)
-    expect(screen.queryByTestId('warm-brief-needs-you')).toBeNull()
-    expect(screen.queryByTestId('warm-brief-spark')).toBeNull()
+    expect(screen.queryByTestId('warm-brief-progress-count')).toBeNull()
+    expect(container.textContent).not.toMatch(/count/i)
+  })
+
+  it('a goal board still draws the orb with its count', () => {
+    render(<WarmBriefCard brief={orbOf({ status: 'on_track', progress: { accepted: 2, total: 5 } })} />)
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2')
+    expect(screen.getByTestId('warm-brief-progress-count')).toHaveTextContent('2 of 5')
+    expect(level()).toBeCloseTo(2 / 5)
   })
 
   it('a long title keeps every character in a wrapping card', () => {

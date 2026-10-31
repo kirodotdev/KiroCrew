@@ -52,12 +52,12 @@ export interface WarmBrief {
 // The gateway caps every field already; these are the renderer's own bound so
 // a hand-edited or foreign row can never stretch the card.
 const MAX_FIELD = 240
-const MAX_ITEMS = 3
+const MAX_ITEMS = 4
 // Matches the gateway's bound on listed waiting items.
 const MAX_WAITING = 50
 const MAX_DONE = 4
 const MAX_EXTRA = 2
-const MAX_BODY = 1200
+const MAX_BODY = 3000
 // A widget over this is dropped whole: cut HTML would draw broken.
 const MAX_WIDGET = 8000
 const STATUSES: readonly WarmBriefStatus[] = ['on_track', 'needs_you', 'blocked', 'done']
@@ -158,7 +158,7 @@ export function warmBriefVisibleText(brief: WarmBrief): string {
       const folded = cards.length - SHOWN + brief.waitingTotal - brief.waiting.length
       lines.push(i18nT('components.warmBriefCard.more_waiting', { count: folded }))
     }
-    lines.push(brief.progress ? countText(brief.progress) : i18nT('components.warmBriefCard.no_count'))
+    if (brief.progress) lines.push(countText(brief.progress))
   } else if (brief.needsYou.length) {
     lines.push(i18nT('components.warmBriefCard.needs_you'), ...brief.needsYou)
   }
@@ -176,10 +176,16 @@ function cardsOf(brief: WarmBrief): WarmBriefCardItem[] {
   return [...brief.waiting, ...brief.needsYou.map(title => ({ title, ask: '' }))]
 }
 
-/** A brief with a status (every brief since the status chip) or a count draws
- *  the orb; an older `now` brief with neither keeps its plain shape. */
+/** A brief with a status (every brief since the status chip) or a count takes
+ *  the orb's shape; an older `now` brief with neither keeps its plain shape.
+ *  The orb itself draws only with a count, so a no-goal brief shows just cards. */
 function hasOrb(brief: WarmBrief): boolean {
   return brief.progress !== null || brief.status !== null
+}
+
+/** Whether the orb component has anything to draw: a count or a card. */
+function orbHasContent(brief: WarmBrief): boolean {
+  return brief.progress !== null || cardsOf(brief).length > 0
 }
 
 /** The card as the assistant bubble's body, or undefined for any other row. */
@@ -229,10 +235,10 @@ export default function WarmBriefCard({ brief }: { brief: WarmBrief }) {
         )}
         <span className="min-w-0 font-semibold text-text-strong" data-testid="warm-brief-headline">{brief.headline}</span>
       </div>
-      {(hasOrb(brief) || brief.needsYou.length > 0 || brief.remaining) && (
+      {((hasOrb(brief) && orbHasContent(brief)) || brief.needsYou.length > 0 || brief.remaining) && (
         <div data-testid="warm-brief-progress">
           {hasOrb(brief) ? (
-            <WarmBriefOrb progress={progress} cards={cardsOf(brief)} unlisted={brief.waitingTotal - brief.waiting.length} />
+            orbHasContent(brief) && <WarmBriefOrb progress={progress} cards={cardsOf(brief)} unlisted={brief.waitingTotal - brief.waiting.length} />
           ) : brief.needsYou.length > 0 && (
             <div className="rounded-lg bg-warn-subtle text-text px-2.5 py-1.5 forced-colors:border" data-testid="warm-brief-needs-you">
               <div className={`${SECTION_LABEL} text-warn-text`}>{i18nT('components.warmBriefCard.needs_you')}</div>

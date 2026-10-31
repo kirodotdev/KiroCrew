@@ -5702,7 +5702,6 @@
       "more_waiting": "আরও {{count}}টি",
       "needs_you": "তোমার কাছে দরকার",
       "next": "এরপর",
-      "no_count": "এখনও কোনো গণনা নেই",
       "progress": "অগ্রগতি",
       "progress_count": "{{total}}টির মধ্যে {{accepted}}টি শেষ",
       "remaining": "বাকি",
@@ -6575,7 +6574,8 @@
       "split_right_d": "ডানে ভাগ করুন (⌘D)",
       "type_to_filter": "ফিল্টার করতে লিখুন…",
       "earlier_conversation_show": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ দেখাও ({{count}})",
-      "earlier_conversation_hide": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ লুকাও (আর মনে নেই)"
+      "earlier_conversation_hide": "{{time}}-এ নতুন করে শুরু · আগের মেসেজ লুকাও (আর মনে নেই)",
+      "preparing_catch_up": "তোমার জন্য সারাংশ তৈরি হচ্ছে…"
     },
     "cliPanel": {
       "copied": "কপি হয়েছে",

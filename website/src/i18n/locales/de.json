@@ -5702,7 +5702,6 @@
       "more_waiting": "{{count}} weitere",
       "needs_you": "Braucht dich",
       "next": "Als Nächstes",
-      "no_count": "Noch keine Zählung",
       "progress": "Fortschritt",
       "progress_count": "{{accepted}} von {{total}} erledigt",
       "remaining": "Offen",
@@ -6575,7 +6574,8 @@
       "split_right_d": "Nach rechts teilen (⌘D)",
       "type_to_filter": "Zum Filtern tippen…",
       "earlier_conversation_show": "Neu anfangen um {{time}} · Frühere Nachrichten zeigen ({{count}})",
-      "earlier_conversation_hide": "Neu anfangen um {{time}} · Frühere Nachrichten ausblenden (nicht mehr erinnert)"
+      "earlier_conversation_hide": "Neu anfangen um {{time}} · Frühere Nachrichten ausblenden (nicht mehr erinnert)",
+      "preparing_catch_up": "Zusammenfassung wird vorbereitet…"
     },
     "cliPanel": {
       "copied": "Kopiert",

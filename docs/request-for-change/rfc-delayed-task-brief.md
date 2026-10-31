@@ -343,6 +343,8 @@ Each ask is a structured field: `what`, `why_owner` (approve, merge, decide, rep
 
 A count is shown only when it is scoped to the current goal: `progress` is drawn only when `goal_version > 0`, so a board that never recorded a `new_goal` shows no count (the orb's "No count yet"). Whole-history counts are never shown. Any other number must come from an input field scoped to the current goal and must bear on an ask.
 
+Note, 2026-10-31 (owner decision, the redesign's answer 6: show only useful data): a brief with no count draws no orb at all, not an empty ring captioned "No count yet". The waiting cards, their "N more" toggle and the status tag still show. This replaces the empty ring and its caption in the orb amendment of 2026-10-31 (#26500) and in the "No count yet" wording above; a brief with a count draws the orb as before.
+
 #### 3.9.6 Output check
 
 Before posting, the gateway checks the model's fields. Every `#N` reference and every commit SHA must appear in the input; every HH:MM must equal a `read_at` in the input; every volatile fact stated as current must cite a field read after the away anchor. On any failure the model's fields are dropped and the gateway posts what it built itself: the asks from the source marker and the `waiting` list, their buttons, and one line saying the summary could not be written. The existing invalid-output failure line still covers an empty or malformed result.

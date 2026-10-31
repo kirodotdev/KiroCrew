@@ -5599,7 +5599,6 @@
       "more_waiting": "还有 {{count}} 件",
       "needs_you": "需要你处理",
       "next": "下一步",
-      "no_count": "还没有计数",
       "progress": "进度",
       "progress_count": "{{total}} 项中已完成 {{accepted}} 项",
       "remaining": "还剩",
@@ -6461,7 +6460,8 @@
       "split_right_d": "向右分屏（⌘D）",
       "type_to_filter": "输入以筛选…",
       "earlier_conversation_show": "{{time}} 重新开始 · 显示之前的消息（{{count}}）",
-      "earlier_conversation_hide": "{{time}} 重新开始 · 隐藏之前的消息（已不再记得）"
+      "earlier_conversation_hide": "{{time}} 重新开始 · 隐藏之前的消息（已不再记得）",
+      "preparing_catch_up": "正在整理你的进展摘要…"
     },
     "cliPanel": {
       "copied": "已复制",
