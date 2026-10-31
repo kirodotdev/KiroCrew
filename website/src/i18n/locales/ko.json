@@ -9340,7 +9340,7 @@
       "row_unreadable_marker_dismissed": "읽을 수 없음 — 알림이 닫혔습니다",
       "root_unreadable": "워크스페이스 폴더를 읽을 권한이 없습니다",
       "root_hidden_only": "이 워크스페이스에는 숨김 항목만 포함되어 있습니다(건너뛴 도구·캐시 폴더, 보호된 항목)",
-      "root_truncated": "워크스페이스가 너무 커서 나열할 수 없음: 항목 수 제한 10,000개에 도달했습니다",
+      "root_truncated": "문제가 없습니다. 이 프로젝트는 파일 및 폴더가 너무 많아 여기에 나열할 수 없습니다(한도 10,000개).",
       "root_truncated_search_hint": "위 입력란에 파일 이름을 입력해 찾으세요.",
       "unreadable_folders": "읽을 수 없는 폴더: {{paths}}",
       "dismiss_unreadable": "닫기: 읽을 수 없는 폴더가 바뀔 때까지 이 알림 숨기기",

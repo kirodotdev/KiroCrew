@@ -9622,7 +9622,7 @@
       "row_unreadable_marker_dismissed": "Lecture impossible — avis ignoré",
       "root_unreadable": "Aucune autorisation de lecture du dossier de l’espace de travail",
       "root_hidden_only": "Cet espace de travail ne contient que des éléments cachés (dossiers d’outils et de cache ignorés, entrées protégées)",
-      "root_truncated": "Espace de travail trop volumineux pour être listé : limite de 10 000 éléments atteinte",
+      "root_truncated": "Tout va bien. Ce projet contient trop de fichiers et de dossiers pour les lister ici (la limite est de 10 000).",
       "root_truncated_search_hint": "Saisis un nom de fichier dans le champ ci-dessus pour le trouver.",
       "unreadable_folders": "Dossiers non lisibles : {{paths}}",
       "dismiss_unreadable": "Ignorer : masquer cet avis jusqu’à ce que les dossiers non lisibles changent",
