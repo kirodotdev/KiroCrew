@@ -11,6 +11,7 @@ import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/cli
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../components/AgentSpecNotRewrittenNotice'
+import { ComputerUseInstallStatus } from './ComputerUseInstallStatus'
 
 const QK = ['computer-use-config']
 /** The locked-by-policy note under the enable, which the switch's description points at. */
@@ -396,9 +397,12 @@ export function ComputerUsePanel() {
         </SettingsCard>
       </SettingsSection>
 
+      {/* The agent-desktop driver: install state, version, active driver, grants. */}
+      <ComputerUseInstallStatus platform={cfg.platform} index={1} />
+
       {cfg.platform === DARWIN && (
         <SettingsSection title={i18nT('pages.settings.computerUsePanel.permissions')}>
-          <SettingsCard index={1}>
+          <SettingsCard index={2}>
             <div className="flex items-center gap-1.5 pb-1 text-[13px] text-muted">
               <span>{i18nT('pages.settings.computerUsePanel.advisory_only')}</span>
               <InfoTip text={i18nT('pages.settings.computerUsePanel.not_detected_does_not_always_mean_unavailable_ma')} />
@@ -413,7 +417,7 @@ export function ComputerUsePanel() {
       )}
 
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')}>
-        <SettingsCard index={2}>
+        <SettingsCard index={3}>
           <div className="pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}</div>
           <SettingsInput
             label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}

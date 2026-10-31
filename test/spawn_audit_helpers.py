@@ -684,6 +684,19 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # computer-use.md § Known limitations) — not a new plane.
         "computer_use/launch_windows.py::spawn_detached",
         "computer_use/launch_macos.py::spawn_detached",
+        # The agent-desktop computer-use driver: every observation and input is one
+        # call to that CLI, the same work the native drivers do in-process. The
+        # program is fixed (located, then accepted only when its SHA-256 matches the
+        # pinned release, helpers included), there is no shell and no cwd. Agent text
+        # DOES reach argv, as the value to type or set, but only after ``--``, so it is
+        # data to that one program and never a flag or another command; the same text
+        # already passed ``policy.check_input_target`` at the dispatch chokepoint. Not
+        # routed through ``sandboxed_spawn_argv`` for the overlay's reason: the child
+        # must hold the operator's Accessibility grant to read and drive their real
+        # desktop, which a confining sandbox denies (its own ``list-apps`` already
+        # fails on a ``ps`` denial under the gateway's sandbox). Pinned by
+        # test_computer_use_agent_desktop_driver.py.
+        "computer_use/agent_desktop_driver.py::_subprocess_runner",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run``
         # (attribute ``run`` on base ``asyncio``). Both sites drive an in-process
         # coroutine from the loop-less CLI entry point; the network I/O is

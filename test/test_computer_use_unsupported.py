@@ -143,10 +143,21 @@ class TestImportSafety:
         an OS catalog and then verified — which the sibling tests here and in
         ``test_computer_use_launch.py`` pin structurally. Each also carries a
         ``BENIGN_SPAWNS`` entry in ``test_spawn_audit.py`` with the same reasoning.
+
+        ``agent_desktop_driver.py`` IS a driver that lives in another process: every
+        observation and input is one call to the agent-desktop CLI. Its one spawn
+        site runs a binary whose SHA-256 must match the pinned release, with no shell
+        and with every agent-supplied value after ``--``, which
+        ``test_computer_use_agent_desktop_driver.py`` pins.
         """
         # ``os.system`` / ``os.popen`` invoke a SHELL and are forbidden everywhere in
         # the package, exceptions included — there is no legitimate use for either.
-        spawn_exempt = {"overlay.py", "launch_windows.py", "launch_macos.py"}
+        spawn_exempt = {
+            "overlay.py",
+            "launch_windows.py",
+            "launch_macos.py",
+            "agent_desktop_driver.py",
+        }
         offenders: list[str] = []
         for path in sorted(_PACKAGE_ROOT.glob("*.py")):
             source = path.read_text(encoding="utf-8")

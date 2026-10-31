@@ -44,6 +44,7 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    _safe_str,
     field_default,
 )
 from kiro_crew.config.integration_sections import (
@@ -576,6 +577,15 @@ def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig
     )
 
 
+_CU_DRIVERS = ("auto", "agent-desktop", "native")
+
+
+def _computer_use_driver(raw: str) -> str:
+    """``computer_use.driver``, with any value outside the enum read as ``auto``."""
+    value = (raw or "").strip().lower()
+    return value if value in _CU_DRIVERS else "auto"
+
+
 def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
     section = SectionReader(ComputerUseConfig, computer_use_data)
     return ComputerUseConfig(
@@ -618,6 +628,7 @@ def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
         # Default False: a missing or unparseable value must mean "do not
         # draw on the operator's screen", never the reverse.
         cursor_motion=section.read("cursor_motion", _safe_bool),
+        driver=_computer_use_driver(section.read("driver", _safe_str)),
     )
 
 

@@ -215,6 +215,35 @@ export interface ComputerUseConfigSave {
   extra_denied_apps: string[]
 }
 
+/** One TCC grant as the agent-desktop status reports it. */
+export type AgentDesktopPermission = 'granted' | 'denied' | 'unknown'
+
+/** Which computer-use driver the gateway is running right now. */
+export type AgentDesktopDriver = 'agent-desktop' | 'native' | 'unsupported'
+
+/** The gateway-owned agent-desktop install job. `idle` means none has run. */
+export interface AgentDesktopJob {
+  state: 'idle' | 'running' | 'done' | 'failed'
+  /** The installer's last output lines, redacted by the gateway. */
+  log_tail: string
+  error: string | null
+}
+
+/** Answer of GET /api/computer-use/agent-desktop/status (and of the install POST). */
+export interface AgentDesktopStatus {
+  installed: boolean
+  version: string | null
+  /** The version this build is pinned to install. */
+  pinned: string
+  path: string | null
+  driver_active: AgentDesktopDriver
+  permissions: {
+    accessibility: AgentDesktopPermission
+    screen_recording: AgentDesktopPermission
+  }
+  job: AgentDesktopJob
+}
+
 export function createBrowserAndComputerUseEndpoints({ get, post, put, j }: ClientTransport) {
   const hostAutomation = {
     // Playwright CLI browser view. GET reports; POST /start is idempotent and
@@ -237,6 +266,15 @@ export function createBrowserAndComputerUseEndpoints({ get, post, put, j }: Clie
     getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,
     saveComputerUseConfig: (body: Partial<ComputerUseConfigSave>) =>
       put('/api/computer-use/config', body).then(j) as Promise<ComputerUseConfigData>,
+    // agent-desktop driver install. The install POST starts a gateway-owned job
+    // and the card polls the status while `job.state` is `running`.
+    getAgentDesktopStatus: () =>
+      get('/api/computer-use/agent-desktop/status').then(j) as Promise<AgentDesktopStatus>,
+    installAgentDesktop: () =>
+      post('/api/computer-use/agent-desktop/install', {}).then(j) as Promise<AgentDesktopStatus>,
+    // Opens the OS permission guide on the gateway host. The body is not read.
+    openAgentDesktopPermissionsGuide: () =>
+      post('/api/computer-use/agent-desktop/permissions-guide', {}).then(j) as Promise<unknown>,
   }
 
   return { hostAutomation }

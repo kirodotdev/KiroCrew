@@ -397,6 +397,25 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "pre-redaction cut cannot split a credential past its matching anchor.",
     ),
     (
+        "agent-desktop install output",
+        "computer_use/agent_desktop_install.py",
+        "The output of `npm install agent-desktop@<pin>` and of the CLI's "
+        "`permissions --guide`, which reaches the install job's log tail and the "
+        "error on Settings > Computer Use. npm quotes its own environment back on "
+        "failure (a registry `_authToken`, a credential proxy URL), so every line "
+        "goes through only `redact_install_output` (the shared two-pass plus npm "
+        "patterns) at the source before it is emitted or returned.",
+    ),
+    (
+        "agent-desktop install job failure detail",
+        "dashboard/handlers/computer_use_install.py",
+        "The `error` of the agent-desktop install job, returned by "
+        "`GET /api/computer-use/agent-desktop/status`. Step failures arrive "
+        "already redacted; an exception's text is not, so the handler runs it "
+        "through only `redact_install_output` (the shared two-pass plus npm "
+        "patterns) before the 2000-character cut.",
+    ),
+    (
         "Browser panel launch failures",
         "browser_cli/launcher.py",
         "The CLI's own words when the Browser panel's address bar could not open a "

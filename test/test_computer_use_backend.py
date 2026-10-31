@@ -296,6 +296,15 @@ class TestUnsupportedBackend:
 # select_default_backend — the ONLY platform branch
 # ──────────────────────────────────────────────────────────────────────────
 class TestPlatformSelection:
+    @pytest.fixture(autouse=True)
+    def _no_agent_desktop(self, monkeypatch):
+        # These tests own the NATIVE branch; an agent-desktop on the host's PATH
+        # would otherwise wrap it. The wrapper is pinned in
+        # test_computer_use_agent_desktop_driver.py.
+        from kiro_crew.computer_use import agent_desktop_locate
+
+        monkeypatch.setattr(agent_desktop_locate, "locate", lambda: None)
+
     @staticmethod
     def _pin(monkeypatch, *, macos=False, windows=False, linux=False):
         monkeypatch.setattr(platform_compat, "IS_MACOS", macos)

@@ -11,6 +11,11 @@ vi.mock('../../api/client', () => ({
   api: {
     getComputerUseConfig: vi.fn(),
     saveComputerUseConfig: vi.fn(),
+    // The mounted agent-desktop card reads its own status; a never-settling read
+    // keeps it on its skeleton so these cases stay about the panel.
+    getAgentDesktopStatus: vi.fn(() => new Promise(() => {})),
+    installAgentDesktop: vi.fn(),
+    openAgentDesktopPermissionsGuide: vi.fn(),
   },
 }))
 

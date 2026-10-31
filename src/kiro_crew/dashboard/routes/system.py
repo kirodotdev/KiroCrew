@@ -18,6 +18,7 @@ from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers import computer_use_install
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.edition_locks import local_enable_locked
@@ -172,6 +173,9 @@ def register(app: web.Application) -> None:
     # set and is registered in ``_register_mcp_routes``.
     app.router.add_get("/api/computer-use/config", handlers.api_computer_use_config_get)
     app.router.add_put("/api/computer-use/config", handlers.api_computer_use_config_save)
+    # agent-desktop driver setup: status (open read), install and permissions
+    # guide (owner-only), plus the shutdown hook that kills a running npm child.
+    computer_use_install.register_routes(app)
 
     # Paid-AWS-service consent (Settings > Voice). Browser-called and
     # cookie-authed like the computer-use pair above, and for the same reason:
