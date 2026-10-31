@@ -55,7 +55,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, pinned_fs, platform_compat  # noqa: F401
+from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
