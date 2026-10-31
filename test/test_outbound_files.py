@@ -558,7 +558,6 @@ class TestRejections:
         assert result.files == []
         assert result.rejections[0].reason == REASON_SYMLINK
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="os.link needs privileges on Windows")
     def test_a_hardlinked_inode_is_rejected(self, tmp_path: Path) -> None:
         """A second name on the inode means the read gate cannot vouch for it."""
         real = _png(tmp_path, "real.png")

@@ -1450,7 +1450,6 @@ class TestGetObjectHeadBytes:
         with pytest.raises(expected):
             self._run(b"head", {"ContentRange": "bytes 0-3/4"}, tmp_path=tmp_path, writer=swap)
 
-    @pytest.mark.skipif(os.name != "posix", reason="hard links need a privilege on Windows CI")
     def test_a_destination_hard_linked_elsewhere_is_refused(self, tmp_path):
         # A second name on the staged file means something outside the fence
         # can read the object bytes after the staging directory is removed.
