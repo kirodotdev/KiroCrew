@@ -707,3 +707,20 @@ class TestMixedInternalPathRegistration:
         # Confidence check: the prefix-match rule this guards against —
         # "/api/artifact-folders" is NOT covered by the "/api/artifacts" entry.
         assert not "/api/artifact-folders".startswith("/api/artifacts" + "/")
+
+
+class TestSetFolderMissingArtifact:
+    @pytest.mark.asyncio
+    async def test_unknown_slug_move_creates_no_folders(self, stores, patch_restricted) -> None:
+        """A move for an unknown slug 404s and leaves no mkdir -p folders behind.
+
+        ``api_artifact_set_folder`` must resolve the ``folder`` path only after
+        the artifact is known to exist; otherwise ``resolve_path`` persists the
+        whole segment chain before ``_set_folder_and_reload`` raises 404.
+        """
+        _store, fstore = stores
+        resp = await api_artifact_set_folder(
+            _request(body={"folder": "Inbox/Triage"}, match={"slug": "does-not-exist"})
+        )
+        assert resp.status == 404
+        assert fstore.list() == []
