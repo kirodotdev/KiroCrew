@@ -367,6 +367,7 @@ _UPDATER_MODULES = (
     "platform/update_provider.py",
     "platform/update_layout.py",
     "platform/wheel_apply.py",
+    "platform/release_apply.py",
     "dep_sync.py",
     "frontend.py",
 )

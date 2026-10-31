@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import functools
 import logging
 import os
 import shutil
@@ -49,7 +48,7 @@ from kiro_crew import platform_compat
 
 # The module, not its names: every engine call resolves at call time, so a test
 # (or a caller) that patches ``wheel_engine`` patches this path too.
-from kiro_crew.platform import wheel_engine
+from kiro_crew.platform import release_apply, wheel_engine
 from kiro_crew.platform.wheel_engine import (
     FAILURE_TEXT_CHARS,
     ApplyCancel,
@@ -589,8 +588,9 @@ async def run_wheel_apply(
         loop.call_soon_threadsafe(_arm_deadline)
         _push("pulling", f"Applying update to v{version}…")
 
-    call = functools.partial(
-        wheel_engine.apply_wheel_update,
+    # The release, not the wheel: the new version's KAS engine is installed
+    # before the stable link flips (release_apply).
+    release = release_apply.WheelRelease(
         channel=channel,
         feed_base=feed_base,
         artifact_base=artifact_base,
@@ -602,6 +602,9 @@ async def run_wheel_apply(
         before_promote=memory_snapshot_hook(lambda message: _push("building", message)),
         held_lock_fd=held_lock_fd,
     )
+
+    def call() -> Path:
+        return release_apply.apply_release(release)
 
     def _apply_and_release() -> Path:
         try:

@@ -1339,3 +1339,29 @@ def _cloud_guard_ignores_the_runners_agent_markers(_floor_monkeypatch):
     aws_mod = sys.modules.get("kiro_crew.cloud.aws")
     if aws_mod is not None and hasattr(aws_mod, "_agent_confinement"):
         _floor_monkeypatch.setattr(aws_mod, "_agent_confinement", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def release_engine_installs(_floor_monkeypatch):
+    """Record the KAS engine step of every release apply instead of running it.
+
+    ``release_apply.apply_release`` ends each update with the new release's own
+    ``kirocrew kas install --if-in-use``, a child that downloads a few hundred MB
+    from the release bucket whenever the install uses KAS -- and a stock test home
+    does, since KAS is the default backend. Every update-path test that stubs only
+    the package install would otherwise spawn that download. Stubbing it here makes
+    the engine step opt-in for the whole suite: the recorder returns as a successful
+    install does, and a test can request this fixture by name to assert on the
+    ``(interpreter, trusted_env)`` pairs. A test of the step itself patches
+    ``release_apply._install_engine`` again, or holds the real function it imported
+    at collection time.
+    """
+    from kiro_crew.platform import release_apply
+
+    calls: list[tuple[pathlib.Path, bool]] = []
+
+    def _record(python: pathlib.Path, ctx) -> None:
+        calls.append((pathlib.Path(python), bool(ctx.trusted_env)))
+
+    _floor_monkeypatch.setattr(release_apply, "_install_engine", _record)
+    yield calls
