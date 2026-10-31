@@ -423,15 +423,26 @@ def test_distinct_homes_both_acquire(tmp_path):
 
 def test_release_allows_reacquire(tmp_path):
     GatewayLock(tmp_path).acquire().release()
-    # Lock is free again -> a fresh acquire succeeds.
     lock = GatewayLock(tmp_path).acquire()
-    lock.release()
+    try:
+        with pytest.raises(GatewayLockError):
+            GatewayLock(tmp_path).acquire()
+    finally:
+        lock.release()
 
 
 def test_release_is_idempotent(tmp_path):
     lock = GatewayLock(tmp_path).acquire()
     lock.release()
-    lock.release()  # no raise
+    # The newer lock may reuse the old descriptor numbers, so a second
+    # release that closed them again would drop this lock.
+    newer = GatewayLock(tmp_path).acquire()
+    try:
+        lock.release()
+        with pytest.raises(GatewayLockError):
+            GatewayLock(tmp_path).acquire()
+    finally:
+        newer.release()
 
 
 def test_context_manager_releases(tmp_path):

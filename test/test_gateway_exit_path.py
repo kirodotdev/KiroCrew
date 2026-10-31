@@ -66,12 +66,14 @@ async def test_both_signals_share_one_handler(monkeypatch, seams) -> None:
 
 @pytest.mark.asyncio
 async def test_the_first_signal_stops_the_apply_and_sets_the_event(monkeypatch, seams) -> None:
+    event = threading.Event()
+    monkeypatch.setattr(gw, "shutdown_event", event)
     handlers = _install(monkeypatch)
 
     handlers[signal.SIGTERM]()
 
     seams.compat.cancel_wheel_applies_in_flight.assert_called_once_with("shutdown")
-    seams.event.set.assert_called_once_with()
+    assert event.is_set()
     seams.compat.hard_exit.assert_not_called()
     seams.cleanup.assert_not_called()
 
