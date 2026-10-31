@@ -56,6 +56,7 @@ function createIpcRegistrar({
   // The update channel this build must follow, "" when Settings decides (an oss
   // build). See runtime/update/policy-channel.js.
   getRequiredChannel = requiredUpdateChannelFor(),
+  clipboardImageTimeoutMs = 1000,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -74,8 +75,46 @@ function createIpcRegistrar({
     ipcMain,
     shell,
     webContents,
+    clipboard,
   } = electron;
   const log = typeof glog === "function" ? glog : (() => {});
+
+  const RESTORABLE_TEXT_FORMATS = new Set(["text/plain", "text/html", "text/rtf"]);
+  const RESTORABLE_IMAGE_FORMATS = new Set(["image/png", "image/jpeg", "image/tiff", "image/bmp"]);
+  // An image format counts only when readImage() can capture it as a raster.
+  const isRestorableFormat = (f, hasRasterImage) =>
+    RESTORABLE_TEXT_FORMATS.has(f) || (hasRasterImage && RESTORABLE_IMAGE_FORMATS.has(f));
+
+  function snapshotClipboard() {
+    const image = clipboard.readImage();
+    const saved = {
+      text: clipboard.readText(),
+      html: clipboard.readHTML(),
+      rtf: clipboard.readRTF(),
+    };
+    if (!image.isEmpty()) saved.image = image;
+    return saved;
+  }
+
+  function restoreClipboardIfEmpty(saved) {
+    if (clipboard.availableFormats().length > 0) return;
+    const data = {};
+    for (const [key, value] of Object.entries(saved)) if (value) data[key] = value;
+    if (Object.keys(data).length > 0) clipboard.write(data);
+  }
+
+  // `replaced` lists formats only a successful copy can remove, so an image
+  // counts once they are gone and the answer never reflects the prior contents.
+  async function clipboardHoldsImage(replaced = []) {
+    const deadline = Date.now() + clipboardImageTimeoutMs;
+    for (;;) {
+      const formats = clipboard.availableFormats();
+      if (formats.some((f) => f.startsWith("image/"))
+          && !replaced.some((f) => formats.includes(f))) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 
   let shellRegistered = false;
   let updaterRegistered = false;
@@ -214,6 +253,40 @@ function createIpcRegistrar({
       windows.chrome.watchFocusCursor(event.sender, watching));
     ipcMain.on("window-control", (event, action) =>
       windows.chrome.windowControl(event.sender, action, event.senderFrame));
+    // The chat bubble's Copy image for an image the page cannot fetch (another
+    // origin, or no async Clipboard API over plain HTTP). The renderer passes
+    // CSS pixels in its own main frame; copyImageAt takes zoomed ones.
+    // copyImageAt reports nothing, so success means an image reached the
+    // clipboard after it was cleared. A clipboard holding formats the snapshot
+    // cannot restore, such as copied files, is never cleared.
+    ipcMain.handle("image:copy-at", async (event, x, y) => {
+      const sender = event.sender;
+      if (!sender || event.senderFrame !== sender.mainFrame) return false;
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return false;
+      const zoom = typeof sender.getZoomFactor === "function" ? sender.getZoomFactor() : 1;
+      const hasRasterImage = !clipboard.readImage().isEmpty();
+      const unrestorable = clipboard.availableFormats()
+        .filter((f) => !isRestorableFormat(f, hasRasterImage));
+      if (unrestorable.length > 0) {
+        try {
+          sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+        } catch {
+          return false;
+        }
+        return clipboardHoldsImage(unrestorable);
+      }
+      const saved = snapshotClipboard();
+      try {
+        clipboard.clear();
+        sender.copyImageAt(Math.round(x * zoom), Math.round(y * zoom));
+      } catch {
+        restoreClipboardIfEmpty(saved);
+        return false;
+      }
+      if (await clipboardHoldsImage()) return true;
+      restoreClipboardIfEmpty(saved);
+      return false;
+    });
     ipcMain.on("theme-mode-changed", (_event, pref) =>
       windows.chrome.setThemeMode(pref));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>

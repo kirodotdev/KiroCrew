@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Resolves to whether a purge ran; the caller reloads regardless.
   clearPaneHttpCache: (origin) =>
     ipcRenderer.invoke("pane:clear-http-cache", String(origin || "")),
+  // Copy the image drawn at a main-frame point (CSS pixels) to the OS clipboard.
+  copyImageAt: (x, y) => ipcRenderer.invoke("image:copy-at", Number(x), Number(y)),
   onStatus: (cb) => {
     const handler = (_e, msg) => cb(msg);
     ipcRenderer.on("status", handler);

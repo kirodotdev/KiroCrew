@@ -79,6 +79,8 @@ declare global {
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
+    /** Copy the image drawn at a main-frame point (CSS pixels). Optional: absent on an older shell. */
+    copyImageAt?: (x: number, y: number) => Promise<boolean>
   }
 
   interface LocalGatewayAPI {

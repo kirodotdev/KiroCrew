@@ -2,7 +2,7 @@ import React, { useCallback, useContext, useEffect, useRef, useState } from 'rea
 import { Check, Copy, Download, MoreHorizontal, Minus, Plus, Search, X } from 'lucide-react'
 import Clickable from '../Clickable'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../../hooks/usePinchZoom'
-import { copyImageToClipboard, imageBlobToPng } from '../../utils/clipboard'
+import { copyImageFromUrl, fetchImageBlob, imageBlobToPng } from '../../utils/clipboard'
 import { isEditableTarget } from '../../utils/editableTarget'
 import { isAndroidWebView, saveBlob } from '../../utils/download'
 import ErrorNotice from '../ErrorNotice'
@@ -97,7 +97,7 @@ async function downloadLightboxImage(image: LightboxImage): Promise<boolean> {
   const name = lightboxFilename(image)
   let blob: Blob
   try {
-    blob = await fetchLightboxBlob(image)
+    blob = await fetchImageBlob(image.src)
   } catch {
     window.open(image.src, '_blank', 'noopener,noreferrer')
     return true
@@ -117,19 +117,6 @@ async function downloadLightboxImage(image: LightboxImage): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-async function fetchLightboxBlob(image: LightboxImage): Promise<Blob> {
-  const res = await fetch(image.src)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return await res.blob()
-}
-
-/** Resolves whether the image reached the clipboard. The bytes are passed
- *  UNAWAITED: WebKit checks user activation when write() is called, so awaiting
- *  the fetch first would spend the click that asked for the copy. */
-function copyLightboxImage(image: LightboxImage): Promise<boolean> {
-  return copyImageToClipboard(fetchLightboxBlob(image).then(imageBlobToPng))
 }
 
 function lightboxImageOf(el: HTMLImageElement): LightboxImage {
@@ -245,7 +232,7 @@ export function Lightbox() {
     downloadSeqRef.current += 1
     setDownloadFailed(false)
     const seq = ++copySeqRef.current
-    void copyLightboxImage(cur.images[cur.index]).then(ok => {
+    void copyImageFromUrl(cur.images[cur.index].src).then(ok => {
       // Superseded by a later press, a page/close reset, or unmount.
       if (seq !== copySeqRef.current) return
       setCopyState(ok ? 'ok' : 'failed')

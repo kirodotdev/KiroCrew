@@ -43,7 +43,7 @@ from kiro_crew.memory_stores import (
     resolve_declared_store,
 )
 from kiro_crew.security import scan_memory
-from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
+from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text, declared_store
 
 
@@ -1132,7 +1132,18 @@ def _memory_verb(args: argparse.Namespace) -> None:
                 output = json.dumps(data, indent=2, default=str)
                 out_file = getattr(args, "output", None)
                 if out_file:
-                    Path(out_file).write_text(output, encoding="utf-8")
+                    try:
+                        # A missing parent folder is created, as `perf` and
+                        # `manifest` do for their own output path.
+                        Path(out_file).parent.mkdir(parents=True, exist_ok=True)
+                        Path(out_file).write_text(output, encoding="utf-8")
+                    except OSError as exc:
+                        # A directory at the path, a file where a folder should be
+                        # or a read-only target: one line, not a traceback.
+                        shown = safe_terminal_line(str(out_file))
+                        reason = safe_terminal_line(str(exc.strerror or exc))
+                        print(f"Error: could not write {shown}: {reason}", file=sys.stderr)
+                        sys.exit(1)
                     print(f"Exported to {out_file}")
                 else:
                     print(output)
