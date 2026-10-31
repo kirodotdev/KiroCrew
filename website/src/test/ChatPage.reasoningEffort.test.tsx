@@ -150,6 +150,19 @@ describe('ChatInput reasoning effort on the model chip', () => {
     expect(modelSupportsEffort('minimax-m2.5')).toBe(false)
     expect(modelSupportsEffort('glm-5')).toBe(false)
   })
+
+  it('modelSupportsEffort offers Haiku 5.5 and later, never older Haiku (#26173)', () => {
+    // kiro-cli accepts /effort on claude-haiku-5.5 and refuses it on 4.5.
+    expect(modelSupportsEffort('claude-haiku-5.5')).toBe(true)
+    expect(modelSupportsEffort('global.anthropic.claude-haiku-5-5[1m]')).toBe(true)
+    expect(modelSupportsEffort('claude-haiku-5.6')).toBe(true)
+    expect(modelSupportsEffort('claude-haiku-6')).toBe(true)
+    expect(modelSupportsEffort('claude-haiku-4.5')).toBe(false)
+    expect(modelSupportsEffort('anthropic.claude-haiku-4-5-20251001-v1:0')).toBe(false)
+    expect(modelSupportsEffort('claude-3-5-haiku-20241022')).toBe(false)
+    expect(modelSupportsEffort('claude-haiku-5')).toBe(false)
+    expect(modelSupportsEffort('claude-haiku')).toBe(false)
+  })
 })
 
 const mockApi = vi.hoisted(() => ({ chatSlotReasoningEffort: vi.fn().mockResolvedValue({ ok: true }), effortLevels: vi.fn().mockResolvedValue(['low', 'medium', 'high', 'xhigh', 'max']) }))

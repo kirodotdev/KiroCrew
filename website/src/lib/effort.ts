@@ -52,8 +52,8 @@ export function effortLabel(level: string): string {
 
 /**
  * Concrete effort levels offered in the dropdown, ordered low→high, with the
- * '' default sentinel first. kiro-cli (acp) supports these on Fable/Opus/Sonnet
- * and GPT-5.x models.
+ * '' default sentinel first. kiro-cli (acp) supports these on Fable/Opus/Sonnet,
+ * Haiku 5.5 and later, and GPT-5.x models.
  */
 export const EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
@@ -61,12 +61,36 @@ export const EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as co
  *  KiroACP-only, so this is just 'acp'. */
 export const REASONING_EFFORT_PROVIDERS = new Set(['acp'])
 
+/** The first Haiku release that accepts an effort level — mirrors the backend
+ *  `HAIKU_EFFORT_MIN_VERSION` (kiro_crew/effort.py). */
+export const HAIKU_EFFORT_MIN_VERSION: readonly [number, number] = [5, 5]
+
+/** `haiku-5.5`, `haiku-5-5` (Bedrock), `haiku-6`. One or two digits per part,
+ *  so a Bedrock date suffix (`claude-3-5-haiku-20241022`) is never read as a
+ *  version. Same pattern as the backend `_HAIKU_VERSION_RE`. */
+const HAIKU_VERSION_RE = /haiku[-_.]?(\d{1,2})(?:[-_.](\d{1,2}))?(?!\d)/
+
+/**
+ * True when the Haiku id `model` is version 5.5 or later — mirrors the backend
+ * `haiku_supports_effort`. A missing minor counts as 0; an id whose version
+ * cannot be read answers false, so an unknown Haiku keeps the control hidden.
+ */
+export function haikuSupportsEffort(model: string): boolean {
+  const match = HAIKU_VERSION_RE.exec(model.toLowerCase())
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2] ?? 0)
+  const [minMajor, minMinor] = HAIKU_EFFORT_MIN_VERSION
+  return major > minMajor || (major === minMajor && minor >= minMinor)
+}
+
 /**
  * Per-model effort capability — mirrors the backend `model_supports_effort`
- * (kiro_crew/effort.py): effort is available on Fable/Opus/Sonnet and GPT-5.x
- * models; Haiku/auto/empty and the other third-party models (deepseek, minimax,
- * glm, qwen) cannot use it. Gates the dropdown so a non-capable model never
- * shows a control that would silently no-op on the backend.
+ * (kiro_crew/effort.py): effort is available on Fable/Opus/Sonnet, Haiku 5.5
+ * and later, and GPT-5.x models; older Haiku, auto/empty and the other
+ * third-party models (deepseek, minimax, glm, qwen) cannot use it. Gates the
+ * dropdown so a non-capable model never shows a control that would silently
+ * no-op on the backend.
  *
  * Keep this in sync with the backend allowlist — it is a conservative list of
  * known-capable families, not a "non-Claude means unsupported" denylist.
@@ -74,7 +98,8 @@ export const REASONING_EFFORT_PROVIDERS = new Set(['acp'])
 export function modelSupportsEffort(model: string | undefined): boolean {
   if (!model) return false
   const m = model.toLowerCase()
-  if (m === 'auto' || m.includes('haiku')) return false
+  if (m === 'auto') return false
+  if (m.includes('haiku')) return haikuSupportsEffort(m)
   return m.includes('opus') || m.includes('sonnet') || m.includes('fable') || m.includes('gpt')
 }
 
