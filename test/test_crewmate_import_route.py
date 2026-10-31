@@ -25,6 +25,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import AGENT, Clock, _card_headers
 from named_cases_helpers import named_cases
 
+from conftest import requires_symlinks
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle, crewmate_carried, crewmate_stage
 from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
@@ -1017,7 +1018,7 @@ def test_route_tables_register_the_import_routes():
     assert ("POST", "/api/members/{slug}/import-files") not in catalog.MEMORY_ROUTES
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@requires_symlinks
 def test_skills_land_under_the_workspace_and_a_linked_skills_folder_is_refused(tmp_path):
     from kiro_crew.config.loader import WorkspaceConfig
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.dashboard.crash_dump_store import (
@@ -889,7 +890,7 @@ def test_sweep_treats_oversized_pid_as_unparseable(dumps_dir: Path) -> None:
     assert removed == 0
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privilege on Windows")
+@requires_symlinks
 def test_sweep_refuses_symlinked_dump(dumps_dir: Path) -> None:
     # A dump-named symlink (e.g. pointed at /dev/zero) must not be followed:
     # the header inspection opens O_NOFOLLOW, so the sweep leaves the entry

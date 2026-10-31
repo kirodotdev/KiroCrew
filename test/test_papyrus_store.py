@@ -29,7 +29,6 @@ import gc
 import json
 import os
 import shutil
-import sys
 import threading
 from pathlib import Path
 from unittest import mock
@@ -401,7 +400,7 @@ class TestFileIO:
         with pytest.raises(ValueError):
             store.delete_file(project, "main.tex")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_delete_refuses_the_main_document_through_a_symlink_alias(
         self, project: Path
     ) -> None:
@@ -485,7 +484,7 @@ class TestPdfPathIsContained:
     `/pdf` route, which renders it inline in the browser.
     """
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_pdf_is_refused(self, project: Path, tmp_path: Path) -> None:
         secret = tmp_path / "outside-the-project.txt"
         secret.write_text("SUPER SECRET", encoding="utf-8")
@@ -520,7 +519,7 @@ class TestMainFileDiscoveryIsContained:
     had, one function over.
     """
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_main_document_is_not_accepted(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -535,7 +534,7 @@ class TestMainFileDiscoveryIsContained:
                 stray.unlink()
         assert store.resolve_main_file(project) is None
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_real_sibling_is_still_discovered(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -549,7 +548,7 @@ class TestMainFileDiscoveryIsContained:
 
         assert store.resolve_main_file(project) == "paper.tex"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_the_glob_fallback_is_contained_too(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -622,7 +621,7 @@ class TestProjectConfigIsContained:
     filename the code supplies itself still lands in a directory the repo controls.
     """
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_config_is_not_read(self, project: Path, tmp_path: Path) -> None:
         secret = tmp_path / "docker-config.json"
         secret.write_text(json.dumps({"auths": {"r": {"auth": "SECRET"}}}), encoding="utf-8")
@@ -631,7 +630,7 @@ class TestProjectConfigIsContained:
 
         assert store.read_project_config(project) == {}
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_config_is_not_written_through(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -670,7 +669,7 @@ class TestProjectConfigIsContained:
 
         assert store._config_path(project) is None
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_an_in_project_config_symlink_cannot_overwrite_the_manuscript(
         self, project: Path
     ) -> None:
@@ -697,7 +696,7 @@ class TestProjectConfigIsContained:
         store.write_project_config(project, {"main_file": "paper.tex"})
         assert store.read_project_config(project)["main_file"] == "paper.tex"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     def test_a_symlinked_config_does_not_break_main_file_discovery(
         self, project: Path, tmp_path: Path
     ) -> None:
@@ -750,9 +749,7 @@ class TestGitMachineryIsNotDocumentContent:
         """The refusal must not catch ordinary dotfiles or nested sources."""
         assert store.safe_child(project, path).name == Path(path).name
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
-    )
+    @requires_symlinks
     @pytest.mark.parametrize(
         "alias,path",
         [
@@ -777,9 +774,7 @@ class TestGitMachineryIsNotDocumentContent:
         with pytest.raises(store.PathRejected):
             store.safe_child(project, path)
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs privilege on Windows"
-    )
+    @requires_symlinks
     def test_a_link_out_of_git_is_refused_too(self, project: Path) -> None:
         """The reverse direction: the request names `.git`, resolution leaves it.
 

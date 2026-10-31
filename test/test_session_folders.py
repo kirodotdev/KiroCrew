@@ -30,6 +30,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from dashboard_owner_helpers import as_owner
 
+from conftest import requires_symlinks
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import chat_folders, chat_handlers, session_folders
 from kiro_crew.dashboard.session_folders import (
@@ -116,7 +117,7 @@ def test_a_folder_that_cannot_be_made_private_is_removed(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges")
+@requires_symlinks
 def test_a_folder_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()

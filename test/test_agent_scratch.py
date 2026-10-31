@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from git_maintenance_helpers import git_maintenance_off_entries
 
+from conftest import requires_symlinks
 from kiro_crew import agent_scratch as sc
 from kiro_crew import platform_compat
 from kiro_crew.config import paths
@@ -861,7 +862,7 @@ class TestLivenessSweep:
     def test_missing_root_returns_zero(self, scratch_root: Path) -> None:
         assert sc.sweep_dead_scratch() == 0
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_symlink_child_is_never_followed(self, scratch_root: Path, tmp_path: Path) -> None:
         victim = tmp_path / "victim"
         victim.mkdir()

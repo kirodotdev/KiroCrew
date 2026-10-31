@@ -30,12 +30,14 @@ import sys
 
 if sys.platform == "win32":  # pragma: no cover - platform-gated
     import _winapi
+
 from pathlib import Path
 from typing import Iterator
 from unittest import mock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import sandbox, security
 from kiro_crew.apps.builtins.papyrus.backend import latex, procio, store
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
@@ -1126,7 +1128,7 @@ class TestCompileRefusesSymlinkedArtifacts:
     then the write has happened. The only place to stop it is before the spawn.
     """
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_pdf_symlinked_to_the_source_refuses_to_compile(
         self, project: Path
     ) -> None:
@@ -1145,7 +1147,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert not run.called, "the compiler ran despite a symlinked output"
         assert (project / "main.tex").read_text(encoding="utf-8") == source_before
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_link_at_a_name_no_suffix_list_predicts_is_refused(
         self, project: Path
     ) -> None:
@@ -1166,7 +1168,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert "chapter1.tex" in result.log
         assert not run.called, "the compiler ran despite an in-project symlink"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_link_in_a_subdirectory_is_refused(self, project: Path) -> None:
         """The walk descends: `\\openout` takes a relative path, so `sections/x.tex` is a
         write the compiler can aim just as well as one at the project root."""
@@ -1180,7 +1182,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert "sections/linked.tex" in result.log
         assert not run.called
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_symlink_cycle_does_not_hang_the_walk(self, project: Path) -> None:
         """`a -> ..` is a link, so it is reported rather than descended into. A walk that
         followed it would recurse forever and wedge the request."""
@@ -1204,7 +1206,7 @@ class TestCompileRefusesSymlinkedArtifacts:
             assert links == []
             assert complete is False
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_an_exhausted_budget_reports_an_incomplete_scan(
         self, project: Path
     ) -> None:
@@ -1222,7 +1224,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert complete is True
         assert "zzz.pdf" in links
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_compile_refuses_when_the_scan_could_not_finish(
         self, project: Path
     ) -> None:
@@ -1242,7 +1244,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert not run.called, "the compiler ran despite an unfinished symlink scan"
         assert (project / "main.tex").read_text(encoding="utf-8") == r"\documentclass{article}"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_git_checkout_does_not_trip_the_guard(self, project: Path) -> None:
         """`.git` is skipped. A real checkout can hold links in there, and refusing to
         compile every cloned project would make the guard unusable."""
@@ -1254,7 +1256,7 @@ class TestCompileRefusesSymlinkedArtifacts:
             await latex.compile_project(project, "main.tex")
         assert run.called, "a link inside .git blocked the compile"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     @pytest.mark.parametrize(
         "suffix", [".aux", ".log", ".bbl", ".synctex.gz", ".nav", ".lof", ".fls"]
     )
@@ -1271,7 +1273,7 @@ class TestCompileRefusesSymlinkedArtifacts:
         assert result.ok is False
         assert not run.called
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+    @requires_symlinks
     async def test_a_dangling_symlink_is_also_refused(self, project: Path) -> None:
         """`is_symlink()` does not follow the link, which is correct here: the compiler
         would CREATE the target wherever it points."""

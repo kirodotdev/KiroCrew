@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.mcp_gateway import backend_tmp as bt
 
@@ -192,7 +193,7 @@ class TestSweepOne:
     def test_missing_dir_is_a_noop(self, tmp_root: Path) -> None:
         bt.sweep_backend_tmp(tmp_root / "gone-already")  # must not raise
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_symlink_in_place_of_dir_is_never_followed(
         self, tmp_root: Path, tmp_path: Path
     ) -> None:
@@ -378,7 +379,7 @@ class TestBootSweep:
 
         assert removed == 0 and stray.exists()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege")
+    @requires_symlinks
     def test_symlink_child_is_never_followed(self, tmp_root: Path, tmp_path: Path) -> None:
         victim = tmp_path / "victim"
         victim.mkdir()
