@@ -61,7 +61,7 @@ This RFC brings both to Kiro Crew behind two switches and one block of defaults
 }
 ```
 
-The person flips a switch in Settings → Slack, picks a default folder and/or
+The person flips a switch in Settings → Messaging Channels → Slack, picks a default folder and/or
 agent (with a model and effort), and the page shows exactly which manifest lines
 change and whether their installed app already carries them.
 
@@ -194,7 +194,7 @@ Slack does not report an app's event subscriptions to a bot token, so the status
 checks scopes only, and the page says so. Scopes the install holds that the
 switches no longer need are listed as optional cleanup, never as drift.
 
-**UI.** Settings → Slack gains a "Slack Code" section: the Agent sessions switch
+**UI.** Settings → Messaging Channels → Slack gains a "Slack Code" section: the Agent sessions switch
 and the "Update your Slack app" panel (status, the lines each switch adds with
 missing scopes marked, copy manifest, open App Manifest, the reinstall steps,
 Check again).
