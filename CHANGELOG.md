@@ -19,30 +19,38 @@ corrupted.
 
 **KAS engine.** KAS auto-approves the built-in tools a spec grants once Crew's
 own checks pass, honors a spec's allowed shell commands at the gate and
-refuses the rest when the spec denies by default, and mounts web search under
-the name the engine expects. Agent spec hooks block a tool only on exit code
-2, as on kiro-cli, an MCP server gets its boolean env flags but never its
-secrets, and a relative prompt file may use `..` as on kiro-cli. A resumed KAS
-session replays its history when no turns come back.
+refuses the rest when the spec denies by default, refuses a file write outside
+a deny-by-default spec's allowed paths, and mounts web search under the name
+the engine expects. Agent spec hooks block a tool only on exit code 2, as on
+kiro-cli, an MCP server gets its boolean env flags but never its secrets, and
+a relative prompt file may use `..` as on kiro-cli. A resumed KAS session
+replays its history when no turns come back.
 
 **Chat and settings.** File changes from kiro-cli v3 write tools show in the
 transcript again, each background tool approval gets its own id so one answer
 no longer settles another, and kiro-cli's read-only file searches are approved
 after the safety checks. A workflow run that stored an infinite or not-a-number
-value opens again, and Settings refuses a save that `config.local.json` would
-override.
+value opens again, Settings refuses a save that `config.local.json` would
+override, and a schedule's time label keeps its wall-clock hour across a
+daylight saving change. Background work such as the live crew log, knowledge
+ingest and sub-agent events now runs to the end instead of stopping without a
+word.
 
 **Security.** The shell reader finds a `-c` script placed after options and
 redirections, and every agent process counts as an agent in the cloud guard
 for human-only actions. A deny rule that wrongly refused commands such as
-`find -type f` and `od -tx1` as a curl upload is removed.
+`find -type f` and `od -tx1` as a curl upload is removed. The local decision
+models install a `filelock` with its published advisory fixed.
 
-**Desktop and CLI.** `kirocrew restart` says when another gateway still serves
-the port, `kirocrew stop` and `kirocrew restart` refuse a gateway the desktop
-app supervises, and Windows recovery retries a failed network check before it
-gives up. A new terminal stays above the iPhone keyboard, a working icon in the
-Crew stack blinks and sits flush, and a host-wide out-of-memory kill is no
-longer blamed on a single sandbox limit.
+**Desktop and CLI.** The one-line and `install.sh` installers download Crew's
+built-in KAS engine by default (`--no-kas` skips it), `kirocrew restart` says
+when another gateway still serves the port, and `kirocrew stop` and `kirocrew
+restart` refuse a gateway the desktop app supervises. Quitting the desktop app
+while it starts no longer leaves a gateway running behind it, and Windows
+recovery retries a failed network check before it gives up. A new terminal
+stays above the iPhone keyboard, a working icon in the Crew stack blinks and
+sits flush, and a host-wide out-of-memory kill is no longer blamed on a single
+sandbox limit.
 
 ## [0.11.0] - 2026-10-24
 

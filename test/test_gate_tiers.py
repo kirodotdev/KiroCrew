@@ -161,6 +161,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        "spec-write-allowlist",
+        TOOL_DENY,
+        ToolCall(
+            title="Write",
+            kind="edit",
+            raw_params={"path": "/tmp/elsewhere.txt"},
+            mcp_tool="fs_write",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_write_allowlist=("/tmp/allowed",),
+        ),
+    ),
+    Scenario(
         "app-own-server",
         TOOL_AUTO_APPROVE,
         ToolCall(
@@ -376,6 +389,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("search-target", "deny"),
         ("governance", "deny_policy"),
         ("spec-shell-allowlist", "deny_policy"),
+        ("spec-write-allowlist", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
@@ -554,11 +568,14 @@ _DENY_UNDER_GRANT = (
         pytest.param(scenario, grant, id=f"{grant}-{scenario.tier}")
         for scenario in _DENY_SCENARIOS
         for grant in ("operator", "app-own-server")
-        # The spec's shell allowlist binds the agent's own shell built-in, never a
-        # call addressed to an MCP server, so the app-own-server re-address skips it.
+        # The spec's shell and write allowlists bind the agent's own built-ins, never
+        # a call addressed to an MCP server, so the app-own-server re-address skips them.
         if not (
             grant == "app-own-server"
-            and (scenario.call.mcp_server or scenario.tier == "spec-shell-allowlist")
+            and (
+                scenario.call.mcp_server
+                or scenario.tier in ("spec-shell-allowlist", "spec-write-allowlist")
+            )
         )
     ]
     + [

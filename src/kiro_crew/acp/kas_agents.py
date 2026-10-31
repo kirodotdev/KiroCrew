@@ -75,12 +75,14 @@ from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
     CREW_SHELL_ALLOWLIST_KEY,
+    CREW_WRITE_ALLOWLIST_KEY,
     allowed_tools_to_permissions,
     auto_approved_capabilities,
     crew_answered_builtins,
     crew_answered_commands,
     merge_user_permissions,
     spec_shell_allowlist,
+    spec_write_allowlist,
     tools_settings_to_permissions,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
@@ -1142,6 +1144,13 @@ def to_client_custom_agent(
     shell_allowlist = spec_shell_allowlist(spec.get("toolsSettings"))
     if shell_allowlist is not None:
         out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
+    # `toolsSettings.fs_write.fallbackAction: "deny"`: the only paths the write
+    # tool may touch, as the spec wrote them. Recorded whatever the ceiling says,
+    # like the shell's; the gate refuses every other write of this agent
+    # (`spec-write-allowlist` tier).
+    write_allowlist = spec_write_allowlist(spec.get("toolsSettings"))
+    if write_allowlist is not None:
+        out[CREW_WRITE_ALLOWLIST_KEY] = write_allowlist
 
     description = spec.get("description")
     if isinstance(description, str) and description:

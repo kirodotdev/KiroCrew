@@ -67,6 +67,8 @@ class _GateMixin(ManagerComponent):
         MEMORY_WAIT_UNTIL_KEY: str
         MEMORY_CAUSE_LANE_SHARE: str
 
+        def track_store_task(self, task: "asyncio.Task[Any]") -> "asyncio.Task[Any]": ...
+
     # Each name below IS its owner module's function, whose first parameter is ``self``:
     # ``_hoist_impls`` and ``bind_component_globals`` see a bound ``*_impl`` exactly as
     # one defined in this class body, and a member without the suffix runs on its
@@ -1469,11 +1471,13 @@ class _GateMixin(ManagerComponent):
             self._manager._seen_batches.add(batch_id)
             try:
                 loop = asyncio.get_event_loop()
-                loop.create_task(
-                    self._manager._fire_event(
-                        "spawn_batch_started",
-                        info,
-                        {"batch_id": batch_id, "count": info.batch_total},
+                self.track_store_task(
+                    loop.create_task(
+                        self._manager._fire_event(
+                            "spawn_batch_started",
+                            info,
+                            {"batch_id": batch_id, "count": info.batch_total},
+                        )
                     )
                 )
             except RuntimeError:
