@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,6 +36,65 @@ def hook_store(tmp_path: Path) -> ScriptHookStore:
     return ScriptHookStore(tmp_path)
 
 
+def _probe_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A real hook command that writes its stdin event and its own cwd to files.
+
+    Every hook child runs in ``tmp_path``: the real spawner is wrapped to pass
+    ``cwd=tmp_path``, since its default inherits the test runner's working
+    directory (the checkout). Returns ``(command, read)``; ``read()`` parses the
+    event the child got and asserts the child ran in ``tmp_path``.
+    """
+    import kiro_crew.hooks as hooks_mod
+
+    monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+    monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    real_run = hooks_mod.run_script_hook
+
+    async def run_in_tmp(*args, **kwargs):
+        kwargs["cwd"] = str(tmp_path)
+        return await real_run(*args, **kwargs)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", run_in_tmp)
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import os, sys\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as f:\n"
+        "    f.write(sys.stdin.read())\n"
+        "with open(sys.argv[1] + '.cwd', 'w', encoding='utf-8') as f:\n"
+        "    f.write(os.getcwd())\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "event.json"
+
+    def read() -> dict:
+        child_cwd = Path(f"{out}.cwd").read_text(encoding="utf-8")
+        assert Path(child_cwd).resolve() == tmp_path.resolve()
+        return json.loads(out.read_text(encoding="utf-8"))
+
+    return f'"{sys.executable}" "{script}" "{out}"', read
+
+
+@pytest.fixture
+def probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A store with one real PreToolUse hook that writes its stdin event to a file.
+
+    Returns ``(store, read)``: ``read()`` parses the event the hook process got.
+    """
+    command, read = _probe_command(tmp_path, monkeypatch)
+    store = ScriptHookStore(tmp_path / "store")
+    store.create({
+        "name": "probe",
+        "event": HOOK_EVENT_PRE_TOOL_USE,
+        "matcher": "",
+        "command": command,
+    })
+    return store, read
+
+
+_ATTRIBUTION = ("subagent_id", "parent_session_key", "agent_role")
+
+
 class TestGlobalHookStore:
     """Test get/set global hook store accessor."""
 
@@ -62,70 +122,48 @@ class TestFireToolHooks:
         await fire_tool_hooks(None, "Running: echo hello")
 
     @pytest.mark.asyncio
-    async def test_strips_running_prefix(self, hook_store: ScriptHookStore):
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "Running: echo hello")
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="echo hello",
-                tool_input=None,
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+    async def test_strips_running_prefix(self, probe):
+        store, read = probe
+        await fire_tool_hooks(store, "Running: echo hello")
+        event = read()
+        assert event["hook_event_name"] == HOOK_EVENT_PRE_TOOL_USE
+        assert event["tool_name"] == "echo hello"
+        assert "tool_input" not in event
+        assert not set(_ATTRIBUTION) & set(event)
 
     @pytest.mark.asyncio
-    async def test_no_prefix(self, hook_store: ScriptHookStore):
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "@builder-mcp/ReadFile")
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="@builder-mcp/ReadFile",
-                tool_input=None,
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+    async def test_no_prefix(self, probe):
+        store, read = probe
+        await fire_tool_hooks(store, "@builder-mcp/ReadFile")
+        event = read()
+        assert event["tool_name"] == "@builder-mcp/ReadFile"
+        assert "tool_input" not in event
 
     @pytest.mark.asyncio
-    async def test_parses_tool_input_json(self, hook_store: ScriptHookStore):
+    async def test_parses_tool_input_json(self, probe):
+        store, read = probe
         ti = json.dumps({"path": "/tmp/test.txt"})
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "ReadFile", ti)
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="ReadFile",
-                tool_input={"path": "/tmp/test.txt"},
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+        await fire_tool_hooks(store, "ReadFile", ti)
+        event = read()
+        assert event["tool_name"] == "ReadFile"
+        assert event["tool_input"] == {"path": "/tmp/test.txt"}
 
     @pytest.mark.asyncio
-    async def test_invalid_json_passes_none(self, hook_store: ScriptHookStore):
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "ReadFile", "not-json")
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="ReadFile",
-                tool_input=None,
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+    async def test_invalid_json_passes_none(self, probe):
+        store, read = probe
+        await fire_tool_hooks(store, "ReadFile", "not-json")
+        event = read()
+        assert event["tool_name"] == "ReadFile"
+        assert "tool_input" not in event
 
     @pytest.mark.asyncio
-    async def test_empty_title(self, hook_store: ScriptHookStore):
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "")
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="",
-                tool_input=None,
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+    async def test_empty_title(self, probe):
+        # An empty title still fires the hook; the payload carries no tool name.
+        store, read = probe
+        await fire_tool_hooks(store, "")
+        event = read()
+        assert event["hook_event_name"] == HOOK_EVENT_PRE_TOOL_USE
+        assert "tool_name" not in event
 
     @pytest.mark.asyncio
     async def test_fire_exception_swallowed(self, hook_store: ScriptHookStore):
@@ -136,38 +174,31 @@ class TestFireToolHooks:
             await fire_tool_hooks(hook_store, "ReadFile")
 
     @pytest.mark.asyncio
-    async def test_none_tool_input_skipped(self, hook_store: ScriptHookStore):
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(hook_store, "ReadFile", None)
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="ReadFile",
-                tool_input=None,
-                subagent_id=None,
-                parent_session_key=None,
-                agent_role=None,
-            )
+    async def test_none_tool_input_skipped(self, probe):
+        store, read = probe
+        await fire_tool_hooks(store, "ReadFile", None)
+        event = read()
+        assert event["tool_name"] == "ReadFile"
+        assert "tool_input" not in event
 
     @pytest.mark.asyncio
-    async def test_passes_subagent_metadata(self, hook_store: ScriptHookStore):
-        """When called with subagent_id, parent_session_key, agent_role, those propagate to fire()."""
-        with patch.object(hook_store, "fire", new_callable=AsyncMock) as mock_fire:
-            await fire_tool_hooks(
-                hook_store,
-                "ReadFile",
-                None,
-                subagent_id="abc12345",
-                parent_session_key="dashboard:slot-1",
-                agent_role="utility",
-            )
-            mock_fire.assert_called_once_with(
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name="ReadFile",
-                tool_input=None,
-                subagent_id="abc12345",
-                parent_session_key="dashboard:slot-1",
-                agent_role="utility",
-            )
+    async def test_passes_subagent_metadata(self, probe):
+        """subagent_id, parent_session_key and agent_role reach the hook's stdin event."""
+        store, read = probe
+        await fire_tool_hooks(
+            store,
+            "ReadFile",
+            None,
+            subagent_id="abc12345",
+            parent_session_key="dashboard:slot-1",
+            agent_role="utility",
+        )
+        event = read()
+        assert {k: event[k] for k in _ATTRIBUTION} == {
+            "subagent_id": "abc12345",
+            "parent_session_key": "dashboard:slot-1",
+            "agent_role": "utility",
+        }
 
 
 class TestScriptHookStoreFire:
@@ -325,21 +356,25 @@ class TestScriptHookStoreStopContext:
             assert ctx_arg == full
 
     @pytest.mark.asyncio
-    async def test_stop_tail_matcher_is_not_truncated(self, tmp_path: Path):
+    async def test_stop_tail_matcher_is_not_truncated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         # A Stop hook whose matcher targets tail content must still fire — fire()
         # matches against the full context, not the 500-char env slice.
-        store = ScriptHookStore(tmp_path)
+        command, read = _probe_command(tmp_path, monkeypatch)
+        store = ScriptHookStore(tmp_path / "store")
         store.create({
             "name": "options-stop-hook",
             "event": HOOK_EVENT_STOP,
             "matcher": "*[OPTIONS:*",
-            "command": "echo test",
+            "command": command,
         })
         full = ("x" * 900) + "\n[OPTIONS: A | B | C]"
-        with patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = type("R", (), {"hook_name": "options-stop-hook", "exit_code": 0, "stdout": "", "stderr": "", "duration_ms": 1})()
-            await store.fire(HOOK_EVENT_STOP, context=full)
-            assert mock_run.await_count == 1, "tail-matching Stop hook was filtered out by env truncation"
+        results = await store.fire(HOOK_EVENT_STOP, context=full)
+        assert [r.exit_code for r in results] == [0], (
+            "tail-matching Stop hook was filtered out by env truncation"
+        )
+        assert read()["assistant_text"] == full
 
     @pytest.mark.asyncio
     async def test_stop_empty_turn_still_emits_key(self, stop_store: ScriptHookStore):
