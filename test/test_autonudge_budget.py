@@ -1121,3 +1121,98 @@ async def test_a_finished_loop_is_displaced_by_a_new_arm_not_by_a_create(svc, tm
     )
     assert replacement.id != loop.id and replacement.active
     assert [lp.id for lp in svc.list_all()] == [replacement.id]
+
+
+_REAL_SLEEP = asyncio.sleep
+
+
+def _recording_sleep(slept: list[float], on_wake=None):
+    """A stand-in ``asyncio.sleep`` that records each delay.
+
+    The first nonzero sleep calls *on_wake* with its delay and returns, so the timer
+    body runs once as if that much time had passed; every later nonzero sleep parks
+    until the test cancels it. A zero sleep returns at once.
+    """
+    woke: list[bool] = []
+
+    async def _sleep(secs):
+        slept.append(secs)
+        if secs == 0:
+            await _REAL_SLEEP(0)
+            return None
+        if on_wake is not None and not woke:
+            woke.append(True)
+            on_wake(secs)
+            return None
+        await asyncio.get_running_loop().create_future()
+
+    return _sleep
+
+
+@pytest.mark.asyncio
+async def test_a_budget_shorter_than_the_interval_stops_the_loop_when_it_is_spent(svc, monkeypatch):
+    """The timer wakes when the runtime budget runs out, not a full interval later.
+
+    A loop with a one-day interval and a ten-minute budget is expired ten minutes
+    in. Sleeping the whole day would leave it active with its budget spent,
+    refusing a create-only arm on its slot until the timer woke.
+    """
+    slept: list[float] = []
+
+    def _time_passes(secs):
+        # Backdating ``created_ts`` re-reads the spent time, as after a load. The
+        # timer can wake before ``add`` returns, so the loop is read from the store.
+        for armed in svc._loops.values():
+            armed.created_ts -= secs
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _recording_sleep(slept, _time_passes))
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+    await svc.start()
+    try:
+        loop = await svc.add(
+            slot_key="chat-1-123", message="go", idle_secs=86400, max_runtime_secs=600
+        )
+        await asyncio.wait_for(svc._timers[loop.id], _LOST_RUN_SECS)
+        assert slept and 0 < slept[0] <= 600, f"armed {slept[0]}s against a 600s budget"
+        refreshed = svc._loops[loop.id]
+        assert not refreshed.active
+        assert refreshed.stopped_reason == RUNTIME_BUDGET_REASON
+        assert ("expired", loop.id) in events
+    finally:
+        for task in list(svc._timers.values()):
+            task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_spent_cycle_cap_stops_the_loop_without_waiting_an_interval(svc, monkeypatch):
+    """The turn that ends the last allowed cycle hands the cap check to the timer now.
+
+    Re-arming toward a fresh full interval would keep a capped-out loop active for
+    a whole day on a one-day interval before the cap branch ran and expired it.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(_an.asyncio, "sleep", _recording_sleep(slept))
+    events: list[tuple[str, str]] = []
+    svc.subscribe(lambda ev, lp: events.append((ev, lp.id if lp else "")))
+    await svc.start()
+    try:
+        loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=86400, max_cycles=1)
+        await _REAL_SLEEP(0)
+        # The one allowed cycle was delivered, which clears the deadline, and its
+        # turn now ends.
+        loop.cycle_count = 1
+        loop.next_due_ts = 0.0
+        slept.clear()
+        svc.notify_turn_complete("chat-1-123")
+        for _ in range(5):
+            await _REAL_SLEEP(0)
+        assert slept and slept[0] == 0, f"re-armed for {slept}s after the cap was spent"
+        await asyncio.wait_for(svc._timers[loop.id], _LOST_RUN_SECS)
+        refreshed = svc._loops[loop.id]
+        assert not refreshed.active
+        assert refreshed.stopped_reason == CYCLE_CAP_REASON
+        assert ("expired", loop.id) in events
+    finally:
+        for task in list(svc._timers.values()):
+            task.cancel()
