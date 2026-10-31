@@ -248,25 +248,39 @@ describe('chat sidebar — stale-session collapse', () => {
     expect(getByTestId('stale-expander-root')).toHaveAccessibleName('Show 1 sleeping session outside folders')
   })
 
-  it('tooltip names the inactivity window and the click action; both flip when expanded', () => {
-    const { getByTestId } = renderSidebar([
+  it('explains what sleeping means in an instant tip, not a native title; the click cue flips when expanded', () => {
+    const { getByTestId, queryByRole, getByRole } = renderSidebar([
       slot('fresh', 'fresh session', 2),
       slot('old-1', 'old session one', 10 * 24),
     ])
-    // Default window is 7 days; the same compact label the sort/filter menu shows.
-    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to show.')
+    const expander = getByTestId('stale-expander-root')
+    // A native title waits ~1s and never shows on focus, so a first-time user
+    // never learnt what the word meant.
+    expect(expander).not.toHaveAttribute('title')
+    // Default window is 7 days (the same compact label the sort/filter menu
+    // shows), and the menu row that changes it is named by its own label.
+    const closed = 'Sleeping sessions are still open. You haven\'t used them in over 7d, so they are folded here to keep the list short. '
+      + 'Click to show them. To change the time or turn this off, use “Collapse dormant sessions” in “Sort & filter sessions”.'
+    // Screen readers get the same explanation as the button's description, open or not.
+    expect(expander).toHaveAccessibleDescription(closed)
+    expect(queryByRole('tooltip')).toBeNull()
+    fireEvent.focus(expander)
+    expect(getByRole('tooltip')).toHaveTextContent(closed)
+    fireEvent.blur(expander)
+    expect(queryByRole('tooltip')).toBeNull()
+
     fireEvent.click(getByTestId('stale-expander-root'))
     expect(getByTestId('stale-expander-root')).toHaveTextContent('Hide 1 sleeping session')
-    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to hide.')
+    expect(getByTestId('stale-expander-root')).toHaveAccessibleDescription(closed.replace('Click to show them.', 'Click to hide them.'))
   })
 
-  it('tooltip follows a persisted custom threshold', () => {
+  it('the explanation follows a persisted custom threshold', () => {
     localStorage.setItem('mc-session-stale-collapse-ms', String(3 * DAY))
     const { getByTestId } = renderSidebar([
       slot('fresh', 'fresh session', 2),
       slot('old-1', 'old session one', 5 * 24),
     ])
-    expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 3d. Click to show.')
+    expect(getByTestId('stale-expander-root')).toHaveAccessibleDescription(/You haven't used them in over 3d,/)
   })
 
   it('a persisted "0" turns the feature off and shows every session', () => {
