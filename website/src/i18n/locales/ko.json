@@ -17022,6 +17022,8 @@
         "terminal_cursor_style_block": "블록",
         "terminal_cursor_style_bar": "막대",
         "terminal_cursor_style_underline": "밑줄",
+        "terminal_copy_on_select": "선택 시 복사",
+        "terminal_copy_on_select_desc": "마우스로 텍스트를 선택하는 즉시 클립보드에 복사합니다. 선택 도구 모음은 그대로 열리므로 채팅으로 전송도 클릭 한 번이면 됩니다.",
         "terminal_shell": "기본 셸",
         "terminal_shell_hint": "내장 터미널이 실행하는 셸입니다.",
         "terminal_shell_desc": "절대 경로 또는 PATH에 있는 명령을 입력하세요. 비워 두면 시스템 기본값($SHELL)을 사용합니다.",

@@ -17318,6 +17318,8 @@
         "terminal_cursor_style_block": "ब्लॉक",
         "terminal_cursor_style_bar": "बार",
         "terminal_cursor_style_underline": "अंडरलाइन",
+        "terminal_copy_on_select": "चुनते ही कॉपी करो",
+        "terminal_copy_on_select_desc": "माउस से टेक्स्ट चुनते ही उसे क्लिपबोर्ड पर कॉपी करता है। चयन टूलबार फिर भी खुलता है, इसलिए चैट में भेजें एक क्लिक पर उपलब्ध रहता है।",
         "terminal_shell": "डिफ़ॉल्ट शेल",
         "terminal_shell_hint": "बिल्ट-इन टर्मिनल द्वारा शुरू किया जाने वाला शेल।",
         "terminal_shell_desc": "एक पूर्ण पथ या PATH में मौजूद कमांड। खाली होने पर सिस्टम डिफ़ॉल्ट ($SHELL) उपयोग होता है।",

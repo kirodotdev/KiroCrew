@@ -17,7 +17,12 @@ import { safeSetItem } from '../utils/safeStorage'
  * prompt themes rely on, so those rendered as tofu. Pointing it at an installed
  * Nerd Font fixes that. The cursor style lets a reader swap the default
  * blinking block — which obscures the character it sits on — for a thin bar or
- * underline, matching most text editors. */
+ * underline, matching most text editors.
+ *
+ * Copy-on-select rides the same store although it is behaviour, not a render
+ * option: it acts on THIS client's clipboard, so a server-side setting would
+ * reach into every browser that opens the dashboard, and it shares the store's
+ * per-device lifetime for the same reason the font does. */
 
 /**
  * Default terminal font, shaped as a `fontFamily` style value (the historical
@@ -63,6 +68,9 @@ export interface TerminalFontState {
   fontSize: number
   /** xterm cursor shape — block (default), bar, or underline. */
   cursorStyle: TerminalCursorStyle
+  /** Copy a mouse selection to the clipboard as soon as the drag ends. Off by
+   *  default, so a selection does nothing until the toolbar's Copy is pressed. */
+  copyOnSelect: boolean
 }
 
 const STORAGE_KEY = 'mc-terminal-font'
@@ -75,6 +83,7 @@ function loadPersisted(): TerminalFontState {
     fontFamily: '',
     fontSize: DEFAULT_TERMINAL_FONT_SIZE,
     cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
+    copyOnSelect: false,
   }
   if (typeof localStorage === 'undefined') return base
   try {
@@ -86,6 +95,8 @@ function loadPersisted(): TerminalFontState {
       fontFamily: typeof p.fontFamily === 'string' ? p.fontFamily : '',
       fontSize: typeof p.fontSize === 'number' ? clampSize(p.fontSize) : DEFAULT_TERMINAL_FONT_SIZE,
       cursorStyle: isCursorStyle(p.cursorStyle) ? p.cursorStyle : DEFAULT_TERMINAL_CURSOR_STYLE,
+      // Only a literal `true` turns it on: a hand-edited or corrupt value stays off.
+      copyOnSelect: p.copyOnSelect === true,
     }
   } catch {
     return base
@@ -101,7 +112,8 @@ function set(next: TerminalFontState): void {
   if (
     next.fontFamily === state.fontFamily &&
     next.fontSize === state.fontSize &&
-    next.cursorStyle === state.cursorStyle
+    next.cursorStyle === state.cursorStyle &&
+    next.copyOnSelect === state.copyOnSelect
   ) return
   state = next
   emit()
@@ -123,8 +135,12 @@ export function setTerminalCursorStyle(cursorStyle: TerminalCursorStyle): void {
   set({ ...state, cursorStyle })
 }
 
+export function setTerminalCopyOnSelect(copyOnSelect: boolean): void {
+  set({ ...state, copyOnSelect })
+}
+
 export function resetTerminalFont(): void {
-  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE })
+  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false })
 }
 
 /** Current preference — for non-React callers (xterm construction in CliPanel). */
@@ -177,7 +193,7 @@ export function subscribeTerminalFont(cb: () => void): () => void {
 
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetTerminalFontStore(): void {
-  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE }
+  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE, copyOnSelect: false }
   emit()
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }

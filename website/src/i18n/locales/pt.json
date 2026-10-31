@@ -17614,6 +17614,8 @@
         "terminal_cursor_style_block": "Bloco",
         "terminal_cursor_style_bar": "Barra",
         "terminal_cursor_style_underline": "Sublinhado",
+        "terminal_copy_on_select": "Copiar ao selecionar",
+        "terminal_copy_on_select_desc": "Copia o texto para a área de transferência assim que você o seleciona com o mouse. A barra de seleção continua abrindo, então Enviar para a conversa fica a um clique.",
         "terminal_shell": "Shell padrão",
         "terminal_shell_hint": "Shell que o terminal integrado inicia.",
         "terminal_shell_desc": "Um caminho absoluto ou um comando no PATH. Deixe vazio para usar o padrão do sistema ($SHELL).",
