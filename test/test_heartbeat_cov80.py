@@ -21,12 +21,14 @@ exactly the part that decides *whether* maintenance ever runs:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+import kiro_crew.memory as memory_mod
 from kiro_crew.heartbeat import (
     _HEADER,
     HeartbeatService,
@@ -37,6 +39,8 @@ from kiro_crew.heartbeat import (
     is_keep_response,
     strip_keep_sentinel,
 )
+from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import await_until, finished
 
 
@@ -220,6 +224,7 @@ class TestBeat:
         workspace: Path,
         inline_executor: None,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         cfg = MagicMock()
         cfg.memory.history_max_days = 11
@@ -227,12 +232,23 @@ class TestBeat:
         sel_obj = MagicMock()
         monkeypatch.setattr("kiro_crew.heartbeat.sel", lambda: sel_obj)
 
-        mem = _memory()
+        clock = ManualClock()
+        clock.install(monkeypatch, memory_mod, time=False, datetime=True)
+        mem = MemoryStore(workspace=tmp_path / "store")
+        mem.init()
+        history = tmp_path / "store" / "memory" / "history"
+        today = datetime.fromtimestamp(clock.time()).date()
+        stale = history / f"{(today - timedelta(days=20)).strftime('%Y-%m-%d')}.md"
+        kept = history / f"{(today - timedelta(days=5)).strftime('%Y-%m-%d')}.md"
+        for f in (stale, kept):
+            f.write_text("# x\n", encoding="utf-8")
+
         svc = HeartbeatService(mem)
         svc._tick = 1440
         await svc._beat()
 
-        mem.prune_history.assert_called_once_with(keep_days=11)
+        assert not stale.exists()
+        assert kept.exists()
         sel_obj.prune.assert_called_once_with()
 
     @pytest.mark.asyncio

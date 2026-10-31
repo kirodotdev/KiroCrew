@@ -104,11 +104,17 @@ export default function McpOAuthBanner({
     // A host holding state the hand-off's navigation would drop (ChatEmbed,
     // ChatPane) turns it off through `askAgent`. The server name is the bold
     // lead; the sentence stays the journal key.
+    //
+    // No hand-off: with `askAgent` off the notice would end on the error and
+    // leave nothing to do, so it names where to sign in again instead. Plain
+    // text, not a link: a link navigates away from the same unsaved draft or
+    // staged quote the hand-off was turned off to protect.
     return (
       <ErrorNotice
         title={label}
         message={`${i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}${error ? `: ${error}` : '.'}`}
         askAgent={askAgent}
+        footer={askAgent ? undefined : i18nT('pages.chat.mcpOAuthBanner.failed_next_step')}
       />
     )
   }

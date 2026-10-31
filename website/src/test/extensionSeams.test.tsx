@@ -62,6 +62,8 @@ import {
   getRemoteProvisionerRenderer,
   canRenderRemoteProvisionerKind,
 } from '../components/remoteProvisionerRenderers'
+import { registerCrewRowActions, getCrewRowActions } from '../components/remoteCrewRowActions'
+import type { InstanceView } from '../api/client'
 import { apiTransport } from '../api/apiTransport'
 // Importing the client installs the blessed transport (installApiTransport runs
 // at client module load), so `apiTransport` is populated for the test below.
@@ -519,6 +521,65 @@ describe('remoteProvisionerRenderers — remote-instance provisioner form seam',
       registerRemoteProvisionerRenderer({ kind: 'seam_test_prov_dup', component: second }),
     ).toThrow(/already has a renderer/)
     expect(getRemoteProvisionerRenderer('seam_test_prov_dup')?.component).toBe(first)
+  })
+})
+
+describe('remoteCrewRowActions — row lifecycle controls for a contributed provisioner', () => {
+  // Module singleton, so each test uses its OWN provisioner id; the "core
+  // registers nothing" claim takes a fresh module.
+  const row = (over: Partial<InstanceView>): InstanceView =>
+    ({ id: 'r1', name: 'crew', provisioner_id: '', ...over }) as InstanceView
+
+  it('registers nothing of its own — a fresh registry is empty', async () => {
+    vi.resetModules()
+    const fresh = await import('../components/remoteCrewRowActions')
+    expect(fresh.getCrewRowActions(row({ provisioner_id: 'seam_rows_unlisted' }))).toBeUndefined()
+  })
+
+  it('a registered contribution applies to rows stamped with its provisioner id', () => {
+    const Items = () => null
+    registerCrewRowActions({ provisionerId: 'seam_rows_devspace', menuItems: Items })
+    expect(getCrewRowActions(row({ provisioner_id: 'seam_rows_devspace' }))?.menuItems).toBe(Items)
+    expect(getCrewRowActions(row({ provisioner_id: 'seam_rows_other' }))).toBeUndefined()
+    expect(getCrewRowActions(row({}))).toBeUndefined()
+  })
+
+  it('never applies to a chained row, whose stamp the announcing pane chose', () => {
+    registerCrewRowActions({ provisionerId: 'seam_rows_chained', detail: () => null })
+    expect(
+      getCrewRowActions(row({ provisioner_id: 'seam_rows_chained', via_instance_id: 'parent' })),
+    ).toBeUndefined()
+  })
+
+  it('refuses the built-in provisioner — EC2 lifecycle is a core action', () => {
+    expect(() => registerCrewRowActions({ provisionerId: 'aws_ec2', menuItems: () => null })).toThrow(
+      /built-in row actions/,
+    )
+    expect(getCrewRowActions(row({ provisioner_id: 'aws_ec2' }))).toBeUndefined()
+  })
+
+  it('refuses an id that could never match a stamp verbatim', () => {
+    for (const provisionerId of ['', '  ', ' padded ', 7 as unknown as string]) {
+      expect(() => registerCrewRowActions({ provisionerId, menuItems: () => null })).toThrow(
+        /non-empty provisioner id with no surrounding whitespace/,
+      )
+    }
+  })
+
+  it('refuses a contribution that draws nothing', () => {
+    expect(() => registerCrewRowActions({ provisionerId: 'seam_rows_empty' })).toThrow(
+      /neither menuItems nor detail/,
+    )
+    expect(getCrewRowActions(row({ provisioner_id: 'seam_rows_empty' }))).toBeUndefined()
+  })
+
+  it('throws on a duplicate id in dev/test; the first contribution keeps it', () => {
+    const first = () => null
+    registerCrewRowActions({ provisionerId: 'seam_rows_dup', menuItems: first })
+    expect(() => registerCrewRowActions({ provisionerId: 'seam_rows_dup', menuItems: () => null })).toThrow(
+      /already has row actions/,
+    )
+    expect(getCrewRowActions(row({ provisioner_id: 'seam_rows_dup' }))?.menuItems).toBe(first)
   })
 })
 

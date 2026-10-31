@@ -11982,7 +11982,8 @@
         "remote_gateway_hint": "Em um gateway remoto, o callback localhost do navegador falhará — isso é esperado. Copie o endereço completo em que o navegador parou e cole-o aqui para concluir a autorização.",
         "requires_authentication": "requer autenticação.",
         "superseded": "não tem mais um início de sessão ativo: uma solicitação mais recente o substituiu. Use o botão \"Autorizar\" mais recente para entrar.",
-        "expired": "não tem mais um início de sessão ativo: a sessão que o iniciou foi encerrada. Envie uma mensagem para obter um novo link \"Autorizar\"."
+        "expired": "não tem mais um início de sessão ativo: a sessão que o iniciou foi encerrada. Envie uma mensagem para obter um novo link \"Autorizar\".",
+        "failed_next_step": "Para iniciar sessão novamente, abra Personalizar → Conexões → Servidores MCP."
       },
       "notificationItem": {
         "acknowledged": "Confirmado",
@@ -19327,7 +19328,8 @@
         "crew_disabled": "Conexões: desligadas",
         "crew_enabled_named": "{{name}} ativado",
         "crew_toggle_failed": "Não foi possível alterar {{name}}: {{error}}",
-        "crew_switch_hint": "Desligado fecha a conexão deste painel com essa crew e a mantém fechada. As sessões na máquina continuam rodando."
+        "crew_switch_hint": "Desligado fecha a conexão deste painel com essa crew e a mantém fechada. As sessões na máquina continuam rodando.",
+        "row_actions_failed": "Não foi possível carregar os controles extras de {{name}}: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks de entrada",

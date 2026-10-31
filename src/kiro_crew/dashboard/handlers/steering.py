@@ -649,9 +649,23 @@ def _blocked(request: web.Request, operation: str) -> web.Response | None:
             resources="restricted_session_block",
         )
         return web.json_response(
-            {"error": "restricted session cannot modify steering files"}, status=403
+            {
+                "error": "restricted session cannot modify steering files",
+                "code": "restricted_session",
+            },
+            status=403,
         )
     return None
+
+
+def _not_found() -> web.Response:
+    """The one 404 every steering verb answers.
+
+    A key that never resolved and a read the descriptor gate withheld share
+    this body on purpose, so the reply is no oracle for which files the gate
+    protects. One helper keeps the two from drifting apart.
+    """
+    return web.json_response({"error": "not found", "code": "steering_not_found"}, status=404)
 
 
 # ── Blocking filesystem transactions (run on the discovery pool) ──
@@ -1081,20 +1095,26 @@ async def api_steering_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     project_dir, project_state = active_project_state(state, _read_session_key(request))
     source = str(body.get("source") or ("workspace" if project_dir else "user"))
     if source not in STEERING_SOURCES:
-        return web.json_response({"error": "invalid source"}, status=400)
+        return web.json_response({"error": "invalid source", "code": "invalid_source"}, status=400)
     if source == "workspace" and project_dir is None:
         # Refuse rather than write to a guess. ``reason`` lets the dialog say
         # which fix applies — bind a project, or close the chat that disagrees —
@@ -1117,7 +1137,7 @@ async def api_steering_create(request: web.Request) -> web.Response:
         )
     rel = _safe_rel_name(str(body.get("name", "")))
     if not rel:
-        return web.json_response({"error": "name is required"}, status=400)
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if len(rel.encode("utf-8")) > MAX_STEERING_NAME_BYTES:
         # Bound the name before the write: the host would otherwise refuse the
         # joined path for its length and the blanket OSError handling below would
@@ -1144,12 +1164,16 @@ async def api_steering_create(request: web.Request) -> web.Response:
     key = f"{source}/{rel}"
     target = await _offload(_resolve_blocking, key, project_dir, True)
     if target is None:
-        return web.json_response({"error": "invalid steering path"}, status=400)
+        return web.json_response(
+            {"error": "invalid steering path", "code": "invalid_steering_path"}, status=400
+        )
     err, display = await _offload(_create_file_blocking, target, content)
     if err == "exists":
-        return web.json_response({"error": f"'{rel}' already exists"}, status=409)
+        return web.json_response(
+            {"error": f"'{rel}' already exists", "code": "steering_exists"}, status=409
+        )
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.create",
@@ -1254,7 +1278,10 @@ async def api_steering_detail(request: web.Request) -> web.Response:
             _audit("too_large")
             size = err.split(":", 1)[1]
             return web.json_response(
-                {"error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})"},
+                {
+                    "error": f"file too large ({size} bytes; cap {STEERING_FILE_MAX_BYTES})",
+                    "code": "file_too_large",
+                },
                 status=413,
             )
         if err is not None:
@@ -1268,7 +1295,7 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 _audit_unread("api_steering_read", "steering", "error", {"key": key})
             else:
                 _audit("not_found")
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is
         # deliberate: this response populates the editor and is written straight
@@ -1305,12 +1332,14 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 return stale
         target = await _offload(_resolve_blocking, key, project_dir, False)
         if target is None:
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         err = await _offload(_delete_file_blocking, target)
         if err == "notfound":
-            return web.json_response({"error": "not found"}, status=404)
+            return _not_found()
         if err is not None:
-            return web.json_response({"error": "delete failed"}, status=500)
+            return web.json_response(
+                {"error": "delete failed", "code": "delete_failed"}, status=500
+            )
         _sel().log_api_access(
             caller=request.get("user", "dashboard"),
             operation="steering.delete",
@@ -1340,28 +1369,34 @@ async def api_steering_detail(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
     content = body.get("content", "")
     if not isinstance(content, str) or not content.strip():
-        return web.json_response({"error": "content is required"}, status=400)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400
+        )
     try:
         content = _apply_declaration(content, body)
     except _DeclarationError as exc:
         return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     if len(content.encode("utf-8")) > STEERING_FILE_MAX_BYTES:
         return web.json_response(
-            {"error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)"}, status=413
+            {
+                "error": f"content too large (cap {STEERING_FILE_MAX_BYTES} bytes)",
+                "code": "content_too_large",
+            },
+            status=413,
         )
     target = await _offload(_resolve_blocking, key, project_dir, False)
     if target is None:
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     err = await _offload(_update_file_blocking, target, content)
     if err == "notfound":
-        return web.json_response({"error": "not found"}, status=404)
+        return _not_found()
     if err is not None:
-        return web.json_response({"error": "write failed"}, status=500)
+        return web.json_response({"error": "write failed", "code": "write_failed"}, status=500)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="steering.update",

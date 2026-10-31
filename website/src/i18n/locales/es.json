@@ -11982,7 +11982,8 @@
         "remote_gateway_hint": "En una puerta de enlace remota, la llamada de retorno a localhost del navegador fallará; es lo esperado. Copia la dirección completa a la que llegó el navegador y pégala aquí para terminar la autorización.",
         "requires_authentication": "requiere autenticación.",
         "superseded": "ya no tiene un inicio de sesión activo: una solicitud más reciente lo reemplazó. Usa el botón «Autorizar» más reciente para iniciar sesión.",
-        "expired": "ya no tiene un inicio de sesión activo: la sesión que lo inició terminó. Envía un mensaje para obtener un nuevo enlace «Autorizar»."
+        "expired": "ya no tiene un inicio de sesión activo: la sesión que lo inició terminó. Envía un mensaje para obtener un nuevo enlace «Autorizar».",
+        "failed_next_step": "Para volver a iniciar sesión, abre Personalizar → Conexiones → Servidores MCP."
       },
       "notificationItem": {
         "acknowledged": "Confirmado",
@@ -19327,7 +19328,8 @@
         "crew_disabled": "Conexiones: apagadas",
         "crew_enabled_named": "{{name}} activado",
         "crew_toggle_failed": "No se pudo cambiar {{name}}: {{error}}",
-        "crew_switch_hint": "Apagado cierra la conexión de este panel con esa crew y la mantiene cerrada. Las sesiones en la máquina siguen en marcha."
+        "crew_switch_hint": "Apagado cierra la conexión de este panel con esa crew y la mantiene cerrada. Las sesiones en la máquina siguen en marcha.",
+        "row_actions_failed": "No se pudieron cargar los controles adicionales de {{name}}: {{error}}"
       },
       "webhooksPanel": {
         "inbound_webhooks": "Webhooks entrantes",

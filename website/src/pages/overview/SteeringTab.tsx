@@ -342,7 +342,7 @@ function isProjectConflict(err: unknown): boolean {
   const body = (err as { body?: unknown }).body
   // The CODE is the identity, and it is required — 409 alone is not enough on
   // these routes, because create already answers 409 for a name collision
-  // ("'x.md' already exists") with no code. Treating a bare 409 as a project
+  // ("'x.md' already exists", code `steering_exists`). Treating a bare 409 as a project
   // conflict showed "the active project changed" over a collision and re-listed
   // for nothing. Anything without this code keeps the server's own message.
   return parseErrorCode(typeof body === 'string' ? body : undefined) === 'steering_project_changed'

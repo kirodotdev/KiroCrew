@@ -192,7 +192,7 @@ def delete_item(self: KnowledgeStore, item_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch(
@@ -217,7 +217,7 @@ def delete_items_batch(
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def delete_items_batch_in_txn(
@@ -366,4 +366,4 @@ def delete_source_cascade(self: KnowledgeStore, source_id):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
-    self._load_graph()
+    self.mark_graph_stale()

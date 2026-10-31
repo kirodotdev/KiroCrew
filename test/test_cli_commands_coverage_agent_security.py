@@ -696,11 +696,28 @@ class TestSecurityCli:
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_commands.scan_history", return_value=history),
             patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "1 suspicious entries found" in out and "s.jsonl" in out
         assert "1 suspicious memory entries" in out and "[semantic] k" in out
+
+    def test_audit_memory_findings_only_exits_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        memory = [{"type": "semantic", "key": "k", "warning": "odd", "value": "v"}]
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_commands.scan_history", return_value=[]),
+            patch("kiro_crew.cli_commands.scan_memory", return_value=memory),
+            pytest.raises(SystemExit) as exc,
+        ):
+            cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "No suspicious tool usage" in out and "1 suspicious memory entries" in out
 
     def test_audit_history_findings_with_clean_memory(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -710,8 +727,10 @@ class TestSecurityCli:
             patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_commands.scan_history", return_value=history),
             patch("kiro_crew.cli_commands.scan_memory", return_value=[]),
+            pytest.raises(SystemExit) as exc,
         ):
             cc._security(_ns(sec_action="audit"))
+        assert exc.value.code == 1
         assert "No suspicious content in vector memory." in capsys.readouterr().out
 
     def test_events_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -928,23 +947,25 @@ class TestSecurityCli:
         assert "cron.add → allowed" in out and "error: boom" in out and "slack" in out
 
     @pytest.mark.parametrize(
-        ("total", "valid", "verifiable", "expected"),
+        ("total", "valid", "verifiable", "expected", "exit_code"),
         [
-            (0, 0, True, "No security events to verify."),
-            (3, 3, True, "HMAC chain intact"),
-            (3, 1, True, "HMAC chain COMPROMISED"),
+            (0, 0, True, "No security events to verify.", 0),
+            (3, 3, True, "HMAC chain intact", 0),
+            (3, 1, True, "HMAC chain COMPROMISED", 1),
             (
                 5,
                 5,
                 False,
                 "Audit history UNVERIFIABLE: segment directory refused to pin",
+                1,
             ),
-            (0, 0, False, "Audit history UNVERIFIABLE"),
+            (0, 0, False, "Audit history UNVERIFIABLE", 1),
             (
                 5,
                 3,
                 False,
                 "the live log shows tampered entries: 3/5 entries valid",
+                1,
             ),
         ],
     )
@@ -954,6 +975,7 @@ class TestSecurityCli:
         valid: int,
         verifiable: bool,
         expected: str,
+        exit_code: int,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         outcome = sel_mod.SelVerification(
@@ -964,7 +986,12 @@ class TestSecurityCli:
         )
         with patch("kiro_crew.cli_commands.sel") as sel:
             sel.return_value.verify_integrity.return_value = outcome
-            cc._security(_ns(sec_action="verify"))
+            if exit_code:
+                with pytest.raises(SystemExit) as exc:
+                    cc._security(_ns(sec_action="verify"))
+                assert exc.value.code == exit_code
+            else:
+                cc._security(_ns(sec_action="verify"))
         assert expected in capsys.readouterr().out
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
