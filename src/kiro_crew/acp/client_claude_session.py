@@ -281,8 +281,9 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     when the adapter that
     answered the handshake is below
     :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION` or reported no version.
-    Before the handshake the floor is read from the installed package's own
-    version, so the decision is made before the MCP array is first resolved;
+    Before the handshake the floor is read from the version the launch read (the
+    installed package's own, or for a wrapper script what it reported at its latest
+    handshake), so the decision is made before the MCP array is first resolved;
     :meth:`_pin_claude_starting_mode` checks the handshake's version too.
 
     Returns whether the exclusion was taken.
@@ -349,16 +350,31 @@ def _claude_adapter_below_setting_sources_floor(self: AcpClient) -> bool:
     """Whether the adapter may ignore ``settingSources``.
 
     After a handshake, judged on the ``agentInfo.version`` it reported. Before
-    one, on the installed package's own version, read by the claude adapter's
-    launch (``ClaudeLaunch.resolve_spawn``) before the settings writer runs
-    (``_claude_adapter_disk_version``). Unknown reads as below the floor, so the
-    exclusion is never taken on a guess.
+    one, on the version the claude adapter's launch (``ClaudeLaunch.resolve_spawn``)
+    read before the settings writer runs (``_claude_adapter_disk_version``): the
+    package's own, or for a wrapper script what it reported at its latest
+    handshake. Unknown reads as below the floor, so the exclusion is never taken
+    on a guess.
     """
     if getattr(self, "_agent_version_read", False):
         version = getattr(self, "_agent_version", "")
     else:
         version = getattr(self, "_claude_adapter_disk_version", "")
     return not _claude_adapter_honours_setting_sources(version)
+
+
+def _note_claude_adapter_version(self: AcpClient) -> None:
+    """Record the ``agentInfo.version`` this session's adapter argv reported at the handshake.
+
+    Kept for the process (``harness.claude._claude_adapter_handshake_versions``), so a
+    later pre-spawn check can read the version a wrapper script runs. An empty
+    report is recorded as well: the latest handshake is the answer.
+    """
+    if not self._is_claude:
+        return
+    argv = getattr(self, "_claude_adapter_argv", None)
+    if argv:
+        claude_mod._claude_adapter_handshake_versions[argv] = self._agent_version
 
 
 def _log_claude_adapter_below_floor(self: AcpClient, local_settings: Path, whose: str) -> None:
@@ -553,8 +569,8 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     if not (excludes_local or getattr(self, "_side_read_only", False)):
         return
     if self._claude_adapter_below_setting_sources_floor():
-        # The installed package passed the floor, but the adapter that answered
-        # the handshake did not: it may have ignored the session's options.
+        # The version read before the spawn passed the floor, but the adapter that
+        # answered the handshake did not: it may have ignored the session's options.
         await self._kill_process(force=True)
         raise AcpError(
             "the claude-agent-acp that answered the handshake is not verified to "

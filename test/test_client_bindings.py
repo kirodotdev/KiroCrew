@@ -67,6 +67,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_claim_stdout": ("function", True, "b60c5fea256e", "client_transport"),
     "_claiming_stdout": ("function", False, "202eff0259ef", "client_transport"),
     "_classify_failed_start": ("function", True, "05bb8f207290", "client_lifecycle"),
+    "_claude_adapter_argv": ("annotation", False, "", ""),
     "_claude_adapter_below_setting_sources_floor": (
         "function",
         False,
@@ -176,6 +177,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_note_asked_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_note_background_launch": ("function", False, "87459833bc5c", "client_turn_control"),
     "_refuse_unverified_copilot_version": ("function", False, "b60c5fea256e", "client_copilot"),
+    "_note_claude_adapter_version": ("function", False, "b60c5fea256e", "client_claude_session"),
     "_note_goose_version": ("function", False, "b60c5fea256e", "client_permissions"),
     "_note_pi_adapter_version": ("function", False, "b60c5fea256e", "client_permissions"),
     "_note_pi_gate_asked": ("function", False, "87459833bc5c", "client_permissions"),

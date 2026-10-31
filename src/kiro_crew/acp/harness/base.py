@@ -131,6 +131,7 @@ class ProcessSession(Protocol):
     _session_key: str | None
     _model: str
     _agent_version_read: bool
+    _claude_adapter_argv: tuple[str, ...]
     _claude_adapter_disk_version: str
     _opencode_config_mcp_servers: tuple[str, ...]
     _session_harness_deny_rules: tuple[str, ...]

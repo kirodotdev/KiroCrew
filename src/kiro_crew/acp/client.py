@@ -774,6 +774,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_resolve_claude_acp_bin",
         "_resolve_claude_code_executable",
         "_claude_adapter_installed_version",
+        "_claude_adapter_known_version",
     ),
     "kiro_crew.acp.harness.opencode": (
         "_OPENCODE_LAUNCH",
@@ -970,6 +971,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         CLAUDE_CODE_BIN,
         _claude_acp_argv_cache,
         _claude_adapter_installed_version,
+        _claude_adapter_known_version,
         _resolve_claude_acp_bin,
         _resolve_claude_code_executable,
         _resolve_vendored_claude_acp,

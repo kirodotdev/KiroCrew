@@ -158,7 +158,9 @@ spreads `_meta.claudeCode.options` over its own `settingSources: ["user", "proje
 "local"]` default, verified against release **0.84.0** (`dist/acp-agent.js`). The
 project-owned settings path below relies on it, so that path is floored at
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION` (0.84.0), twice. Before spawn, the installed
-package's own `package.json` version decides whether the path is taken at all. After
+package's own `package.json` version decides whether the path is taken at all; a
+wrapper script with no `package.json` beside it is judged on the `agentInfo.version`
+the same command reported at its latest handshake in the gateway process. After
 `initialize`, the reported `agentInfo.version` must agree, or the session is stopped
 before its first prompt. Below the floor, or with no readable version, the project file
 stays loaded and the array stays withheld. The forwarding

@@ -96,7 +96,9 @@ class AcpClient:
     __module__ = "kiro_crew.acp.client"
 
     # Written by the claude adapter at launch, read back by the settings writer
-    # through ``getattr`` with an empty default: never set on any other host.
+    # and the handshake through ``getattr`` with an empty default: never set on
+    # any other host.
+    _claude_adapter_argv: tuple[str, ...]
     _claude_adapter_disk_version: str
     # Fields first set by a member an owner module defines, declared so the class names them.
     _claude_shipped_restrictions: frozenset[tuple[str, str]]
@@ -1119,6 +1121,7 @@ class AcpClient:
         _client_claude_session._claude_adapter_below_setting_sources_floor
     )
     _log_claude_adapter_below_floor = _client_claude_session._log_claude_adapter_below_floor
+    _note_claude_adapter_version = _client_claude_session._note_claude_adapter_version
     _prepare_claude_side_read_denies = _client_claude_session._prepare_claude_side_read_denies
     _claude_session_meta = _client_claude_session._claude_session_meta
     _claude_session_excludes_local = _client_claude_session._claude_session_excludes_local
