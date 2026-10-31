@@ -489,6 +489,14 @@ class AcpProvider(LLMProvider):
         return notice if isinstance(notice, str) else ""
 
     @property
+    def withheld_credentials_notice(self) -> str:
+        """The notice naming MCP servers this session started without part of their
+        ``env`` or ``headers``, by key name only, else ``""``. Recorded when the
+        session registered its ``customAgents``."""
+        notice = getattr(self._client, "kas_withheld_credentials_notice", "")
+        return notice if isinstance(notice, str) else ""
+
+    @property
     def cwd(self) -> str:
         """Working directory this provider operates in.
 
