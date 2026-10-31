@@ -88,6 +88,8 @@ class _ChatSlot:
         "memory_store",
         "_memory_assignment_from_history",
         "_binding",
+        "_checkout_turn_projects",
+        "_checkout_turn_unplaced",
         "created_at",
         "_messages",
         "_lazy_window",
@@ -406,6 +408,8 @@ class _ChatSlot:
     memory_store: str
     _memory_assignment_from_history: bool
     _binding: TranscriptBinding
+    _checkout_turn_projects: tuple[str, ...]
+    _checkout_turn_unplaced: bool
     executor: str
     instance_id: str
     remote_slot: str

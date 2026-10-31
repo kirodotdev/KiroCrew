@@ -23,7 +23,7 @@ import functools
 import logging
 from typing import TYPE_CHECKING
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, repo_checkout_guard
 from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _capture_child_records, _get_child_pids
 from kiro_crew.executors import subprocess_executor
@@ -454,6 +454,60 @@ async def kill(self: AcpRuntime, *, expected: bool = False, reason: str = "") ->
         await self._close_remote_workspace()
 
 
+def teardown_leftovers_running(
+    root_dead: bool,
+    root_pid: int | None,
+    root_start: str | None,
+    survivors: dict[int, ChildRecord],
+) -> bool:
+    """Whether a teardown's leftovers still run: its root, or a descendant it left.
+
+    The busy check of a branch switch keeps an unanswered prompt of such a
+    process counted until this reads False (``repo_checkout_guard``), so it
+    follows the PID tracking's own fail-safe rule: anything inconclusive is
+    still running, including a root the teardown could not prove dead and has
+    no pid to probe. Synchronous and off-loop only: it reads ``/proc`` and the
+    descendant prune takes the PID file's lock.
+    """
+    if root_pid is not None and platform_compat.windows_tree_cleanup_pending(root_pid, root_start):
+        return True
+    if not root_dead and (root_pid is None or not _pid_gone_or_unmanaged(root_pid)):
+        return True
+    return bool(survivors) and bool(_prune_dead_descendants(dict(survivors)))
+
+
+def end_prompts_after_teardown(
+    instance: str,
+    root_dead: bool,
+    root_pid: int | None,
+    root_start: str | None,
+    survivors: dict[int, ChildRecord],
+) -> None:
+    """End ``instance``'s unanswered prompts once its process tree is gone.
+
+    At once when the teardown confirmed it (root dead, no survivor); otherwise
+    as soon as the leftovers it named are gone, checked by the switch's busy
+    check, so a respawn or a later kill of the same runtime cannot lose the
+    verdict.
+    """
+    pending = root_pid is not None and platform_compat.windows_tree_cleanup_pending(
+        root_pid, root_start
+    )
+    if root_dead and not survivors and not pending:
+        repo_checkout_guard.prompt_process_gone(instance)
+    else:
+        repo_checkout_guard.prompt_process_lingering(
+            instance,
+            functools.partial(
+                teardown_leftovers_running,
+                root_dead,
+                root_pid,
+                root_start,
+                dict(survivors),
+            ),
+        )
+
+
 async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str = "") -> None:
     """Kill the subprocess and clean up all state.
 
@@ -470,6 +524,9 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
     # self._dead internally; doing it up front (before teardown) ensures any
     # waiters learn the runtime died. Calling it after setting _dead=True
     # would hit its early-return guard and skip all cleanup.
+    # Whose prompts a confirmed death below ends (repo_checkout_guard).
+    dying_instance = str(getattr(self, "_process_instance", "") or "")
+    dying_start = getattr(self, "_spawn_start_token", None)
     self._mark_dead(f"killed ({reason})" if reason else "killed", expected=expected)
 
     if self._reader_task and not self._reader_task.done():
@@ -513,7 +570,14 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         process = self._process
         pid = process.pid
         try:
-            await platform_compat.terminate_windows_asyncio_tree(process)
+            try:
+                await platform_compat.terminate_windows_asyncio_tree(process)
+            except BaseException:
+                # The drain could not confirm the tree; its prompts stay counted
+                # until the root can be probed gone (a later kill or the cleanup
+                # sweep may still reap it).
+                end_prompts_after_teardown(dying_instance, False, pid, dying_start, {})
+                raise
         except platform_compat.WindowsTreeDrainPending as exc:
             # Pending, not lost: every pin is in the pending registry and the
             # cleanup sweep resumes this drain. One line, because a traceback
@@ -542,6 +606,13 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         # the placeholder true for a tree it could not confirm.
         self._note_reaped_after_kill(process.returncode)
         self._process_tree_confirmed_dead = process.returncode is not None
+        end_prompts_after_teardown(
+            dying_instance,
+            self._process_tree_confirmed_dead,
+            getattr(process, "pid", None),
+            dying_start,
+            {},
+        )
         self._process = None
         self._process_instance = ""
         self._scope_unit = ""
@@ -673,3 +744,10 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                     survivors,
                 )
         self._process_tree_confirmed_dead = root_confirmed_dead and not survivors
+        end_prompts_after_teardown(
+            dying_instance,
+            root_confirmed_dead,
+            pid,
+            dying_start,
+            {p: saved_children[p] for p in survivors},
+        )

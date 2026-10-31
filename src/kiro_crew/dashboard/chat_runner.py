@@ -32,6 +32,7 @@ from kiro_crew import (  # noqa: F401
     injection_receipts,
     mcp_apps_render,
     model_registry,
+    repo_checkout_guard,
     resource_status,
     runtime_death,
     session_directive,

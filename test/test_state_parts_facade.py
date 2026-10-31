@@ -412,6 +412,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_channel_folder_filed": ("value", "False"),
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),
+    "_checkout_turn_projects": ("value", "()"),
+    "_checkout_turn_unplaced": ("value", "False"),
     "_chunk_seq": ("value", "0"),
     "_closing": ("value", "0"),
     "_compacting": ("value", "False"),

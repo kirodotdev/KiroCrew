@@ -11,9 +11,10 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_last_activity``, ``_next_id``, ``_pending_requests``,
 ``_routed_requests``, ``_stdin_lock``.
 
-Instance fields read: ``_acp_backend``, ``_agent``, ``_dead``, ``_launch_agent``,
+Instance fields read: ``_acp_backend``, ``_admit_prompt``, ``_agent``, ``_dead``, ``_launch_agent``,
 ``_native_skill_projection``,
-``_one_at_a_time_sent``, ``_process``, ``_session_queues``, ``_stderr_lines``.
+``_one_at_a_time_sent``, ``_process``, ``_process_instance``, ``_record_prompt``, ``_session_cwds``,
+``_session_queues``, ``_stderr_lines``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew import repo_checkout_guard
 from kiro_crew.acp.client import _loggable_request_id
 from kiro_crew.acp.runtime_start import _cold_start_counts
 from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeDead
@@ -106,6 +108,41 @@ class AcpRuntimeStdinStalled(AcpRuntimeDead):
 AcpRuntimeStdinStalled.__module__ = "kiro_crew.acp.runtime"
 
 
+async def _admit_prompt(self: AcpRuntime, method: str, params: dict[str, Any]) -> str | None:
+    """Wait out a branch switch before a request that starts agent work.
+
+    ``None`` for any other request. For a prompt (``PROMPT_METHODS``), the
+    folder its session was opened in, or ``""`` when that is unknown (busy in
+    every repository), returned once no checkout covers it; with none in
+    flight, without suspending. Every request writer of this runtime calls it
+    before it reserves an id and :meth:`_record_prompt` right after, with no
+    await between (repo_checkout_guard).
+    """
+    if not repo_checkout_guard.is_tracked(method):
+        return None
+    folder = getattr(self, "_session_cwds", {}).get(str(params.get("sessionId") or ""), "")
+    await repo_checkout_guard.before_prompt(folder)
+    if not self._process or not self._process.stdin:
+        raise AcpRuntimeDead("process not running")
+    if self._dead:
+        raise AcpRuntimeDead("runtime is dead")
+    return folder
+
+
+def _record_prompt(
+    self: AcpRuntime, method: str, req_id: int, folder: str | None, session: object = ""
+) -> None:
+    """Count a prompt :meth:`_admit_prompt` admitted until the backend answers it."""
+    if folder is not None:
+        repo_checkout_guard.prompt_sent(
+            str(getattr(self, "_process_instance", "") or ""),
+            req_id,
+            folder,
+            method=method,
+            session=str(session or ""),
+        )
+
+
 async def send_request(
     self: AcpRuntime,
     method: str,
@@ -128,6 +165,8 @@ async def send_request(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
+
     projection = getattr(self, "_native_skill_projection", None)
     if method == METHOD_SET_MODE and self._launch_agent and params.get("modeId") == self._agent:
         # Re-selecting this runtime's own agent mid-session names its launch
@@ -137,6 +176,7 @@ async def send_request(
         params = projection.request(method, params)
     req_id = self._next_id
     self._next_id += 1
+    self._record_prompt(method, req_id, folder, params.get("sessionId"))
 
     # Register for session routing so the response goes to the right queue
     session_id = params.get("sessionId")
@@ -338,12 +378,19 @@ async def _write_request_bounded(
     only through ``_loggable_request_id``.
     """
     assert self._process is not None and self._process.stdin is not None
+
+    def _prompt_not_written() -> None:
+        repo_checkout_guard.prompt_not_written(
+            str(getattr(self, "_process_instance", "") or ""), request_id
+        )
+
     result = await write_request_frame_bounded(
         self._process.stdin,
         self._stdin_write_lock(),
         data,
         bound_secs=_RESPONSE_WRITE_BOUND_SECS,
         before_write=self._refuse_write_if_dead,
+        on_not_written=_prompt_not_written,
     )
     if result is RequestWriteResult.OK:
         return
@@ -425,8 +472,10 @@ async def send_request_for_answer(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
     req_id = self._next_id
     self._next_id += 1
+    self._record_prompt(method, req_id, folder, params.get("sessionId"))
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         params = projection.request(method, params)
@@ -591,8 +640,10 @@ async def _send_and_await(
     if self._dead:
         raise AcpRuntimeDead("runtime is dead")
 
+    folder = await self._admit_prompt(method, params)
     req_id = self._next_id
     self._next_id += 1
+    self._record_prompt(method, req_id, folder, params.get("sessionId"))
     ahead = self._one_at_a_time_ahead(method, req_id)
 
     projection = getattr(self, "_native_skill_projection", None)

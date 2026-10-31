@@ -78,6 +78,32 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
+/** One row of `GET /api/project/git/branches`. `switchable` is false when the
+ *  name came back redacted, so echoing it to the switch route could not work. */
+export interface GitBranchRow {
+  name: string
+  date: string
+  author: string
+  subject: string
+  switchable: boolean
+  current?: boolean
+  /** Commits ahead of / behind the branch's upstream; absent when untracked or equal. */
+  ahead?: number
+  behind?: number
+}
+
+export interface GitBranchList {
+  repo: boolean
+  current?: string | null
+  detached?: boolean
+  head?: string
+  local: GitBranchRow[]
+  remote: GitBranchRow[]
+  truncated?: boolean
+  /** Present when checkout is refused for this repository (a declared filter driver). */
+  switchBlocked?: 'filter'
+}
+
 export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
@@ -128,6 +154,11 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
      *  `listed` counts the agent rows shown and `omitted` the ones past the cap.
      *  `incomplete` means bounded tool-path tracking may have missed repositories. */
     projectGitRepos: (slot: string) => fetch('/api/project/git/repos?slot=' + encodeURIComponent(slot)).then(j) as Promise<{ repos: { path: string; source: 'project' | 'agent' }[]; omitted: number; listed: number; incomplete: boolean }>,
+    /** Local branches (newest commit first) plus remote branches with no local twin. See `handlers/git_branches.py`. */
+    projectGitBranches: (path: string) => fetch('/api/project/git/branches?path=' + encodeURIComponent(path)).then(j) as Promise<GitBranchList>,
+    /** Check out `branch`; `create` makes it at HEAD, `track` makes it tracking `<remote>/<name>`. Owner-only. */
+    projectGitSwitch: (body: { path: string; branch: string; create?: boolean; track?: string }) =>
+      post('/api/project/git/switch', body).then(j) as Promise<{ ok: true; branch: string }>,
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>

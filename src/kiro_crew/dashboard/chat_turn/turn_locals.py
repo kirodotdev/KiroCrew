@@ -106,6 +106,7 @@ class _ChatTurn:
     _batch_cascade_steered: "bool"
     _builtin_identity_trusted: "bool"
     _child_lf_warning: "str"
+    _checkout_project: "str | None"
     _compact_after_turn_noticed: "bool"
     _compaction_completed: "bool"
     _compaction_dropped_leak: "bool"

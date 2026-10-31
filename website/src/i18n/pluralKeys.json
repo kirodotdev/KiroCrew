@@ -327,5 +327,7 @@
   "pages.settings.postureDisclosure.count_credential_families",
   "pages.settings.postureDisclosure.count_exfil_heuristics",
   "pages.settings.postureDisclosure.count_audit_surfaces",
-  "pages.settings.postureDisclosure.count_token_auth"
+  "pages.settings.postureDisclosure.count_token_auth",
+  "components.branchSwitcher.ahead_count",
+  "components.branchSwitcher.behind_count"
 ]

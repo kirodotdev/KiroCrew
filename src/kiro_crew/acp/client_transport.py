@@ -15,8 +15,8 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 
 Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
-``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
-``_turn_done``, ``memory_mode``.
+``_native_skill_projection``, ``_process``, ``_process_instance``, ``_spawn_work_dir``,
+``_stderr_lines``, ``_stderr_task``, ``_turn_done``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, TypeVar
 
+from kiro_crew import repo_checkout_guard
 from kiro_crew.acp import transport_framing
 from kiro_crew.acp._dispatch import _loggable_request_id
 from kiro_crew.acp._frame_record import record_frame
@@ -224,10 +225,27 @@ async def _send_request(
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
 
+    is_prompt = repo_checkout_guard.is_tracked(method)
+    if is_prompt:
+        # The branch switch's busy check sees every prompt from before its
+        # write until the backend answers it (repo_checkout_guard). No await
+        # without a checkout in flight, so nothing reorders here.
+        folder = str(getattr(self, "_spawn_work_dir", "") or "")
+        await repo_checkout_guard.before_prompt(folder)
+        if not self._process or not self._process.stdin:
+            raise AcpError("ACP process not running")
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         params = projection.request(method, params)
     req_id = self._next_req_id()
+    if is_prompt:
+        repo_checkout_guard.prompt_sent(
+            str(getattr(self, "_process_instance", "") or ""),
+            req_id,
+            folder,
+            method=method,
+            session=str(params.get("sessionId") or ""),
+        )
     if on_id is not None:
         on_id(req_id)
     req = JsonRpcRequest(method=method, params=params, id=req_id)
@@ -285,11 +303,18 @@ async def _write_request_bounded(
     ``ensure_ready`` kills the child before spawning its replacement.
     """
     assert self._process is not None and self._process.stdin is not None
+
+    def _prompt_not_written() -> None:
+        repo_checkout_guard.prompt_not_written(
+            str(getattr(self, "_process_instance", "") or ""), request_id
+        )
+
     result = await write_request_frame_bounded(
         self._process.stdin,
         self._stdin_write_lock(),
         data,
         bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+        on_not_written=_prompt_not_written,
     )
     if result is RequestWriteResult.OK:
         return
@@ -768,6 +793,13 @@ async def _read_message(
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         data = projection.frame(data)
+    if data.get("method") is None and ("result" in data or "error" in data):
+        # A response, read off the wire once: if it answers a prompt, the
+        # backend has ended that turn, whichever loop reads it (a later turn
+        # reads the answer to one a cancelled caller stopped waiting on).
+        repo_checkout_guard.prompt_answered(
+            str(getattr(self, "_process_instance", "") or ""), data.get("id"), data.get("result")
+        )
     return JsonRpcMessage(
         id=data.get("id"),
         method=data.get("method"),

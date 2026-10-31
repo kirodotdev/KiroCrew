@@ -651,6 +651,34 @@ directory, and any other errno (`ENOENT` from a concurrent prune elsewhere,
 `EMFILE`) is reported by name with no such diagnosis. Every other `False`
 from the unlink is a deliberate keep and stays at debug.
 
+**Prompts in flight, for the branch switch.** Both transports count every request
+that starts agent work (`repo_checkout_guard.is_tracked`: a turn, a kiro slash
+command, a steer, a KAS checkpoint restore) from before its write until the
+backend answers it, so the dashboard's branch switch refuses while a turn may
+still be changing files. `AcpClient._send_request` and `AcpRuntime`'s three request
+writers (`runtime_wire`: `send_request`, `send_request_for_answer`,
+`_send_and_await`) wait out a checkout of the session's folder (`_session_cwds` on
+the runtime, `_spawn_work_dir` on the client) before they reserve the id, then
+record the prompt with no await between. If the writer is cancelled or refuses
+while it is still waiting for the stdin lock, or its lock wait stalls, it removes
+that registration because no byte of the frame reached stdin. Once `stdin.write`
+has accepted the frame, cancellation or a drain stall keeps the registration:
+the backend may still consume the buffered request. Both frame readers report every response
+by its id exactly as the wire carried it, including one whose `result` is JSON
+`null`: the runtime reader checks the key on the raw frame for that case, because
+its routing test reads a parsed `None` as absent. A teardown whose
+`process_tree_confirmed_dead` is True ends that process instance's prompts at
+once; one that is not -- a root it could not prove dead, a Windows drain retained
+in `windows_tree_cleanup_pending`, or descendants left for the orphan sweep -- hands the guard a
+probe of those leftovers
+(`runtime_tree_kill.end_prompts_after_teardown`), so a respawn or a later kill of
+the same runtime never drops the verdict, and the prompts end once the probe reads
+the leftovers gone. A root that exits on its own (an OOM kill, a crash) reaches no
+teardown, so `_retire_tracking_after_exit` makes the same call once the exit is
+confirmed (reaped, and the pid no longer answers), with the descendants the
+runtime last recorded. Neither path changes when a work directory is reclaimed: that
+still reads `process_tree_confirmed_dead` alone.
+
 Threads of one process do not race the publication file lock on their own
 clocks. `_projection_alias_lock` first takes an in-process `threading.Lock` per
 agents directory (`_in_process_projection_lock`, waited on for at most
