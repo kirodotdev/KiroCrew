@@ -1199,13 +1199,18 @@ class TestSchemaInit:
         store = VectorMemoryStore(db_path=db_path)
         try:
             store.init()
+            # Read before close: on a driver without setconfig the close opens a
+            # read-only connection of its own (sqlite_wal.close_keeping_wal).
+            opened_by_init = list(events)
         finally:
             store.close()
 
-        assert events.count("probe_readonly") == 1, events
-        assert events.count("connect") == 1, events
-        restricted_db_before = events.index("restrict:mem.db") < events.index("connect")
-        assert restricted_db_before, events
+        assert opened_by_init.count("probe_readonly") == 1, opened_by_init
+        assert opened_by_init.count("connect") == 1, opened_by_init
+        restricted_db_before = opened_by_init.index("restrict:mem.db") < opened_by_init.index(
+            "connect"
+        )
+        assert restricted_db_before, opened_by_init
 
     def test_relaxed_mode_is_retightened_on_reopen(self, tmp_path: Path, opened) -> None:
         """A DB whose mode was widened after creation is locked down again.
