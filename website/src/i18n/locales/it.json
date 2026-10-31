@@ -17937,7 +17937,21 @@
         "custom_sound_kind_tones": "Toni",
         "priority_critical": "Critica",
         "priority_default": "Predefinita",
-        "priority_passive": "Passiva"
+        "priority_passive": "Passiva",
+        "channel_tip_agent": "Quando un agente ti invia un messaggio o un avviso fuori da una chat, e per gli avvisi generali di {{productName}}, come un'approvazione di uno strumento scaduta, un aggiornamento disponibile o sessioni spostate nella Cronologia.",
+        "channel_tip_approval": "Quando un agente è fermo finché non approvi uno strumento che vuole usare.",
+        "channel_tip_apps": "Quando viene pubblicata una versione più recente di un'app che hai installato. Ricevi un solo avviso per ogni versione.",
+        "channel_tip_cron": "Quando un job pianificato termina o non riesce. Se continua a dare lo stesso risultato o errore, ogni ripetizione viene comunque annotata qui, segnata come ripetizione.",
+        "channel_tip_heartbeat": "Quando termina un'attività heartbeat (un'attività in background che l'agente controlla con un timer). Le attività ancora in corso restano silenziose. Anche quando {{productName}} si riavvia dopo aver smesso di rispondere.",
+        "channel_tip_hook": "Quando un servizio esterno chiama uno dei tuoi webhook e l'esecuzione dell'agente che avvia restituisce un risultato.",
+        "channel_tip_member": "Quando un compagno ti risponde nella propria chat. Silenzioso per impostazione predefinita: niente suono né banner.",
+        "channel_tip_monitor": "Quando si ferma il monitoraggio di una pull request o un controllo ricorrente: ha finito, ha esaurito il tempo o i turni, oppure è bloccato in attesa di te.",
+        "channel_tip_resources": "Quando il computer su cui gira {{productName}} sta esaurendo la memoria, o un agente viene fermato perché ne usa troppa. Con memoria criticamente bassa l'avviso si ripete ogni 30 minuti, e ricevi una notifica quando torna alla normalità.",
+        "channel_tip_safety_override": "Quando l'approvazione automatica scade mentre un job non presidiato, come un ciclo di monitoraggio, è ancora in esecuzione. Quel job resta quindi in attesa di approvazioni che nessuno è lì per dare.",
+        "channel_tip_skills": "Quando {{productName}} prepara la bozza di una nuova skill, o di una modifica a una skill, a partire dalle tue sessioni. Non cambia nulla finché non la rivedi.",
+        "channel_tip_subagent": "Quando un agente di supporto in background termina, non riesce o viene interrotto da un riavvio, e nessuna chat aperta ne mostra il risultato. Silenzioso per impostazione predefinita: niente suono né banner.",
+        "channel_tip_taskrunner": "Quando un'esecuzione di attività avanza o ha bisogno di te: il suo piano è pronto, si avvia, riprova o ripianifica, si completa, non riesce, si blocca o va in timeout, oppure viene messa in pausa dopo un riavvio.",
+        "channel_tip_terminal": "Quando la shell di una scheda del terminale esce con un errore o viene terminata forzatamente. La scheda si chiude, quindi il codice di uscita viene conservato qui."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registra le metriche",

@@ -17345,7 +17345,21 @@
         "custom_sound_kind_tones": "音符",
         "priority_critical": "紧急",
         "priority_default": "默认",
-        "priority_passive": "静默"
+        "priority_passive": "静默",
+        "channel_tip_agent": "当代理在聊天之外向你发送消息或提醒时，以及 {{productName}} 的一般通知，例如工具审批已过期、有可用更新或会话已移至历史。",
+        "channel_tip_approval": "当代理暂停运行，等待你批准它要使用的工具时。",
+        "channel_tip_apps": "当你安装的应用发布了新版本时。每个版本只会通知你一次。",
+        "channel_tip_cron": "当定时任务完成或失败时。如果它反复给出相同的结果或错误，每次重复仍会记录在这里，并标记为重复。",
+        "channel_tip_heartbeat": "当心跳任务（代理按定时器检查的后台任务）完成时。仍在进行的任务不会通知。{{productName}} 在停止响应后重启时也会通知。",
+        "channel_tip_hook": "当外部服务调用你的某个 Webhook，且由此启动的代理运行返回结果时。",
+        "channel_tip_member": "当队友在它自己的聊天中回复你时。默认静默：不播放声音，也不显示横幅。",
+        "channel_tip_monitor": "当拉取请求监视或重复检查停止时：它已完成、用完了时间或轮次，或卡在等待你处理。",
+        "channel_tip_resources": "当运行 {{productName}} 的计算机内存不足，或某个代理因占用过多而被停止时。内存严重不足时每 30 分钟再次提醒，恢复后你会收到一条通知。",
+        "channel_tip_safety_override": "当自动审批到期，而无人值守的任务（例如监控循环）仍在运行时。该任务随后会等待无人能给出的审批。",
+        "channel_tip_skills": "当 {{productName}} 根据你的会话起草新技能或对现有技能的修改时。在你审核之前不会有任何改变。",
+        "channel_tip_subagent": "当后台辅助代理完成、失败或因重启而中断，且没有打开的聊天显示其结果时。默认静默：不播放声音，也不显示横幅。",
+        "channel_tip_taskrunner": "当任务运行有进展或需要你处理时：计划已就绪、开始、重试或重新规划、完成、失败、停滞或超时，或在重启后暂停。",
+        "channel_tip_terminal": "当终端标签页的 shell 以错误退出或被强制终止时。标签页会关闭，因此退出代码保留在这里。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

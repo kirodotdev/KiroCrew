@@ -17641,7 +17641,21 @@
         "custom_sound_kind_tones": "Töne",
         "priority_critical": "Kritisch",
         "priority_default": "Standard",
-        "priority_passive": "Passiv"
+        "priority_passive": "Passiv",
+        "channel_tip_agent": "Wenn dir ein Agent außerhalb eines Chats eine Nachricht oder Warnung schickt, und für allgemeine Hinweise von {{productName}}, etwa eine abgelaufene Tool-Genehmigung, ein verfügbares Update oder in den Verlauf verschobene Sitzungen.",
+        "channel_tip_approval": "Wenn ein Agent angehalten ist, bis du ein Tool genehmigst, das er verwenden möchte.",
+        "channel_tip_apps": "Wenn eine neuere Version einer installierten App veröffentlicht wird. Über jede Version wirst du nur einmal informiert.",
+        "channel_tip_cron": "Wenn ein geplanter Job abgeschlossen ist oder fehlschlägt. Liefert er immer wieder dasselbe Ergebnis oder denselben Fehler, wird jede Wiederholung trotzdem hier vermerkt und als Wiederholung gekennzeichnet.",
+        "channel_tip_heartbeat": "Wenn eine Heartbeat-Aufgabe (eine Hintergrundaufgabe, die der Agent per Timer prüft) abgeschlossen ist. Laufende Aufgaben bleiben still. Außerdem, wenn {{productName}} neu startet, nachdem es nicht mehr reagiert hat.",
+        "channel_tip_hook": "Wenn ein externer Dienst einen deiner Webhooks aufruft und der dadurch gestartete Agentenlauf ein Ergebnis zurückgibt.",
+        "channel_tip_member": "Wenn dir ein Crewmate in seinem eigenen Chat antwortet. Standardmäßig still: kein Ton und kein Banner.",
+        "channel_tip_monitor": "Wenn eine Pull-Request-Überwachung oder eine wiederkehrende Prüfung endet, weil sie fertig ist, ihre Zeit oder Runden aufgebraucht hat oder auf dich wartet.",
+        "channel_tip_resources": "Wenn auf dem Rechner, auf dem {{productName}} läuft, der Arbeitsspeicher knapp wird oder ein Agent wegen zu hohen Verbrauchs gestoppt wird. Bei kritisch knappem Speicher kommt alle 30 Minuten eine erneute Warnung, und sobald er sich erholt, erhältst du einen Hinweis.",
+        "channel_tip_safety_override": "Wenn die automatische Genehmigung abläuft, während ein unbeaufsichtigter Job wie eine Überwachungsschleife noch läuft. Dieser Job wartet dann auf Genehmigungen, die niemand erteilen kann.",
+        "channel_tip_skills": "Wenn {{productName}} aus deinen Sitzungen einen neuen Skill oder eine Änderung an einem Skill entwirft. Nichts ändert sich, bevor du es geprüft hast.",
+        "channel_tip_subagent": "Wenn ein Hilfsagent im Hintergrund fertig wird, fehlschlägt oder durch einen Neustart abgebrochen wird und kein offener Chat sein Ergebnis anzeigt. Standardmäßig still: kein Ton und kein Banner.",
+        "channel_tip_taskrunner": "Wenn ein Aufgabenlauf vorankommt oder dich braucht: Sein Plan ist fertig, er startet, versucht es erneut oder plant neu, wird abgeschlossen, schlägt fehl, hängt, überschreitet das Zeitlimit oder wird nach einem Neustart pausiert.",
+        "channel_tip_terminal": "Wenn die Shell eines Terminal-Tabs mit einem Fehler endet oder abgebrochen wird. Der Tab schließt sich, daher wird der Exit-Code hier aufbewahrt."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Leistungsmetriken auf diesem Rechner erfassen.",
