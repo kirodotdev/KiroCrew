@@ -89,7 +89,7 @@ export function ZeroDiffNotice({ onExitDiff, message }: { onExitDiff?: () => voi
   )
 }
 
-export function DiffViewBlock({ diffMode, fileName, originalContent, content, gitPatch, lineNums, wordWrap, collapseUnchanged, flush, sideBySide = true }: {
+export function DiffViewBlock({ diffMode, fileName, originalContent, content, gitPatch, lineNums, wordWrap, collapseUnchanged, flush, sideBySide = true, autoLineByLine }: {
   diffMode: boolean; fileName: string; originalContent: string; content: string
   /** Git's own unified diff, drawn INSTEAD of comparing the two bodies. Set
    *  when the buffer is only part of the file (see `gitPatch` in the panel). */
@@ -101,6 +101,9 @@ export function DiffViewBlock({ diffMode, fileName, originalContent, content, gi
   sideBySide?: boolean
   /** Drop the rounded border box — host surface frames the content. */
   flush?: boolean
+  /** Start an over-budget pair's worker diff without the click. Set only
+   *  while this tab is the visible one, so a hidden tab computes nothing. */
+  autoLineByLine?: boolean
 }) {
   const oldFile = useMemo(
     () => (originalContent ? { name: fileName, contents: originalContent } : null),
@@ -124,7 +127,7 @@ export function DiffViewBlock({ diffMode, fileName, originalContent, content, gi
     <div className={`w-full h-full overflow-auto pierre-surface ${flush ? '' : 'border border-border rounded-md'}`}>
       {gitPatch != null
         ? <PierrePatch patch={gitPatch} options={options} />
-        : <PierreFilePair oldFile={oldFile} newFile={newFile} options={options} />}
+        : <PierreFilePair oldFile={oldFile} newFile={newFile} options={options} autoLineByLine={autoLineByLine} />}
     </div>
   )
 }
