@@ -10654,6 +10654,7 @@
       "next": "下一步",
       "once_launched_the_app_will_automatically_connect": "启动后，此应用会自动连接到此 {{productName}} 实例并出现在“应用”中。",
       "open_screenshot": "打开截图 {{n}}",
+      "screenshot_viewer": "截图查看器",
       "origin": "安装来源：",
       "permissions": "权限",
       "session_approval_desc": "可以在你的对话中发送消息和选择回复选项，批准或拒绝工具请求，并切换对话的审批模式。",

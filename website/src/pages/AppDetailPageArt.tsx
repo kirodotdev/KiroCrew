@@ -17,6 +17,7 @@ import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '.
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
 import { classifyManifestArt } from '../components/appstore/useHeroArt'
+import AppStoreDialog from '../components/appstore/AppStoreDialog'
 
 type ScreenshotFailureState = {
   screensKey: string
@@ -138,14 +139,12 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
   // inspect a fit-scaled screenshot. Unlike those two, the surface also owns
   // prev/next navigation and click-to-dismiss, so the shared hook supplies only
   // the gesture math while the page keeps those interactions.
-  const dialogRef = useRef<HTMLDivElement | null>(null)
-  // A stable ref, so the dialog takes focus once, when it opens. An inline ref
-  // is a new function each render and ran again on every prev/next, pulling
-  // focus off the arrow button the user had just pressed.
-  const attachDialog = useCallback((el: HTMLDivElement | null) => {
-    dialogRef.current = el
-    el?.focus()
-  }, [])
+  // The viewer's root, shared with AppStoreDialog: that component moves focus
+  // in once when the viewer opens (not on every prev/next, which would pull
+  // focus off the arrow button just pressed), keeps Tab inside, and hands focus
+  // back to the thumbnail on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeViewer = useCallback(() => setSelected(null), [])
   const imgRef = useRef<HTMLImageElement | null>(null)
   const reduceMotion = useReducedMotion()
   // A finished pinch or double-tap synthesises a click; without suppression it
@@ -345,26 +344,23 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
         const nextVisible = visible.find(i => i > selected)
         const prevVisible = [...visible].reverse().find(i => i < selected)
         return (
-          // Modal backdrop: click-to-dismiss is a mouse affordance; keyboard users
-          // dismiss/navigate via the onKeyDown handler (Escape / arrows) below.
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div
+          // Click-to-dismiss on the backdrop is a mouse affordance; keyboard
+          // users close with Escape (AppStoreDialog) and step with the arrows.
+          <AppStoreDialog
             className="fixed inset-0 z-[9999] flex items-center justify-center bg-bg/80 backdrop-blur-xs"
-            onClick={() => {
+            dialogRef={dialogRef}
+            onClose={closeViewer}
+            onBackdropClick={() => {
               // A pinch, drag or double-tap just finished — that click is gesture
               // residue and must not dismiss the viewer the user just zoomed into.
               if (suppressClickRef.current) { suppressClickRef.current = false; return }
               setSelected(null)
             }}
             onKeyDown={e => {
-              if (e.key === 'Escape') setSelected(null)
               if (e.key === 'ArrowRight' && nextVisible !== undefined) setSelected(nextVisible)
               if (e.key === 'ArrowLeft' && prevVisible !== undefined) setSelected(prevVisible)
             }}
-            tabIndex={-1}
-            ref={attachDialog}
-            role="dialog"
-            aria-modal="true"
+            aria-label={i18nT('pages.appDetailPage.screenshot_viewer')}
           >
             {/* Presentational wrapper: stops backdrop-dismiss when clicking the image. */}
             <div role="presentation" className="relative max-w-4xl max-h-[80vh] mx-4" onClick={e => e.stopPropagation()}>
@@ -395,7 +391,7 @@ export function ScreenshotGallery({ screenshots, fallbacks }: { screenshots: str
               )}
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[12px] text-muted bg-bg/80 px-3 py-1 rounded-full">{visible.indexOf(selected) + 1} / {visible.length}</div>
             </div>
-          </div>
+          </AppStoreDialog>
         )
       })()}
     </>

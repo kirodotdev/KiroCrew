@@ -10654,6 +10654,7 @@
       "next": "다음",
       "once_launched_the_app_will_automatically_connect": "실행되면 앱이 이 {{productName}} 인스턴스에 자동으로 연결되고 앱 목록에 나타납니다.",
       "open_screenshot": "스크린샷 {{n}} 열기",
+      "screenshot_viewer": "스크린샷 뷰어",
       "origin": "출처:",
       "permissions": "권한",
       "session_approval_desc": "내 채팅에 메시지를 보내고 답변 옵션을 선택하며, 도구 요청을 승인 또는 거부하고 채팅의 승인 모드를 전환할 수 있습니다.",

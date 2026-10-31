@@ -16,7 +16,7 @@
  * worklist and Update All (PR2 App Store split). Per-tile Update stays on
  * the action bar via the shared `useAppUpdates` hook.
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { Link, useNavigate } from 'react-router-dom'
 import {
@@ -42,7 +42,7 @@ import LaunchpadTile from './LaunchpadTile'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
-import { focusOnMount } from '../../utils/focusOnMount'
+import AppStoreDialog from '../../components/appstore/AppStoreDialog'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -129,6 +129,9 @@ export default function LibraryPage() {
   const [keepData, setKeepData] = useState(true)
   const [uninstallPreview, setUninstallPreview] = useState<UninstallPreview | null>(null)
   const [keepSpecific, setKeepSpecific] = useState<Set<string>>(new Set())
+  // The tile's ⋯ trigger the dialog was opened from, so closing it puts focus
+  // back there (the menu item that held focus is gone by then).
+  const uninstallOpenerRef = useRef<HTMLElement | null>(null)
   // Resource lists the uninstall dialog itemises, derived once so the count it
   // prints and the check that decides to print it read the same value. Reading
   // the list twice — a `?.` gate here, a `!` assertion there — is the shape that
@@ -172,11 +175,12 @@ export default function LibraryPage() {
   // single enable path come from useAppActions — shared with DiscoverPage so
   // the two pages cannot drift on how an action behaves.
 
-  const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update') => {
+  const handleAction = async (name: string, action: 'enable' | 'disable' | 'uninstall' | 'update', opener?: HTMLElement | null) => {
     // Intercept uninstall to show confirmation modal with preview
     if (action === 'uninstall') {
       const app = apps.find(a => a.name === name)
       if (app) {
+        uninstallOpenerRef.current = opener ?? null
         setUninstallTarget(app)
         setKeepData(true)
         setKeepSpecific(new Set())
@@ -301,16 +305,16 @@ export default function LibraryPage() {
         />
 
         {/* Uninstall confirmation modal. The backdrop closes on click (mouse
-            convenience); keyboard users press Escape (handled) or the Cancel
-            button inside. The inner card's onClick only stops propagation so a
-            click inside doesn't bubble to the backdrop-close — it is not a user
-            interaction, hence the scoped disables. */}
+            convenience); keyboard users press Escape or the Cancel button
+            inside, and Tab stays inside the dialog (AppStoreDialog). The inner
+            card's onClick only stops propagation so a click inside doesn't
+            bubble to the backdrop-close — it is not a user interaction. */}
         {uninstallTarget && (
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-            onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}
-            onKeyDown={e => { if (e.key === 'Escape') { setUninstallTarget(null); setUninstallPreview(null) } }}
-            tabIndex={-1} ref={focusOnMount} role="dialog" aria-modal="true" aria-label={i18nT('pages.appsPage.confirm_uninstall')}
+          <AppStoreDialog
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
+            onClose={() => { setUninstallTarget(null); setUninstallPreview(null) }}
+            returnFocusTo={uninstallOpenerRef}
+            aria-label={i18nT('pages.appsPage.confirm_uninstall')}
           >
             {/* Stop clicks inside the dialog card from reaching the backdrop's
                 dismiss handler; presentation-only, no interaction of its own. */}
@@ -430,7 +434,7 @@ export default function LibraryPage() {
                 </Btn>
               </div>
             </div>
-          </div>
+          </AppStoreDialog>
         )}
 
         {/* ---- Installed list ---- */}
@@ -555,10 +559,16 @@ export default function LibraryPage() {
                         // `/apps/${name}` fallback would land on a detail page
                         // pretending to be the app. Remote gateways answer
                         // `{remote: true}` with the command to run locally.
+                        // A refusal (the app is off, its code is not trusted
+                        // to run, the launch failed) lands in the page's error
+                        // notice: swallowed, the click looked like a no-op.
                         if (app.manifest?.openCommand) {
+                          setError('')
                           api.openApp(app.name).then((res: { remote?: boolean; command?: string; message?: string } | null) => {
                             if (res?.remote) setRemoteCmd(res.command || res.message || i18nT('components.appstore.installedAppCard.app_cannot_be_opened_kirocrew_is_running_in_a_he'))
-                          }).catch(() => {})
+                          }).catch((e: unknown) => {
+                            setError((e as Error)?.message || i18nT('pages.appsPage.action_failed', { action: 'open', name: app.name }))
+                          })
                           return
                         }
                         navigate(target?.route || `/apps/${app.name}`)

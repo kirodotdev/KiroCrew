@@ -352,6 +352,23 @@ describe('LibraryPage — action dispatch', () => {
     await waitFor(() => expect(screen.queryByText('Remote environment detected')).toBeNull())
   })
 
+  it('a refused open shows the gateway’s reason in the page error notice', async () => {
+    // The 409 the open route answers for a disabled app; ApiError carries the
+    // body's `error` as its message.
+    openApp.mockRejectedValue(Object.assign(new Error("app 'term-tool' is disabled"), { status: 409 }))
+    listApps.mockResolvedValue([installedApp('term-tool', 'Term Tool', {
+      manifest: {
+        name: 'term-tool', version: '1.0.0', displayName: 'Term Tool',
+        description: 'Opens a terminal.', author: 'zezhexu', tags: [],
+        openCommand: 'term-tool open',
+      },
+    })])
+    renderLibrary()
+    fireEvent.click(within(await tile('term-tool')).getByRole('button', { name: 'Open' }))
+    const notice = await screen.findByRole('alert')
+    expect(notice).toHaveTextContent("app 'term-tool' is disabled")
+  })
+
   it('Details in the menu routes to the detail page', async () => {
     renderLibrary()
     const scope = await openTileMenu('secretary', 'Secretary')
@@ -437,7 +454,8 @@ describe('LibraryPage — action dispatch', () => {
     const scope = await openTileMenu('secretary', 'Secretary')
     fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
     const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
-    expect(document.activeElement).toBe(dialog)
+    // Focus moves to the dialog's first control (the shared dialog contract).
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('Keep app data'))
 
     // A re-render (here the checkbox's own state change) must not pull focus
     // back to the dialog box: the user's Tab position would reset each time.
@@ -446,6 +464,25 @@ describe('LibraryPage — action dispatch', () => {
     fireEvent.click(keep)
     expect(keep).not.toBeChecked()
     expect(document.activeElement).toBe(keep)
+  })
+
+  it('keeps Tab inside the uninstall dialog instead of letting it reach the page behind', async () => {
+    renderLibrary()
+    const scope = await openTileMenu('secretary', 'Secretary')
+    fireEvent.click(scope.getByRole('menuitem', { name: 'Uninstall' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm uninstall' })
+    const keep = within(dialog).getByLabelText('Keep app data')
+    const confirm = within(dialog).getByRole('button', { name: 'Uninstall' })
+
+    confirm.focus()
+    fireEvent.keyDown(confirm, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+    fireEvent.keyDown(keep, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(confirm)
+
+    // Escape closes it from any control inside, not only from the backdrop.
+    fireEvent.keyDown(confirm, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Confirm uninstall' })).toBeNull()
   })
 
   it('Uninstall is absent from the menu for a lifecycle-locked app', async () => {

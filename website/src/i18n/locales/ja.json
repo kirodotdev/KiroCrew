@@ -10654,6 +10654,7 @@
       "next": "次へ",
       "once_launched_the_app_will_automatically_connect": "起動後、アプリはこの {{productName}} インスタンスに自動的に接続され、アプリに表示されます。",
       "open_screenshot": "スクリーンショット {{n}} を開く",
+      "screenshot_viewer": "スクリーンショットビューアー",
       "origin": "起源:",
       "permissions": "権限",
       "session_approval_desc": "あなたのチャットでメッセージを送信して返信オプションを選び、ツール要求を承認または拒否し、チャットの承認モードを切り替えられます。",
