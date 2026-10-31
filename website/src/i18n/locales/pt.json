@@ -12051,6 +12051,7 @@
         "queue_cancel_failed": "Não foi possível cancelar essa pergunta na fila",
         "queue_edit_failed": "Não foi possível atualizar essa pergunta na fila",
         "refresh_context": "Atualizar contexto",
+        "refresh_context_hint": "Limpa este chat lateral em todas as abas abertas e recomeça com o contexto atual",
         "refresh_blocked_queued": "Conclua ou cancele primeiro as perguntas na fila — atualizar iria descartá-las",
         "restore_failed": "Não foi possível carregar esta conversa paralela. Tente novamente antes de perguntar. Uma pergunta enviada agora volta para a caixa de composição em vez de ser feita.",
         "restore_failed_command": "Não foi possível carregar esta conversa paralela, então o comando não foi executado. Sua mensagem continua na caixa de composição. Envie-a de novo.",

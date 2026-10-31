@@ -12051,6 +12051,7 @@
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
         "queue_edit_failed": "Impossibile aggiornare quella domanda in coda",
         "refresh_context": "Aggiorna il contesto",
+        "refresh_context_hint": "Svuota questa chat laterale in tutte le schede aperte e ricomincia con il contesto attuale",
         "refresh_blocked_queued": "Completa o annulla prima le domande in coda — aggiornare le eliminerebbe",
         "restore_failed": "Impossibile caricare questa conversazione a parte. Riprova prima di fare una domanda. Una domanda inviata ora torna nel campo di scrittura invece di essere posta.",
         "restore_failed_command": "Impossibile caricare questa conversazione a parte, quindi il comando non è stato eseguito. Il tuo messaggio è ancora nel campo di scrittura. Invialo di nuovo.",

@@ -12051,6 +12051,7 @@
         "queue_cancel_failed": "Impossible d'annuler cette question en file d'attente",
         "queue_edit_failed": "Impossible de modifier cette question en file d'attente",
         "refresh_context": "Actualiser le contexte",
+        "refresh_context_hint": "Efface ce chat annexe dans tous les onglets ouverts et repart du contexte actuel",
         "refresh_blocked_queued": "Termine ou annule d’abord les questions en file d’attente — actualiser les supprimerait",
         "restore_failed": "Impossible de charger cette conversation annexe. Réessaie avant de poser une question. Une question envoyée maintenant revient dans le champ de saisie au lieu d'être posée.",
         "restore_failed_command": "Impossible de charger cette conversation annexe, la commande n'a donc pas été exécutée. Ton message est toujours dans le champ de saisie. Renvoie-le.",

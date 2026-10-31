@@ -5257,6 +5257,7 @@
         "question_too_long_with_paste": "Question too long — reduce to under ~{{max}} characters (yours: {{current}}, counting the collapsed paste). Select the paste pill and press Backspace to remove it, or paste a shorter excerpt.",
         "queue_cancel_failed": "Could not cancel that queued question",
         "queue_edit_failed": "Could not update that queued question",
+        "refresh_context_hint": "Clears this side chat in every open tab and starts over with the current context",
         "restore_failed": "Couldn't load this side conversation. Retry before asking. A question sent now comes back to the composer instead.",
         "restore_failed_command": "Couldn't load this side conversation, so the command was not run. Your message is still in the composer. Send it again.",
         "restore_retry": "Retry",
