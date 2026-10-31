@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
@@ -77,6 +77,35 @@ describe('NotificationsPanel channels section', () => {
     await waitFor(() => expect(screen.getByText('approval')).toBeTruthy())
     expect(screen.getByText('protected')).toBeTruthy()
     expect(screen.queryByRole('switch', { name: /system\.approval/ })).toBeNull()
+  })
+
+  it('explains when each system source fires, and leaves app rows without a tip', async () => {
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const tips = screen.getAllByRole('button', { name: 'More information' })
+    // Five system rows in the fixture, each with a tip; the two app rows get none.
+    expect(tips).toHaveLength(5)
+    const cronRow = screen.getByText('cron').closest('div') as HTMLElement
+    const cronTip = within(cronRow).getByRole('button', { name: 'More information' })
+    expect(cronTip.getAttribute('title')).toBe(
+      'When a scheduled job finishes or fails. If it keeps giving the same result or error, each repeat is still noted here, marked as a repeat.',
+    )
+    // Protected row: the tip sits after the lock and the protected text is unchanged.
+    const approvalRow = screen.getByText('approval').closest('div') as HTMLElement
+    expect(within(approvalRow).getByRole('button', { name: 'More information' }).getAttribute('title'))
+      .toBe('When an agent is stopped until you approve a tool it wants to use.')
+    expect(screen.getByText('Always interrupts — cannot be muted or lowered')).toBeTruthy()
+    const appRow = screen.getByText('ticket-update').closest('div') as HTMLElement
+    expect(within(appRow).queryByRole('button', { name: 'More information' })).toBeNull()
+  })
+
+  it('shows no tip for a system channel this build does not know', async () => {
+    mockChannels.mockResolvedValue({ channels: [
+      { channel: 'system.future', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+    ] })
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('future')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'More information' })).toBeNull()
   })
 
   it('marks unregistered channels as retained', async () => {

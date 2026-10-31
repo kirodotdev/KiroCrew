@@ -17937,7 +17937,21 @@
         "custom_sound_kind_tones": "Tonos",
         "priority_critical": "Crítica",
         "priority_default": "Predeterminada",
-        "priority_passive": "Pasiva"
+        "priority_passive": "Pasiva",
+        "channel_tip_agent": "Cuando un agente te envía un mensaje o una alerta fuera de un chat, y para avisos generales de {{productName}}, como una aprobación de herramienta caducada, una actualización disponible o sesiones movidas al Historial.",
+        "channel_tip_approval": "Cuando un agente queda detenido hasta que apruebes una herramienta que quiere usar.",
+        "channel_tip_apps": "Cuando se publica una versión más reciente de una app que instalaste. Recibes un solo aviso por cada versión.",
+        "channel_tip_cron": "Cuando un trabajo programado termina o falla. Si sigue dando el mismo resultado o error, cada repetición se anota igualmente aquí, marcada como repetición.",
+        "channel_tip_heartbeat": "Cuando termina una tarea de heartbeat (una tarea en segundo plano que el agente revisa con un temporizador). Las tareas que siguen en curso no avisan. También cuando {{productName}} se reinicia después de dejar de responder.",
+        "channel_tip_hook": "Cuando un servicio externo llama a uno de tus webhooks y la ejecución del agente que inicia devuelve un resultado.",
+        "channel_tip_member": "Cuando un compañero te responde en su propio chat. Silencioso por defecto: sin sonido ni banner.",
+        "channel_tip_monitor": "Cuando se detiene la vigilancia de un pull request o una comprobación periódica: terminó, se quedó sin tiempo o sin turnos, o está bloqueada esperándote.",
+        "channel_tip_resources": "Cuando el equipo que ejecuta {{productName}} se queda con poca memoria, o se detiene un agente por usar demasiada. Con memoria críticamente baja vuelve a avisar cada 30 minutos, y recibes un aviso cuando se recupera.",
+        "channel_tip_safety_override": "Cuando la aprobación automática caduca mientras un trabajo desatendido, como un bucle de monitorización, sigue en marcha. Ese trabajo queda entonces esperando aprobaciones que nadie puede dar.",
+        "channel_tip_skills": "Cuando {{productName}} redacta una nueva skill, o un cambio en una, a partir de tus sesiones. Nada cambia hasta que la revises.",
+        "channel_tip_subagent": "Cuando un agente auxiliar en segundo plano termina, falla o se interrumpe por un reinicio, y ningún chat abierto muestra su resultado. Silencioso por defecto: sin sonido ni banner.",
+        "channel_tip_taskrunner": "Cuando una ejecución de tarea avanza o te necesita: su plan está listo, empieza, reintenta o replanifica, se completa, falla, se atasca o agota el tiempo, o queda en pausa tras un reinicio.",
+        "channel_tip_terminal": "Cuando el shell de una pestaña de terminal sale con un error o se cierra a la fuerza. La pestaña se cierra, así que el código de salida se guarda aquí."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

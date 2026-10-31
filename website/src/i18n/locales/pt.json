@@ -17937,7 +17937,21 @@
         "custom_sound_kind_tones": "Tons",
         "priority_critical": "Crítica",
         "priority_default": "Padrão",
-        "priority_passive": "Passiva"
+        "priority_passive": "Passiva",
+        "channel_tip_agent": "Quando um agente envia uma mensagem ou um alerta para você fora de um chat, e para avisos gerais do {{productName}}, como uma aprovação de ferramenta expirada, uma atualização disponível ou sessões movidas para o Histórico.",
+        "channel_tip_approval": "Quando um agente fica parado até você aprovar uma ferramenta que ele quer usar.",
+        "channel_tip_apps": "Quando uma versão mais nova de um app que você instalou é publicada. Você recebe um único aviso por versão.",
+        "channel_tip_cron": "Quando um job agendado termina ou falha. Se ele continuar dando o mesmo resultado ou erro, cada repetição ainda é registrada aqui, marcada como repetição.",
+        "channel_tip_heartbeat": "Quando uma tarefa de heartbeat (uma tarefa em segundo plano que o agente verifica com um timer) termina. Tarefas ainda em andamento ficam em silêncio. Também quando o {{productName}} reinicia depois de parar de responder.",
+        "channel_tip_hook": "Quando um serviço externo chama um dos seus webhooks e a execução do agente que ela inicia devolve um resultado.",
+        "channel_tip_member": "Quando um colega responde a você no próprio chat dele. Silencioso por padrão: sem som nem banner.",
+        "channel_tip_monitor": "Quando a observação de um pull request ou uma verificação recorrente para: ela terminou, ficou sem tempo ou sem turnos, ou está travada esperando por você.",
+        "channel_tip_resources": "Quando o computador que executa o {{productName}} fica com pouca memória, ou um agente é parado por usar demais. Memória criticamente baixa gera um novo alerta a cada 30 minutos, e você recebe um aviso quando ela se recupera.",
+        "channel_tip_safety_override": "Quando a aprovação automática acaba enquanto um job sem supervisão, como um loop de monitoramento, ainda está em execução. Esse job passa a esperar aprovações que ninguém está lá para dar.",
+        "channel_tip_skills": "Quando o {{productName}} rascunha uma nova habilidade, ou uma alteração em uma, a partir das suas sessões. Nada muda até você revisar.",
+        "channel_tip_subagent": "Quando um agente auxiliar em segundo plano termina, falha ou é interrompido por uma reinicialização, e nenhum chat aberto está mostrando o resultado. Silencioso por padrão: sem som nem banner.",
+        "channel_tip_taskrunner": "Quando uma execução de tarefa avança ou precisa de você: o plano está pronto, ela começa, tenta de novo ou refaz o plano, é concluída, falha, trava ou excede o tempo, ou é pausada após uma reinicialização.",
+        "channel_tip_terminal": "Quando o shell de uma aba de terminal sai com erro ou é encerrado à força. A aba fecha, então o código de saída fica guardado aqui."
       },
       "privacyPanel": {
         "recordMetricsLabel": "Registrar métricas",

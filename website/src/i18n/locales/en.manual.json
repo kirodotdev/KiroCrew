@@ -8407,7 +8407,21 @@
         "custom_sound_preview": "Play",
         "custom_sound_choose_where": "Choose where it plays in Per-category sounds",
         "custom_sound_kind_file": "File",
-        "custom_sound_kind_tones": "Tones"
+        "custom_sound_kind_tones": "Tones",
+        "channel_tip_agent": "When an agent sends you a message or alert outside a chat, and for general {{productName}} notices, such as an expired tool approval, an available update, or sessions moved to History.",
+        "channel_tip_approval": "When an agent is stopped until you approve a tool it wants to use.",
+        "channel_tip_cron": "When a scheduled job finishes or fails. If it keeps giving the same result or error, each repeat is still noted here, marked as a repeat.",
+        "channel_tip_heartbeat": "When a heartbeat task (a background task the agent checks on a timer) finishes. Tasks still in progress stay quiet. Also when {{productName}} restarts after it stopped responding.",
+        "channel_tip_hook": "When an outside service calls one of your webhooks and the agent run it starts sends back a result.",
+        "channel_tip_monitor": "When a pull request watch or a repeating check stops: it finished, ran out of time or turns, or is stuck waiting on you.",
+        "channel_tip_resources": "When the computer running {{productName}} runs low on memory, or an agent is stopped for using too much. Critically low memory alerts again every 30 minutes, and you get one note when it recovers.",
+        "channel_tip_safety_override": "When auto-approve runs out while an unattended job, such as a monitoring loop, is still running. That job then waits for approvals nobody is there to give.",
+        "channel_tip_skills": "When {{productName}} drafts a new skill, or a change to one, from your sessions. Nothing changes until you review it.",
+        "channel_tip_subagent": "When a background helper agent finishes, fails, or is cut off by a restart, and no open chat is showing its result. Quiet by default: no sound or banner.",
+        "channel_tip_taskrunner": "When a task run moves forward or needs you: its plan is ready, it starts, retries or re-plans, completes, fails, stalls or times out, or is paused after a restart.",
+        "channel_tip_terminal": "When a terminal tab's shell exits with an error or is killed. The tab closes, so the exit code is kept here.",
+        "channel_tip_member": "When a mate replies to you in its own chat. Quiet by default: no sound or banner.",
+        "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once."
       },
       "securityPanel": {
         "all_allowed": "All allowed",

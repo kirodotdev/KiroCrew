@@ -17937,7 +17937,21 @@
         "custom_sound_kind_tones": "Tonalités",
         "priority_critical": "Critique",
         "priority_default": "Par défaut",
-        "priority_passive": "Passive"
+        "priority_passive": "Passive",
+        "channel_tip_agent": "Quand un agent t'envoie un message ou une alerte en dehors d'un chat, et pour les avis généraux de {{productName}}, comme une approbation d'outil expirée, une mise à jour disponible ou des sessions déplacées dans l'Historique.",
+        "channel_tip_approval": "Quand un agent est bloqué jusqu'à ce que tu approuves un outil qu'il veut utiliser.",
+        "channel_tip_apps": "Quand une nouvelle version d'une app que tu as installée est publiée. Chaque version ne t'est signalée qu'une seule fois.",
+        "channel_tip_cron": "Quand une tâche planifiée se termine ou échoue. Si elle renvoie toujours le même résultat ou la même erreur, chaque répétition est quand même notée ici, marquée comme répétition.",
+        "channel_tip_heartbeat": "Quand une tâche heartbeat (une tâche de fond que l'agent vérifie selon un minuteur) se termine. Les tâches encore en cours restent silencieuses. Aussi quand {{productName}} redémarre après avoir cessé de répondre.",
+        "channel_tip_hook": "Quand un service extérieur appelle l'un de tes webhooks et que l'exécution d'agent qu'il lance renvoie un résultat.",
+        "channel_tip_member": "Quand un coéquipier te répond dans son propre chat. Discret par défaut : ni son ni bannière.",
+        "channel_tip_monitor": "Quand une surveillance de pull request ou une vérification répétée s'arrête : elle est terminée, a épuisé son temps ou ses tours, ou est bloquée en t'attendant.",
+        "channel_tip_resources": "Quand l'ordinateur qui exécute {{productName}} manque de mémoire, ou qu'un agent est arrêté parce qu'il en utilise trop. Une mémoire critique déclenche une nouvelle alerte toutes les 30 minutes, et tu reçois un avis quand elle revient à la normale.",
+        "channel_tip_safety_override": "Quand l'approbation automatique expire alors qu'une tâche sans surveillance, comme une boucle de monitoring, est toujours en cours. Cette tâche attend alors des approbations que personne n'est là pour donner.",
+        "channel_tip_skills": "Quand {{productName}} rédige une nouvelle compétence, ou une modification d'une compétence, à partir de tes sessions. Rien ne change tant que tu ne l'as pas examinée.",
+        "channel_tip_subagent": "Quand un agent auxiliaire en arrière-plan se termine, échoue ou est interrompu par un redémarrage, et qu'aucun chat ouvert n'affiche son résultat. Discret par défaut : ni son ni bannière.",
+        "channel_tip_taskrunner": "Quand une exécution de tâche avance ou a besoin de toi : son plan est prêt, elle démarre, réessaie ou se replanifie, se termine, échoue, se bloque ou expire, ou est mise en pause après un redémarrage.",
+        "channel_tip_terminal": "Quand le shell d'un onglet de terminal se termine avec une erreur ou est tué. L'onglet se ferme, donc le code de sortie est conservé ici."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",
