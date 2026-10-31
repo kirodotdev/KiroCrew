@@ -1038,6 +1038,18 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
         "sandbox_slice.py::ensure_agents_slice_limits",
+        # A pod's fill of the shared parent slice, run from the same startup
+        # call as the apply above. `_unbounded_parent_properties` reads
+        # `systemctl --user show --property=MemoryMax --property=TasksMax
+        # kirocrew-agents.slice`; `_backfill_unbounded_parent` then runs
+        # `systemctl --user set-property --runtime kirocrew-agents.slice` with
+        # only the properties that read `infinity`. The binary is the trusted
+        # systemctl the caller already resolved, the unit is the module
+        # constant, and the only variable tokens are the same config-derived
+        # integers. Not agent-influenced, and circular to sandbox for the same
+        # reason as the apply.
+        "sandbox_slice.py::_unbounded_parent_properties",
+        "sandbox_slice.py::_backfill_unbounded_parent",
         # Shared Crew per-principal slices: `systemctl --user set-property
         # --runtime <slice> CPUQuota=<N>% MemoryMax=<N>M MemorySwapMax=0
         # TasksMax=<N>`, `start|stop <slice>` and `is-active <unit>`. The binary

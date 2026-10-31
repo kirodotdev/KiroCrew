@@ -480,6 +480,8 @@ class TestAgentsSliceLimits:
         sb._CGROUP_SCOPE_PROBE = None
         sb._CGROUP_WARNED = False
         sb._SLICE_LIMITS_APPLIED = False
+        sb._PARENT_FILL_TRIED = False
+        sb._SLICE_PARENT_ID = None
         sb._SLICE_OOM_SEEN = None
 
     def test_applies_runtime_property_once_idempotent(self):
@@ -515,6 +517,211 @@ class TestAgentsSliceLimits:
                 "MemorySwapMax=0",
                 "TasksMax=32768",
             ]
+        finally:
+            self._reset()
+
+    def _apply_with_fake_slice(self, monkeypatch, parent_dir, *, pod, parent_props=()):
+        """Run ensure_agents_slice_limits against a fabricated slice tree and
+        return the argv of every systemctl set-property it issued.
+
+        *parent_props* is what the shared parent reports as unset."""
+        import kiro_crew.sandbox as sb
+
+        if pod:
+            monkeypatch.setenv("KIROCREW_POD", "1")
+        else:
+            monkeypatch.delenv("KIROCREW_POD", raising=False)
+        run_mock = MagicMock(return_value=MagicMock(returncode=0, stderr=""))
+        with (
+            patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+            patch("kiro_crew.sandbox._slice_limits_from_config", return_value=(10000, 32768)),
+            patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=parent_dir),
+            patch(
+                "kiro_crew.sandbox._unbounded_parent_properties",
+                return_value=list(parent_props),
+            ),
+            patch(
+                "kiro_crew.platform_compat.trusted_system_bin",
+                return_value="/usr/bin/systemctl",
+            ),
+            patch("kiro_crew.sandbox.subprocess.run", run_mock),
+        ):
+            assert sb.ensure_agents_slice_limits() is True
+        return [c[0][0] for c in run_mock.call_args_list]
+
+    def test_pod_bounds_its_own_child_slice_not_the_shared_parent(self, monkeypatch, tmp_path):
+        """A pod's empty-home defaults must not replace the ceiling the host's
+        gateway put on the shared parent: every gateway's agents run under it,
+        so a pod lowering TasksMax there starves them (EAGAIN on fork). The
+        pod writes its own per-instance child instead."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            [argv] = self._apply_with_fake_slice(monkeypatch, tmp_path, pod=True)
+            unit = argv[4]
+            assert unit != sb._CGROUP_AGENTS_SLICE
+            assert unit == sb._agents_slice_name()
+            assert unit.startswith("kirocrew-agents-") and unit.endswith(".slice")
+            assert "TasksMax=32768" in argv
+        finally:
+            self._reset()
+
+    def test_non_pod_gateway_still_bounds_the_shared_parent(self, monkeypatch, tmp_path):
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            [argv] = self._apply_with_fake_slice(monkeypatch, tmp_path, pod=False)
+            assert argv[4] == sb._CGROUP_AGENTS_SLICE
+        finally:
+            self._reset()
+
+    def test_pod_bounds_an_unbounded_shared_parent(self, monkeypatch, tmp_path):
+        """On a host that runs only pods nothing else caps the shared parent,
+        so separate pods could together exhaust host RAM. The pod fills the
+        parent's unset properties, and only those."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            child_argv, parent_argv = self._apply_with_fake_slice(
+                monkeypatch,
+                tmp_path,
+                pod=True,
+                parent_props=["MemoryMax=10000M", "MemorySwapMax=0"],
+            )
+            assert child_argv[4] == sb._agents_slice_name()
+            assert parent_argv[3:] == [
+                "--runtime",
+                sb._CGROUP_AGENTS_SLICE,
+                "MemoryMax=10000M",
+                "MemorySwapMax=0",
+            ]
+        finally:
+            self._reset()
+
+    def test_pod_fills_the_parent_only_on_its_first_apply(self, monkeypatch, tmp_path):
+        """A re-apply after a user-manager restart cleared every --runtime
+        property must not fill the parent: the host gateway's self-heal only
+        restores its own value while the parent reads unbounded, so a pod
+        filling it first would leave the pod's defaults in place."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            unset = ["MemoryMax=10000M", "MemorySwapMax=0"]
+            first = self._apply_with_fake_slice(monkeypatch, tmp_path, pod=True, parent_props=unset)
+            assert len(first) == 2
+            sb._SLICE_LIMITS_APPLIED = False  # what the self-heal does
+            [again] = self._apply_with_fake_slice(
+                monkeypatch, tmp_path, pod=True, parent_props=unset
+            )
+            assert again[4] == sb._agents_slice_name()
+        finally:
+            self._reset()
+
+    def test_pod_apply_never_overwrites_a_finite_parent(self, monkeypatch, tmp_path):
+        """End to end through ensure_agents_slice_limits with the real
+        systemctl-show parsing: a parent the host gateway already bounded is
+        read, found finite, and left alone. Only the pod's child is written."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        monkeypatch.setenv("KIROCREW_POD", "1")
+        calls: list[list[str]] = []
+
+        def _run(argv, **_kw):
+            calls.append(argv)
+            if "show" in argv:
+                return MagicMock(
+                    returncode=0, stdout="MemoryMax=8589934592\nTasksMax=131072\n", stderr=""
+                )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        try:
+            with (
+                patch("kiro_crew.sandbox._probe_cgroup_scope", return_value=(True, "ok")),
+                patch("kiro_crew.sandbox._slice_limits_from_config", return_value=(10000, 32768)),
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=tmp_path),
+                patch(
+                    "kiro_crew.platform_compat.trusted_system_bin",
+                    return_value="/usr/bin/systemctl",
+                ),
+                patch("kiro_crew.sandbox.subprocess.run", side_effect=_run),
+            ):
+                assert sb.ensure_agents_slice_limits() is True
+            writes = [a for a in calls if "set-property" in a]
+            assert [a[4] for a in writes] == [sb._agents_slice_name()]
+            assert any("show" in a for a in calls)
+        finally:
+            self._reset()
+
+    def test_pod_leaves_a_bounded_shared_parent_alone(self, monkeypatch, tmp_path):
+        self._reset()
+        try:
+            [argv] = self._apply_with_fake_slice(monkeypatch, tmp_path, pod=True)
+            assert "kirocrew-agents.slice" != argv[4]
+        finally:
+            self._reset()
+
+    def test_unbounded_parent_properties_fill_only_unset_values(self):
+        """Read from systemd's configured properties, so an inactive parent
+        that still carries the host gateway's --runtime value is left alone,
+        and a failed read writes nothing."""
+        import kiro_crew.sandbox as sb
+
+        def _show(stdout, rc=0):
+            return patch(
+                "kiro_crew.sandbox.subprocess.run",
+                return_value=MagicMock(returncode=rc, stdout=stdout, stderr=""),
+            )
+
+        with _show("MemoryMax=infinity\nTasksMax=131072\n"):
+            assert sb._unbounded_parent_properties("/usr/bin/systemctl", 10000, 32768) == [
+                "MemoryMax=10000M",
+                "MemorySwapMax=0",
+            ]
+        with _show("MemoryMax=8589934592\nTasksMax=infinity\n"):
+            assert sb._unbounded_parent_properties("/usr/bin/systemctl", 10000, 32768) == [
+                "TasksMax=32768"
+            ]
+        with _show("MemoryMax=8589934592\nTasksMax=131072\n"):
+            assert sb._unbounded_parent_properties("/usr/bin/systemctl", 10000, 32768) == []
+        with _show("", rc=1):
+            assert sb._unbounded_parent_properties("/usr/bin/systemctl", 10000, 32768) == []
+
+    def test_lowering_an_existing_ceiling_is_logged_as_a_warning(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """The write that shrinks a live slice's headroom must land in the
+        gateway log at default levels, naming the old and new values."""
+        import logging
+
+        self._reset()
+        try:
+            (tmp_path / "pids.max").write_text("131072\n")
+            (tmp_path / "memory.max").write_text("max\n")
+            with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
+                self._apply_with_fake_slice(monkeypatch, tmp_path, pod=False)
+            [rec] = [r for r in caplog.records if "aggregate cgroup ceiling on" in r.getMessage()]
+            assert rec.levelno == logging.WARNING
+            assert "TasksMax=32768" in rec.getMessage()
+            assert "was pids.max=131072" in rec.getMessage()
+        finally:
+            self._reset()
+
+    def test_raising_or_first_write_is_info(self, monkeypatch, tmp_path, caplog):
+        import logging
+
+        self._reset()
+        try:
+            (tmp_path / "pids.max").write_text("max\n")
+            (tmp_path / "memory.max").write_text("max\n")
+            with caplog.at_level(logging.INFO, logger="kiro_crew.sandbox"):
+                self._apply_with_fake_slice(monkeypatch, tmp_path, pod=False)
+            [rec] = [r for r in caplog.records if "aggregate cgroup ceiling on" in r.getMessage()]
+            assert rec.levelno == logging.INFO
         finally:
             self._reset()
 
@@ -785,6 +992,32 @@ class TestAgentsSliceLimits:
         finally:
             self._reset()
 
+    def test_slice_pressure_attributes_a_pod_child_breach(self, monkeypatch, tmp_path):
+        """A pod's aggregate ceiling is on its own child slice. A breach there
+        moves the child's local max counter, not the parent's, and must be
+        reported as the aggregate ceiling engaging, with the child's limit."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            monkeypatch.setenv("KIROCREW_POD", "1")
+            d = self._fake_slice(tmp_path, mem_max="max")
+            child = d / sb._agents_slice_name()
+            child.mkdir()
+            (child / "memory.events.local").write_text("max 0\noom_kill 0\n")
+            (child / "memory.current").write_text("900\n")
+            (child / "memory.max").write_text("1000\n")
+            with patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d):
+                assert sb.check_agents_slice_pressure() is None
+                self._fake_slice(tmp_path, oom_kill=1, local_max=0, mem_max="max")
+                (child / "memory.events.local").write_text("max 1\noom_kill 0\n")
+                msg = sb.check_agents_slice_pressure()
+                assert msg is not None
+                assert "aggregate ceiling engaged: yes" in msg
+                assert f"slice {child.name} memory.current=900 memory.max=1000" in msg
+        finally:
+            self._reset()
+
     def test_slice_pressure_none_when_slice_absent(self):
         import kiro_crew.sandbox as sb
 
@@ -813,6 +1046,63 @@ class TestAgentsSliceLimits:
                 sb.check_agents_slice_pressure()
                 ensure_mock.assert_called_once()
                 assert sb._SLICE_LIMITS_APPLIED is False  # reset so the re-apply is real
+        finally:
+            self._reset()
+
+    def test_pod_self_heal_reads_its_own_child_slice(self, monkeypatch, tmp_path):
+        """A pod's ceiling lives on its child slice. An unbounded parent is
+        not a vanished pod ceiling, so it must not trigger a re-apply on
+        every sampler tick."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            monkeypatch.setenv("KIROCREW_POD", "1")
+            d = self._fake_slice(tmp_path, mem_max="max")
+            child = d / sb._agents_slice_name()
+            child.mkdir()
+            (child / "memory.max").write_text("10485760000\n")
+            ensure_mock = MagicMock(return_value=True)
+            with (
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d),
+                patch("kiro_crew.sandbox.ensure_agents_slice_limits", ensure_mock),
+            ):
+                sb._SLICE_LIMITS_APPLIED = True
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_not_called()
+                (child / "memory.max").write_text("max\n")
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_called_once()
+        finally:
+            self._reset()
+
+    def test_slice_pressure_reapplies_on_a_recreated_parent(self, monkeypatch, tmp_path):
+        """A user-manager restart recreates the shared parent and drops its
+        --runtime ceiling. A pod's first apply may then fill the new parent
+        with the pod's defaults, so it reads a finite value. The host
+        gateway must still re-apply its own ceiling, keyed on the parent's
+        directory identity changing."""
+        import kiro_crew.sandbox as sb
+
+        self._reset()
+        try:
+            monkeypatch.delenv("KIROCREW_POD", raising=False)
+            d = self._fake_slice(tmp_path, mem_max="10485760000")
+            ensure_mock = MagicMock(return_value=True)
+            ids = iter([101, 101, 202])
+            with (
+                patch("kiro_crew.sandbox._agents_slice_cgroup_dir", return_value=d),
+                patch("kiro_crew.sandbox.ensure_agents_slice_limits", ensure_mock),
+                patch("kiro_crew.sandbox._cgroup_dir_id", side_effect=lambda _p: next(ids)),
+            ):
+                sb._SLICE_LIMITS_APPLIED = True
+                sb.check_agents_slice_pressure()
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_not_called()
+                # Recreated, and a pod already filled it with a finite value.
+                (d / "memory.max").write_text("4294967296\n")
+                sb.check_agents_slice_pressure()
+                ensure_mock.assert_called_once()
         finally:
             self._reset()
 

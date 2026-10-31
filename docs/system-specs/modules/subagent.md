@@ -303,7 +303,9 @@ figure and the unreadable-host fallback), dispatched per operating system (see
   sits on the anon lists, so all three stay used. An unreadable `memory.stat`
   subtracts nothing. The agents slice's own ceiling
   (`min(memory.high, memory.max) - working set` on `kirocrew-agents.slice`,
-  read via `_agents_slice_available_gb()`) is a second clamp: the slice is a
+  read via `_agents_slice_available_gb()`; inside a pod, which puts its
+  aggregate ceiling on its own per-instance child slice, the same figure is
+  read on that child too and the smaller one is kept) is a second clamp: the slice is a
   sibling of the gateway's cgroup, not an ancestor, and the walk never reads
   `memory.high`, so the slice term is what lets the posture go `critical` on
   a bare host whose `MemAvailable` is still large while agent process memory

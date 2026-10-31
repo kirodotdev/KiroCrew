@@ -560,18 +560,30 @@ def _agents_slice_available_gb() -> float:
     slice_dir = _agents_slice_cgroup_dir()
     if slice_dir is None:
         return -1.0
-    ceilings = [
-        limit
-        for limit in (
-            _read_int_file(str(slice_dir / "memory.high")),
-            _read_int_file(str(slice_dir / "memory.max")),
-        )
-        if limit is not None and limit < _CGROUP_UNLIMITED
-    ]
-    if not ceilings:
-        return -1.0
-    current = _read_int_file(str(slice_dir / "memory.current")) or 0
-    return max(0.0, (min(ceilings) - _working_set(slice_dir, True, current)) / (1024**3))
+    # A pod (KIROCREW_POD) writes its aggregate ceiling on its own child slice
+    # rather than the shared parent, so that child's headroom binds too; the
+    # nearer of the two walls is the one the next spawn hits.
+    from kiro_crew.sandbox import _slice_limits_dir, _slice_limits_unit
+
+    dirs = [slice_dir]
+    own = _slice_limits_dir(_slice_limits_unit())
+    if own is not None and own != slice_dir:
+        dirs.append(own)
+    headrooms: list[float] = []
+    for d in dirs:
+        ceilings = [
+            limit
+            for limit in (
+                _read_int_file(str(d / "memory.high")),
+                _read_int_file(str(d / "memory.max")),
+            )
+            if limit is not None and limit < _CGROUP_UNLIMITED
+        ]
+        if not ceilings:
+            continue
+        current = _read_int_file(str(d / "memory.current")) or 0
+        headrooms.append(max(0.0, (min(ceilings) - _working_set(d, True, current)) / (1024**3)))
+    return min(headrooms) if headrooms else -1.0
 
 
 def _auto_ceiling(cfg: KiroCrewConfig) -> int:
