@@ -188,8 +188,10 @@ The vector-memory subsystem is always enabled:
 
 - **Semantic memory**: structured key-value store with confidence scoring
 - **Episodic memory**: conversation fragments searchable by meaning
-- **Embeddings**: Qwen3-Embedding-0.6B running in-process (no Ollama or any
-  other server to install — the runtime is bundled; no data leaves your machine)
+- **Embeddings**: Qwen3-Embedding-0.6B running in-process by default (no Ollama
+  or any other server to install — the runtime is bundled; no data leaves your
+  machine). An Ollama server can serve them instead; see
+  [Using an Ollama server](#using-an-ollama-server).
 
 The embedding model (~610MB) downloads automatically in the background the
 first time the gateway starts, over HTTPS from the Kiro Crew CDN — failed
@@ -204,6 +206,57 @@ one (`memory.embedding_idle_evict_secs`, `0` keeps it loaded); the first search
 after that waits a few seconds for it to load again.
 
 The bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL; `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
+
+### Using an Ollama server
+
+A machine short on RAM, or one that already runs Ollama on a GPU, can embed
+through an Ollama server instead of the bundled model:
+
+```bash
+kirocrew config set memory.embedding_provider ollama_http
+kirocrew config set memory.ollama_model nomic-embed-text
+kirocrew config set memory.embedding_dim 768   # the model's output width
+kirocrew restart
+```
+
+`memory.ollama_url` defaults to `http://127.0.0.1:11434`. The server must list
+the model in `/api/tags` (`ollama pull nomic-embed-text`). Kiro Crew calls
+`/api/embed` with `truncate` on, so the server cuts an input longer than the
+model's context instead of failing it.
+
+- **Your text goes to the server.** A loopback URL keeps it on this machine. To
+  use another host, set `memory.ollama_allow_remote` to `true` and give an
+  `https://` URL; a plain `http://` remote host is refused. An SSH tunnel to a
+  loopback port is the simplest way to reach a server elsewhere.
+- **Switching re-embeds everything.** The vector space is `ollama:<model>` at
+  `memory.embedding_dim`, so switching provider or model regenerates every
+  stored embedding in the background, the same as a model change in Settings.
+  Moving the server to another URL does not.
+- **When the server is down, memory falls back to keyword search**, and picks
+  vectors up again once the server answers. The log warns once per outage.
+- **The width must match.** If the model returns vectors of another width,
+  nothing is embedded and the log names the `memory.embedding_dim` to set.
+- With `ollama_http` the bundled model is not downloaded at startup, and
+  `memory.embed_model_path` is ignored.
+
+**A server behind IAM.** When the server sits behind an IAM-authorized endpoint
+such as API Gateway, Kiro Crew can sign each request with AWS Signature
+Version 4 instead of going through a signing proxy:
+
+```bash
+kirocrew config set memory.ollama_url https://<api-id>.execute-api.<region>.amazonaws.com/<stage>
+kirocrew config set memory.ollama_allow_remote true
+kirocrew config set memory.ollama_auth aws_sigv4
+kirocrew config set memory.ollama_aws_region <region>
+kirocrew config set memory.ollama_aws_profile <profile>   # optional
+```
+
+Credentials come from the AWS default chain: environment variables, the shared
+config and SSO, `credential_process`, or an instance role. Kiro Crew stores only
+the profile name. It needs the `botocore` package. A request it cannot sign,
+for example with no credentials found, is not sent, and memory falls back to
+keyword search until signing works again. Use `memory.ollama_aws_service
+lambda` for a Lambda function URL.
 
 ## Rebuilding vectors after a model change
 
