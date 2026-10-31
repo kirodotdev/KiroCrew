@@ -66,7 +66,11 @@ async def test_cleared_config_does_not_clear_persisted_placement(tmp_path, monke
         "snapshot",
         lambda: SimpleNamespace(
             session_environments=SimpleNamespace(
-                coder_url="", profiles=[], sprites_profiles=[], boxd_profiles=[]
+                coder_url="",
+                profiles=[],
+                sprites_profiles=[],
+                boxd_profiles=[],
+                fargate_profiles=[],
             )
         ),
     )

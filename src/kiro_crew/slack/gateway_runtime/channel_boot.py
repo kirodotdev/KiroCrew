@@ -235,6 +235,7 @@ def _register_config_appliers(self: GatewayOrchestrator) -> None:
             "session_environments.coder_url",
             "session_environments.sprites_profiles",
             "session_environments.boxd_profiles",
+            "session_environments.fargate_profiles",
             callback=self._on_session_environment_config_change,
             name="GatewayOrchestrator.session_environments",
         ),
