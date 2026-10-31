@@ -584,6 +584,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether an edited message's rewind forks the native session or replays "
         "the transcript as text. The edit runs either way"
     ),
+    "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": (
+        "whether Crew reads one harness's own error for a session it disposed in a "
+        "live process, and reloads that session in a fresh one before the next "
+        "prompt. Recovery from a harness's failure mode, not a feature: a harness "
+        "without that failure mode loses nothing by being outside the set"
+    ),
     "ACP_BACKENDS_SELF_SERVED_ACP": (
         "whether a harness's whole launch is a row of ACP_BACKEND_LAUNCH, so the "
         "spawn path, the install probe and the driver seams resolve argv from that "

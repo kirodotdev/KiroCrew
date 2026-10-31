@@ -202,10 +202,11 @@ exists, it uses the factory's member-aware `select_provider_backend` authority.
 default `agent.acp_backend` capability only; a member session routed to a
 different harness is still judged by the gate above when the command is sent.
 The same default decides the rest of the list on a harness in
-`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS): the list keeps only the commands
-the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
-`/model`, `/prompts`, `/side`, `/tools`, `/workflow`), because the slash gate reads
-the same set and answers every other harness command with a notice. `/model`,
+`ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
+commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
+`/prompts`, `/side`, `/workflow`, plus `/mcp`, `/model` and `/tools` on KAS alone,
+`served_slash_commands`), because the slash gate reads the same set and answers
+every other harness command with a notice naming the harness. `/model`,
 `/tools` and `/mcp` are answered by `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`
 shows the slot's pin and the session's advertised list (else the recorded KAS

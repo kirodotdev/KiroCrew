@@ -101,6 +101,7 @@ vocabulary.
 | `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | The harness owns persisted session records and can restore from a `sessionId` without a Crew-side transcript or `_kiro.dev/session_file`. |
 | `ACP_BACKENDS_LOAD_WITHOUT_MODES` | A successful restore response may omit `modes`; membership prevents that valid load from being mistaken for a failed restore and replaced by a fresh session. |
 | `ACP_BACKENDS_RESUME_WITHOUT_LOAD` | The harness restores with standard ACP `session/resume` and advertises `sessionCapabilities.resume`, rather than using `session/load`. Membership selects both the capability key and verb. |
+| `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` | The harness can dispose one session's backend inside a live process and then answer every prompt on that id with one error. Membership needs a capture of that error and of a `session/load` in a second process; `acp/disposed_session.py` lists the exact texts. |
 | `ACP_BACKENDS_FORK_AT_MESSAGE` | The harness's `session/fork` copies a stored session only up to a given assistant message, so an edited message's rewind can keep the retained native history. Advertising `sessionCapabilities.fork` is not enough: a fork that ignores the point copies the edited-away suffix too. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
