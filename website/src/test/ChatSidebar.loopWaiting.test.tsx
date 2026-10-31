@@ -192,16 +192,16 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
       { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true },
       { key: 'w', title: 'worker', running: true, messages: 3, created_by: 'k' },
     ]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
-    expect(getByText('Loop 5/300')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expectLoopIcon(container, 5, 300)
     expect(queryByText(WAITING_LABEL)).toBeNull()
     expect(queryByText(/Paused at 5\/300/)).toBeNull()
   })
 
   it('a loop whose own sub-agents run stays on the progress row despite [OPTIONS:]', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, subagents_running: true }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
-    expect(getByText('Loop 7/24')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
+    expectLoopIcon(container, 7, 24)
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 

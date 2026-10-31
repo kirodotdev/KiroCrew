@@ -2421,6 +2421,43 @@ session-start notice names `allowedCommands`. A malformed record reads as an
 empty allowlist. A listed command still prompts: the author's own
 `denyByDefault` withholds the `allowedCommands` grant, as above.
 
+**KAS spec write allowlist (`fallbackAction: "deny"`)** — a spec that sets
+`toolsSettings.fs_write.fallbackAction` (or `write`) to `"deny"` (any case, or a
+value that is not a string) has its usable `allowedPaths` recorded as the agent's
+write allowlist (`kas_permissions.spec_write_allowlist`, at most 64 entries,
+possibly empty) whatever the governance ceiling says. Only the subset
+`platform/allowed_paths.py` reads the way kiro-cli's glob set does is usable:
+literals, `*` and `**` (any run, `/` included), `?`, a leading `~` or `~/`; `/**/`
+also matches one `/`, and an entry also covers what lies below it. An entry with
+`[`, `]`, `{`, `}`, `\`, `$`, a `~user`, or a `.`/`..` segment after a wildcard
+covers nothing. The handle anchors the entries at the session's own directory
+(`kas_write_allowlist.projected_write_allowlist`, string work only, re-read on a
+mode switch; with no directory a relative entry covers nothing), keeps them
+(`AcpSessionHandle.kas_spec_write_allowlist`) and stamps them on its own agent's
+requests only (`AcpEvent.spec_write_allowlist`). The gate's `spec-write-allowlist`
+row, a `deny_policy` right after `spec-shell-allowlist`, refuses a file write (the
+write plane by `is_edit_call`, or `fs_write` among its names, deny-only aliases
+such as `delete_file` included, no MCP server behind it) unless every target
+`edit_target_candidates` names is covered both as written (normalized, `~`
+expanded, a relative target joined to the session directory the handle stamps as
+`AcpEvent.spec_write_cwd`, which is where KAS resolves it) and in every
+symlink-resolved spelling, resolved before any `..` is folded so `link/..` is
+followed as the filesystem follows it. Only for a spelling the entries do not
+cover are the entries' own directory parts resolved too, as kiro-cli
+canonicalizes them (bounded; a stall or failed resolution refuses). A write whose targets cannot be read (none, a truncated walk, a relative
+diff path, a relative target with no session directory) is refused. As a deny it holds
+under `ToolApprovalPolicy.AUTO_APPROVE`. A covered write still prompts on KAS, so
+the session-start notice keeps naming `allowedPaths`. On Windows, where kiro-cli's
+glob set reads `\` as a separator, entries and targets are matched in one form
+(`allowed_paths.to_glob_path`: `\` as `/`, ASCII letters case-folded, as NTFS
+compares them) and a drive root (`c:/`) is absolute; an entry with `%VAR%` or
+`$env:`, a UNC entry, and one whose `..` climbs off its drive cover nothing. The
+`kirocrew chat` CLI gate passes both spec allowlists (shell and write) to
+`on_tool_call`, so answering its prompt cannot run what they refuse. A remote
+workspace turns the built-ins into MCP tools these rows do not bind, so
+`_remote_workspace_agents` refuses an agent carrying either allowlist
+(`REMOTE_AGENT_RESTRICTED`), as it refuses one with authored shell or file rules.
+
 **Read-only auto-approve** — kiro-cli's `autoAllowReadonly` is not used;
 the tool gate auto-approves read-only tool calls itself, as its `read-only` row —
 the **last** of `GATE_TIERS`, before `judge`'s fall-through `allow()` — after every

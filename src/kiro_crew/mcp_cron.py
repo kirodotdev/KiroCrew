@@ -868,6 +868,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if isinstance(parsed, str):
                 return parsed  # error message
             at_ts = parsed
+        # The resolved instant carries the schema's ceiling for a raw ``at``
+        # (year 2100), whatever produced it -- the same bound and wording the
+        # dashboard route and the CLI apply. ``at_time``'s relative form has no
+        # bound of its own: "in 999999999 hours" parses to a time ~116,000
+        # years out that the Schedule page cannot render.
+        if at_ts is not None:
+            at_spec = next(s for s in MCP_CRON_SCHEMAS["cron_add"].fields if s.name == "at")
+            lo, hi = at_spec.min_val, at_spec.max_val
+            if (lo is not None and at_ts < lo) or (hi is not None and at_ts > hi):
+                return f"Error: resolved time is outside the supported range ({lo} to {hi})"
         # Guard against past timestamps from any source (at, delay, at_time)
         if at_ts is not None and at_ts < time.time():
             # Rendered in the zone the job keeps its wall clocks in, so a refused

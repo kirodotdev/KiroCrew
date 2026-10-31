@@ -187,6 +187,16 @@ class ToolCall:
     #: ``None`` otherwise. Read by the ``spec-shell-allowlist`` tier, which REFUSES
     #: a shell call none matches. A restriction, never a grant.
     spec_shell_allowlist: tuple[str, ...] | None = None
+    #: ``AcpEvent.spec_write_allowlist``: when the KAS session's own agent sets
+    #: ``toolsSettings.fs_write.fallbackAction: "deny"``, the absolute globs its
+    #: write tool may touch; ``None`` otherwise. Read by the
+    #: ``spec-write-allowlist`` tier, which REFUSES a file write none covers. A
+    #: restriction, never a grant.
+    spec_write_allowlist: tuple[str, ...] | None = None
+    #: ``AcpEvent.spec_write_cwd``: the KAS session's own directory, which the
+    #: ``spec-write-allowlist`` tier joins a relative write target to. ``""``
+    #: leaves a relative target uncovered.
+    spec_write_cwd: str = ""
     #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
     #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
     #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
@@ -252,6 +262,10 @@ class ToolCall:
             "spec_shell_allowlist": _allowlist_patterns(
                 getattr(event, "spec_shell_allowlist", None)
             ),
+            "spec_write_allowlist": _allowlist_patterns(
+                getattr(event, "spec_write_allowlist", None)
+            ),
+            "spec_write_cwd": _plain_str(getattr(event, "spec_write_cwd", "")),
             "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "deepseek_tool_name": getattr(event, "deepseek_tool_name", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
@@ -280,6 +294,8 @@ class ToolCall:
             "spec_granted_builtins": self.spec_granted_builtins,
             "spec_granted_commands": self.spec_granted_commands,
             "spec_shell_allowlist": self.spec_shell_allowlist,
+            "spec_write_allowlist": self.spec_write_allowlist,
+            "spec_write_cwd": self.spec_write_cwd,
             "harness_builtin_tool": self.harness_builtin_tool,
             "deepseek_tool_name": self.deepseek_tool_name,
             "spawn_target": self.spawn_target,
@@ -305,12 +321,18 @@ def _granted_patterns(value: object) -> tuple[str, ...]:
     return tuple(p for p in value if isinstance(p, str) and p)
 
 
+def _plain_str(value: object) -> str:
+    """*value* when it is a string, else ``""``."""
+    return value if isinstance(value, str) else ""
+
+
 def _allowlist_patterns(value: object) -> tuple[str, ...] | None:
-    """``AcpEvent.spec_shell_allowlist`` as the gate reads it.
+    """``AcpEvent.spec_shell_allowlist`` (or ``spec_write_allowlist``) as the gate
+    reads it.
 
     ``None`` (no restriction) only when the event carries ``None`` or no such
     field. Any other value that is not a sequence of strings reads as ``()``, which
-    allows no command: a malformed restriction never lifts itself.
+    allows no command or path: a malformed restriction never lifts itself.
     """
     if value is None:
         return None

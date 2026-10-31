@@ -624,6 +624,14 @@ class KasHarness(MembershipHarness):
         handle.kas_spec_shell_allowlist = kas_agents_mod.projected_shell_allowlist(
             custom_agents, active_agent
         )
+        # A `fallbackAction: "deny"` spec's write allowlist, anchored at the
+        # session's own directory: the gate refuses every other file write of this
+        # agent (`spec-write-allowlist` tier).
+        from kiro_crew.acp.kas_write_allowlist import projected_write_allowlist
+
+        handle.kas_spec_write_allowlist = projected_write_allowlist(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""

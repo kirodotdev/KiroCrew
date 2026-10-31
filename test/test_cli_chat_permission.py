@@ -918,3 +918,35 @@ class TestChatProviderShutdown:
             await cli_chat._chat("hello", None)
         assert provider.shutdowns == 1
         assert collected["n"] == 1
+
+
+class TestChatPermissionRequestSpecRestrictions(_TestChatPermissionRequestHarness):
+    """A KAS spec's deny-all-but restrictions reach the CLI gate, so answering the
+    prompt cannot run what the spec refuses."""
+
+    @pytest.mark.asyncio
+    async def test_a_write_the_spec_does_not_cover_is_refused_before_the_prompt(self, monkeypatch):
+        event = self._event(
+            title="Write", tool_kind="edit", raw_params={"path": "/w/elsewhere.txt"}
+        )
+        event.spec_write_allowlist = ("/w/out",)
+        event.spec_write_cwd = "/w"
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_command_the_spec_does_not_list_is_refused_before_the_prompt(self, monkeypatch):
+        event = self._event(title="Run Command", command="mkfifo /tmp/x")
+        event.spec_shell_allowlist = ("git status",)
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("reject", 7, False)]
+        assert reads["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_covered_write_still_reaches_the_prompt(self, monkeypatch):
+        event = self._event(title="Write", tool_kind="edit", raw_params={"path": "/w/out/a.txt"})
+        event.spec_write_allowlist = ("/w/out",)
+        event.spec_write_cwd = "/w"
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert reads["n"] == 1

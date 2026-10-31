@@ -187,12 +187,19 @@ def test_the_latest_sender_expires() -> None:
 
 
 class TabState(FakeState):
-    """A gateway whose one owner tab answers ``guide_observe`` frames."""
+    """A gateway whose one owner tab answers ``guide_observe`` frames.
 
-    def __init__(self, answer: Any = None) -> None:
+    By default the tab answers in the background, while the route waits. With
+    ``answer_before_wait`` the frame is not handed over until the tab's reply
+    has been posted and its response recorded in ``replies``, so a test that
+    must see a refused reply does not race the route's wait for it.
+    """
+
+    def __init__(self, answer: Any = None, *, answer_before_wait: bool = False) -> None:
         super().__init__()
         self.client: Any = None
         self.answer = answer
+        self.answer_before_wait = answer_before_wait
         self.replies: list[tuple[int, Any]] = []
 
     async def deliver_ws_owners(self, kind: str, payload: dict[str, Any]) -> int:
@@ -205,7 +212,10 @@ class TabState(FakeState):
                 r = await self.client.post("/api/guide/observe", json=body, headers=OWNER)
                 self.replies.append((r.status, await r.json()))
 
-            asyncio.get_running_loop().create_task(reply())
+            if self.answer_before_wait:
+                await reply()
+            else:
+                asyncio.get_running_loop().create_task(reply())
         return 1
 
 
@@ -353,13 +363,20 @@ def test_a_reply_carrying_text_is_refused_and_the_answer_is_not_observed(
 ) -> None:
     from kiro_crew.dashboard.handlers import guide as guide_routes
 
-    monkeypatch.setattr(guide_routes, "OBSERVE_WAIT_SECONDS", 0.2)
-    state = TabState(answer=lambda p: {**_tab_reply(p), "text": "Older Sessions"})
+    # The tab's reply is posted, and refused, while the request is still
+    # waiting; only then does the route's wait start. So the refusal is seen
+    # however slow the machine, and is the text refusal, not a late-reply
+    # ``observation_expired``. Nothing resolves the wait, so it lapses.
+    monkeypatch.setattr(guide_routes, "OBSERVE_WAIT_SECONDS", 0.05)
+    state = TabState(
+        answer=lambda p: {**_tab_reply(p), "text": "Older Sessions"}, answer_before_wait=True
+    )
     state.open_slot("chat-1")
     observation_hub_for(state).note_sender("chat-1", "tab-A")
     status, body = _observe(state, {"targets": [TARGET]}, agent("dashboard:chat-1"))
-    assert body == {"status": "not_observed", "reason": "stale_tab", "ui_lang": ""}
-    assert state.replies and state.replies[0][0] == 400
+    assert (status, body) == (200, {"status": "not_observed", "reason": "stale_tab", "ui_lang": ""})
+    assert [(s, r.get("code")) for s, r in state.replies] == [(400, "invalid_observation")]
+    assert observation_hub_for(state).pending_count() == 0
 
 
 @pytest.mark.parametrize(

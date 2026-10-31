@@ -2205,6 +2205,11 @@ spec the same way kiro-cli v2 does where the wire allows it:
   refuses every shell call of that agent that no usable `allowedCommands` entry
   matches whole, on every approval policy, through its `spec-shell-allowlist` row
   ([security](security.md) § KAS spec shell allowlist).
+- `toolsSettings.fs_write.fallbackAction: "deny"` travels as no rule too: Crew's
+  gate refuses every file write of that agent whose target no usable
+  `allowedPaths` entry covers, anchored at the session's directory, on every
+  approval policy, through its `spec-write-allowlist` row
+  ([security](security.md) § KAS spec write allowlist).
 - The spec's `hooks` run from Crew's turn loop (`agent_sdk/spec_hooks.py`); a
   PostToolUse spec hook's tool matcher is matched on the id the call's permission
   request stated, or for a call the frame classified as a shell command, KAS's

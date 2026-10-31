@@ -48,6 +48,19 @@ def _restricts_replaced_builtins(permissions: Any) -> bool:
     return False
 
 
+def _carries_spec_allowlist(agent: Any) -> bool:
+    """Whether a projected entry records a shell or write allowlist its spec set.
+
+    The gate enforces those on built-in calls only, and a remote workspace turns
+    the built-ins into MCP tools, so such an agent cannot keep its restriction there.
+    """
+    from kiro_crew.acp.kas_permissions import CREW_SHELL_ALLOWLIST_KEY, CREW_WRITE_ALLOWLIST_KEY
+
+    return isinstance(agent, dict) and any(
+        key in agent for key in (CREW_SHELL_ALLOWLIST_KEY, CREW_WRITE_ALLOWLIST_KEY)
+    )
+
+
 def _without_local_only_grants(grants: list[str]) -> list[str]:
     """MCP grants for a remote session, minus every tool that acts on this machine.
 
@@ -238,7 +251,9 @@ def _remote_workspace_agents(self: AcpRuntime, agents: Any, servers: list[Any]) 
     for agent in agents:
         # KAS judges workspace tools as `mcp`, so the agent's own shell and
         # file restrictions would stop matching: refuse instead of dropping them.
-        if _restricts_replaced_builtins(agent.get("permissions")):
+        # The spec's deny-all-but allowlists (shell `denyByDefault`, write
+        # `fallbackAction: "deny"`) bind built-ins only, so they are refused too.
+        if _restricts_replaced_builtins(agent.get("permissions")) or _carries_spec_allowlist(agent):
             from kiro_crew.session_environment import REMOTE_AGENT_RESTRICTED
 
             raise AcpRuntimeError(REMOTE_AGENT_RESTRICTED)

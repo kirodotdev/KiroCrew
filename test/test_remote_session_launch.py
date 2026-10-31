@@ -427,6 +427,19 @@ def test_remote_workspace_grants_follow_the_agents_own_allowlist(tools, expected
     assert agent["tools"] == expected
 
 
+@pytest.mark.parametrize("key", ["_crewShellAllowlist", "_crewWriteAllowlist"])
+def test_an_agent_with_a_spec_allowlist_is_refused_on_a_remote_workspace(key):
+    """The gate binds those allowlists to built-in calls, which a remote workspace
+    replaces with MCP tools, so the agent would run without them."""
+    from kiro_crew.session_environment import REMOTE_AGENT_RESTRICTED
+
+    with pytest.raises(AcpRuntimeError, match="limit shell commands or file paths"):
+        AcpRuntime._remote_workspace_agents(
+            _runtime(), [{"id": "a", "tools": "*", key: []}], [{"name": "workspace"}]
+        )
+    assert "remote workspace cannot enforce" in REMOTE_AGENT_RESTRICTED
+
+
 def test_every_mapped_workspace_tool_is_one_the_guest_server_serves():
     served = {spec["name"] for spec in workspace_tools.tool_specs("/w")}
     mapped = runtime_mod._WORKSPACE_TOOLS_BY_BUILTIN
