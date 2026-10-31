@@ -1159,7 +1159,40 @@ class CronService:
                         # A user resume that lifts an auto-pause restores execute
                         # permission — audit it like the auto-pause transition.
                         job._audit_pause_change("auto_pause_cleared")
-                    self._save()
+                    try:
+                        self._save()
+                    except BaseException:
+                        # These pause fields are also written on the loop thread
+                        # by a run in flight, so restoring the values seen here
+                        # would undo the run's write, and keeping them leaves a
+                        # change the caller is told failed. A reload does
+                        # neither: a run's write that must outlive a reload is
+                        # a held run record or settlement (re-applied by
+                        # ``_load``) or a pending removal (skipped by the due
+                        # scan), the same guarantee a reload after another
+                        # process's write relies on. The list is then the store
+                        # plus those records, as if this request never ran. The
+                        # fingerprint is dropped first, so a reload that cannot
+                        # run here still happens on the next ``_sync``. A store
+                        # that cannot be read latches ``_load_failed``: the list
+                        # is never part-swapped, and every save is refused until
+                        # a load replaces it, so no later write can persist the
+                        # change this caller is told failed.
+                        self._reset_fingerprint()
+                        try:
+                            self._sync()
+                        except Exception:
+                            logger.error(
+                                "Cron: reload after a failed pause/resume save did not run",
+                                exc_info=True,
+                            )
+                        else:
+                            if self._load_failed:
+                                logger.error(
+                                    "Cron: store unreadable after a failed pause/resume save;"
+                                    " writes are refused until it reloads"
+                                )
+                        raise
                     logger.info("%s cron job %s", "Enabled" if enabled else "Disabled", job_id)
                     return True
             if expected_owner is not None:
