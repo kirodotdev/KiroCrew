@@ -599,6 +599,7 @@ describe('every api method issues one well-formed /api request', () => {
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     browseFiles: ['sw-1', CALLER_SIGNAL],
+    sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {
