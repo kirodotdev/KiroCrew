@@ -123,6 +123,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_lifecycle import logger  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_lifecycle import (  # noqa: F401
         _apply_knowledge_config,
+        _reclaim_interrupted_ingest_jobs,
+        _run_ingest_job_reclaim,
         _shutdown_knowledge_pools,
         _start_artifact_ingest_async,
         _watch_knowledge_config,
@@ -228,6 +230,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.knowledge.ingestion import _redact  # noqa: F401
     from kiro_crew.knowledge.ingestion import handoff_gate_context  # noqa: F401
     from kiro_crew.knowledge.ingestion import rebuild_embeddings  # noqa: F401
+    from kiro_crew.knowledge.ingestion import reclaim_interrupted_ingest_jobs  # noqa: F401
     from kiro_crew.knowledge.ingestion import start_rebuild_job  # noqa: F401
     from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT  # noqa: F401
     from kiro_crew.knowledge.llm_pool import LLMPool  # noqa: F401
