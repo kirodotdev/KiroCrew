@@ -344,7 +344,6 @@ class TestPushGuardSquash:
         assert not list(git_dir.glob("push_guard-squash-*"))
         assert not list(git_dir.glob("push_guard-message-*"))
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="hook and gpg stand-ins are sh")
     def test_hooks_and_signing_run_as_for_any_commit(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         hooks = tmp_path / "hooks"
@@ -373,7 +372,6 @@ class TestPushGuardSquash:
         raw = _git(clone_dir, "cat-file", "commit", "HEAD")
         assert "gpgsig" in raw and "Change-Id: I123" in raw
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_a_rejecting_commit_msg_hook_refuses_and_moves_nothing(self, repo_pair, tmp_path):
         clone_dir, _ = repo_pair
         head = _feature(clone_dir)
@@ -390,7 +388,6 @@ class TestPushGuardSquash:
         assert "subject must be imperative" in stderr
         assert _rev(clone_dir, "HEAD") == head
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_hooks_see_the_callers_locale_and_prompt_settings(self, repo_pair, tmp_path):
         """Only the guard's own probes run with LC_ALL=C and no prompts; user code does not."""
         clone_dir, _ = repo_pair
@@ -417,7 +414,6 @@ class TestPushGuardSquash:
         assert proc.returncode == 0, proc.stderr
         assert seen.read_text().strip() == "C.UTF-8|unset"
 
-    @pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-in is sh")
     def test_caller_config_from_the_environment_applies(self, repo_pair, tmp_path):
         """GIT_CONFIG_COUNT carries the caller's choices (a hooks path here); it is kept."""
         clone_dir, _ = repo_pair
@@ -755,7 +751,6 @@ class TestPushGuardCommitByName:
             assert rc == _PG.EXIT_USAGE, (argv, stderr)
 
 
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="the hook stand-ins are sh")
 class TestPushGuardSquashMessage:
     """The squash message goes through the hooks and cleanup ``git commit -F`` applies."""
 

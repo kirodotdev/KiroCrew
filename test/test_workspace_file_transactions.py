@@ -348,7 +348,6 @@ def test_browse_read_keeps_text_whose_last_character_the_cap_splits(tmp_path):
 
 
 @needs_git
-@pytest.mark.skipif(os.name == "nt", reason="POSIX hook script")
 @pytest.mark.parametrize("where", ["hooks_dir", "hooks_path"])
 def test_git_status_runs_no_repository_hook(tmp_path, where):
     """An agent can write a hook (or point core.hooksPath at one); status must not run it."""

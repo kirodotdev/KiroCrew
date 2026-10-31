@@ -625,7 +625,6 @@ def test_pack_program_flags_pin_every_remote_subcommand() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(os.name == "nt", reason="the hostile pack program is a POSIX shell script")
 async def test_pack_program_flags_beat_a_vault_set_uploadpack_and_receivepack(fixtures) -> None:
     """Against real git: a vault's own `remote.origin.uploadpack`/`.receivepack`
     in `.git/config` is read before the GIT_CONFIG_* pins and wins over them, so
