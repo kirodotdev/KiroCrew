@@ -159,8 +159,8 @@ def _prune_orphan_entities(self: KnowledgeStore) -> None:
         """)
 
 
-def ensure_graph_loaded(self: KnowledgeStore) -> None:
-    """Materialise the entity graph if no reader has done so yet.
+def ensure_graph_loaded(self: KnowledgeStore) -> SimpleDiGraph:
+    """Materialise the entity graph if no reader has done so yet, and return it.
 
     Called by each graph reader before it touches :attr:`graph` --
     ``get_entity_graph`` and ``get_full_graph`` in the dashboard handlers --
@@ -184,13 +184,23 @@ def ensure_graph_loaded(self: KnowledgeStore) -> None:
     their own scan. The lock is re-entrant and :meth:`_load_graph` takes it
     again, so a mutation refresh cannot interleave with this load -- see that
     method for why serializing every rebuild is the property that matters.
+
+    The return value is the graph this call saw loaded. A reader must use it
+    rather than re-read :attr:`graph` later: a delete on another thread may
+    mark the graph stale in between (:func:`mark_graph_stale`), and a later
+    read would then rebuild on the caller's thread, the event loop for the
+    dashboard handlers. The fast path returns the graph it read only when the
+    flag says loaded AND that graph is still the published one: a placeholder is
+    published with the flag already down, and every stale mark publishes a new
+    one, so the graph returned is never an empty placeholder.
     """
-    if self._graph_loaded:
-        return
+    graph = self._graph
+    if self._graph_loaded and self._graph is graph:
+        return graph
     with self._graph_lock:
-        if self._graph_loaded:
-            return
-        self._load_graph()
+        if not self._graph_loaded:
+            self._load_graph()
+        return self._graph
 
 
 def _load_graph(self: KnowledgeStore):
@@ -256,13 +266,32 @@ def _load_graph(self: KnowledgeStore):
         self._graph_loaded = True
 
 
+def mark_graph_stale(self: KnowledgeStore) -> None:
+    """Drop the in-memory graph after a delete; its next reader rebuilds it.
+
+    Rebuilding here would make an artifact sync or the orphan sweep at boot
+    hold every entity and relation in memory (~110 MiB on a 59k-entity
+    library) for a graph nobody asked for. Readers go
+    through :meth:`ensure_graph_loaded`, which rebuilds from the tables on first
+    use. Taken under ``_graph_lock`` so a rebuild in progress finishes before
+    the flag drops; a reader already iterating the old graph keeps that object.
+    The flag drops BEFORE the empty graph is published: the lock-free fast path
+    of :meth:`ensure_graph_loaded` reads the graph first and the flag second, so
+    it can see the old complete graph but never the empty placeholder as loaded.
+    """
+    with self._graph_lock:
+        self._graph_loaded = False
+        self._graph = SimpleDiGraph()
+
+
 def reload_graph(self: KnowledgeStore) -> None:
-    """Rebuild the in-memory entity graph from the tables.
+    """Invalidate the in-memory entity graph after a delete made in a transaction.
 
     For a caller that ran :meth:`delete_items_batch_in_txn` and therefore owes
-    the reload that :meth:`delete_items_batch` would have done for it.
+    what :meth:`delete_items_batch` does for it: :meth:`mark_graph_stale`, so the
+    next reader rebuilds from the tables.
     """
-    self._load_graph()
+    self.mark_graph_stale()
 
 
 def add_entity(self: KnowledgeStore, name, entity_type, description=None, aliases=None) -> str:

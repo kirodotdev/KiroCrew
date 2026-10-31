@@ -197,24 +197,27 @@ class TestReclaimOrphansStillSweeps:
         finally:
             s.close()
 
-    def test_reclaim_reads_the_loaded_flag_and_refreshes_under_the_graph_lock(self, tmp_path):
+    def test_reclaim_drops_a_loaded_graph_instead_of_rebuilding_it(self, tmp_path):
         """A first graph load racing the sweep must not publish pruned entities:
-        the flag check and the refresh run under ``_graph_lock``, so a load
-        either finishes first (and is then refreshed) or reads after the prune."""
+        the sweep drops the graph under ``_graph_lock`` rather than rebuilding it,
+        so a load either finishes first (and is then dropped) or reads after the
+        prune. The rebuild waits for the next reader."""
         s = KnowledgeStore(str(tmp_path / "k.db"))
         try:
             s.ensure_graph_loaded()
-            held: list[bool] = []
+            rebuilds: list[int] = []
             original = KnowledgeStore._load_graph
 
-            def observing_load(self):
-                held.append(self._graph_lock._is_owned())
+            def counting_load(self):
+                rebuilds.append(1)
                 return original(self)
 
             with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(KnowledgeStore, "_load_graph", observing_load)
+                mp.setattr(KnowledgeStore, "_load_graph", counting_load)
                 s.reclaim_orphans()
-            assert held == [True]
+                assert rebuilds == [] and s._graph_loaded is False
+                s.ensure_graph_loaded()
+                assert rebuilds == [1], "the next reader rebuilds it"
         finally:
             s.close()
 
