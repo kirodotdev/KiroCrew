@@ -16,7 +16,6 @@ import ast
 import hashlib
 import importlib.util
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -539,7 +538,7 @@ class TestRejections:
         assert result.files == []
         assert result.rejections[0].reason == REASON_SENSITIVE
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation on Windows")
+    @requires_symlinks
     @pytest.mark.parametrize("exists", [True, False])
     def test_sensitive_parent_alias_is_denied_before_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exists: bool
@@ -557,9 +556,7 @@ class TestRejections:
         assert result.files == []
         assert result.rejections[0].reason == REASON_SENSITIVE
 
-    @pytest.mark.skipif(
-        sys.platform == "win32", reason="symlink creation needs elevation on Windows"
-    )
+    @requires_symlinks
     def test_a_symlink_is_rejected_rather_than_resolved(self, tmp_path: Path) -> None:
         """The path handed to a transport must name the file that was validated."""
         real = _png(tmp_path, "real.png")

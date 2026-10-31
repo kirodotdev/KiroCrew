@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.project_scan import (
     MAX_DECLARATION_BYTES,
     SIGNAL_GIT,
@@ -559,7 +560,7 @@ class TestNothingToOffer:
         assert scan(empty).candidates == scan(filled).candidates == ()
 
 
-@pytest.mark.skipif(_IS_WINDOWS, reason="directory symlinks need elevation on Windows")
+@requires_symlinks
 class TestSymlinkedTree:
     @pytest.fixture
     def linked_root(self, tmp_path: Path) -> Path:
