@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import sys
@@ -21,6 +22,7 @@ from kiro_crew import sandbox_leaves, sandbox_precreate
 from kiro_crew.browser_harness import HARNESS_VERSION, helper_worker, supervisor
 from kiro_crew.browser_harness.supervisor import HarnessSupervisor
 from kiro_crew.security import paths_lists
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture
@@ -181,7 +183,13 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
     way ``--remote-debugging-pipe`` does, then exits; the gateway side is the real
     :class:`PipeUpstream`. A flat ``--remote-debugging-port`` must not be in argv.
     """
-    sup = HarnessSupervisor(tmp_path, base_env={"PATH": "/usr/bin:/bin"})
+    # The stand-in is this interpreter, so it keeps the loader path a shared-library
+    # Python build needs to start at all (hosted CI pythons set LD_LIBRARY_PATH).
+    env = {"PATH": "/usr/bin:/bin"}
+    for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    sup = HarnessSupervisor(tmp_path, base_env=env)
     seen: list[list[str]] = []
     original = sup._spawn
 
@@ -683,7 +691,7 @@ async def test_a_launch_cancelled_mid_start_stops_the_child_it_spawned(
         sup._daemon_env = lambda _url: {}  # type: ignore[method-assign]
         sup._ipc_ping = _never  # type: ignore[method-assign]
         task = asyncio.ensure_future(sup._start_daemon(Path("python"), "ws://relay"))
-    await asyncio.wait_for(waiting.wait(), 5)
+    await await_until(waiting, what="the launcher to reach its wait")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -706,7 +714,7 @@ async def test_a_cancel_during_the_unowned_stop_waits_for_it_then_is_raised(
 
     monkeypatch.setattr(supervisor, "_stop_process", _slow_stop)
     task = asyncio.ensure_future(supervisor._stop_unowned(_Child()))  # type: ignore[arg-type]
-    await asyncio.wait_for(started.wait(), 5)
+    await await_until(started, what="the stop to start")
     task.cancel()
     await asyncio.sleep(0)
     assert not task.done(), "returned before the child was stopped"
