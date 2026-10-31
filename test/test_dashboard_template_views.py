@@ -1139,6 +1139,7 @@ def test_the_refusal_notes_lead_with_what_to_do_and_avoid_the_word_board(
         "open_busy",
         "open_declined",
         "open_untied",
+        "open_remote",
     ):
         for text in _page_strings(page, key):
             assert "board" not in text.lower(), f"{key} says board: {text!r}"
@@ -1186,6 +1187,22 @@ def test_an_inert_button_says_why_in_its_label(pages: dict[str, tuple[Any, str]]
     # The label sits on a card button, so it stays a few words.
     for key in _INERT_LABEL_KEYS:
         assert len(_page_strings(page, key)[0]) <= 16, key
+
+
+def test_a_remote_worker_gets_its_own_note_and_the_button_stays_usable(
+    pages: dict[str, tuple[Any, str]],
+) -> None:
+    """The gateway's `open_remote` refusal is drawn in both languages and does not grey the button."""
+    _, page = pages["org-chart"]
+    assert "open_remote: 'open_remote'" in page
+    # The lookup table maps the code to the note key, the one match that is not copy.
+    copy = [text for text in _page_strings(page, "open_remote") if text != "open_remote"]
+    assert len(copy) == 2, "open_remote is not declared in en and zh-CN"
+    inert = page[page.index("var INERT_NOTES") :].split("]", 1)[0]
+    assert "open_remote" not in inert
+    for text in copy:
+        for word in ("fold", "host", "alias", "cap", "board"):
+            assert word not in text.lower().split(), f"open_remote says {word!r}: {text!r}"
 
 
 def test_the_button_is_inert_while_the_stale_note_says_to_wait(

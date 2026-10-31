@@ -16,6 +16,8 @@ import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
 import { APPROVAL_MODE_KEYS, isRootSession, runTitle } from './model'
 import { PANEL_HEADING_ATTR } from './panelHeading'
 import { slotRowByKey } from '../../../store/slotIndex'
+import { useConfirm } from '../../../components/ConfirmDialog'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../../../components/NavigationLeaveGuard'
 
 // The Overview chunk is lazy-loaded. A chunk that fails to load (a 404 after a
 // frontend rebuild on an open tab) shows its notice in the Overview region, with
@@ -77,6 +79,26 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   const hasDraft = data.hasQuestionDraft
   useEffect(() => { draftCb.current?.(hasDraft) }, [hasDraft])
   useEffect(() => () => { draftCb.current?.(false) }, [])
+  // The app shell's own channel, for every exit that asks before it navigates (sidebar, command
+  // palette, notification jumps, the org-chart card's open action). Registering the guard makes
+  // those exits ask; publishing the stake arms the browser Back button too. The registry is
+  // synchronous, so an unsent answer refuses the exit and opens the app's own discard dialog;
+  // after "Discard" the person repeats the exit, which then goes through (the same flow as the
+  // artifact editor). Any later edit to the answer re-arms the question.
+  const { confirm, confirmDialog } = useConfirm()
+  const hasDraftRef = useRef(hasDraft)
+  hasDraftRef.current = hasDraft
+  // "Discard" is consent for the answer as it stands: any later edit to it (a draft change) withdraws it.
+  const discardedRef = useRef(false)
+  useRegisterNavigationLeaveGuard(() => {
+    if (!hasDraftRef.current || discardedRef.current) return true
+    void confirm({
+      title: t('components.markdownPanel.discard_unsaved_changes'),
+      confirmLabel: t('pages.overview.mcpTab.discard'),
+    }).then(ok => { if (ok) discardedRef.current = true })
+    return false
+  })
+  usePublishNavigationStake(hasDraft)
   // A ROOT session (`isRootSession`): one no other session dispatched (`created_by`)
   // or adopted (`parent`). The gateway decides with the same two readings and refuses
   // the read otherwise, so this only withholds a segment it would refuse. This is the
@@ -148,7 +170,7 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
       {data.attention.map(item => {
         const node = data.nodes.find(n => n.id === `session:${item.slot}`)!
         return <div key={`${slot}:${item.id}`} hidden={section === 'approvals' ? item.kind !== 'approval' : item.kind === 'approval'}>
-          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? answers => data.onQuestionDraftChange(item.question!, answers) : undefined} />
+          <AttentionCard item={item} title={runTitle(node)} context={node.detail} onOpenSession={onOpenSession} onDraftChange={item.question ? answers => { discardedRef.current = false; data.onQuestionDraftChange(item.question!, answers) } : undefined} />
         </div>
       })}
       {data.restoredQuestionNotices.map(notice => {
@@ -176,5 +198,6 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
       />}
     </div>}
     </div>
+    {confirmDialog}
   </div>
 }

@@ -660,7 +660,7 @@ def test_a_closed_item_no_longer_needs_me() -> None:
 def test_a_savepoint_from_before_reason_and_answered_rebuilds() -> None:
     """Items in an older savepoint carry no ``reason``/``answered``, so resuming one
     would hide a real person wait from ``needs_you``. The bumped version retires it."""
-    assert projection._FOLDS["workstreams"].state_version == projection._FOLD_STATE_VERSION_BASE + 2
+    assert projection._FOLDS["workstreams"].state_version >= projection._FOLD_STATE_VERSION_BASE + 2
 
 
 def _asked(item_id: str, status: str, reason: str | None) -> list[Entry]:
@@ -1497,7 +1497,25 @@ def test_an_item_id_finds_the_worker_bound_to_it() -> None:
             _work("bind", item_id="it_1", worker_session_key=WORKER_A),
         ]
     )
-    assert projection._workstreams_item_workers(state, "it_1") == [WORKER_A]
+    assert projection._workstreams_item_workers(state, "it_1") == [(WORKER_A, "")]
+
+
+def test_a_remote_worker_keeps_the_instance_it_runs_on() -> None:
+    """The key of a remote worker names a slot on a peer, so the lookup must say whose it is."""
+    state = _raw(
+        [
+            _opened(CONDUCTOR),
+            _work("goal", goal="ship", round=1),
+            _work("create", item_id="it_1", title="remote", round=1),
+            _work(
+                "bind",
+                item_id="it_1",
+                worker_session_key=WORKER_A,
+                worker_instance_id="peer-crew",
+            ),
+        ]
+    )
+    assert projection._workstreams_item_workers(state, "it_1") == [(WORKER_A, "peer-crew")]
 
 
 def test_an_unbound_item_answers_one_empty_key_and_an_unknown_one_none() -> None:
@@ -1508,7 +1526,7 @@ def test_an_unbound_item_answers_one_empty_key_and_an_unknown_one_none() -> None
             _work("create", item_id="it_1", title="not dispatched", round=1),
         ]
     )
-    assert projection._workstreams_item_workers(state, "it_1") == [""]
+    assert projection._workstreams_item_workers(state, "it_1") == [("", "")]
     assert projection._workstreams_item_workers(state, "it_2") == []
 
 
@@ -1524,7 +1542,10 @@ def test_an_id_on_two_boards_answers_both_so_the_caller_can_refuse() -> None:
             _work("bind", item_id="it_1", worker_session_key=WORKER_B, generation="g2"),
         ]
     )
-    assert sorted(projection._workstreams_item_workers(state, "it_1")) == [WORKER_A, WORKER_B]
+    assert sorted(projection._workstreams_item_workers(state, "it_1")) == [
+        (WORKER_A, ""),
+        (WORKER_B, ""),
+    ]
 
 
 def test_every_task_the_page_draws_is_found_by_the_lookup() -> None:

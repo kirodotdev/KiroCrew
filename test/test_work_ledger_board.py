@@ -29,6 +29,7 @@ CONDUCTOR = "chat-1-conductor"
 OTHER_CONDUCTOR = "chat-9-other-conductor"
 WORKER = "chat-2-worker"
 OTHER_WORKER = "chat-8-other-worker"
+PEER_KEY = "chat-77-on-the-peer-gateway"
 OWNER = "owner-subject"
 NON_OWNER = "some-other-subject"
 
@@ -1071,7 +1072,7 @@ async def _open(
 @pytest.fixture
 def _lookup(monkeypatch):
     """Stand in for the workstreams lookup and record what it was asked."""
-    answer: dict = {"workers": [WORKER], "raises": False}
+    answer: dict = {"workers": [(WORKER, "")], "raises": False}
     calls: list[tuple[str, str]] = []
 
     def _fake(slot, item_id):
@@ -1288,7 +1289,7 @@ async def test_an_item_this_dashboard_does_not_reach_is_refused_404(_lookup):
 
 @pytest.mark.asyncio
 async def test_an_id_on_two_boards_is_refused_not_guessed(_lookup):
-    _lookup["workers"] = [WORKER, OTHER_WORKER]
+    _lookup["workers"] = [(WORKER, ""), (OTHER_WORKER, "")]
     state = _open_state(**{OTHER_WORKER: _keyed(OTHER_WORKER)})
     body, response = await _open(state)
     assert response.status == 409
@@ -1298,7 +1299,7 @@ async def test_an_id_on_two_boards_is_refused_not_guessed(_lookup):
 
 @pytest.mark.asyncio
 async def test_an_id_on_two_boards_is_refused_even_when_one_has_no_worker(_lookup):
-    _lookup["workers"] = ["", WORKER]
+    _lookup["workers"] = [("", ""), (WORKER, "")]
     body, response = await _open(_open_state())
     assert response.status == 409
     assert body["code"] == "ambiguous_item"
@@ -1306,10 +1307,49 @@ async def test_an_id_on_two_boards_is_refused_even_when_one_has_no_worker(_looku
 
 @pytest.mark.asyncio
 async def test_an_item_with_no_bound_worker_has_nothing_to_open(_lookup):
-    _lookup["workers"] = [""]
+    _lookup["workers"] = [("", "")]
     body, response = await _open(_open_state())
     assert response.status == 409
     assert body["code"] == "no_worker_bound"
+
+
+@pytest.mark.asyncio
+async def test_a_remote_worker_is_refused_and_no_local_slot_is_opened(_lookup):
+    """A peer's session key is not a slot here: a live remote worker is not 'closed'."""
+    _lookup["workers"] = [(PEER_KEY, "peer-crew")]
+    body, response = await _open(_open_state())
+    assert response.status == 409
+    assert body["code"] == "open_remote"
+    assert "slot" not in body
+    assert PEER_KEY not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_a_remote_worker_whose_key_matches_a_local_slot_still_opens_nothing(_lookup):
+    """The key can collide with a real local session; that session must not be returned."""
+    _lookup["workers"] = [(WORKER, "peer-crew")]
+    body, response = await _open(_open_state())
+    assert response.status == 409
+    assert body["code"] == "open_remote"
+    assert "slot" not in body
+    assert WORKER not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_a_remote_refusal_is_audited_as_a_denial(_lookup, _audit_callers):
+    _lookup["workers"] = [(WORKER, "peer-crew")]
+    await _open(_open_state())
+    rows = [row for row in _audit_callers if row[1] == "crew_board_action"]
+    assert rows[-1][2] == "denied"
+    assert "open_remote" in rows[-1][3]
+
+
+@pytest.mark.asyncio
+async def test_a_local_worker_still_opens_when_the_instance_id_is_empty(_lookup):
+    _lookup["workers"] = [(WORKER, "")]
+    body, response = await _open(_open_state())
+    assert response.status == 200
+    assert body["slot"] == WORKER
 
 
 @pytest.mark.asyncio

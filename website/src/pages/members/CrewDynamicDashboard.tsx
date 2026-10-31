@@ -11,6 +11,7 @@ import { useSandboxDoc } from '../../hooks/useSandboxDoc'
 import { focusHostOf, useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
 import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
 import { hasGesture } from '../../hooks/useFrameOpenLink'
+import { useFrameOpenSession } from '../../hooks/useFrameOpenSession'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
@@ -346,6 +347,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // The text of the send in flight or last accepted: a repeat of it inside the
   // interval is a double click; a different text inside it falls back to `act`.
   const lastTextRef = useRef('')
+  // The worker session behind an org-chart card: this frame only, resolved on the gateway from the
+  // item id. The key stays in the host's JavaScript; the page is told only whether it worked.
+  useFrameOpenSession(
+    frameRef,
+    target.kind === 'member'
+      ? (target.slug && target.member ? { kind: 'member', slug: target.slug, member: target.member } : null)
+      : (target.slot ? { kind: 'session', slot: target.slot } : null),
+  )
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
