@@ -1252,7 +1252,7 @@ class TestFirstPrinciplesReview:
         # `checking` with no later event able to clear it.
         finalize = _step_script(_workflow("fork-first-principles-review.yml"), "Finalize check-run")
 
-        assert "for attempt in 1 2; do" in finalize
+        assert "complete() {" in finalize
         assert "completing stranded check-run" in finalize
         assert "::warning::could not complete check-run" in finalize
 
