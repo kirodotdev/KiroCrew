@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
+from kiro_crew.acp.types import ACP_BACKENDS_EFFORT_AT_LAUNCH
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.providers.acp_model_effort import launch_effort_level
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.session_work_dir import mark_run_dir, reclaim_session_work_dir
 
@@ -86,6 +88,9 @@ async def start(self: AcpProvider) -> None:
 
             raise AcpRuntimeError(REMOTE_NEEDS_KAS)
         self._client.member_context = self.member_context
+        if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+            # The launch reads it (``--effort``); a change relaunches.
+            self._client._launch_effort = launch_effort_level(self)
         await self._client.ensure_ready()
         # Startup records the advertised spelling of the pin, or the backend
         # default when every spelling was refused; the level follows a pin.

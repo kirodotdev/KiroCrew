@@ -29,12 +29,14 @@ from kiro_crew.acp.client import (
     advertised_model_ids,
     catalog_row_would_drop,
 )
+from kiro_crew.acp.launch_tuning import switch_launch_model, switch_launch_tuning
 from kiro_crew.acp.session_handle import (
     _READ_PATH_PROBE_DEADLINE_SECS,
     _READ_PATH_REPROBE_MIN_INTERVAL_SECS,
     EntitlementRevalidating,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -43,6 +45,7 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
 )
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
+from kiro_crew.agent_sdk.backends import launch_effort_supported
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
 from kiro_crew.providers.acp_cli_overlay import _clear_cli_overlay_effort
 from kiro_crew.providers.base import LLMProvider
@@ -256,6 +259,10 @@ def supports_effort(self: AcpProvider) -> bool:
     harness is saying the current model takes no level (goose does this per
     model), and every write there reads back as ``off``.
     """
+    if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+        # The CLI takes a level for every model and maps it onto what the model
+        # offers itself; Crew's registry knows none of these operator-named ids.
+        return True
     if self._client.backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION:
         if not self._client.supports_config_option(effort_config_option_id(self._client.backend)):
             return False
@@ -427,6 +434,8 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             model,
         )
         return False
+    if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+        return await _change_launch_effort(self, level)
     # The capability answers, not raw set membership: the capability layer is the
     # one place that names a harness's effort channel.
     via_config_option = self.capabilities.effort_via_config_option
@@ -574,6 +583,13 @@ async def set_model(self: AcpProvider, model: str) -> None:
     """
     overrides = self._effort_per_model
     carried = overrides.get(self._effort_model, "")
+    if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+        # Model and level are both launch arguments: one relaunch carries both, the
+        # target's own level when it has one, else the level of the model left.
+        await switch_launch_model(
+            self._client, model, effort=overrides.get(model) or carried or None
+        )
+        return
     await self._client.set_model(model)
     try:
         own = overrides.get(self._client._model) or overrides.get(model, "")
@@ -615,6 +631,8 @@ async def clear_effort(self: AcpProvider) -> bool | None:
     # Cleared to the default: a level held for an unpinned start must not
     # be bound again by the next restart.
     self._unbound_effort = ""
+    if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+        return await _clear_launch_effort(self, model)
     if not self.supports_effort():
         return False
     cleared = self._effort_per_model.pop(model, None)
@@ -679,6 +697,65 @@ async def clear_effort(self: AcpProvider) -> bool | None:
         return None
     logger.info("ACP effort cleared (kiro); session reset needed for built-in default")
     return False
+
+
+def launch_effort_level(provider: AcpProvider) -> str:
+    """The level a launch-time-effort harness starts with, or ``""`` for the CLI's own.
+
+    The level stored for the model the session runs, else one requested with nothing
+    pinned, else the inherited level the factory resolved (``_launch_default_effort``). The registry's per-model gate in :meth:`_resolve_effort` is not asked:
+    it knows none of the operator-named ids such a harness runs, and the CLI maps a
+    level onto the model itself.
+    """
+    return (
+        provider._effort_per_model.get(provider._effort_model)
+        or provider._unbound_effort
+        or provider._launch_default_effort
+    )
+
+
+async def _change_launch_effort(provider: AcpProvider, level: str) -> bool:
+    """``change_effort`` for ``ACP_BACKENDS_EFFORT_AT_LAUNCH``: relaunch on *level*."""
+    # The cold-start factory judges a level by the same vocabulary, so a level
+    # accepted here is the level the next start launches with.
+    if not launch_effort_supported(provider._client.backend, level):
+        raise ValueError(f"invalid effort level {level!r}")
+    model = provider._effort_model
+    prev = provider._effort_per_model.get(model)
+    provider._effort_per_model[model] = level
+    try:
+        await switch_launch_tuning(provider._client, effort=level)
+    except BaseException:
+        if prev is None:
+            provider._effort_per_model.pop(model, None)
+        else:
+            provider._effort_per_model[model] = prev
+        raise
+    if provider._unbound_effort:
+        provider._unbound_effort = level
+    return True
+
+
+async def _clear_launch_effort(provider: AcpProvider, model: str) -> bool:
+    """``clear_effort`` for ``ACP_BACKENDS_EFFORT_AT_LAUNCH``: relaunch on the default.
+
+    The default is the inherited level a cold start resolves (crew pin, role
+    default, ``agent.reasoning_effort``), else the CLI's own when none is set, so a
+    clear and the next cold start run the same level.
+
+    Every model's entry goes, not only *model*'s: the slot holds one level, and a
+    model this session left (whose level a switch carried here) must not bring the
+    cleared level back when it is picked again, since a cold start would not.
+    """
+    del model  # every entry is cleared, see above
+    cleared = dict(provider._effort_per_model)
+    provider._effort_per_model.clear()
+    try:
+        await switch_launch_tuning(provider._client, effort=provider._launch_default_effort)
+    except BaseException:
+        provider._effort_per_model.update(cleared)
+        raise
+    return True
 
 
 async def _apply_initial_effort(self: AcpProvider) -> None:

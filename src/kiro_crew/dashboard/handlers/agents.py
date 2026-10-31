@@ -45,10 +45,12 @@ from kiro_crew import crew_teams as teams_mod  # noqa: F401
 from kiro_crew import model_registry, model_scope
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
+from kiro_crew.acp.launch_tuning import settings_default_model
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
     model_registry_namespace,
     selectable_backend_values,
     selectable_stored_backend_values,
@@ -926,18 +928,13 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 
 def _scoped_default(cfg: Any, backend: str) -> str:
-    """The stored pin, but only when *backend*'s own harness can claim it.
+    """The stored pin when *backend*'s harness can claim it, else none (the factory's rule).
 
-    A pin chosen in another harness is not a default here: marking it as one puts
-    an id the returned list does not even contain into the picker's selected slot,
-    while every turn runs the harness default. Same rule the provider factory
-    sends by, so the marker and the wire agree.
-
-    Called from the two branches that read the pin rather than once above them:
-    the kiro branch does not consult ``agent.model`` at all, and pulling the read
-    up would make it pay for a value it never uses (harness-parity H13 -- the
-    test is whether the kiro path changed, not whether it still works).
+    A pin from another harness would mark an id the list lacks. A harness whose models
+    its own settings name answers with those. Read only where used: kiro pays nothing (H13).
     """
+    if backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
+        return settings_default_model(cfg.agent, backend)
     return model_scope.scoped_pin(
         getattr(cfg.agent, "model", "") or "",
         capabilities_for(backend).model_id_namespace,
@@ -1407,7 +1404,9 @@ async def api_models(request: web.Request) -> web.Response:
         return web.json_response(
             _cc_models(request, configured_default=_scoped_default(cfg, backend))
         )
-    if capabilities_for(backend).resolves_model_from_advertised_list:
+    if capabilities_for(backend).resolves_model_from_advertised_list or (
+        backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+    ):
         return web.json_response(
             _advertised_backend_models(
                 request, backend, configured_default=_scoped_default(cfg, backend)

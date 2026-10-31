@@ -2516,6 +2516,19 @@ A harness in `ACP_BACKENDS_MCP_RELAUNCH_RELOAD` reads its MCP servers once, at l
 
 A replacement that opened a different session (`ensure_ready` falls back to `session/new` when a load fails) is not this conversation, so it counts as a failure. A failed relaunch refuses the turn with a plain message (`RELAUNCH_FAILED_TEXT`) and leaves the load owed (`_relaunch_owed_session`): the client is stalled with the session id as its resume id, and every later turn is refused until a replacement serves that id, so no turn is prompted into another conversation. A chat whose saved session is gone keeps refusing, and the message tells the person to start a new chat. The relaunch keeps the chat's model (`session._model` reaches `--model` again). `relaunch_and_reload` is the shared step for any launch-time setting a live chat must take.
 
+### A model or effort the harness takes at launch (`acp/launch_tuning.py`)
+
+A harness in `ACP_BACKENDS_MODEL_AT_LAUNCH` reads its model from its argv and offers no ACP request that changes it; one in `ACP_BACKENDS_EFFORT_AT_LAUNCH` does the same for effort. Strands is both: `--model` and `--effort` are read when the CLI starts. So `set_model` and the provider's effort verbs move an idle session by replacing its process, the way Strands' own TUI restarts its worker:
+
+| Step | What happens |
+|---|---|
+| Refuse | No session yet, a turn in flight, or (for a model) another harness's id. For Strands a `<provider>/<model>` id with a provider the CLI knows is its own, even when pi or opencode lists the same spelling; any other id another catalog claims is refused (`strands_model_is_foreign`). That refusal is `AcpModelUnavailable`, so a picker answers 4xx and a fallback walk skips the entry. |
+| Record | The new `_model` / `_launch_effort`, which the harness's launch reads. |
+| Relaunch | `relaunch_and_reload` (above) runs now: the replacement reads the new values and `session/load`s the same id, so the harness replays its own history. |
+| Undo | A relaunch that raised, or that opened another session, restores the prior values; the helper leaves the load owed, so the next start reopens the chat on them. |
+
+The switch holds the client's `_launch_tuning_lock` across the relaunch. Every `ensure_ready` a turn or command runs holds it too (`switch_barrier`: the provider's `_ready_confirmed_session`, and the client's send and command entries, which take it after marking the turn started), so no turn starts a process inside a switch, and a switch that wakes after a turn started refuses. Only a member of the launch-time sets takes it. An unchanged value starts nothing. The provider passes a model change and its effort in one relaunch, and its factory carries a saved level for any model id, pinned or not, so a cold start launches on it. A live change, the factory and the launch argv judge the level by one vocabulary, the CLI's own (`agent_sdk.backends.launch_effort_supported` over `EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND`: Crew's five plus `auto`, `off` and `minimal` for Strands), so a level the switch took is never dropped on the next start. Clearing the override relaunches on the level the session inherits with none (crew pin, role default, `agent.reasoning_effort`; the factory hands it over as `launch_default_effort`), the same level a cold start resolves, and on the CLI's own default only when nothing is set. Such a harness advertises no model list, so `GET /api/models` offers `auto` and the model its own settings name (`settings_default_model`: `agent.strands_provider` / `agent.strands_model`), never kiro-cli's catalog.
+
 ### stopReason Parsing
 
 When the ACP agent acknowledges a cancel, the `session/prompt` response carries `result.stopReason`. `_dispatch_events` reads this field on `action == "complete"` and populates `AcpEvent.stop_reason`:

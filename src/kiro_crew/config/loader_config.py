@@ -16,7 +16,9 @@ from pathlib import Path
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import model_registry, model_scope, platform_compat
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    launch_effort_supported,
     resolve_cc_permission_mode,
 )
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
@@ -1488,7 +1490,21 @@ class KiroCrewConfig:
             # every cold start, and the session then runs the adapter's own default
             # while the dashboard still shows the level the operator picked.
             _from_option = _backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
-            _registry_ok = is_valid_effort(_eff) and model_supports_effort(m)
+            # A launch-effort harness (Strands) takes the level for any model id it
+            # runs, and the registry knows none of them: a level its CLI takes is
+            # carried, pinned or not -- the same vocabulary a live change accepts.
+            _at_launch = _backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+            _launch_default = ""
+            if _at_launch:
+                _launch_ok = launch_effort_supported(_backend, _eff)
+                # What a cleared override falls back to: the level this start
+                # would resolve with no override, so a clear and a cold start agree.
+                _inherited = self.resolve_session_effort(agent, crew_agent)
+                if launch_effort_supported(_backend, _inherited):
+                    _launch_default = _inherited
+            else:
+                _launch_ok = False
+            _registry_ok = _launch_ok or (is_valid_effort(_eff) and model_supports_effort(m))
             # With nothing pinned there is no model id to key the level under
             # yet: the backend picks the model and reports it on ``session/new``.
             # The level is carried unkeyed and the provider binds it to the
@@ -1497,7 +1513,7 @@ class KiroCrewConfig:
             _unbound_effort = ""
             if m and _eff and (_from_option or _registry_ok):
                 _eff_per_model[m] = _eff
-            elif not m and _eff and (_from_option or is_valid_effort(_eff)):
+            elif not m and _eff and (_from_option or _launch_ok or is_valid_effort(_eff)):
                 _unbound_effort = _eff
             elif _eff and is_valid_effort(_eff):
                 # Single-authority drop warning: a valid requested effort is
@@ -1540,6 +1556,7 @@ class KiroCrewConfig:
                 acp_backend=_backend,
                 effort_per_model=_eff_per_model,
                 unbound_effort=_unbound_effort,
+                launch_default_effort=_launch_default,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
