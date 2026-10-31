@@ -24,6 +24,7 @@ import base64
 import importlib as _importlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,26 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.security import redact
+
+
+def _new_envelope_tag() -> str:
+    """A fresh per-run marker for the launcher's status line (see ``_envelope_line``)."""
+    return f"__kirocrew_cron_status_{secrets.token_hex(16)}__:"
+
+
+def _envelope_line(stdout: str, tag: str) -> str:
+    """The JSON of the launcher's status line in ``stdout``; LookupError when there is none.
+
+    The script body writes to the same stdout as the launcher, so a status is
+    read only from a line carrying this run's ``tag``. A body that prints a
+    status-shaped line of its own and then ends the process (``sys.exit``,
+    ``os._exit``) leaves no tagged line, and the run is a failure rather than
+    whatever its last printed line said.
+    """
+    for line in reversed(stdout.splitlines()):
+        if line.startswith(tag):
+            return line[len(tag) :]
+    raise LookupError("no launcher status line")
 
 
 def run_script_sandboxed(
@@ -181,6 +202,11 @@ def run_script_sandboxed(
     # prepended. Both spellings are stripped because CPython
     # realpaths the script dir when computing sys.path[0].
     _kiro_pkg_parent = str(Path(__file__).resolve().parent.parent)
+    # Marks the ONE stdout line the launcher writes with the run's status. The
+    # script body shares that stdout, so an unmarked line it prints -- its own
+    # JSON summary, say ``{"status": "done"}`` -- is never read as the status,
+    # even when the body ends the process before the launcher reports.
+    envelope_tag = _new_envelope_tag()
     if stdin_payload is not None:
         assert pinned_dir is not None
         _launcher_dirs = (pinned_dir, os.path.realpath(pinned_dir))
@@ -240,10 +266,18 @@ def run_script_sandboxed(
         "else:\n"
         f"    with open({file_path_str!r}, 'rb') as f:\n"
         "        _src = f.read()\n"
+        # The stream and writer the status envelope goes out on, bound before
+        # the script body runs so a body that rebinds ``sys.stdout`` cannot
+        # swallow it. The envelope line opens with a newline (a body that left
+        # a partial line cannot fuse with it) and carries ``envelope_tag``.
+        "_kc_out = sys.stdout\n"
+        "def _kc_emit(_env):\n"
+        f"    _kc_out.write('\\n' + {envelope_tag!r} + json.dumps(_env) + '\\n')\n"
+        "    _kc_out.flush()\n"
         f"exec(compile(_src, {file_path_str!r}, 'exec'), mod.__dict__)\n"
         f"fn = getattr(mod, {func_name!r}, None)\n"
         "if fn is None:\n"
-        f"    print(json.dumps({{'status': 'error', 'error': 'Function not found'}}))\n"
+        "    _kc_emit({'status': 'error', 'error': 'Function not found'})\n"
         "    sys.exit(0)\n"
         f"job = types.SimpleNamespace(id={job_id!r}, message={job_message!r})\n"
         "ctx = ScriptContext(job=job)\n"
@@ -264,7 +298,7 @@ def run_script_sandboxed(
         # the body ran passed the preamble probe, and its run persisted nothing.
         "if _envelope['status'] != 'error':\n"
         "    child_persistence_preflight()\n"
-        "print(json.dumps(_envelope))\n"
+        "_kc_emit(_envelope)\n"
     )
 
     # A granted launcher is born inside the private pinned dir, as defense in
@@ -574,7 +608,7 @@ def run_script_sandboxed(
             return {"status": "error", "error": error_text}
 
         try:
-            parsed = json.loads(stdout.strip().split("\n")[-1])
+            parsed = json.loads(_envelope_line(stdout, envelope_tag))
             # The launcher's status JSON carries str(e) from the script's own
             # exception — the one child-diagnostic path that does NOT flow
             # through the stderr redaction above. Scrub granted values from
@@ -590,7 +624,7 @@ def run_script_sandboxed(
                     if k != "status" and isinstance(v, str):
                         parsed[k] = _scrub_grant_values(v, resolved_secret_env)
             return parsed
-        except (json.JSONDecodeError, IndexError):
+        except (json.JSONDecodeError, LookupError):
             # Redact BEFORE truncating: slicing first could cut a credential at
             # the boundary, leaving its unredacted head in the diagnostic. Same
             # split as the stderr tail above: the grant scrub reads the WHOLE

@@ -58,10 +58,11 @@ def _capture_launcher_env(
             during_spawn(captured["env"])
         proc = MagicMock()
         proc.returncode = 0
-        proc.communicate.return_value = ('{"status": "ok"}', "")
+        proc.communicate.return_value = ('__t__:{"status": "ok"}', "")
         return proc
 
     with (
+        patch("kiro_crew.cron_script._new_envelope_tag", return_value="__t__:"),
         patch("kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")),
         patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)),
         patch("kiro_crew.cron_script._resolve_internal_secret", return_value="s"),

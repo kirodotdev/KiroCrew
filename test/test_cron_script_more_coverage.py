@@ -996,10 +996,15 @@ class TestPathAndSecretResolution:
 
 # ── run_script_sandboxed ──
 
+#: The status-line marker ``script_run`` pins, so a fake child can write the line
+#: the launcher would.
+_TAG = "__test_cron_status__:"
+
 
 @pytest.fixture
 def script_run(monkeypatch, tmp_path):
     """Patch run_script_sandboxed's spawn chain; expose the recorded Popen call."""
+    monkeypatch.setattr(cron_script, "_new_envelope_tag", lambda: _TAG)
     script = tmp_path / "job.py"
     script.write_text("def run(ctx): pass\n", newline="\n")
     # Records the keywords the launcher passes, so the stub cannot silently
@@ -1047,7 +1052,7 @@ class TestRunScriptSandboxed:
         the CLI, the vault-grant sites) pass neither keyword and stay confined to
         `crons/`; asserting the flag here is what keeps those two apart.
         """
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         run_script_sandboxed("spec:run", "job-roots", "the message")
 
@@ -1070,7 +1075,7 @@ class TestRunScriptSandboxed:
         # Do NOT stub _resolve_internal_secret here (the fixture does): we want the
         # real credential path so a second internal resolution would be counted.
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", lambda port: "s")
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         run_script_sandboxed("spec:run", "job-once")
 
@@ -1091,7 +1096,7 @@ class TestRunScriptSandboxed:
         # Use the real credential path (the fixture stubs it) so the provider
         # actually competes with env/file derivation.
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         run_script_sandboxed("spec:run", "job-live", internal_secret_provider=lambda: "live-secret")
 
@@ -1105,14 +1110,14 @@ class TestRunScriptSandboxed:
         monkeypatch.setattr(cron_script, "read_local_secret", lambda port, **_kw: "file-loses")
         # Use the real derivation (the fixture stubs it).
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         run_script_sandboxed("spec:run", "job-env")
         assert script_run.secret_seen == "env-wins"
 
         # env absent -> file is used.
         monkeypatch.delenv("KIROCREW_INTERNAL_SECRET", raising=False)
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
         run_script_sandboxed("spec:run", "job-file")
         assert script_run.secret_seen == "file-loses"
 
@@ -1122,7 +1127,7 @@ class TestRunScriptSandboxed:
         monkeypatch.setattr(cron_script, "_resolve_internal_secret", _resolve_internal_secret)
         monkeypatch.setattr(cron_script, "_resolve_dial_port", lambda: 7788)
         secret = "provider-only-secret"
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         run_script_sandboxed("spec:run", "job-noleak", internal_secret_provider=lambda: secret)
 
@@ -1132,7 +1137,7 @@ class TestRunScriptSandboxed:
         assert secret not in script_run.launcher_src
 
     def test_ok_result_and_temp_file_cleanup(self, script_run):
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}\n', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}\n', "")])
 
         assert run_script_sandboxed("spec:run", "job-9", "the message") == {"status": "ok"}
 
@@ -1146,15 +1151,31 @@ class TestRunScriptSandboxed:
         assert not Path(script_run.env["_KIROCREW_SECRET_FILE"]).exists()
         assert cron_script._RUNNING_PROCS == {}
 
-    def test_only_the_last_stdout_line_is_parsed(self, script_run):
+    def test_the_tagged_status_line_is_parsed(self, script_run):
         script_run.proc = _FakeProc(
-            comm_results=[('warming up\n{"status": "done", "message": "bye"}\n', "")]
+            comm_results=[("warming up\n" + _TAG + '{"status": "done", "message": "bye"}\n', "")]
         )
 
         assert run_script_sandboxed("spec:run", "job-9") == {
             "status": "done",
             "message": "bye",
         }
+        assert _TAG in script_run.launcher_src
+
+    def test_an_untagged_status_line_from_the_script_is_not_its_status(self, script_run):
+        """A status-shaped line the script printed itself is output, not the run's status.
+
+        A body that prints its own JSON summary and then ends the process
+        (``sys.exit``) leaves that summary as the last stdout line. Read as the
+        status, ``{"status": "done"}`` removes a recurring job after a run that
+        succeeded. It must read as a run that reported no status.
+        """
+        script_run.proc = _FakeProc(comm_results=[('{"status": "done", "found": 0}\n', "")])
+
+        result = run_script_sandboxed("spec:run", "job-9")
+
+        assert result["status"] == "error"
+        assert result["error"].startswith("Bad output:")
 
     def test_cancellation_wins_over_the_exit_status(self, script_run):
         script_run.proc = _FakeProc(comm_results=[("", "")], returncode=-15)
@@ -1208,7 +1229,7 @@ class TestRunScriptSandboxed:
         cleanup = tmp_path / "profile.sb"
         cleanup.write_text("(deny default)", newline="\n")
         monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), str(cleanup)))
-        script_run.proc = _FakeProc(comm_results=[('{"status": "ok"}', "")])
+        script_run.proc = _FakeProc(comm_results=[(_TAG + '{"status": "ok"}', "")])
 
         assert run_script_sandboxed("spec:run", "job-9")["status"] == "ok"
         assert not cleanup.exists()
