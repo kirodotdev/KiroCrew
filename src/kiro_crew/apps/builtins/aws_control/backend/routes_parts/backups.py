@@ -131,6 +131,22 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
     account, profile, region = target
     payload: dict[str, Any] = {
         "nightly": await asyncio.to_thread(backup_mod.nightly_enabled, account),
+        # Why the snapshot grant cannot actually run here, or None when it can.
+        # Reported BESIDE the grant for the same reason `nightlySessionsBlocked`
+        # is: the grant is what the owner asked for and must keep reading back as
+        # they set it, while this says whether asking for it achieves anything on
+        # the account they are viewing. The snapshot kind has only the one
+        # condition -- the grant is settable on any account in the registry while
+        # the nightly loop runs for the one the default key belongs to, so a grant
+        # recorded on a second account is authorized and unreachable at once.
+        # Without this the console can only show the switch as on, which on a
+        # non-default account is a claim that snapshots are being backed up when
+        # none ever are, and the loss only surfaces at the host loss the feature
+        # exists for. `scheduled_account` is the part only this route can answer.
+        "nightlyBlocked": await asyncio.to_thread(
+            backup_mod.scheduled_snapshot_blocked_code,
+            scheduled_account=account == await accounts_mod.default_account_id(),
+        ),
         # The EFFECTIVE count the sweep would use, not the raw stored value, and
         # `null` when retention is off. A panel reporting a number the sweep would
         # clamp or ignore is worse than reporting none.

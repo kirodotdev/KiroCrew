@@ -1389,6 +1389,7 @@ if _typing.TYPE_CHECKING:
         nightly_sessions_enabled,
         scheduled_sessions_blocked_code,
         scheduled_sessions_blocked_reason,
+        scheduled_snapshot_blocked_code,
         set_nightly,
         set_nightly_sessions,
         snapshot_redact,
