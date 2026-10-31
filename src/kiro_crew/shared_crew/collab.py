@@ -42,6 +42,8 @@ FRAME_SEND_STATE = "shared_crew.send_state"
 FRAME_TYPING_LEASE = "shared_crew.typing_lease"
 #: A lesson write replaced stored ones (``memory_changes``).
 FRAME_MEMORY_CHANGE = "shared_crew.memory_change"
+#: Someone changed a person's display name or picture; People pages refetch.
+FRAME_PEOPLE = "shared_crew.people"
 SERVER_FRAMES = frozenset(
     {
         FRAME_PRESENCE,
@@ -50,6 +52,7 @@ SERVER_FRAMES = frozenset(
         FRAME_SEND_STATE,
         FRAME_TYPING_LEASE,
         FRAME_MEMORY_CHANGE,
+        FRAME_PEOPLE,
     }
 )
 

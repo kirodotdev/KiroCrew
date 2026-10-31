@@ -21,6 +21,15 @@ A single operator's Crew never locks: the holder is compared as a person, so
 the operator's own tabs, and the operator's machine-local bootstrap subjects
 (:func:`~kiro_crew.shared_crew.crew_mode.operator_ids`), are one holder.
 
+Another collaborator may take the lease over
+(:meth:`TypingLeaseRegistry.take_over`, ``POST
+/api/shared-crew/typing-lease/takeover``, only with
+``KIROCREW_SHARED_CREW_PREVIEW=1``). The taker then holds it as if they had
+just typed, under the same idle window, and the frame that announces it names
+the previous holder in ``taken_over_from`` with ``ended: "taken_over"``. The
+previous holder's composer locks like any other viewer's; their draft is never
+read, sent or cleared.
+
 Nothing here is persisted: no draft text, no keystroke, only who holds the
 lease, which of their connections are drafting, and when it was last renewed.
 """
@@ -56,6 +65,16 @@ END_SENT = "sent"
 END_CLEARED = "cleared"
 END_IDLE = "idle"
 END_DISCONNECTED = "disconnected"
+#: The previous holder's lease ended because someone else took it over.
+END_TAKEN_OVER = "taken_over"
+
+#: The drafting entry a takeover holds until one of the taker's own tabs reports typing.
+TAKEOVER_CONN_PREFIX = "takeover:"
+
+
+def takeover_conn_id(principal: Principal) -> str:
+    """The drafting entry that keeps a taken-over lease until the taker types."""
+    return TAKEOVER_CONN_PREFIX + principal.id
 
 
 def clamp_idle_seconds(raw: object) -> int:
@@ -98,6 +117,8 @@ class LeaseChange:
     """Sessions whose lease changed, and why each ended (``""`` for a new holder)."""
 
     sessions: dict[str, str] = field(default_factory=dict)
+    #: Session -> the person a takeover moved its lease away from.
+    taken_over_from: dict[str, Principal] = field(default_factory=dict)
 
     @property
     def changed(self) -> tuple[str, ...]:
@@ -150,9 +171,34 @@ class TypingLeaseRegistry:
                 ended[session_key] = ""
             elif not same_person(lease.holder, principal, owner_id=self._owner_id):
                 return LeaseChange(ended)
+            else:
+                # The taker's own tab now drafts: it stands for them, so the
+                # takeover's entry stops counting and clearing this draft ends the lease.
+                for cid in [c for c in lease.drafting if c.startswith(TAKEOVER_CONN_PREFIX)]:
+                    del lease.drafting[cid]
             lease.drafting[conn_id] = now
             lease.renewed_wall = self._wall()
             return LeaseChange(ended)
+
+    def take_over(self, session_key: str, conn_id: str, principal: Principal) -> LeaseChange:
+        """Move *session_key*'s lease to *principal*, held as if they just typed from *conn_id*.
+
+        A free lease, or one *principal* already holds, is left as it is. The
+        previous holder's connections stop drafting; their draft stays theirs.
+        """
+        if not session_key or not conn_id or not can_hold(principal):
+            return LeaseChange()
+        now = self._clock()
+        with self._lock:
+            ended = self._expire_locked(now)
+            lease = self._leases.get(session_key)
+            if lease is None or same_person(lease.holder, principal, owner_id=self._owner_id):
+                return LeaseChange(ended)
+            self._leases[session_key] = _Lease(
+                holder=principal, drafting={conn_id: now}, renewed_wall=self._wall()
+            )
+            ended[session_key] = END_TAKEN_OVER
+            return LeaseChange(ended, {session_key: lease.holder})
 
     def cleared(self, session_key: str, conn_id: str) -> LeaseChange:
         """A holder connection's draft went empty: it stops holding the lease."""
@@ -198,8 +244,15 @@ class TypingLeaseRegistry:
             times = [lease.last_typed() + self._idle for lease in self._leases.values()]
             return min(times) if times else None
 
-    def state(self, session_key: str, *, ended: str = "") -> dict[str, Any]:
-        """The whole-value lease state: the GET body and the frame body."""
+    def state(
+        self, session_key: str, *, ended: str = "", taken_over_from: Principal | None = None
+    ) -> dict[str, Any]:
+        """The whole-value lease state: the GET body and the frame body.
+
+        *taken_over_from* is set only for the frame announcing a takeover: the
+        body then also carries ``ended: "taken_over"``, ``taken_over_from`` and
+        ``taken_over_from_ids``, so the previous holder's tabs can tell it was them.
+        """
         with self._lock:
             lease = self._live_locked(session_key)
             if lease is None:
@@ -212,25 +265,32 @@ class TypingLeaseRegistry:
                     "idle_seconds": self._idle,
                     "ended": ended,
                 }
-            ids = sorted(operator_ids(lease.holder, self._owner_id) | {lease.holder.id})
-            return {
+            body: dict[str, Any] = {
                 "schema_version": SCHEMA_VERSION,
                 "session_key": session_key,
                 "holder": lease.holder.to_public_dict(),
                 # Every principal id that counts as the holder (the operator's
                 # local subjects fold into one person), so a tab can tell
                 # whether the lease is its own without a second read.
-                "holder_ids": ids,
+                "holder_ids": self._person_ids(lease.holder),
                 "expires_at": lease.renewed_wall + self._idle,
                 "idle_seconds": self._idle,
                 "ended": "",
             }
+            if taken_over_from is not None:
+                body["ended"] = END_TAKEN_OVER
+                body["taken_over_from"] = taken_over_from.to_public_dict()
+                body["taken_over_from_ids"] = self._person_ids(taken_over_from)
+            return body
 
     def lease_count(self) -> int:
         with self._lock:
             return len(self._leases)
 
     # -- internals -------------------------------------------------------------
+
+    def _person_ids(self, principal: Principal) -> list[str]:
+        return sorted(operator_ids(principal, self._owner_id) | {principal.id})
 
     def _drop_conn(self, conn_id: str, reason: str, *, only: str = "") -> LeaseChange:
         now = self._clock()
@@ -292,7 +352,10 @@ def typing_lease_for(state: Any) -> TypingLeaseRegistry:
 def broadcast_changes(state: Any, registry: TypingLeaseRegistry, change: LeaseChange) -> None:
     """Push one whole-value lease frame per changed session, then re-arm the idle timer."""
     for session_key, reason in sorted(change.sessions.items()):
-        frame = {"type": FRAME_TYPING_LEASE, **registry.state(session_key, ended=reason)}
+        body = registry.state(
+            session_key, ended=reason, taken_over_from=change.taken_over_from.get(session_key)
+        )
+        frame = {"type": FRAME_TYPING_LEASE, **body}
         try:
             state.broadcast_ws(FRAME_TYPING_LEASE, frame)
         except Exception:
@@ -376,6 +439,14 @@ def note_sent(state: Any, session_key: str, principal: Principal) -> None:
         broadcast_changes(state, registry, registry.sent(session_key, principal))
 
 
+def take_over(state: Any, session_key: str, principal: Principal) -> dict[str, Any]:
+    """Give *principal* the session's lease, push what changed, and answer the new state."""
+    registry = typing_lease_for(state)
+    change = registry.take_over(session_key, takeover_conn_id(principal), principal)
+    broadcast_changes(state, registry, change)
+    return registry.state(session_key, taken_over_from=change.taken_over_from.get(session_key))
+
+
 def locked_body(registry: TypingLeaseRegistry, session_key: str, holder: Principal) -> dict:
     """The 409 body of a send refused by someone else's lease. The draft stays."""
     lease = registry.state(session_key)
@@ -406,9 +477,11 @@ __all__ = [
     "END_DISCONNECTED",
     "END_IDLE",
     "END_SENT",
+    "END_TAKEN_OVER",
     "FRAME_TYPING_LEASE",
     "IDLE_SECONDS_BOUNDS",
     "LeaseChange",
+    "TAKEOVER_CONN_PREFIX",
     "TypingLeaseRegistry",
     "arm_idle_timer",
     "broadcast_changes",
@@ -421,5 +494,7 @@ __all__ = [
     "release_connection",
     "same_person",
     "sweep_and_broadcast",
+    "take_over",
+    "takeover_conn_id",
     "typing_lease_for",
 ]

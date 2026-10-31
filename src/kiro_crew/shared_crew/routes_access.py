@@ -20,7 +20,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.shared_crew import access_set, host_power
-from kiro_crew.shared_crew.routes_invites import _actor, _error, _owner_refusal, preview_only
+from kiro_crew.shared_crew.preview import preview_only
+from kiro_crew.shared_crew.routes_invites import _actor, _error, _owner_refusal
 
 logger = logging.getLogger(__name__)
 

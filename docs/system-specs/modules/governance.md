@@ -3304,6 +3304,7 @@ Every place an origin becomes trusted, and what decides it:
 | Extra origins at startup (`dashboard.url`, configured host, env lists) | `dashboard_origins` | each one |
 | Tunnel URL on connect | `dashboard_origins` | yes |
 | Tailnet origin (startup, recovery) | `capabilities.tailnet_origin` (enterprise: policy layer only) | yes |
+| Shared Crew Tailscale invites (invite and credential routes, accept poller) | `capabilities.tailnet_origin`, through `tailnet.is_governance_pinned_off` (`shared-crew.md` §1) | yes, except the status read |
 | `check_origin` loopback `Origin == Host` fallback | an allowlisted origin up to case and default port, else `dashboard_origins` | each request |
 | `check_origin` with no `Origin` header (loopback or unix socket) | unchanged: not a browser | no |
 

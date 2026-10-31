@@ -375,6 +375,8 @@ class ActionType(str, enum.Enum):
     RETRY = "retry"
     #: A lesson or preference write that replaced stored ones (newest wins).
     MEMORY_CHANGE = "memory_change"
+    #: Someone set the display name or picture shown for a person. Display only.
+    PERSON_DISPLAY = "person_display"
 
 
 class ActionOutcome(str, enum.Enum):

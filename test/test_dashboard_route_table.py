@@ -211,6 +211,7 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
         routes_collab,
         routes_identity,
         routes_invites,
+        routes_people,
     )
 
     def table(*registrars: Any) -> list[tuple[str, str, Any]]:
@@ -232,7 +233,15 @@ def test_shared_crew_slice_matches_each_lane_registrar() -> None:
         routes_capabilities.register,
         routes_invites.register,
         routes_access.register,
+        routes_people.register,
     )
+
+
+def test_the_typing_lease_takeover_sits_beside_its_read() -> None:
+    """The takeover write is a literal Shared Crew route, registered right after the lease read."""
+    routes = _slice_routes("shared_crew")
+    read = routes.index(("GET", "/api/shared-crew/typing-lease"))
+    assert routes[read + 1] == ("POST", "/api/shared-crew/typing-lease/takeover")
 
 
 def test_every_slice_module_exposes_register() -> None:

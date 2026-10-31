@@ -719,6 +719,7 @@ family imports an owner. A module beside them in `src/types/` that is not named
 | `index.chat.ts` | the chat slot row (`ChatSlot`) with its turn identity and the `chat_done` payload, its todo list, MCP report and channel links; sidebar folders, tags and board lanes; transcript messages and the slot detail read; subagent and tool activity; content blocks; notifications and their channels; approvals; history session rows |
 | `index.sources.ts` | pull requests, issues, the source provider id, an app repository's contributors |
 | `index.artifacts.ts` | artifacts and their publication, publishing providers, forks, remote listings, session docs, folders, events, comments, web-app metadata |
+| `index.sharedCrew.ts` | Shared Crew attribution: the browser-facing principal and its display snapshot, a session's creator, availability and trigger |
 
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:

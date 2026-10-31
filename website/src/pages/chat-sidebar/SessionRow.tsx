@@ -55,6 +55,7 @@ import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-cent
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { SessionCreatorByline } from './SessionCreatorByline'
 
 /** A row's slot-scoped live facts, read in ONE subscription. Flat, so the
  *  caller's shallowEqual compares each fact by identity: the workflow entry
@@ -1614,6 +1615,8 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
               {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
+              {/* Shared Crew creator: inline after the agent name, never a new line. */}
+              <SessionCreatorByline attribution={s.attribution} />
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
                 *  The accent bar down its left edge groups the card with the

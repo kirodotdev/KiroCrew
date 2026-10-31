@@ -83,6 +83,7 @@ import { createDecisionsEndpoints } from './client/decisions'
 import { createMessagingEndpoints } from './client/messaging'
 import { createAutoResearchEndpoints } from './client/autoResearch'
 import { createBrowserLiveEndpoints } from './client/browserLive'
+import { createSharedCrewEndpoints } from './client/sharedCrew'
 import type { DecisionsConsentData } from './client/decisions'
 
 export type { TunnelStatus } from './client/system'
@@ -1446,6 +1447,7 @@ const decisions = createDecisionsEndpoints(transport)
 const messaging = createMessagingEndpoints(transport)
 const autoResearch = createAutoResearchEndpoints(transport)
 const browserLive = createBrowserLiveEndpoints(transport)
+const sharedCrew = createSharedCrewEndpoints(transport)
 
 // Spread in the order the methods have always had, so the key order is
 // unchanged. A key two segments both defined would silently take the later
@@ -1629,4 +1631,5 @@ export const api = {
   ...artifacts.publishing,
   ...featureDiscovery.tips,
   ...browserLive.browserLive,
+  ...sharedCrew.requests,
 }

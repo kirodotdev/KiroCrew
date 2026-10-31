@@ -88,6 +88,11 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, on the Settings > Developer > MCP Management page, zero settings",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
+  'PeoplePanel.tsx': 'read-only list of who has used this Crew and where access is managed; no setting and no control writes a config path',
+  'PeopleCrew.tsx': 'the People share card, People list and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
+  'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes, Remote Control button); no setting and no control writes a config path',
+  'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
+  'TailscaleInvites.tsx': 'the People invite card: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
   'ReleasesPanel.tsx': 'read-only changelog viewer, zero persistent settings',
   'ReportProblemCard.tsx': 'feedback action card, no settings',
@@ -284,6 +289,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'the per-crew on/off switch rendered once per runtime-fetched crew row, a field of that ' +
       'crew\'s record, not a global setting',
   },
+  'PeopleCrew.tsx': {
+    counts: { Input: 2, input: 1 },
+    reason:
+      'the read-only share link field and the name-and-picture dialog (name, picture file) ' +
+      'are a copy target and display-only edits saved by their own route: nothing here ' +
+      'writes a config path, so there is no row for settings search to find',
+  },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
@@ -311,6 +323,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'SlackPanel.tsx': {
     counts: { Input: 1 },
     reason: "TagListEditor's internal draft input — part of a composite the extractor indexes whole",
+  },
+  'TailscaleInvites.tsx': {
+    counts: { Toggle: 1, Input: 2, input: 1, textarea: 1 },
+    reason:
+      'the invite form (emails, reusable, alias, picture) and the Tailscale API key ' +
+      'field are inputs to one-shot actions, not persistent settings: nothing here ' +
+      'writes a config path, so there is no row for settings search to find',
   },
   'WhatsAppPanel.tsx': {
     counts: { SimpleSelect: 1 },

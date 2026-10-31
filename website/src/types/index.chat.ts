@@ -5,6 +5,7 @@
 // content blocks; notifications and their channels; approvals; history session
 // rows. Consumers import them from `types/index.ts`.
 import type { WebAppMetadata } from './index.artifacts'
+import type { SessionAttribution } from './index.sharedCrew'
 import type { SourceProviderId } from './index.sources'
 
 export interface TodoTask {
@@ -241,6 +242,8 @@ export interface ChatSlot extends TurnIdentityFields {
    * (written at birth, rehydrated), so it is the one link from a crew member's
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
+  /** Shared Crew creator (`shared_crew.attribution`), public shape. Display only. */
+  attribution?: SessionAttribution | null
   created_by?: string
   /** True on a Crew Mode root: a root session running a conductor template
    *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */

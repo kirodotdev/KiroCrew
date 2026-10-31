@@ -13,6 +13,19 @@ import type { MemorySource } from '../../lib/agentMemorySource'
    and re-exports `ComposerBusyMode`; the owners under this directory take the
    props they need as their own parameters, a few by indexed access
    (`ChatInputProps['onFileSelect']`). */
+/** Who holds the typing lease that locks this composer (`ChatInputProps.typingLock`). */
+export interface ComposerTypingLockView {
+  holderName: string
+  holderInitials: string
+  /** The holder took the lease over from this user: the banner says so. */
+  tookOver?: boolean
+  /** Shows Take over on the banner (Shared Crew preview only). */
+  onTakeOver?: () => void
+  takeOverPending?: boolean
+  /** A failed takeover, shown under the banner with the agent hand-off. */
+  takeOverError?: string
+}
+
 /** Busy-composer send affordance — see `ChatInputProps.busyMode`. */
 export type ComposerBusyMode = 'split' | 'steer-only' | 'responsive'
 
@@ -82,6 +95,11 @@ export interface ChatInputProps {
    * the host asks the gateway to prioritize the message, never stops locally. */
   busyMode?: ComposerBusyMode
   disabled?: boolean
+  /** Set while another collaborator holds the session's typing lease: the box
+   *  turns read-only (the draft in it is kept, and focus with it), the button
+   *  row gives way to a banner naming who is typing, and only Stop and Steer
+   *  stay for a running turn. Cleared the moment the lease ends. */
+  typingLock?: ComposerTypingLockView | null
   placeholder?: string
   /** Shown instead of the default "Stopping…" while `disabled` is set, naming
    *  why the composer is locked. */
