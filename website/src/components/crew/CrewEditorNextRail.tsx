@@ -11,6 +11,7 @@
 import { type Ref } from 'react'
 import SimpleSelect from '../SimpleSelect'
 import { forwardUiLocation, UI_LOCATION_ATTR } from '../../uiLocations/uiLocation'
+import { useRovingTabs } from '../Tablist'
 
 export interface CrewEditorNextRailSection<K extends string> {
   key: K
@@ -45,8 +46,16 @@ export interface CrewEditorNextRailProps<K extends string> {
 export default function CrewEditorNextRail<K extends string>({
   sections, value, onSelect, locked, ariaLabel, dangerKey, lockedHint, segments,
 }: CrewEditorNextRailProps<K>) {
-  const markerOf = (key: K) =>
-    forwardUiLocation<HTMLButtonElement>(segments?.find(seg => seg.key === key)?.[UI_LOCATION_ATTR])
+  const markerOf = (key: K, ref: (el: HTMLElement | null) => void) =>
+    forwardUiLocation<HTMLButtonElement>(segments?.find(seg => seg.key === key)?.[UI_LOCATION_ATTR], ref)
+  // One tab stop, Up/Down between sections. A locked rail disables every
+  // inactive section, so the arrows stay on the current one.
+  const roving = useRovingTabs(
+    sections.map(s => ({ key: s.key, disabled: s.key !== value && locked })),
+    value,
+    onSelect,
+    'vertical',
+  )
   return (
     <>
       {/*
@@ -89,9 +98,10 @@ export default function CrewEditorNextRail<K extends string>({
         className="hidden shrink-0 gap-px border-border bg-bg-accent p-2
                    sm:flex sm:w-[180px] sm:flex-col sm:border-r"
       >
-      {sections.map(s => {
+      {sections.map((s, i) => {
         const isActive = s.key === value
         const isDanger = s.key === dangerKey
+        const { ref, ...keys } = roving(i)
         return (
           <button
             key={s.key}
@@ -101,7 +111,8 @@ export default function CrewEditorNextRail<K extends string>({
             data-testid={`next-rail-${s.key}`}
             onClick={() => { if (!locked) onSelect(s.key) }}
             disabled={!isActive && locked}
-            {...markerOf(s.key)}
+            {...keys}
+            {...markerOf(s.key, ref)}
             className={[
               'flex w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] focus-ring',
               // A locked rail says why it will not switch: dimmed, not-allowed

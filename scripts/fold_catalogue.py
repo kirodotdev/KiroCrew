@@ -146,7 +146,8 @@ _ANSWERS: dict[str, str] = {
     ),
     "custom": (
         "The latest record per type a script cron bound to this crewmate appended with "
-        "ctx.crew_log_append: the record's data, when it landed and which job wrote it"
+        "ctx.crew_log_append: the record's data, when it landed, which job wrote it, "
+        "when it goes stale and whether that job's run has failed since"
     ),
     "workers": (
         "The worker sessions this crewmate created: each one's task, whether it is "

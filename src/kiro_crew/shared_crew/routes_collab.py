@@ -39,14 +39,10 @@ def _session_read(body: Callable[[Any, str], dict[str, Any]]) -> Callable[[web.R
 
     async def handler(request: web.Request) -> web.Response:
         if not request.get("is_dashboard_user", False):
-            return web.json_response(
-                {"error": "dashboard users only", "code": "forbidden"}, status=403
-            )
+            return _error(403, "forbidden", "dashboard users only")
         session_key = request.query.get("session_key", "")
         if not session_key or len(session_key) > MAX_SESSION_KEY_LEN:
-            return web.json_response(
-                {"error": "session_key is required", "code": "invalid_session_key"}, status=400
-            )
+            return _error(400, "invalid_session_key", "session_key is required")
         return web.json_response(body(request.app["state"], session_key))
 
     return handler
@@ -101,7 +97,7 @@ async def api_shared_crew_typing_lease_takeover(request: web.Request) -> web.Res
 
 
 def register(app: web.Application) -> None:
-    """Mount the collaboration reads. F adds this to ``routes._REGISTRARS``."""
+    """Register the collaboration routes on *app*."""
     app.router.add_get("/api/shared-crew/presence", api_shared_crew_presence)
     app.router.add_get("/api/shared-crew/decisions", api_shared_crew_decisions)
     app.router.add_get("/api/shared-crew/send-state", api_shared_crew_send_state)

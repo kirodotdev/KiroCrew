@@ -195,6 +195,22 @@ CUSTOM_TYPE_LIMIT = 64
 #: Characters the stamped ``writer`` and ``member`` cells keep on read. The gateway
 #: writes both, so these clamp a planted line, never a real one.
 CUSTOM_WRITER_LIMIT = 128
+#: The range a record's optional ``max_age_s`` may declare, in seconds: how long the
+#: script promises the record stays current. A minute is the scheduler's shortest
+#: interval, so a shorter promise can never be kept; thirty days is past any poll a
+#: page reads as current. The fold renders ``stale_after`` from the GATEWAY's ``at``
+#: plus this, so a script names how long, never when.
+CUSTOM_MAX_AGE_MIN_S = 60
+CUSTOM_MAX_AGE_MAX_S = 30 * 24 * 3600
+#: The entry a member-bound script cron's FAILED run lands as in its crewmate's log.
+#: Written by the gateway's scheduler, never by a script: a failed run writes no
+#: record, so without it a page keeps showing the last good one as if it were current.
+CUSTOM_FAILED_ENTRY_TYPE = "dashboard/custom_failed"
+#: Characters a failure's ``error`` keeps. A sentence the person reads, not a log.
+CUSTOM_ERROR_LIMIT = 240
+#: Writers the custom fold remembers a failure for. Least recently FAILED goes; one
+#: crewmate has a handful of crons, so this bounds a planted line, not real use.
+CUSTOM_FAILURE_LIMIT = 16
 
 
 #: The ``code`` a CORRECTION entry carries.
@@ -779,6 +795,17 @@ TYPES: tuple[EntryType, ...] = (
                     "not fill the other's page."
                 ),
             ),
+            Field(
+                "max_age_s",
+                JSON_INT,
+                note=(
+                    "How many seconds the script says the record stays current, between "
+                    "CUSTOM_MAX_AGE_MIN_S and CUSTOM_MAX_AGE_MAX_S. The script's promise, not "
+                    "provenance: the fold adds it to the entry's own time to render "
+                    "stale_after, so the script names how long and never when. Absent when "
+                    "the script declared none."
+                ),
+            ),
         ),
         note=(
             "Appended by the gateway to the crewmate's own DM session log when a script "
@@ -788,6 +815,50 @@ TYPES: tuple[EntryType, ...] = (
             "member cells, which the route stamps and the body cannot set. The data is a "
             "script's own words: a page draws it as text, and nothing frames it as an "
             "instruction to an agent."
+        ),
+    ),
+    EntryType(
+        CUSTOM_FAILED_ENTRY_TYPE,
+        "A run of a script cron bound to this crewmate ended in error, stamped by the gateway.",
+        (
+            Field(
+                "writer",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The job that failed, cron:<job id>, from the scheduler's own record of "
+                    "the run. The same spelling a dashboard/custom_value writer carries, so "
+                    "the fold marks that writer's records with the failure."
+                ),
+            ),
+            Field(
+                "error",
+                JSON_STRING,
+                note=(
+                    "The run's last_error, redacted and cut to CUSTOM_ERROR_LIMIT characters. "
+                    "The scheduler's words about the run, never the script's record."
+                ),
+            ),
+            Field(
+                "member",
+                JSON_STRING,
+                note="The slug of the crewmate the job is bound to, stamped by the gateway.",
+            ),
+            Field(
+                "crew_key",
+                JSON_STRING,
+                note="Digest of that crewmate's exact name, as dashboard/custom_value carries.",
+            ),
+        ),
+        note=(
+            "Appended BEST-EFFORT by the gateway's scheduler to the bound crewmate's own DM "
+            "session log when a script cron's run ends with last_status error (an exception, "
+            "a refused crew_log_append such as quota_exceeded, a timeout, a denial). Folded "
+            "by the custom fold: every latest record that writer wrote earlier gains "
+            "failed_at and last_error, and failures lists the writer. A later "
+            "dashboard/custom_value from the writer replaces its row and so clears the "
+            "mark. No script can append one: the record route only ever writes "
+            "dashboard/custom_value."
         ),
     ),
 )

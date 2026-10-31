@@ -559,6 +559,12 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     "cron_fire": (
         ("_init_cron", "async method", "(self, *, arm: 'bool' = True) -> 'None'"),
         ("_cron_capture", "async method", "(self, job: 'CronJob') -> '_CronCapture'"),
+        ("_record_bound_script_failure", "async method", "(self, job: 'CronJob') -> 'None'"),
+        (
+            "_alert_cron_timeout",
+            "async method",
+            "(self, job: 'CronJob', detail: 'str') -> 'None'",
+        ),
         (
             "_resolve_cron_agent",
             "method",

@@ -1112,10 +1112,22 @@
       "advertised": true,
       "package_only": false,
       "affects": [
+        "dashboard/custom_failed",
         "dashboard/custom_value"
       ],
-      "answers": "The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed and which job wrote it",
+      "answers": "The latest record per type a script cron bound to this crewmate appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since",
       "fields": [
+        {
+          "name": "failures",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "failures_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
         {
           "name": "latest",
           "type": "object",

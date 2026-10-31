@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.apps.link_preview_grants import host_refusal, normalize_host
+
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
 #: bar out. Apps needing more configuration have a page for it.
@@ -645,6 +647,173 @@ class PanelTabConfig:
         return errors
 
 
+#: One link-preview provider per app. The host runs one hover detector for every
+#: provider, and a link matches the FIRST provider whose hosts list it, so a second
+#: provider in the same app would only ever shadow or be shadowed by the first.
+MAX_LINK_PREVIEWS_PER_APP = 1
+#: Host patterns per provider. Bounded because the detector tests every hovered link
+#: against every pattern of every enabled app.
+_MAX_LINK_PREVIEW_HOSTS = 64
+#: Plain-text patterns per provider, and the longest pattern source. Every pattern
+#: of every enabled app scans every rendered chat message, so both are small. The
+#: dashboard refuses a pattern whose backtracking it cannot bound before it ever
+#: meets message text (`website/src/linkPreview/textPatterns.ts`).
+MAX_LINK_PREVIEW_TEXT_PATTERNS = 16
+MAX_LINK_PREVIEW_TEXT_PATTERN_LEN = 200
+#: JavaScript regex flags an entry may carry; `g` is implied. No repeats.
+_TEXT_PATTERN_FLAGS_RE = re.compile(r"^(?!.*(.).*\1)[giu]*$")
+_TEXT_PATTERN_KEYS = frozenset({"pattern", "flags", "id", "defaultOff"})
+
+
+@dataclass
+class LinkPreviewConfig:
+    """A link-preview provider: the app shows its own card when a link is hovered.
+
+    The host owns detection -- which links, the hover delay, leave and dismissal --
+    and never runs app code until a link on one of ``hosts`` is hovered. Then it
+    creates a sandboxed, opaque-origin frame (``apps/link_preview_frame.py``) that
+    imports ``entry`` and calls the module's ``activate(ctx)`` once; the returned
+    provider receives ``show`` with the hovered URL or text and the anchor's rect,
+    ``leave`` and ``hide``, over ``postMessage``. The card never runs in the
+    dashboard's document.
+
+    Declarative for the reason ``panelTabs`` is: core reads ``hosts`` without
+    importing app code, so a disabled or broken app costs nothing on hover.
+    """
+
+    id: str = ""  # stable id, unique within the app
+    # ESM module, relative to the app's ``ui`` directory (same base as ``ui.entry``).
+    entry: str = ""
+    # Exact hostnames, or a leading dot for "this domain and every subdomain"
+    # (``.example.dev``). https links only; the host refuses every other scheme.
+    hosts: list[str] = field(default_factory=list)
+    #: ``hosts`` present but not a list. Not serialized.
+    bad_hosts: bool = False
+    # Optional: plain text in chat messages that also opens a card, as
+    # ``{"pattern": <JS regex source>, "flags"?: "giu" subset, "id"?: <slug>,
+    # "defaultOff"?: bool}``. The host wraps each match in a hoverable span (never
+    # a link) and, on hover, hands the provider the matched text. ``id`` is what the
+    # app's module names when it switches patterns off (``ctx.setTextPatternsOff``).
+    textPatterns: list[dict[str, Any]] = field(default_factory=list)  # noqa: N815
+    #: ``textPatterns`` present but not a list, or an entry that was not an object
+    #: of two strings. Not serialized.
+    bad_text_patterns: bool = False
+    # Optional: hand the module the hovered URL whole. By default the host strips
+    # the query and fragment, which can carry signed tokens or other secrets.
+    fullUrl: bool = False  # noqa: N815
+    #: ``fullUrl`` present but not a boolean. Not serialized.
+    bad_full_url: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.id:
+            d["id"] = self.id
+        if self.entry:
+            d["entry"] = self.entry
+        if self.hosts:
+            d["hosts"] = list(self.hosts)
+        if self.textPatterns:
+            # Serialized, so it is part of the signing payload: a pattern decides
+            # which text in a transcript the app's module is shown.
+            d["textPatterns"] = [dict(p) for p in self.textPatterns]
+        if self.fullUrl:
+            d["fullUrl"] = True
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LinkPreviewConfig:
+        raw_hosts = data.get("hosts", [])
+        raw_patterns = data.get("textPatterns", [])
+        patterns: list[dict[str, Any]] = []
+        bad_patterns = "textPatterns" in data and not isinstance(raw_patterns, list)
+        for p in raw_patterns if isinstance(raw_patterns, list) else []:
+            if (
+                isinstance(p, dict)
+                and "pattern" in p
+                and set(p) <= _TEXT_PATTERN_KEYS
+                and all(isinstance(p[k], str) for k in ("pattern", "flags", "id") if k in p)
+                and isinstance(p.get("defaultOff", False), bool)
+            ):
+                patterns.append({k: p[k] for k in sorted(p)})
+            else:
+                bad_patterns = True
+        return cls(
+            id=str(data.get("id", "")),
+            entry=str(data.get("entry", "")),
+            # Normalized (lowercase, no trailing dot, IDNA), so what is matched, signed
+            # and granted is one form. A value that does not normalize is kept
+            # lowercased for ``validate`` to refuse by name.
+            hosts=(
+                [normalize_host(h) or str(h).lower() for h in raw_hosts]
+                if isinstance(raw_hosts, list)
+                else []
+            ),
+            bad_hosts="hosts" in data and not isinstance(raw_hosts, list),
+            textPatterns=patterns,
+            bad_text_patterns=bad_patterns,
+            fullUrl=data.get("fullUrl") is True,
+            bad_full_url="fullUrl" in data and not isinstance(data.get("fullUrl"), bool),
+        )
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        where = f"contributes.linkPreviews[{self.id or '?'}]"
+        if not self.id:
+            errors.append("contributes.linkPreviews: entry missing id")
+        elif not _PANEL_TAB_ID_RE.fullmatch(self.id):
+            errors.append(f"{where}: id must be a storage-safe slug ({self.id!r})")
+        if not self.entry:
+            errors.append(f"{where}: missing entry")
+        if self.bad_hosts:
+            # Coerced to [] this would read as "no links", and the provider would
+            # install clean and never fire.
+            errors.append(f"{where}: hosts must be an array of hostnames")
+        elif not self.hosts:
+            errors.append(f"{where}: hosts must list at least one hostname")
+        elif len(self.hosts) > _MAX_LINK_PREVIEW_HOSTS:
+            errors.append(
+                f"{where}: {len(self.hosts)} hosts exceeds the limit of {_MAX_LINK_PREVIEW_HOSTS}"
+            )
+        for host in self.hosts:
+            # Same grammar as a command argument's host allowlist. A bare TLD or a
+            # leading-dot public suffix (".com") is refused by requiring two labels.
+            if not _HOST_RE.fullmatch(host):
+                errors.append(f"{where}: hosts entry is not a hostname ({host!r})")
+            elif refusal := host_refusal(host):
+                # A public suffix (``.co.uk``, ``github.io``) would reach every site
+                # under it.
+                errors.append(f"{where}: hosts entry is {refusal} ({host!r})")
+        if self.bad_full_url:
+            errors.append(f"{where}: fullUrl must be true or false")
+        if len(set(self.hosts)) != len(self.hosts):
+            errors.append(f"{where}: hosts repeats an entry")
+        if self.bad_text_patterns:
+            errors.append(
+                f"{where}: textPatterns must be an array of "
+                "{pattern, flags?, id?, defaultOff?} objects"
+            )
+        if len(self.textPatterns) > MAX_LINK_PREVIEW_TEXT_PATTERNS:
+            errors.append(
+                f"{where}: {len(self.textPatterns)} textPatterns exceeds the limit of "
+                f"{MAX_LINK_PREVIEW_TEXT_PATTERNS}"
+            )
+        for i, tp in enumerate(self.textPatterns):
+            source = tp["pattern"]
+            if not source:
+                errors.append(f"{where}: textPatterns[{i}] pattern is empty")
+            elif len(source) > MAX_LINK_PREVIEW_TEXT_PATTERN_LEN:
+                errors.append(
+                    f"{where}: textPatterns[{i}] pattern exceeds "
+                    f"{MAX_LINK_PREVIEW_TEXT_PATTERN_LEN} characters"
+                )
+            if not _TEXT_PATTERN_FLAGS_RE.fullmatch(tp.get("flags", "")):
+                errors.append(f"{where}: textPatterns[{i}] flags must be a subset of 'giu'")
+            if "id" in tp and not _PANEL_TAB_ID_RE.fullmatch(tp["id"]):
+                errors.append(f"{where}: textPatterns[{i}] id must be a storage-safe slug")
+        # `entry` traversal is checked in `AppManifest.validate` (needs the app root).
+        return errors
+
+
 @dataclass
 class FileMenuWhen:
     """Declarative visibility predicate for a contributed file-menu row.
@@ -858,6 +1027,11 @@ class Contributes:
     #: How many entries of a well-formed ``fileMenuItems`` array were not objects. Not
     #: serialized.
     dropped_file_menu_items: int = 0
+    linkPreviews: list[LinkPreviewConfig] = field(default_factory=list)  # noqa: N815
+    #: ``linkPreviews`` present but not a list / entries that were not objects. Same
+    #: reasoning as the flags above. Not serialized.
+    bad_link_previews: bool = False
+    dropped_link_previews: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -878,6 +1052,10 @@ class Contributes:
         kept_items = [i for i in items if i]
         if kept_items:
             d["fileMenuItems"] = kept_items
+        previews = [p.to_dict() for p in self.linkPreviews]
+        kept_previews = [p for p in previews if p]
+        if kept_previews:
+            d["linkPreviews"] = kept_previews
         return d
 
     @classmethod
@@ -909,7 +1087,14 @@ class Contributes:
         tab_entries = tabs_raw if isinstance(tabs_raw, list) else []
         items_raw = data.get("fileMenuItems", [])
         item_entries = items_raw if isinstance(items_raw, list) else []
+        previews_raw = data.get("linkPreviews", [])
+        preview_entries = previews_raw if isinstance(previews_raw, list) else []
         return cls(
+            linkPreviews=[
+                LinkPreviewConfig.from_dict(p) for p in preview_entries if isinstance(p, dict)
+            ],
+            bad_link_previews="linkPreviews" in data and not isinstance(previews_raw, list),
+            dropped_link_previews=sum(1 for p in preview_entries if not isinstance(p, dict)),
             commands=[CommandContribution.from_dict(c) for c in entries if isinstance(c, dict)],
             panelTabs=[PanelTabConfig.from_dict(t) for t in tab_entries if isinstance(t, dict)],
             fileMenuItems=[
@@ -1031,4 +1216,22 @@ class Contributes:
                     # row's activation would target the first row's endpoint.
                     errors.append(f"contributes.fileMenuItems: duplicate id {item.id!r}")
                 seen_items.add(item.id)
+        if self.bad_link_previews:
+            errors.append(
+                "contributes.linkPreviews must be an array -- a non-array value passes "
+                "as empty and then disappears from the serialized manifest, so the app "
+                "author sees neither an error nor any card"
+            )
+        if self.dropped_link_previews:
+            errors.append(
+                f"contributes.linkPreviews: {self.dropped_link_previews} entr"
+                f"{'y' if self.dropped_link_previews == 1 else 'ies'} must be an object"
+            )
+        if len(self.linkPreviews) > MAX_LINK_PREVIEWS_PER_APP:
+            errors.append(
+                f"contributes.linkPreviews: {len(self.linkPreviews)} providers exceeds the "
+                f"limit of {MAX_LINK_PREVIEWS_PER_APP}"
+            )
+        for preview in self.linkPreviews:
+            errors.extend(preview.validate())
         return errors

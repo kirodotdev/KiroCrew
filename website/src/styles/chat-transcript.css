@@ -506,3 +506,6 @@ file-tree-container{
 .chat-container[data-slide-anchor] {
   overflow-anchor: none !important;
 }
+/* Plain text an app's link-preview `textPatterns` match (linkPreview/remarkLinkPreviewText.ts): hoverable, not a link. */
+/* A solid accent underline, so it never reads as inline code's dotted click-to-copy one. */
+.link-preview-text{text-decoration:underline solid;text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,var(--accent) 60%,transparent);text-underline-offset:3px;cursor:default}

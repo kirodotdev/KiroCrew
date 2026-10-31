@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
+from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
@@ -479,8 +480,14 @@ def _write_installed(
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
-# with its own disable-until-consent path below; these two are entry lists.
-STAGED_GRANT_FAMILIES = ("api", "events")
+# with its own disable-until-consent path below; these are entry lists. The two
+# link-preview families come from ``contributes.linkPreviews`` (see
+# ``link_preview_grants``); a stored set from before they existed does not carry
+# them, and a missing family approves what the manifest declares, as a missing
+# file does for an install that never stored one.
+STAGED_GRANT_FAMILIES = ("api", "events", *LINK_PREVIEW_GRANT_FAMILIES)
+#: Families every stored set carries; the others are absent from an older file.
+_ALWAYS_STORED_FAMILIES = ("api", "events")
 
 
 def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
@@ -492,6 +499,9 @@ def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
     record = raw if isinstance(raw, dict) else {}
     parsed: dict[str, list[str]] = {}
     for family in STAGED_GRANT_FAMILIES:
+        if family not in _ALWAYS_STORED_FAMILIES and isinstance(raw, dict) and family not in record:
+            # Written before this family existed: no decision recorded for it.
+            continue
         entries = record.get(family)
         parsed[family] = (
             [e for e in entries if isinstance(e, str)] if isinstance(entries, list) else []
@@ -549,7 +559,11 @@ def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> No
     if grants is None:
         path.unlink(missing_ok=True)
         return
-    body = {family: list(grants.get(family, ())) for family in STAGED_GRANT_FAMILIES}
+    body = {
+        family: list(grants.get(family, ()))
+        for family in STAGED_GRANT_FAMILIES
+        if family in _ALWAYS_STORED_FAMILIES or family in grants
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, json.dumps(body, indent=2) + "\n")
 
@@ -583,12 +597,19 @@ def _approved_grants_after_manifest_change(
     new manifest adds is not approved, and one it drops must be approved again
     if a later version brings it back.
     """
+    old_declared = _declared_grant_entries(old_permissions) if old_permissions is not None else {}
     if existing_approved is not None:
-        baseline = existing_approved
-    elif old_permissions is not None:
-        baseline = _declared_grant_entries(old_permissions)
+        # A family the stored set predates approves what the replaced manifest declared.
+        baseline = {
+            family: (
+                existing_approved[family]
+                if family in existing_approved
+                else old_declared.get(family, [])
+            )
+            for family in STAGED_GRANT_FAMILIES
+        }
     else:
-        baseline = {}
+        baseline = old_declared
     declared = _declared_grant_entries(new_permissions)
     return {
         family: [e for e in declared[family] if e in set(baseline.get(family, ()))]
@@ -604,7 +625,11 @@ def _held_back_entries(
     if approved is None:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
     return {
-        family: [e for e in declared[family] if e not in set(approved.get(family, ()))]
+        family: (
+            [e for e in declared[family] if e not in set(approved[family])]
+            if family in approved
+            else []
+        )
         for family in STAGED_GRANT_FAMILIES
     }
 
@@ -772,8 +797,12 @@ def staged_app_grants(
                 return []
             granted = list(declared)
         else:
-            approved = set(grants.get(family, ()))
-            granted = [entry for entry in declared if entry in approved]
+            if family not in grants:
+                # The stored set predates this family: what is declared is approved.
+                granted = list(declared)
+            else:
+                approved = set(grants[family])
+                granted = [entry for entry in declared if entry in approved]
     if _tree_swap_spanned(swap_before, _tree_swap_state(name)):
         return []
     return granted
@@ -782,7 +811,16 @@ def staged_app_grants(
 def _approved_grants_row(name: str) -> dict[str, Any]:
     """The ``approvedGrants`` key for an app row, absent when no set is stored."""
     grants = _effective_approved_grants(name, _read_installed(name))
-    return {} if grants is None else {"approvedGrants": grants}
+    if grants is None:
+        return {}
+    # An empty link-preview family says nothing an app row needs: the row's
+    # ``linkPreviewGrant`` is where a provider's approved and waiting entries live.
+    shown = {
+        family: entries
+        for family, entries in grants.items()
+        if family in _ALWAYS_STORED_FAMILIES or entries
+    }
+    return {"approvedGrants": shown}
 
 
 def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:

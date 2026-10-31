@@ -184,6 +184,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RECORD_QUOTA_PER_MINUTE,
         RECORD_QUOTA_WRITERS,
         RecordWriter,
+        _cron_writer,
         _over_quota,
         _recent_records,
         _recent_records_guard,
@@ -195,6 +196,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _scrubbed,
         _scrubbed_under,
         _unique_key,
+        record_cron_failure,
         record_through_door,
     )
     from kiro_crew.dashboard.handlers.agent_panel_record_app import (  # noqa: F401
@@ -239,12 +241,17 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.crew_log import projection  # noqa: F401
     from kiro_crew.crew_log.entry_types import (  # noqa: F401
         CUSTOM_ENTRY_TYPE,
+        CUSTOM_ERROR_LIMIT,
+        CUSTOM_FAILED_ENTRY_TYPE,
+        CUSTOM_MAX_AGE_MAX_S,
+        CUSTOM_MAX_AGE_MIN_S,
         CUSTOM_RECORD_BYTES,
         CUSTOM_RECORD_DEPTH,
         CUSTOM_TYPE_NAME_LIMIT,
         PANEL_FOLD_NAME,
     )
     from kiro_crew.crew_log.projection_dashboard import (  # noqa: F401
+        custom_max_age_ok,
         custom_record_depth,
         custom_record_fits,
         custom_type_name_ok,

@@ -123,7 +123,8 @@ export function edgeEnabledIndex(
  * `Tablist` runs on it, and so does any hand-drawn rail whose look differs from
  * the pill, so there is one keyboard model rather than one per rail.
  *
- * Selection follows focus, as in `Tablist`.
+ * Selection follows focus, as in `Tablist`. `orientation` picks the arrow
+ * pair: Left/Right for a horizontal rail, Up/Down for a vertical one.
  *
  * Spread `tabProps(i)` on the i-th tab.
  */
@@ -131,13 +132,17 @@ export function useRovingTabs<K>(
   tabs: ReadonlyArray<RovingTab & { key: K }>,
   value: K | undefined,
   onChange: (key: K) => void,
+  orientation: 'horizontal' | 'vertical' = 'horizontal',
 ) {
   const refs = useRef<Array<HTMLElement | null>>([])
+  const vertical = orientation === 'vertical'
 
   const move = (to: number) => {
     const tab = tabs[to]
     if (!tab || tab.disabled) return
-    onChange(tab.key)
+    // An arrow with nowhere to go (every other tab disabled) lands on the
+    // current tab: nothing to select.
+    if (tab.key !== value) onChange(tab.key)
     // Follow the selection with focus so the arrow keys keep working from the
     // tab the user just landed on.
     refs.current[to]?.focus()
@@ -149,8 +154,10 @@ export function useRovingTabs<K>(
     // costs one Tab press instead of one per tab.
     tabIndex: tabs[i]?.key === value ? 0 : -1,
     onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
-      const to = e.key === 'ArrowRight' ? nextEnabledIndex(tabs, i, 1)
-        : e.key === 'ArrowLeft' ? nextEnabledIndex(tabs, i, -1)
+      const forward = vertical ? e.key === 'ArrowDown' : e.key === 'ArrowRight'
+      const back = vertical ? e.key === 'ArrowUp' : e.key === 'ArrowLeft'
+      const to = forward ? nextEnabledIndex(tabs, i, 1)
+        : back ? nextEnabledIndex(tabs, i, -1)
         : e.key === 'Home' ? edgeEnabledIndex(tabs, 'first')
         : e.key === 'End' ? edgeEnabledIndex(tabs, 'last')
         : null

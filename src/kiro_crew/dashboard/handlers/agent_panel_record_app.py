@@ -250,5 +250,11 @@ async def api_member_record(request: web.Request) -> web.Response:
         )
     data: dict[str, Any] = body["data"]
     return await record_through_door(
-        request, resolved, stored_type, data, caller=app_name, operation=_RECORD_OPERATION
+        request,
+        resolved,
+        stored_type,
+        data,
+        caller=app_name,
+        operation=_RECORD_OPERATION,
+        max_age_s=body.get("max_age_s"),
     )

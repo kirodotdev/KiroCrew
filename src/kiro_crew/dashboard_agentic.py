@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence, cast
 
@@ -1061,6 +1063,91 @@ def _crew_panel_on() -> bool:
 #: How many unresolved field names the turn block spells out before it counts the rest.
 UNRESOLVED_NAMES_SHOWN: Final[int] = 3
 
+#: A fold field whose fold has had no value for long enough that the page is past
+#: fresh: ``fold_unseen`` promoted, so :func:`unresolved_line` names it.
+NEVER_RESOLVED: Final[str] = "never_resolved"
+#: A ``custom`` field still unseen after a script cron bound to the crewmate has run:
+#: the feed exists and has landed nothing, so the wait is already over.
+NEVER_RESOLVED_CRON: Final[str] = "never_resolved_cron"
+#: How long a ``custom`` field may stay ``fold_unseen`` before it is reported even with
+#: no bound script cron that has run. ``custom`` only: it fills from nothing but a
+#: script cron, so a day empty means no bound job is feeding it (the job is bound to no
+#: crewmate, or none exists). Other folds have an empty state that is normal -- a panel
+#: never published, no goal yet, nothing waiting -- and are never promoted. A day
+#: covers a daily job's first run. Measured
+#: on this process's clock from the first turn that saw it unseen; a restart starts it
+#: again, which can only delay a report, never invent one.
+NEVER_RESOLVED_AFTER_S: Final[float] = 24 * 3600.0
+#: How long a ``custom`` field must stay unseen, once a bound script cron has run,
+#: before it is reported. Not zero: the turn block reads with no prime wait, so the
+#: first read after a restart sees a cold fold as unseen even when it holds records.
+#: Five minutes outlasts any prime, so only a fold that is really empty is named.
+NEVER_RESOLVED_CRON_AFTER_S: Final[float] = 300.0
+
+#: When each fold field was first seen unseen, by slot: process memory, bounded.
+_UNSEEN_SINCE: "OrderedDict[str, dict[str, float]]" = OrderedDict()
+_UNSEEN_SLOTS_MAX: Final[int] = 256
+_UNSEEN_LOCK = threading.Lock()
+
+
+def _unseen_for(slot: str, names: list[str], now: float) -> dict[str, float]:
+    """How long each of *names* has been unseen on *slot*, recording the new ones.
+
+    Names that are not unseen on this read are forgotten, so a field that resolves and goes cold
+    again (a unit rollover) starts its wait afresh.
+    """
+    with _UNSEEN_LOCK:
+        known = _UNSEEN_SINCE.pop(slot, {})
+        kept = {name: known.get(name, now) for name in names}
+        if kept:
+            _UNSEEN_SINCE[slot] = kept
+            while len(_UNSEEN_SINCE) > _UNSEEN_SLOTS_MAX:
+                _UNSEEN_SINCE.popitem(last=False)
+    return {name: now - since for name, since in kept.items()}
+
+
+def _bound_cron_has_run(member: str) -> bool:
+    """Whether a script cron bound to crewmate *member* has finished a run. TOTAL."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.cron import bound_script_runs_from_disk
+
+        record = KiroCrewConfig.load().agents.get(member)
+        member_id = str(getattr(record, "member_id", "") or "")
+        return bool(member_id) and bool(bound_script_runs_from_disk(member_id))
+    except Exception:
+        logger.debug("dashboard: %r's bound crons could not be read", member, exc_info=True)
+        return False
+
+
+def _promote_unseen(
+    slot: str, member: str, manifest: TemplateManifest, unresolved: dict[str, str]
+) -> None:
+    """Promote ``fold_unseen`` fields that have stayed unseen past their bound, in place.
+
+    A fresh crewmate's page is all ``fold_unseen`` and stays quiet. A ``custom`` field
+    is promoted to :data:`NEVER_RESOLVED_CRON` once a script cron bound to the crewmate
+    has run (the cron failed before it could land, or writes another type) and the
+    field has been unseen for :data:`NEVER_RESOLVED_CRON_AFTER_S`, else to
+    :data:`NEVER_RESOLVED` after :data:`NEVER_RESOLVED_AFTER_S` unseen. No other fold is
+    promoted: an empty panel, goal or waiting fold is a normal state, not a bad binding.
+    """
+    import time
+
+    from kiro_crew.crew_log.entry_types import CUSTOM_FOLD_NAME
+    from kiro_crew.dashboard_feed import FOLD_UNSEEN
+
+    unseen = sorted(name for name, reason in unresolved.items() if reason == FOLD_UNSEEN)
+    waited = _unseen_for(slot, unseen, time.monotonic())
+    custom = [name for name in unseen if manifest.fields[name].fold == CUSTOM_FOLD_NAME]
+    due = [name for name in custom if waited.get(name, 0.0) >= NEVER_RESOLVED_CRON_AFTER_S]
+    if due and _bound_cron_has_run(member):
+        for name in due:
+            unresolved[name] = NEVER_RESOLVED_CRON
+    for name in custom:
+        if unresolved[name] == FOLD_UNSEEN and waited.get(name, 0.0) >= NEVER_RESOLVED_AFTER_S:
+            unresolved[name] = NEVER_RESOLVED
+
 
 def _unresolved_reason(reason: str, fold: str, path: str) -> str:
     """One reason, in the crewmate prompt file's words."""
@@ -1069,6 +1156,10 @@ def _unresolved_reason(reason: str, fold: str, path: str) -> str:
 
     if reason == OLDER_VALUE:
         return crewmate_prompts.text("dashboard.reason_older_value")
+    if reason == NEVER_RESOLVED:
+        return crewmate_prompts.text("dashboard.reason_never_resolved")
+    if reason == NEVER_RESOLVED_CRON:
+        return crewmate_prompts.text("dashboard.reason_never_resolved_cron")
     return crewmate_prompts.fill("dashboard.reason_path_missing", fold=fold, path=path)
 
 
@@ -1127,6 +1218,7 @@ def _unresolved_fold_fields(slug: str, member: str, manifest: TemplateManifest) 
                     continue
                 unresolved.pop(name)
                 remember_resolved(slot, [name])
+        _promote_unseen(_dashboard_slot(member, slug), member, manifest, unresolved)
         return unresolved
     except Exception:
         logger.debug("dashboard: %r's fields could not be read for its turn", slug, exc_info=True)
@@ -1137,10 +1229,12 @@ def unresolved_line(manifest: TemplateManifest, unresolved: Mapping[str, str]) -
     """The turn block's line naming each fold field that did not resolve, or ``""``.
 
     Only the causes the crewmate can fix are named: a path not found in a fold that
-    HAS a value, and a field that resolved before and stopped. A fold that has produced
-    no value yet (``fold_unseen``, which includes a panel never published) is no broken
-    binding -- a fresh crewmate on its shipped page is in exactly that state -- so it
-    is left out, and once the fold has a value a wrong path shows as ``path_missing``.
+    HAS a value, a field that resolved before and stopped, and a field that has NEVER
+    resolved past its bound (:func:`_promote_unseen`). A fold that has produced no value
+    yet (``fold_unseen``, which includes a panel never published) is no broken binding
+    while the page is fresh -- a new crewmate on its shipped page is in exactly that
+    state -- so it is left out until the bound promotes it, and once the fold has a
+    value a wrong path shows as ``path_missing``.
 
     Capped at :data:`UNRESOLVED_NAMES_SHOWN` names with the rest counted, so a page
     whose every binding broke still costs the turn one line.

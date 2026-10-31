@@ -222,6 +222,88 @@ class TestConversationLogCacheBounded:
         assert len(msgs) == 1
         assert msgs[0]["content"] == "content 0"
 
+    def test_msg_cache_is_bounded_by_bytes(self, tmp_path, monkeypatch):
+        """Past the byte budget the least recently read transcripts go first."""
+        from kiro_crew import history_cache
+
+        log = ConversationLog(base_dir=tmp_path)
+        # Written as fixed bytes, not through append(): a live timestamp prints
+        # shorter on a whole second, which would make one file smaller than the rest.
+        body = (
+            json.dumps({"_type": "metadata", "created_at": "2026-10-01T00:00:00.000001+00:00"})
+            + "\n"
+            + json.dumps({"role": "user", "content": "x" * 1000, "ts": "2026-10-01T00:00:01"})
+            + "\n"
+        ).encode("utf-8")
+        for i in range(6):
+            path = log._path(f"s{i}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        size = log._path("s0").stat().st_size
+        assert all(log._path(f"s{i}").stat().st_size == size for i in range(6))
+        weight = size * history_cache._PARSED_BYTES_PER_FILE_BYTE
+        log._msg_cache._max_weight = 3 * weight  # room for exactly three
+        for i in range(6):
+            log._read_messages(f"s{i}")
+        assert [k for k in ("s0", "s1", "s2", "s3", "s4", "s5") if k in log._msg_cache] == [
+            "s3",
+            "s4",
+            "s5",
+        ]
+        assert log._msg_cache.total_weight() == 3 * weight
+
+    def test_a_transcript_heavier_than_the_budget_is_never_cached(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("big", "user", "y" * 5000)
+        log.append("small", "user", "z")
+        log._read_messages("small")
+        log._msg_cache._max_weight = log._path("big").stat().st_size  # below 2x its size
+        msgs = log._read_messages("big")
+        assert msgs and msgs[0]["content"] == "y" * 5000, "the read still answers"
+        assert "big" not in log._msg_cache
+        assert log._read_messages("big") == msgs, "a re-read parses the file again"
+
+
+class TestLRUCacheWeights:
+    """The optional byte bound of _LRUCache keeps its total exact across every removal."""
+
+    def _cache(self):
+        from kiro_crew.history import _LRUCache
+
+        return _LRUCache(maxsize=0, max_weight=10, weigh=len)
+
+    def test_replacing_a_key_counts_only_the_new_value(self):
+        c = self._cache()
+        c["a"] = "xxxx"
+        c["a"] = "xx"
+        assert c.total_weight() == 2
+
+    def test_pop_prefix_clear_and_idle_drop_release_weight(self):
+        from kiro_crew.history import _LRUCache
+
+        c = self._cache()
+        c["p\x00a"] = "xxx"
+        c["q"] = "xx"
+        c.pop_prefix("p\x00")
+        assert c.total_weight() == 2
+        c.pop("q")
+        assert c.total_weight() == 0
+        idle = _LRUCache(maxsize=0, idle_ttl=100.0, max_weight=10, weigh=len)
+        idle["a"] = "xxxx"
+        # An explicit future `now` instead of a backdated stamp: the background
+        # sweeper could otherwise drop the backdated entry before this call.
+        assert idle.drop_idle(now=idle._stamps["a"] + 500) == 1 and idle.total_weight() == 0
+        c["b"] = "x"
+        c.clear()
+        assert c.total_weight() == 0 and len(c) == 0
+
+    def test_without_weigh_there_is_no_byte_bound(self):
+        from kiro_crew.history import _LRUCache
+
+        c = _LRUCache(maxsize=0, max_weight=1)
+        c["a"] = "xxxxxxxx"
+        assert "a" in c and c.total_weight() == 0
+
 
 # ---------------------------------------------------------------------------
 # PR unit C — recommendation #10: tail/seek reads for recent-only access
