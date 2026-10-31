@@ -18,6 +18,7 @@ from kiro_crew.dashboard.chat_fork import (
     fork_slot,
     resolve_fork_source,
 )
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
 from kiro_crew.dashboard.session_control_parts import session_create
 from kiro_crew.dashboard.session_control_parts.caller_access import (
@@ -102,7 +103,8 @@ async def fork_session(
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
     reasons no override of agent, model or mode is taken here. The exceptions
-    are the folder (a Crew Mode caller's child is unfiled) and the sidebar pin:
+    are the folder (a Crew Mode caller's child is unfiled, and so is a child
+    whose parent sits in a mate's home the caller does not own) and the sidebar pin:
     a person's fork of a pinned session is pinned, this child never is,
     because pinned marks a session as human-owned.
 
@@ -209,6 +211,18 @@ async def fork_session(
 
         if not await state.read_folders(_exists):
             raise SessionControlError("folder not found", code="folder_not_found")
+        # A mate's home takes sessions only from that mate, as in `create_session`.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(state, slot_history_key(caller_slot), folder_id)
+        except MateHomeLockedError:
+            raise SessionControlError(
+                "this folder belongs to a mate", status=403, code="mate_home_locked"
+            ) from None
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input
     # above was read before this coroutine suspended (the folder confirmation),
@@ -339,6 +353,17 @@ async def fork_session(
             )
 
     in_crew_tree = False
+    # The caller's folder principal: an inherited folder in a mate's home stays
+    # on the child only when the caller is that mate (its conductor or worker).
+    # Read only for a source in a mate's home; anywhere else it decides nothing,
+    # and a source moved into a home meanwhile leaves the child unfiled.
+    from kiro_crew.dashboard.mate_folders import home_owner_of, session_folder_principal
+
+    fork_folder_principal = (
+        await session_folder_principal(slot_history_key(caller_slot))
+        if home_owner_of(_safe_folder_tree(state._folders), str(source_slot.folder_id or ""))
+        else ""
+    )
 
     def _stamp(child: Any) -> None:
         nonlocal in_crew_tree
@@ -385,6 +410,7 @@ async def fork_session(
         origin=child_origin,
         count_user_session=False,
         jev_route_allowed=False,
+        folder_principal=fork_folder_principal,
         audit_caller=audit_caller,
         audit_operation="session_control.fork",
         stamp=_stamp,

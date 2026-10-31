@@ -15,6 +15,7 @@ import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
 import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
+import CrewDashboardBehindBand from './CrewDashboardBehindBand'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
@@ -105,6 +106,10 @@ const READY_TIMEOUT_MS = 6000
  * every case anybody writes.
  */
 export const DASHBOARD_FALLBACK_REFETCH_MS = 60_000
+
+/** Past this age with no fresh read, the host bands the page as maybe behind: two
+ *  fallback intervals missed means something stopped the read. */
+export const DASHBOARD_BEHIND_AFTER_MS = 2 * DASHBOARD_FALLBACK_REFETCH_MS
 
 /** The preview read's own "nothing staged" answer: 404 `no_preview`. Only that one.
  *  The same route answers 404 `member_not_found` for a crewmate that is gone, and
@@ -279,7 +284,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const timingRef = useRef<DashboardLoadTiming | null>(null)
   const timingLabel =
     target.kind === 'member' ? `member:${target.slug}` : `session:${target.slot}`
-  const { data, isLoading, isError, isFetching, error, refetch } = useQuery({
+  const { data, dataUpdatedAt, isLoading, isError, isFetching, error, refetch } = useQuery({
     queryKey: [...dashboardQueryKey(target), locale, staged ? 'preview' : 'live'],
     queryFn: async () => {
       // A live load only; a staged/preview read is a person action, not the
@@ -315,6 +320,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // dashboard nobody is looking at does not need to be current.
     refetchInterval: DASHBOARD_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
+    // A tab coming back to the front re-reads ONLY when its read is older than one
+    // interval: the paused interval would otherwise leave it on pre-sleep values for
+    // up to a minute. A quick switch away and back costs nothing.
+    refetchOnWindowFocus: (query) => Date.now() - query.state.dataUpdatedAt > DASHBOARD_FALLBACK_REFETCH_MS ? 'always' : false,
   })
   // The crewmate behind a member target; empty for a root-session target, which has
   // neither a slug nor a package and so arms neither the refetch nor the push below.
@@ -1274,6 +1283,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           </Btn>
         </div>
       )}
+      {/* THE PAGE-WIDE "may be behind" band, drawn here so no page can hide it. The
+          refetch band below says the same thing more precisely, with a Retry; when it
+          is up this one stands down rather than say it twice, but stays mounted so a
+          drop seen meanwhile is not forgotten. */}
+      <CrewDashboardBehindBand readAt={dataUpdatedAt} staleAfterMs={DASHBOARD_BEHIND_AFTER_MS} hidden={Boolean(refetchError)} />
       {refetchError && (
         <div
           className="shrink-0 border-b border-border p-2 flex items-start gap-2"

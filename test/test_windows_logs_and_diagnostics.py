@@ -6,9 +6,11 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew import cli_doctor, cli_server, platform_compat
 from kiro_crew.service.common import Platform
+from kiro_crew.testing.clock import ManualClock
 
 
 @pytest.fixture
@@ -39,6 +41,30 @@ def test_windows_empty_log_succeeds(windows_log, capsys):
     assert capsys.readouterr().out == ""
 
 
+def _pin_sleep(monkeypatch, tick) -> ManualClock:
+    """Give only the ``cli_server`` family a clock whose sleep is ``tick``.
+
+    The clock is installed on the facade's own ``time`` binding, which the mirror
+    passes to every owner, and ``tick`` replaces the sleep of that private stand-in.
+    The binding IS the stdlib module, so patching ``cli_server.time.sleep`` would
+    hand ``tick`` (and the ``KeyboardInterrupt`` it raises) to every other thread
+    that sleeps in the worker.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, cli_server)
+    monkeypatch.setattr(clock.as_time_module(), "sleep", tick)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    def tick(_seconds):
+        raise KeyboardInterrupt
+
+    clock = _pin_sleep(monkeypatch, tick)
+    assert cli_server.time.sleep is tick
+    assert_clock_is_private(clock, cli_server)
+
+
 def test_windows_follow_reads_appended_lines_and_stops(windows_log, monkeypatch, capsys):
     # The first poll can transiently fail to open the log (a Windows
     # CreateFileW window or a rotation rename both raise FileNotFoundError and
@@ -67,7 +93,7 @@ def test_windows_follow_reads_appended_lines_and_stops(windows_log, monkeypatch,
             return
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._logs_cmd(argparse.Namespace(lines=1, follow=True))
     emitted += capsys.readouterr().out
     assert emitted == "initial\nappended\n"
@@ -127,7 +153,7 @@ def test_windows_follow_handles_truncation(windows_log, monkeypatch, capsys):
         elif len(waits) == 3:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._logs_cmd(argparse.Namespace(lines=1, follow=True))
     assert capsys.readouterr().out == "a longer initial line\nnew\n"
 
@@ -167,7 +193,7 @@ def test_follow_allows_real_writer_rollover(windows_log, monkeypatch, capsys, du
         if len(ticks) == 3:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     try:
         logger.info("x" * 30)
         cli_server._tail_log_file(windows_log, 1, True)
@@ -191,7 +217,7 @@ def test_follow_replacement_identity(windows_log, monkeypatch, capsys, replaceme
         else:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._tail_log_file(windows_log, 1, True)
     assert capsys.readouterr().out == "seed\n" + replacement
 
@@ -209,7 +235,7 @@ def test_follow_missing_path_during_rotation(windows_log, monkeypatch, capsys):
         else:
             raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._tail_log_file(windows_log, 1, True)
     assert capsys.readouterr().out == "seed\nresumed\n"
 
@@ -226,7 +252,7 @@ def test_follow_split_utf8_and_crlf(windows_log, monkeypatch, capsys, parts):
         with windows_log.open("ab") as log:
             log.write(data)
 
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._tail_log_file(windows_log, 1, True)
     assert capsys.readouterr().out == b"".join(parts).decode("utf-8").replace("\r\n", "\n")
 
@@ -254,7 +280,7 @@ def test_no_data_polls_close_read_descriptors(windows_log, monkeypatch):
             raise KeyboardInterrupt
 
     monkeypatch.setattr(platform_compat, "open_log_file_for_tail", read_open)
-    monkeypatch.setattr(cli_server.time, "sleep", tick)
+    _pin_sleep(monkeypatch, tick)
     cli_server._tail_log_file(windows_log, 1, True)
     assert len(descriptors) == 3
 

@@ -56,8 +56,16 @@ _PEER_FIELD_MAX_CHARS = 2048
 _CHAIN_MUTATION_LOCK = LoopBoundLock()
 
 
-def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "") -> None:
-    """Emit a SEL audit event for an instances control-plane action."""
+def _audit(
+    operation: str, outcome: str, *, request_id: str = "", error: str = "", caller: str = ""
+) -> None:
+    """Emit a SEL audit event for an instances control-plane action.
+
+    ``caller`` records the originating MCP session key (the internal-secret
+    request's ``X-Session-Key``) for the crew-scoped reads, so an audit reviewer
+    can see WHICH agent session read a remote crew's history — the exact
+    cross-crew disclosure this surface enables. Omitted for browser/owner routes.
+    """
     try:
         sel().log_tool_invocation(
             session_key="dashboard:instances",
@@ -66,6 +74,7 @@ def _audit(operation: str, outcome: str, *, request_id: str = "", error: str = "
             request_id=request_id,
             source="dashboard",
             error=error,
+            metadata={"caller": caller} if caller else None,
         )
     except Exception:  # audit must never break the request path
         logger.debug("SEL audit failed for instances_%s", operation, exc_info=True)

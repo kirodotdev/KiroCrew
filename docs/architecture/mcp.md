@@ -2230,7 +2230,11 @@ only `request_server` raises it (see *Asking for an MCP server mid-chat*).
 `setting.change` takes a Settings-registry `setting_id` (found with
 `find_setting(query)`, which returns up to ten matches with `writable`,
 the current value and the allowed values, never a credential value) or a raw
-config `path`. The write target is resolved from data: the dashboard-config
+config `path`. `find_setting` matches a query word at the start of a word in a
+setting's id, label, help or config key, after dropping question words such as
+`how`, `do` and `I` (kept when nothing else is left); a setting ranks by the
+words it holds, a word in its id or label counting three times, and a word found
+on many settings counting for little. The write target is resolved from data: the dashboard-config
 controls in `change_card_catalog.DASHBOARD_SETTINGS` (Response Verbosity and the
 other Chat toggles) write `PUT /api/dashboard/config` with a one-key partial
 body, a registry `configKey` the config route accepts writes
@@ -2287,7 +2291,18 @@ because none of them can change anything: the strict-internal
 a card in the caller's own slot. `search_docs(query? | page, offset?)` on the
 same server is a read of the packaged user docs (`kiro_crew/docs/*.md`, pages
 named from the directory's own listing so no caller string becomes a path; up to
-5 results with 3 matching lines, pages in 12,000-character chunks); it calls no
+5 results with 3 matching lines, pages in 12,000-character chunks). A query is
+matched word by word at the start of a word, after dropping question words such
+as `how`, `do` and `I` (kept when nothing else is left) and one common ending
+(`reminder` finds `reminders` and `remind`, `reply` and `replies` find each other;
+`_` starts a word, so `cycles` finds
+`max_cycles`). A page ranks by the query words it holds, each worth more the
+fewer pages hold it, twice as much in the page name and half again in its
+opening lines, then by how often it says them; a word found on nearly every page
+(`use`, `set`) counts for little. The word itself, with a common ending
+(`updat` + `e`, `automatic` + `ally`), counts full; only the start of a longer
+word (`mode` in `model`, `run` in `runner`) counts half. A tie goes to the
+shorter page name. It calls no
 gateway route, needs no caller identity, and is granted as
 part of `agent._GUIDE_AUTO_GRANTS`; so is `find_ui`, the read of the packaged
 dashboard location index described in
@@ -3163,7 +3178,7 @@ the committed index's own content (never a clock or a git hash), so an edit to a
 input that changes nothing in the index, such as a label no location uses, leaves
 the committed file byte-identical and does not stale it. `npm run gen:ui -- --check` regenerates in memory and
 byte-compares the COMMITTED index (generated and curated tiers only; the auto
-tier below is never compared); it runs in `frontend-lint` and as the first step
+tier below is never compared); it runs in `frontend-ratchets` and as the first step
 of `npm run build`, the build every packaging path (`make frontend`,
 `build-wheel.yml`) runs. Only a release build and a PR that made a fresh base
 stale fail on it; everywhere else a stale index warns. See "The find_ui index
@@ -3610,7 +3625,7 @@ goldens never read a built dashboard: `test/test_find_ui_auto.py` pins the
 loader on synthetic file pairs, and runs the real generator with `--out` and
 `--auto-out` into `tmp_path` when node and `website/node_modules` are present
 (otherwise those tests skip). The backend CI lanes have neither, so CI's
-`frontend-lint` job, which has both, runs exactly those two tests after
+`frontend-ratchets` job, which has both, runs exactly those two tests after
 `gen:ui --check`, with `KIROCREW_UI_GENERATOR_REQUIRED=1` turning the skip into a
 failure. The other `test_find_ui*.py` files point
 `AUTO_INDEX_PATH` at a missing file, so they test the committed tiers whatever
@@ -4072,7 +4087,9 @@ session for as long as the session lives — whether or not that session will ev
 use it. With `agent.tool_search` on (the default), kiro defers MCP specs once they
 cross `agent.tool_search_min_pct` or `agent.tool_search_min_tokens`, and Crew's own
 servers defer like any other when the spawn runs the pinned kiro-cli install or its
-`kiro-cli-chat`, and both are >= 2.27.0. For any other executable (a pod bundle, a `kiro-cli`
+`kiro-cli-chat`, and both are >= 2.27.0. Both the spawned path and the pin are first
+passed through the edition's `agent_executable` resolver, the one the OS sandbox applies
+to argv[0], so a managed launcher is judged by the install it runs. For any other executable (a pod bundle, a `kiro-cli`
 found on `PATH`), below that floor, or when the version is unknown, Crew keeps its
 servers resident to avoid the thinking-signature
 "tools list differs" rejection that bricks a session. KAS ignores the toggle and the

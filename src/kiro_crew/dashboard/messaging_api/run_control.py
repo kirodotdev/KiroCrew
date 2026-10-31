@@ -592,6 +592,13 @@ async def _retry_failed_run(
         # current config before any discovery read.
         if old.agent:
             await warm_project_agents_for_spawn(state, old.cwd or "")
+        from kiro_crew.shared_crew.admission_gate import Admission
+        from kiro_crew.shared_crew.admission_link import link_spawn
+
+        run_id = "" if admission is None else await link_spawn(admission, state.subagents)
+        if run_id is None:
+            # Nothing started: the caller's ``finally`` releases the retry claim.
+            return Admission(None, "rejected", store_unavailable=True).refusal_response()
         start = _spawn_on_loop(
             state,
             old._raw_task or old.task,
@@ -625,6 +632,7 @@ async def _retry_failed_run(
             # The replacement sits where the failed run sat in its tree, even when
             # the parent's record is gone and admission cannot read it.
             _depth=getattr(old, "depth", None),
+            **({"_preassigned_id": run_id} if run_id else {}),
         )
         import contextlib
 

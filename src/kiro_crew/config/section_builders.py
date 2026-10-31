@@ -258,6 +258,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         embedding_idle_evict_secs=section.read(
             "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
         ),
+        embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),
         embed_model_url=section.get("embed_model_url"),
         embed_model_path=section.get("embed_model_path"),
@@ -505,6 +506,7 @@ def _build_instances_config(
     section = SectionReader(InstancesConfig, instances_data)
     return InstancesConfig(
         enabled=bool(section.get("enabled")),
+        crew_reads_enabled=bool(section.get("crew_reads_enabled")),
         warm_set_cap=section.read("warm_set_cap", _safe_int),
         default_destination=clean_crew_ref(section.get("default_destination")),
         tunnel_base_port=section.read("tunnel_base_port", _safe_int),

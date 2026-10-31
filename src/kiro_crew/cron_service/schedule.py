@@ -252,21 +252,39 @@ def get_local_tz() -> tuple[str, tzinfo]:
 
 # Patterns for parse_time_string
 _RE_IN_DURATION = re.compile(
-    r"^in\s+(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)$", re.I
+    r"^in\s+(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes"
+    r"|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)$",
+    re.I,
 )
 _UNIT_SECS = {
     "s": 1,
     "sec": 1,
+    "secs": 1,
     "second": 1,
     "seconds": 1,
     "m": 60,
     "min": 60,
+    "mins": 60,
     "minute": 60,
     "minutes": 60,
     "h": 3600,
     "hr": 3600,
+    "hrs": 3600,
     "hour": 3600,
     "hours": 3600,
+}
+# Day units are calendar days in the job's zone, not 86400-second blocks, so
+# "in 2 days" lands at the same clock time it was asked at even across a DST
+# change, the way "tomorrow" does.
+_UNIT_DAYS = {
+    "d": 1,
+    "day": 1,
+    "days": 1,
+    "w": 7,
+    "wk": 7,
+    "wks": 7,
+    "week": 7,
+    "weeks": 7,
 }
 
 
@@ -333,10 +351,18 @@ def parse_time_string(s: str, tz_name: str = "") -> float | str:
         resolved_tz_name, tz = seams.get_local_tz()
     now = seams.datetime.now(tz)
 
-    # "in 5 minutes", "in 2 hours"
+    # "in 5 minutes", "in 2 hours", "in 3 days", "in 1 week"
     m = _RE_IN_DURATION.match(s)
     if m:
-        secs = int(m.group(1)) * _UNIT_SECS[m.group(2).lower()]
+        unit = m.group(2).lower()
+        if unit in _UNIT_DAYS:
+            try:
+                later = now + timedelta(days=int(m.group(1)) * _UNIT_DAYS[unit])
+            except OverflowError:
+                return f"Error: '{s}' is outside the supported date range"
+            error = _wall_clock_resolution_error(later, tz, resolved_tz_name)
+            return error or later.timestamp()
+        secs = int(m.group(1)) * _UNIT_SECS[unit]
         return time.time() + secs
 
     # Try common formats with optional "tomorrow"

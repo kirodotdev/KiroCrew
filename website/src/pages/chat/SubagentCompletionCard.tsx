@@ -228,7 +228,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
                   ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : resolvedKnown
                     ? 'bg-accent/10 border-accent/20 text-accent/80'
-                    : 'bg-bg-hover border-border text-muted/60'
+                    : 'bg-bg-hover border-border text-muted'
               }`}
               data-testid="subagent-completion-model"
               title={

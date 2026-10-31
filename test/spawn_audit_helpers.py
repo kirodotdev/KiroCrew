@@ -23,6 +23,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Embedding child: this interpreter, -P, a fixed module; requests travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "embeddings_child.py::spawn",
+        # Page-cache read-ahead child: this interpreter, -I -c with a fixed program;
+        # argv is a chunk size and the gateway's own database paths. stdio DEVNULL,
+        # no shell or cwd. A child so closing its descriptors keeps our SQLite locks.
+        "page_cache.py::_read_through",
         # Gateway transport: argv from the resolved CLI, saved deployment and
         # validated workspace; the shell text is a quoted GUEST command and payloads
         # ride stdin. Host credential isolation would prevent coder login.

@@ -595,7 +595,14 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 177, from 32,970, for the ``rm`` floor reading each nested-shell payload
 #: through the shared reader, and ``shell_commands.redirect_hidden_payloads``: a redirect
 #: before the ``-c`` operand hides no payload. Deny-only: no allow widened.
-_PACKAGE_LINE_BUDGET = 33_147
+#: Raised by 25, from 33,147, for ``rm_floor._expands_nothing`` and
+#: ``_literal_shell_script``: a single-quoted ``\\$`` stays literal only in a lone
+#: ``<shell> -c`` / ``<<<`` script that expands nothing, judged once per command.
+#: Raised again for ``shell_normalizer._shell_option_run``: the nested payload reader
+#: takes the word a shell runs after the options and redirections that follow a shell's
+#: own ``-c`` (``bash -c -x '<script>'``). One forward scanner, its lazy per-position
+#: memos and the own-option-run scope; the reader only adds payloads. Re-measured.
+_PACKAGE_LINE_BUDGET = 33_334
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

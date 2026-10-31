@@ -2340,7 +2340,13 @@ owners: `run_records.py` (the off-loop `state.json`, `result.txt` and
 cleanup-identity writes), `run_lifecycle.py` (`_run_impl`, the session teardown, the
 reap ending, the activity stamp and the lifecycle events, the turn cap and the
 completion keep), `run_turn.py` (`_run_inner_impl`: the session, the prompt and the
-streamed turn with its nested `_stream_with_transient_retry`), `run_yields.py` (the
+streamed turn with its nested `_stream_with_transient_retry`; the pre-stream steps it
+calls -- the inherited approval policy, the shared or dedicated session acquisition,
+the cleanup identity, the child's memory and folder steering, the spawn records and
+the `AgentSpawn`/`UserPromptSubmit` hooks -- are plain functions in `turn_session.py`,
+which read the names tests patch on `kiro_crew.subagent` through a call-time
+`sys.modules` lookup, and which is not an owner: every `run_*.py` sibling is one),
+`run_yields.py` (the
 stop-recovery, dependency, infra-retry and input waits, the lane resume, the
 `running` mark, the dependency verdict, and the stop-recovery note and error text)
 and `run_start.py` (the session-sharing decision, the dedicated-start price, the

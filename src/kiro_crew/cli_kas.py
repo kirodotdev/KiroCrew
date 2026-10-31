@@ -162,7 +162,7 @@ def _install(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            # Asked before any fetch, so re-running `install.sh --kas` on a machine
+            # Asked before any fetch, so re-running an installer on a machine
             # that already has the engine succeeds offline too.
             present = _already_installed(version, args.force)
             if present is not None:

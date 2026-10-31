@@ -405,7 +405,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
               // glyph (aria-hidden), and the chip's [direction:rtl] truncation can

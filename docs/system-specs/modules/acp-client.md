@@ -3520,7 +3520,7 @@ adopted session receives the init frames staged both before and during the
 collector window and none of them is counted as a dropped frame; a settled
 collector (torn down, abandoned or runtime-dead) keeps none and the next start's
 timeout names its own silent servers; two live collectors never claim each
-other's frames; `subagent_manager/run_turn.py` never calls `get_or_create` on
+other's frames; `subagent_manager/turn_session.py` (`acquire_session`) never calls `get_or_create` on
 congestion and continues on a session `subagent_manager/run_start.py` adopted late.
 
 **Adaptive-controller sample.** Every `session/new` outcome is one `AdaptiveController.record_start(duration_ms, ok, attributable_timeout, key="acp:session/new")` when a controller is registered (`adaptive.controller.current()`; a no-op otherwise): duration is measured from gate EXIT (the queue wait is admission's cost), `ok=True` on an answer, `ok=False, attributable_timeout=True` on `AcpRequestTimeout` (the congestion signal the controller's decrease keys on), `ok=False` on any other failure. `test_runloop_integration.py` pins the three shapes.

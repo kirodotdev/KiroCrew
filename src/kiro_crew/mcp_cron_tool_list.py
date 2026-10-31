@@ -125,7 +125,8 @@ def _list_tools() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": "Human time string for one-shot job, parsed server-side. "
                         "Examples: '5pm', '17:00', 'tomorrow 9:30am', 'in 2 hours', "
-                        "'2026-03-28 14:00'. A clock time is read in 'timezone' when given, "
+                        "'in 3 days', '2026-03-28 14:00'. A clock time, and a relative "
+                        "day or week count, is read in 'timezone' when given, "
                         "else the global config timezone, then UTC. "
                         "Prefer this over 'at' for absolute times.",
                     },

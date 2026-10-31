@@ -381,6 +381,7 @@ async def steer_into_running_turn(
     send_id: str | None = None,
     user_origin: bool = False,
     channel_origin: bool = False,
+    owner_origin: bool = False,
     admission: dict | None = None,
     decision_strip: dict | None = None,
     attachments: dict | None = None,
@@ -431,6 +432,17 @@ async def steer_into_running_turn(
     carrying both stamps. A steer the turn CONSUMES runs under that turn's own
     provenance, as every steer does. Defaults to FALSE for the composer and the
     peer path, whose text did not come through a channel.
+
+    ``owner_origin`` says the text was sent by the OWNER's dashboard request
+    (``is_owner_dashboard_request``), which ``user_origin`` does not: a channel
+    user allow-listed for ``/kirocrew dashboard`` holds a dashboard token too, and
+    the composer passes ``user_origin=True`` for them. Two readers, both narrower
+    than the flags above. The running turn's ``_turn_owner_sent`` is cleared at
+    admission for a steer that is not the owner's, since the model can act on the
+    injected text before the RPC returns and a crew-scoped session read it then
+    makes would carry the owner's authority. The requeue reads it for
+    ``directive_owner_origin`` on the queue entry. Defaults to FALSE: the owner's
+    mark is the one thing a caller cannot acquire by saying nothing.
 
     ``admission`` is the containment that held when the caller's gate cleared this
     send (``session_control.containment_meta``). It is recorded for the REQUEUE,
@@ -584,6 +596,7 @@ async def steer_into_running_turn(
             slot._steer_send_ids,
             slot._steer_user_origin,
             slot._steer_channel_origin,
+            slot._steer_owner_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
             slot._steer_act_now,
@@ -630,6 +643,9 @@ async def steer_into_running_turn(
     # ``directive_channel_origin`` and must find a definite value for every
     # in-flight steer, so it is stored for the composer's False as well.
     slot._steer_channel_origin[message] = bool(channel_origin)
+    # Same lockstep again: the requeue reads this for the entry's
+    # ``directive_owner_origin`` and a definite False is what fails it closed.
+    slot._steer_owner_origin[message] = bool(owner_origin)
     if channel_origin:
         # NARROW the running turn's directive provenance, at admission. The turn's
         # ``_directive_channel_origin`` is its opener's -- False for a
@@ -650,6 +666,12 @@ async def steer_into_running_turn(
         # (``update_self``), so the turn counts as one the user did not send.
         # Set before the RPC for the reason above; ``chat_runner`` resets it.
         slot._turn_user_sent = False
+    if not owner_origin:
+        # And for "the owner sent this turn": text that is not the owner's --
+        # a peer's, an app's, a channel user's who holds a dashboard token --
+        # can ask the model for a crew-scoped session read, which only the
+        # owner's own turn may make. Same timing, same reset.
+        slot._turn_owner_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments or quote or app_label or app_actor:
@@ -771,6 +793,7 @@ async def steer_into_running_turn(
         slot._steer_send_ids.pop(message, None)
         slot._steer_user_origin.pop(message, None)
         slot._steer_channel_origin.pop(message, None)
+        slot._steer_owner_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
         slot._steer_act_now.discard(message)
@@ -813,6 +836,7 @@ async def steer_into_running_turn(
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
             slot._steer_channel_origin.pop(message, None)
+            slot._steer_owner_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
             slot._steer_act_now.discard(message)
@@ -928,6 +952,7 @@ async def steer_into_running_turn(
         slot._steer_admissions.pop(message, None)
         slot._steer_user_origin.pop(message, None)
         slot._steer_channel_origin.pop(message, None)
+        slot._steer_owner_origin.pop(message, None)
     # Still registered, the provenance is held like the attachments: the RPC
     # accepting the write is not consumption, and a turn that ends before the
     # `steering_consumed` echo requeues the text from these records. Dropping them
@@ -1150,6 +1175,7 @@ def queue_for_next_turn(
     *,
     directive_user_origin: bool = False,
     directive_channel_origin: bool = False,
+    directive_owner_origin: bool = False,
     send_id: str | None = None,
     attachments: dict[str, list[str]] | None = None,
     decision_strip: dict | None = None,
@@ -1198,6 +1224,14 @@ def queue_for_next_turn(
     so the drained turn files any directive it issues as channel-created. Passed
     by a channel conversation resumed into this session; the composer leaves it
     False.
+
+    *directive_owner_origin* marks the entry as the OWNER's words
+    (``_directive_owner_origin``): the request that queued it passed
+    ``is_owner_dashboard_request``, which a dashboard token minted for a channel
+    user does not. The drain reduces the consumed entries' marks into the
+    successor turn's ``_turn_owner_sent``, the one thing a crew-scoped session
+    read accepts. Only the composer and the responsive path pass it, and only
+    for the owner; every other producer leaves it False.
 
     *send_id* is the client-minted ``meta.sendId`` the plain send path persists
     on its user row, already passed through ``normalize_send_id`` by the caller.
@@ -1269,6 +1303,7 @@ def queue_for_next_turn(
         meta=meta,
         directive_user_origin=directive_user_origin,
         directive_channel_origin=directive_channel_origin,
+        directive_owner_origin=directive_owner_origin,
     )
     # Append-only session ledger. The session id comes off the client the running
     # turn published on the slot -- a message is only queued because a turn IS

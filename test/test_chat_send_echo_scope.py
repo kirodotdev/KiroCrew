@@ -56,7 +56,7 @@ def echo_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_sc, "_counts_cache_failures", 0)
     monkeypatch.setattr(_sc, "_counts_refresh_inflight", False)
 
-    async def reply(st, slot, message, *, _directive_user_origin):
+    async def reply(st, slot, message, *, _directive_user_origin, _directive_owner_origin=False):
         slot.append("assistant", "reply")
         slot.append("done", "", "done", broadcast=False)
 

@@ -233,6 +233,12 @@ class TestTheSpecIsSpelledInKasToolIds:
             "fs_append",
         ]
 
+    def test_web_search_mounts_the_engine_s_remote_tool(self):
+        """KAS serves web search as ``remote_web_search``; the kiro-cli name
+        alone matches no KAS tool, so the agent would have no web search."""
+        out = to_client_custom_agent("a", _spec(tools=["web_fetch", "web_search"]), "p")
+        assert out["tools"] == ["web_fetch", "web_search", "remote_web_search"]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""
@@ -255,9 +261,10 @@ class TestTheSpecIsSpelledInKasToolIds:
         spec can name. A tag (``read``, ``@builtin``) would also match but grants
         by class rather than by tool, so none appears here."""
         registry = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
-        registered = set(json.loads(registry.read_text(encoding="utf-8"))["registered"])
+        reg = json.loads(registry.read_text(encoding="utf-8"))
+        registered = set(reg["registered"]) | set(reg["remote"]["ids"])
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
-            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob"}
+            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob", "web_search"}
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
 

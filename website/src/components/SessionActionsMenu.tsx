@@ -28,6 +28,7 @@ import { useChatPopouts } from '../hooks/useChatPopouts'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
+import { isMateManaged } from '../utils/mateFolders'
 export interface SessionActionsMenuProps {
   /** Chooses the Radix primitive family; must match the enclosing menu. */
   variant: 'dropdown' | 'context'
@@ -235,6 +236,8 @@ export default function SessionActionsMenu({
   // (Radix), so this keyed query effectively runs only while a menu is open and
   // dedupes against the sidebar's own ['chat-folders'] cache — no extra fetch.
   const { data: folders = [] } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  const inMateFolder = isMateManaged(folders.find(f => f.id === currentFolderId), folders)
+  const movableFolders = folders.filter(f => !isMateManaged(f, folders))
 
   const groups = collapseGroups<React.ReactNode>([
     // Informational (header only) — generic slots injected by the caller.
@@ -321,11 +324,12 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
-      folders.length > 0 && (
+      // A chat inside a mate's folder stays there, and no chat moves into one.
+      movableFolders.length > 0 && !inMateFolder && (
         <FolderMoveSubmenu
           key="move"
           variant={variant}
-          folders={folders}
+          folders={movableFolders}
           currentFolderId={currentFolderId}
           onPick={(folderId) => move(slotKey, folderId)}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
@@ -342,7 +346,7 @@ export default function SessionActionsMenu({
       // reaches (a button nested in an item is skipped), described by that id;
       // the plain line under the notice says what the list is showing and that
       // the read retries on its own.
-      folders.length > 0 && folderOrderUnsaid && (
+      movableFolders.length > 0 && !inMateFolder && folderOrderUnsaid && (
         <React.Fragment key="folder-order-error">
           {/* Bounded width: the notice is the menu's widest child when the
               server string is long, and an unbounded inline-flex would stretch

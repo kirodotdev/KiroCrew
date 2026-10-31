@@ -208,6 +208,8 @@ class TestBeat:
         monkeypatch.setattr(svc, "_process_heartbeat_file", _counting_process)
         svc._tick = tick
         await svc._beat()
+        assert svc._process_task is not None
+        await await_until(svc._process_task, what="the tick's file pass")
         assert processed == [tick]
         assert mem.rebuild_index.call_count == rebuilds
         mem.prune_history.assert_not_called()
@@ -269,6 +271,7 @@ class TestBeat:
         monkeypatch.setattr(svc, "_process_heartbeat_file", _process)
         svc._tick = 1
         await svc._beat()
+        assert svc._process_task is None
         assert calls == []
 
 

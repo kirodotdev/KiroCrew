@@ -101,3 +101,112 @@ def test_search_docs_reads_each_page_once_until_it_changes(tmp_path, monkeypatch
     )
     assert {r["page"] for r in mcp_guide.search_docs("slack")["results"]} == {"alpha", "beta"}
     assert reads == ["beta.md"]
+
+
+@pytest.mark.parametrize(
+    ("query", "top"),
+    [
+        ("how do I set up a one-time reminder", "cron-and-scheduling"),
+        ("how do I connect Slack", "slack-integration"),
+        ("what do I do when a command is blocked", "blocked-commands"),
+        ("how do I back up and restore my crew", "snapshot-and-restore"),
+        ("how do I run a task in the background", "subagents"),
+        ("how do I add a skill", "skills"),
+        ("how do I use artifacts", "artifacts"),
+    ],
+)
+def test_search_docs_ranks_the_page_a_how_to_question_is_about_first(query, top):
+    assert mcp_guide.search_docs(query)["results"][0]["page"] == top
+
+
+@pytest.mark.parametrize(
+    ("query", "top"),
+    [("reminder", "cron-and-scheduling"), ("telegram", "telegram-integration")],
+)
+def test_search_docs_one_word_query_still_finds_its_page(query, top):
+    assert mcp_guide.search_docs(query)["results"][0]["page"] == top
+
+
+def _docs(tmp_path, monkeypatch, pages: dict[str, str]) -> None:
+    for name, body in pages.items():
+        (tmp_path / f"{name}.md").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(mcp_guide, "_DOCS_DIR", tmp_path)
+    mcp_guide._read_doc.cache_clear()
+
+
+def test_search_docs_matches_whole_words_from_their_start(tmp_path, monkeypatch):
+    """``do`` is not found inside ``window``; ``reminder`` finds ``reminders``."""
+    _docs(
+        tmp_path,
+        monkeypatch,
+        {
+            "alpha": "# Alpha\nopen the window\n",
+            "beta": "# Beta\nset reminders here\n",
+            "gamma": "# Gamma\nraise `max_cycles`\n",
+        },
+    )
+    assert mcp_guide.search_docs("do")["results"] == []
+    assert [r["page"] for r in mcp_guide.search_docs("reminder")["results"]] == ["beta"]
+    # ``_`` starts a word, so a part of a snake_case key still matches.
+    assert [r["page"] for r in mcp_guide.search_docs("cycles")["results"]] == ["gamma"]
+
+
+def test_search_docs_ranks_the_word_itself_above_the_start_of_a_longer_word(tmp_path, monkeypatch):
+    """``mode`` prefers a page saying "mode" over one that only says "model"."""
+    _docs(
+        tmp_path,
+        monkeypatch,
+        {
+            "alpha": "# Alpha\npick a model; the model; one more model\n",
+            "beta": "# Beta\nturn on approval mode\n",
+            "gamma": "# Gamma\nnothing here\n",
+        },
+    )
+    assert [r["page"] for r in mcp_guide.search_docs("mode")["results"]] == ["beta", "alpha"]
+
+
+@pytest.mark.parametrize(
+    ("query", "page_text"),
+    [("updates", "update it"), ("automatic", "runs automatically"), ("modes", "two modes")],
+)
+def test_search_docs_counts_a_common_ending_as_the_same_word(
+    tmp_path, monkeypatch, query, page_text
+):
+    _docs(
+        tmp_path,
+        monkeypatch,
+        {"alpha": f"# Alpha\n{page_text}\n", "beta": f"# Beta\n{query}tional {query}tional\n"},
+    )
+    assert mcp_guide.search_docs(query)["results"][0]["page"] == "alpha"
+
+
+def test_search_docs_breaks_a_tie_toward_the_shorter_page_name(tmp_path, monkeypatch):
+    _docs(tmp_path, monkeypatch, {"aa-long": "# A\nslack\n", "zz": "# Z\nslack\n"})
+    assert [r["page"] for r in mcp_guide.search_docs("slack")["results"]] == ["zz", "aa-long"]
+
+
+@pytest.mark.parametrize(
+    ("query", "page_text"),
+    [
+        ("providers", "pick a provider"),
+        ("provider", "all providers"),
+        ("replies", "one reply"),
+        ("reply", "two replies"),
+        ("policies", "a policy"),
+        ("policy", "the policies"),
+    ],
+)
+def test_search_docs_plural_and_singular_find_each_other(tmp_path, monkeypatch, query, page_text):
+    _docs(tmp_path, monkeypatch, {"alpha": f"# Alpha\n{page_text}\n", "beta": "# Beta\nother\n"})
+    assert [r["page"] for r in mcp_guide.search_docs(query)["results"]] == ["alpha"]
+
+
+def test_search_docs_drops_question_words_unless_nothing_else_is_left(tmp_path, monkeypatch):
+    _docs(
+        tmp_path,
+        monkeypatch,
+        {"alpha": "# Alpha\nhow do I do this, how, how\n", "beta": "# Beta\nslack\n"},
+    )
+    assert [r["page"] for r in mcp_guide.search_docs("how do I use slack")["results"]] == ["beta"]
+    # Only question words: they are searched rather than refused.
+    assert [r["page"] for r in mcp_guide.search_docs("how")["results"]] == ["alpha"]

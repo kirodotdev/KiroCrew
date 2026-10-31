@@ -570,38 +570,47 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
     turn.assistant_text = _cleared_segment_text(slot)
 
 
-def _emit_stale(turn, msg: str, *, will_retry: bool = False) -> None:
+def _emit_stale(
+    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
+) -> None:
+    # *notice* is the row's gateway notice token, *args* its interpolation values.
+    from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
+
     slot = turn.slot
-    slot.append(
-        "error",
-        msg,
-        "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
-    )
+    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
+    if notice:
+        meta.update(gateway_notice_meta(notice, **args))
+    slot.append("error", msg, "msg msg-err", meta=meta or None)
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
-def _emit_stall(turn, msg: str, *, will_retry: bool = False) -> None:
+def _emit_stall(
+    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
+) -> None:
+    # *notice* is the row's gateway notice token, *args* its interpolation values.
+    from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
+
     slot = turn.slot
-    slot.append(
-        "error",
-        msg,
-        "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
-    )
+    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
+    if notice:
+        meta.update(gateway_notice_meta(notice, **args))
+    slot.append("error", msg, "msg msg-err", meta=meta or None)
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
-def _emit_error(turn, msg: str, *, will_retry: bool = False) -> None:
+def _emit_error(
+    turn, msg: str, *, will_retry: bool = False, notice: str = "", **args: str | int
+) -> None:
+    # *notice* is the row's gateway notice token, *args* its interpolation values.
+    from kiro_crew.dashboard.gateway_notice import gateway_notice_meta
+
     slot = turn.slot
-    slot.append(
-        "error",
-        msg,
-        "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
-    )
+    meta: dict = {"kind": TRANSIENT_RETRY_KIND} if will_retry else {}
+    if notice:
+        meta.update(gateway_notice_meta(notice, **args))
+    slot.append("error", msg, "msg msg-err", meta=meta or None)
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 

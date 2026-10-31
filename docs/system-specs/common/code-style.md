@@ -191,8 +191,8 @@ that were each green can together push a file over the cap.
 | A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
 | A malformed or unsorted baseline | Fails. |
 
-Backend Lint and Frontend Lint run the script on the full history and enforce
-the scoped verdict, and the main ratchet audit judges the whole tree, so main
+CI's `backend-ratchets` and `frontend-ratchets` jobs run the script on the full
+history and enforce the scoped verdict, and the main ratchet audit judges the whole tree, so main
 drift turns red there. The test runs on the backend shards' shallow checkout,
 which cannot tell which files a change touched, so there it reports violations
 without failing.

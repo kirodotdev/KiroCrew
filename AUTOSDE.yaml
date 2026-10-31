@@ -1420,3 +1420,28 @@ custom-rules:
       baselined file that shrinks; a re-export of a name no test patches; owners
       that look a patched name up on the facade at call time; code a facade
       keeps because a gate pins it to that path.
+
+  - id: a-gateway-status-row-carries-a-notice-token
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/dashboard/**/*.py"
+    rule: |
+      A status row the chat gateway appends to a transcript keeps its English
+      sentence as `content`, which channel mirrors, SSE readers and the model
+      read verbatim. The dashboard localizes the row only through a structured
+      `meta["notice"]` token (`GATEWAY_NOTICE_*` in
+      `src/kiro_crew/dashboard/gateway_notice.py`, or `TRANSIENT_NOTICE_*` in
+      `chat_utils.py`) keyed in `website/src/pages/chat/gatewayNotice.ts`. A row
+      with literal English and no token renders in English on every locale, and
+      the only way left to translate it is a regex over the prose.
+
+      FLAG a new or edited `slot.append("error" | "notice", "<literal English>",
+      ...)` (or `_emit_error` / `_emit_stale` / `_emit_stall`) that states a
+      gateway status (a recovery, a retry, an empty or refused turn, a model
+      fallback) with no `meta["notice"]` token. Ask for a token from
+      `gateway_notice_meta(...)`, a `NOTICE_FAMILIES` and `COPY_KEY` row, and
+      catalog keys; `test/test_transient_notice_parity.py` then pins both sides.
+
+      Allowed (do NOT flag): rows whose text is the model's or a tool's own
+      output, rows a dedicated card draws from structured meta, and assistant
+      rows carrying the compaction card's own notice markers.

@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { X, Monitor, EyeOff, VenetianMask, MessageSquare, Folder, Clock } from 'lucide-react'
 import FolderGlyph from '../../components/FolderGlyph'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import { offlineProps } from '../../utils/offline'
 import { fetchHistory, resumeFromHistory } from '../../store/chatSlice'
 import { SEARCH_MIN_CHARS } from '../../api/client'
@@ -27,7 +28,7 @@ import type { SidebarScope } from './scope'
 export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
   const { clearClosedSessionsWithConfirm, collapsedHistoryGroups, connected, defaultAgent,
     deleteHistorySessionWithConfirm, dispatch, folderSortMode, folders, history, historyDragging,
-    historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchResults,
+    historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
     openHistoryPane, selectInstance, setCollapsedHistoryGroups, setHistoryFilter, setHistoryOpen, sortKey: listSortKey,
     tintAgents } = shell
   // Older sessions have no place in the manual order (it orders the open ones),
@@ -129,6 +130,19 @@ export function renderHistoryPane(shell: SidebarScope): React.ReactNode {
                   <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text cursor-pointer bg-transparent border-none p-0 leading-none transition-colors" onClick={() => setHistoryFilter('')} aria-label={i18nT('pages.chatSidebar.clear_search')}><X size={13} /></button>
                 )}
               </div>
+              {/* A failed content search drops its rows (they answered an older
+                  query), so the list below falls back to title matches. This
+                  notice says why the list got shorter. A read failure with only a
+                  search query to lose, so the hand-off is on. */}
+              {historySearchFailed && historyFilter.trim().length >= SEARCH_MIN_CHARS && (
+                <ErrorNotice
+                  askAgent
+                  actionPlacement="below"
+                  className="mt-1"
+                  message={i18nT('pages.chatSidebar.history_search_failed')}
+                  testId="history-search-error"
+                />
+              )}
               {/* The unresumable-surface notice used to live here. It moved to
                   ChatPage's shared notice slot above the composer (#5925): this
                   pane starts CLOSED (`historyOpen` defaults false), so a notice

@@ -502,6 +502,17 @@ live start as `cancelled` (it holds no runtime). A start in flight
 (`end_recovery_wait`) when the sweep finishes or fails, when the queue is
 detached, and at boot past the store-ready pass when no sweep was armed.
 
+A child spawn's subagent row becomes dispatchable inside the spawn call, before
+`attach_child`. So every child spawn path (`/api/spawn`, `/api/spawn/{id}/continue`,
+the retry, an app's background spawn) first mints the run id, writes it as
+`extra.execution_id` on the still-`admitted` record and binds the run key
+`subagent:<id>` to the admitted budget (`admission_link.link_spawn`, which writes the
+id through `admission_run_link.link`); the spawn then
+runs under that id (`_preassigned_id`). A start the subagent queue releases later (a
+queue drain, an approval, a parentless spawn) reads that binding, so it lands in the
+admitted person's slice. If the record cannot take the id, the spawn is refused and
+nothing starts.
+
 Across principals the scheduler is deficit round robin. Principals with queued roots
 sit in a ring; a visit adds the quantum (1) to the principal's deficit and admits
 while the deficit covers the head ticket's weight (1) and both scopes have room. A
@@ -559,7 +570,7 @@ expiry, `policy_version` (a change to `admission_enabled`, `hard_limits` or
 `containment_enabled` since acceptance is `policy_changed`), the hard-limit probe,
 and the entry point's own check (a chat slot must still be live). `running` is
 written before the work launches, so `admitted` proves it never started, unless it
-names a run id an operation's probe can find. A queued
+names a run id: a child's, or one an operation's probe can find. A queued
 chat turn holds the slot reservation; while it waits a later send on that slot
 cannot steer into it (`admission_entry.admission_pending`) and queues instead, so a
 queued prompt is never delivered as a steer.
@@ -589,14 +600,21 @@ startup lifecycle. Before the socket binds, `startup_check` runs only the bounde
 containment probe and publishes the hard-mode refusal; reconciliation and the stale
 slice sweep run as a maintenance task after the socket is ready, and the shutdown
 cancels it. Before the first admission or capacity read of a process, `ensure_ready`
-reconciles every non-terminal row:
+reconciles every non-terminal row. The gateway also awaits it before it opens the
+durable subagent queue (`admission_link.release_after_reconcile`), so a recovered
+child's run key is bound again before its dispatch can start. It opens only once
+every surviving linked child is held and bound: a child whose reconcile raised
+(`ensure_ready` logs it and still marks itself ready) is reconciled again first,
+and under hard limits each such child's slice must be applied, as a live
+admission requires. Until then the queue stays held and the check retries every
+`DISPATCH_RETRY_SECONDS` (30 s); with admission off the queue opens at once:
 
 | Found | Becomes | Capacity |
 |---|---|---|
 | `queued`, `admitted` (no linked run id) | `reconciling`, then `queued` and relaunched when a relauncher is registered for its operation and payload, else `cancelled` with `extra.reconcile_detail = host_restarted_before_start` | held only if requeued |
 | `running`, `cancelling` with no unit of its own | `reconciling` -> `unknown_outcome` (`cancelled` if a cancel was asked) | released once proven stopped |
 | `running` with a live scope unit, or a principal slice holding a populated `kirocrew-rt-*.scope` | `reconciling`; the scopes found are stopped (`extra.orphans_reaped`), and the row ends `unknown_outcome` once `systemctl is-active` says each stopped | held |
-| child or probed background run, including an `admitted` one that names its run id | `reconciling`; its owner reconciles the run and the probe settles the row | held |
+| child or probed background run, including a `queued` or `admitted` one that names its run id | `reconciling`; its owner reconciles the run and the probe settles the row; a child's run key `subagent:<id>` is bound to its budget again and its slice prepared, so a recovered dispatch lands in that person's slice | held |
 
 Nothing that may have run is replayed. No relauncher is registered for chat turns in
 this build, so a chat turn queued across a restart ends `cancelled`, and the session

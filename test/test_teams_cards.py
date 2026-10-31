@@ -147,6 +147,23 @@ class TestParseSubmitRefusals:
         """
         assert parse_submit(payload) is None
 
+    @pytest.mark.parametrize("index", ["²", "١"])
+    @pytest.mark.parametrize("kind", [KIND_OPTION, KIND_SESSION])
+    def test_a_non_ascii_digit_index_is_refused(self, kind: str, index: str) -> None:
+        """``"²".isdigit()`` is True but ``int("²")`` raises; the parse stays total."""
+        payload = {"kc": kind, "nonce": "n", "index": index}
+        if kind == KIND_OPTION:
+            payload["label"] = "yes"
+        assert parse_submit(payload) is None
+
+    @pytest.mark.parametrize("kind", [KIND_OPTION, KIND_SESSION])
+    def test_an_ascii_digit_index_still_parses(self, kind: str) -> None:
+        payload = {"kc": kind, "nonce": "n", "index": "3"}
+        if kind == KIND_OPTION:
+            payload["label"] = "yes"
+        parsed = parse_submit(payload)
+        assert parsed is not None and parsed["index"] == "3"
+
 
 class TestDeciderFailsClosed:
     @pytest.mark.asyncio

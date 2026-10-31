@@ -2,7 +2,7 @@
  * The find_ui index generator (`scripts/lib/ui-index.mjs`): marker scanning,
  * label resolution and index assembly on synthetic sources, plus golden
  * assertions on the committed index. The full freshness check
- * (`npm run gen:ui -- --check`) runs once in frontend-lint and in the build, not
+ * (`npm run gen:ui -- --check`) runs once in frontend-ratchets and in the build, not
  * here.
  */
 import { describe, expect, it, afterEach } from 'vitest'

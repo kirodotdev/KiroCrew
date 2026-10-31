@@ -207,6 +207,39 @@ async def test_signed_out_still_refuses_boot(
     assert "no Kiro sign-in was found" in capsys.readouterr().err
 
 
+@pytest.mark.asyncio
+async def test_the_full_probe_logs_the_confirmed_sign_in(
+    enterprise: None,
+    no_backend: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Smoke test N1: the carve-out confirmed the sign-in, so the log says so."""
+    host = _host(tmp_path, monkeypatch)
+    with caplog.at_level("WARNING", logger="kiro_crew.kiro_prerequisite"):
+        status = await host.service._probe(force=True)
+    assert status.sandbox_unavailable and status.authenticated and not status.ready
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("could not be verified" in m for m in messages)
+    assert any("is signed in" in m and "agent sessions still need a sandbox" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_the_full_probe_keeps_the_old_line_when_signed_out(
+    enterprise: None,
+    no_backend: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    host = _host(tmp_path, monkeypatch, whoami='echo "error: Not logged in" >&2; exit 1')
+    with caplog.at_level("WARNING", logger="kiro_crew.kiro_prerequisite"):
+        status = await host.service._probe(force=True)
+    assert status.sandbox_unavailable and not status.authenticated and not status.ready
+    assert any("could not be verified" in r.getMessage() for r in caplog.records)
+
+
 def _gone(pid: int) -> bool:
     try:
         os.kill(pid, 0)

@@ -59,10 +59,11 @@ MAX_DURABLE_QUEUE_SCAN = 4 * MAX_DURABLE_QUEUE_ENTRIES
 #: process-local plumbing (retry callbacks, synthetic payloads) or is
 #: deliberately excluded — see :func:`durable_queue_entries`.
 #:
-#: ``_directive_user_origin`` and ``_directive_channel_origin`` are NOT here, and
+#: ``_directive_user_origin``, ``_directive_channel_origin`` and
+#: ``_directive_owner_origin`` are NOT here, and
 #: their absence is a security property rather than an omission. They record that
-#: an entry's words arrived from an authenticated human, and the drain turns that
-#: into real authority: ``chat_runner`` reduces the consumed entries' flags into
+#: an entry's words arrived from an authenticated human (the owner, for the third),
+#: and the drain turns that into real authority: ``chat_runner`` reduces the consumed entries' flags into
 #: ``producer_is_user_facing``, which admits user-surface and self-arming
 #: directives and exempts them from the LINKED containment constraint. The
 #: transcript this value is written to is an ordinary readable-writable file in
@@ -286,7 +287,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
     callback key, because each of those changes what the drain DOES with it.
 
     Provenance is dropped for the same reason and matters most:
-    ``_directive_user_origin``, ``_directive_channel_origin`` and the entry's
+    ``_directive_user_origin``, ``_directive_channel_origin``,
+    ``_directive_owner_origin`` and the entry's
     ``meta`` turn actor are never restored, so a restored entry is non-directive
     and actor-less by construction. The drain
     reduces the consumed entries' flags into the authenticated-human authority a
@@ -707,6 +709,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Append an entry and return its process-local queue ID."""
         queue_id = self._id_provider()
@@ -723,6 +726,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -745,6 +750,7 @@ class SlotQueueRepository:
         on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> str:
         """Insert one entry while preserving retry callbacks and provenance."""
         queue_id = self._id_provider()
@@ -766,6 +772,8 @@ class SlotQueueRepository:
             item["_directive_user_origin"] = True
         if directive_channel_origin:
             item["_directive_channel_origin"] = True
+        if directive_owner_origin:
+            item["_directive_owner_origin"] = True
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -827,6 +835,7 @@ class SlotQueueRepository:
         *,
         directive_user_origin: bool = False,
         directive_channel_origin: bool = False,
+        directive_owner_origin: bool = False,
     ) -> bool:
         """Edit a user-owned entry without changing its identity or position."""
         for item in owner._queue:
@@ -885,6 +894,13 @@ class SlotQueueRepository:
                 item["_directive_channel_origin"] = True
             else:
                 item.pop("_directive_channel_origin", None)
+            # The replacement words are the EDITOR's, so the owner mark follows
+            # the editor too: an owner's queued entry rewritten by another
+            # dashboard user drains without it.
+            if directive_owner_origin:
+                item["_directive_owner_origin"] = True
+            else:
+                item.pop("_directive_owner_origin", None)
             return True
         return False
 

@@ -193,6 +193,8 @@ def _release_dispatch_lock(turn) -> None:
 
 async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     """Admit the turn onto its session: the admission wait, the dispatch lock, the bindings and the session claim."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _spec_hooks: list
     _spec_hooks_cwd: str | None
     _turn_stats0: object
@@ -237,6 +239,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             "error",
             "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE),
         )
         return _Flow.END
 
@@ -471,6 +474,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             "error",
             "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member.",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE),
         )
         return _Flow.END
     # A session a palette command opened to run as its app's OWN agent runs the

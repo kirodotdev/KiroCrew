@@ -236,6 +236,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bulk_pace_delay,
         embedding_child_process_enabled,
         embedding_idle_evict_secs,
+        embedding_weight_repack,
         embedding_work,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401

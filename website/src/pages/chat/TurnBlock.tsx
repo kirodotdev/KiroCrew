@@ -690,7 +690,7 @@ function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onTo
       {/* The visible label IS the accessible name ("Worked through 2 steps" folded,
           "Hide reasoning" open), so no aria-label; aria-expanded carries the state,
           which a rotated chevron alone never announces. */}
-      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
+      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted hover:text-text cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
         <ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         {label}
       </button>

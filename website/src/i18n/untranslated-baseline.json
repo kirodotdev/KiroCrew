@@ -1,6 +1,6 @@
 {
   "_comment": "Untranslated user-visible strings, per file. Generated — re-snapshot with `node scripts/check-i18n-strings.mjs --update`. These are CEILINGS, not current counts: the gate fails only when a file gains strings, so a number here may sit above reality until someone re-snapshots. Also the Phase 1 worklist: drive files to zero, one PR per file or per directory.",
-  "_total": 362,
+  "_total": 358,
   "files": {
     "api/client.ts": {
       "total": 5,
@@ -342,17 +342,9 @@
       "total": 2,
       "prose": 2
     },
-    "pages/settings/BotChannelPanel.tsx": {
-      "total": 3,
-      "array": 3
-    },
     "pages/settings/DisplayPanel.tsx": {
       "total": 6,
       "object-prop": 6
-    },
-    "pages/settings/InstancesPanel.tsx": {
-      "total": 1,
-      "expression": 1
     },
     "pages/settings/PostureDisclosure.tsx": {
       "total": 3,

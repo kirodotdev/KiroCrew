@@ -460,15 +460,17 @@ describe('SourcesList — add-source dialog, file branch', () => {
     await openAddDialog({
       ingestionJobs: [
         { name: 'alpha.md', status: 'done' },
-        { name: 'bravo.md', status: 'error: too large' },
-        { name: 'charlie.md', status: 'chunking' },
+        { name: 'bravo.md', status: 'error', error: 'too large' },
+        { name: 'charlie.md', status: 'uploading' },
       ],
     })
 
     expect(screen.getByText('alpha.md')).toBeTruthy()
     expect(screen.getByText('done')).toBeTruthy()
-    expect(screen.getByText('error: too large')).toBeTruthy()
-    expect(screen.getByText('chunking')).toBeTruthy()
+    // A failed row is an error, so its detail renders through ErrorNotice.
+    expect(screen.getByRole('alert').textContent).toContain('too large')
+    expect(screen.getByText('bravo.md')).toBeTruthy()
+    expect(screen.getByText('uploading')).toBeTruthy()
   })
 
   it('reports a typed namespace up to the caller', async () => {

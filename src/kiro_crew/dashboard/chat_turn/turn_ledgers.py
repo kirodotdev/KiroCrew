@@ -99,6 +99,17 @@ def _queue_recovery(
     _current_replay_message = turn._current_replay_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_user_origin = turn._directive_user_origin
+    # The owner mark is read off the SLOT, not the turn's call: it is the
+    # dispatcher's `_directive_owner_origin` as the turn's entry adopted it and as
+    # any non-owner steer since has narrowed it, and the turn's end clears it. A recovery is a
+    # second turn of the same request, so it carries the mark exactly as it
+    # stands now -- a retried owner lookup keeps its authority, and a turn a
+    # peer steered into does not regain the authority that steer took away.
+    # Never wider than the user mark, which is the rule everywhere the owner
+    # mark is written.
+    _recovery_owner_origin = getattr(turn.slot, "_turn_owner_sent", False) is True and bool(
+        _directive_user_origin
+    )
     _on_consumed = turn._on_consumed
     _on_irreversibly_consumed = turn._on_irreversibly_consumed
     _recovery_turn_id = turn._recovery_turn_id
@@ -162,6 +173,7 @@ def _queue_recovery(
         ),
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
+        directive_owner_origin=_recovery_owner_origin,
     )
     # A recovery a Regenerate turn queues before it has any reply (a replay of
     # its message or a continuation) is the same Regenerate's next attempt: it

@@ -833,6 +833,22 @@ def test_the_shim_sends_only_the_fields_it_was_given(monkeypatch) -> None:
     assert "Pebble" in out and "Undo" in out
 
 
+def test_a_rename_says_other_mates_still_reach_it_by_its_short_name(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:member-mate", ""))
+    monkeypatch.setattr(
+        mcp_mate,
+        "_post",
+        lambda *_a, **_k: {
+            "ok": True,
+            "member": "mate",
+            "changed": ["display_name"],
+            "after": {"display_name": "SDE Buddy"},
+        },
+    )
+    out = mcp_mate._call_tool_inner("update_self", {"display_name": "SDE Buddy"})
+    assert "other mates still reach you by your short name, mate" in out
+
+
 def test_the_shim_says_nothing_changed_when_the_gateway_refused(monkeypatch) -> None:
     monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:chat-1", ""))
     monkeypatch.setattr(

@@ -441,6 +441,9 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 from kiro_crew.dashboard.handlers._shared import release_markdown_memory_store
 
                 await release_markdown_memory_store(state, retired_store)
+            from kiro_crew.dashboard.mate_folders import hand_back_home
+
+            await hand_back_home(request.app.get("state"), retired_store)
         # The crew is gone; its uploaded picture must not outlive it. Inside
         # the same lock so the cleanup cannot run AFTER a concurrent
         # same-name recreation has already uploaded and committed a new

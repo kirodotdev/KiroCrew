@@ -259,10 +259,15 @@ export const STREAM_IDLE_MS = 700
  * once the stream is inactive.
  */
 export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
-  const [idle, setIdle] = useState(false)
+  const [idle, setIdleState] = useState(false)
+  // Every tick re-arms the timer and clears `idle`; while text flows it is
+  // already false, so the ref skips the update instead of scheduling a render
+  // of the host on every tick.
+  const idleRef = useRef(false)
   useEffect(() => {
-    if (!active) { setIdle(false); return }
+    const setIdle = (v: boolean) => { if (idleRef.current !== v) { idleRef.current = v; setIdleState(v) } }
     setIdle(false)
+    if (!active) return
     const t = window.setTimeout(() => setIdle(true), ms)
     return () => window.clearTimeout(t)
   }, [tick, active, ms])

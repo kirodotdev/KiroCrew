@@ -20,6 +20,7 @@
 // Interactions go through `fireEvent`, not `userEvent`, so each step stays
 // synchronous against the same fake clock the timers are stepped on.
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HistoryEntry, WatchItem } from '../apps/mochi/src/shared/watchlistTypes'
@@ -105,17 +106,35 @@ async function mountWith(
   return { onClose }
 }
 
-/** The clickable row for `label` — the row itself carries role="button". */
+/** The list row for `label`: its "open" button plus, beside it, the action strip. */
 function row(label: string): HTMLElement {
-  const rows = screen.getAllByRole('button').filter(el => el.textContent?.includes(label))
-  const found = rows.find(el => el.getAttribute('tabindex') === '0')
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('.wl-row'))
+  const found = rows.find(el => el.textContent?.includes(label))
   if (!found) throw new Error(`no watch row for ${label}`)
   return found
 }
 
+/** The button that opens `label`'s detail view — the first control in its row. */
+function openButton(label: string): HTMLElement {
+  const button = row(label).querySelector<HTMLElement>('button')
+  if (!button) throw new Error(`no open button for ${label}`)
+  return button
+}
+
+/**
+ * A real keyboard driver. Testing Library drains each user-event call with a
+ * zero-length setTimeout, which this file's frozen fake clock would never fire,
+ * so the clock is re-armed to also follow real time (at the same NOW).
+ */
+function keyboardUser(): ReturnType<typeof userEvent.setup> {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.setSystemTime(NOW)
+  return userEvent.setup()
+}
+
 /** Open the detail view for `label` and let the 250ms view transition settle. */
 async function openDetail(label: string): Promise<void> {
-  fireEvent.click(row(label))
+  fireEvent.click(openButton(label))
   await tick(250)
 }
 
@@ -426,38 +445,50 @@ describe('WatchlistPanel list mode', () => {
   })
 
   it('opens the detail view from the keyboard with Enter and Space', async () => {
+    const user = keyboardUser()
     await mountWith([makeItem()])
-    fireEvent.keyDown(row('Ticket price drop'), { key: 'Enter' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard('{Enter}')
     await tick(250)
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     await tick(250)
-    fireEvent.keyDown(row('Ticket price drop'), { key: ' ' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard(' ')
     await tick(250)
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument()
   })
 
   it('ignores other keys on a row', async () => {
+    const user = keyboardUser()
     await mountWith([makeItem()])
-    fireEvent.keyDown(row('Ticket price drop'), { key: 'a' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard('a')
     await tick(250)
     expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
   })
 
-  it('does not open the detail view from a keystroke inside the action strip', async () => {
+  it.each(['{Enter}', ' '])('runs a row action from the keyboard (%s) without opening the row', async (key) => {
+    const user = keyboardUser()
     await mountWith([
       makeItem({ id: 'w-1' }),
       makeItem({ id: 'w-2', label: 'Done one', status: 'done', completedAt: minutesAgo(5) }),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Show completed (1)' }))
 
-    // The action strip is revealed on hover/focus-within and swallows key events,
-    // so Enter on a revealed button must not also select the row behind it.
-    for (const label of ['Ticket price drop', 'Done one']) {
-      const strip = row(label).querySelector('.wl-actions') as HTMLElement
-      fireEvent.keyDown(strip, { key: 'Enter' })
+    // Each action is a sibling of the row's open button, not nested inside a
+    // role="button" row, so its keystroke reaches it and nothing else.
+    for (const [label, name, status] of [
+      ['Ticket price drop', 'Complete', 'done'],
+      ['Done one', 'Reopen', 'watching'],
+    ] as const) {
+      const action = within(row(label)).getByRole('button', { name })
+      expect(action.parentElement?.closest('button, [role="button"]')).toBeNull()
+      action.focus()
+      await user.keyboard(key)
       await tick(250)
+      expect(api.setWatchItemStatus).toHaveBeenLastCalledWith(label === 'Done one' ? 'w-2' : 'w-1', status)
       expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
     }
   })

@@ -224,6 +224,14 @@ class TestLiveChoices:
         live.publish("s1", "n1", ["A", "B"])
         assert live.take("s1", "1", "n1") == "B"
 
+    def test_an_ascii_digit_press_beside_unicode_digits_still_resolves(self) -> None:
+        """``"²"`` and ``"١"`` pass ``isdigit()``; only ASCII ``"3"`` is a slot."""
+        live = LiveChoices()
+        live.publish("s1", "n1", ["A", "B", "C", "D"])
+        assert live.take("s1", "²", "n1") == ""
+        assert live.take("s1", "١", "n1") == ""
+        assert live.take("s1", "3", "n1") == "D"
+
     def test_a_press_is_one_shot(self) -> None:
         """Webex cannot retire a card that carries an attachment.
 
@@ -242,7 +250,7 @@ class TestLiveChoices:
         assert live.take("s1", "0", "n1") == ""
         assert live.take("s1", "1", "n2") == "Y"
 
-    @pytest.mark.parametrize("index", ["", "-1", "9", "abc", "0.5"])
+    @pytest.mark.parametrize("index", ["", "-1", "9", "abc", "0.5", "²", "١", "0" * 5000])
     def test_an_index_that_is_not_a_slot_resolves_to_nothing(self, index: str) -> None:
         live = LiveChoices()
         live.publish("s1", "n1", ["A", "B"])

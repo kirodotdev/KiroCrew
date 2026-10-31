@@ -304,7 +304,7 @@ class TestInstallFromUrl:
 
 
 class TestInstallWhenAlreadyInstalled:
-    """A re-run (``install.sh --kas`` on an upgrade) is a success, not a refusal."""
+    """A re-run (an installer run on an upgrade) is a success, not a refusal."""
 
     def _args(self, **over) -> argparse.Namespace:
         base = dict(

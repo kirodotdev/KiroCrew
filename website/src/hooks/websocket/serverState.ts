@@ -282,6 +282,15 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
   // Same for a change-card frame: every slot's cards are re-read.
   queryClient.invalidateQueries({ queryKey: CHANGE_CARDS_QUERY_PREFIX })
+  // An open Dashboard tab is moved by `dashboard_fields`, `member_projection` and
+  // `dashboard_value_written` frames, and every one sent while the socket was down
+  // is lost. Its read sets no staleTime, so without this it waits for the 60 s
+  // fallback tick. The re-read is also what re-arms a package page's live feed
+  // after a gateway restart: the restart empties the armed pages, so no push can
+  // arrive until a GET arms one again. Through `refreshDashboardReads`, so a tab
+  // whose read is already out gets one more, not a pile.
+  refreshDashboardReads(queryClient, [MEMBER_DASHBOARD_QUERY_PREFIX])
+  refreshDashboardReads(queryClient, [SESSION_DASHBOARD_QUERY_PREFIX])
   // A dropped socket is the one client-visible sign the gateway may have
   // restarted — and a restart drops an unmessaged member slot while its
   // binding survives. The Crew Members page mounts a cached thread key

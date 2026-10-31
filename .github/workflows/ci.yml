@@ -828,6 +828,89 @@ jobs:
         # Keep cgroup evidence: per-process limits do not bound the whole job.
         run: python3 scripts/ci_black_diagnostics.py scripts/check_black_formatting.py
 
+      # The six baselined backend ratchets run in `backend-ratchets`, which
+      # does NOT feed `lint-gate`. None of them decides whether the heavy
+      # matrix is worth starting: a subprocess call missing `encoding=`, an
+      # over-cap file or an on-loop `execute()` all still compile and still run
+      # their tests, so holding eight test shards behind them would buy latency
+      # and nothing else. Only the three gates below (plus black) can make a
+      # test result meaningless, so only they are on the gate path. See
+      # `backend-ratchets` for the trade this makes.
+
+      # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
+      #
+      # The two repo-root modules are named explicitly: `src/kiro_crew test` misses
+      # them, and between them they hold the host-protection floor for all three
+      # testpaths -- the isolation fixtures and the xdist worker budget -- so they
+      # are the last files that should go unlinted.
+
+      - name: Check imports (isort)
+        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py
+
+      - name: Lint (flake8)
+        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
+
+      - name: Type check (mypy)
+        run: mypy src/kiro_crew/
+
+  # The backend ratchets, OFF the gate path. `lint-gate` deliberately does not
+  # name this job, so it runs ALONGSIDE the heavy matrix instead of ahead of it.
+  #
+  # THE TRADE, stated so a reviewer does not discover it: a failure here does
+  # not SAVE the matrix. It reds the pull request -- these gates are blocking,
+  # and `PR Readiness` folds them in -- in parallel with the shards rather than
+  # in place of them. What that buys is the gate's wait: behind `lint-gate`,
+  # this job's slowest member (the subprocess-encoding scan, ~61s) would hold
+  # every test shard back for a verdict that is not part of the decision the
+  # gate makes.
+  #
+  # The split line is "can this failure make a test result meaningless?" A
+  # malformed import, a type error, a syntax-level reformat: yes, and those
+  # run in `backend-lint`. A text-mode subprocess without `encoding=`, an
+  # over-cap file, an on-loop `execute()`, an import that crosses the agent-SDK
+  # boundary: no. The code compiles and its tests mean what they always meant.
+  #
+  # `needs` and `if:` are copied from `backend-lint` verbatim and must stay
+  # that way: these gates read no file under website/, so a frontend-only diff
+  # cannot change their verdict, and `only_frontend` (rather than a positive
+  # "python changed" allowlist) keeps anything unclassifiable running them.
+  backend-ratchets:
+    name: Backend Ratchets & Boundaries
+    needs: [changes, await-fast-gate]
+    if: needs.changes.outputs.only_frontend != 'true'
+    # Not `linux_runner_large`: black, the one backend gate that needs the
+    # large fleet for its process pool, runs in `backend-lint`. Every gate
+    # below is a single-process stdlib scan.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      # Full history, for the same reason `backend-lint` needs it: four of the
+      # gates below (subprocess encoding, file line cap, agent-SDK boundary,
+      # blocking IO) scope their verdict to THIS change through
+      # scripts/ratchet_scope.py, and that resolver will only diff HEAD^1..HEAD
+      # once `merge-base --is-ancestor HEAD^1 origin/main` has confirmed HEAD^1
+      # really is a base commit. A shallow clone has neither the ancestry nor
+      # origin/main, the probe says no, and every one of those gates silently
+      # falls back to judging the WHOLE TREE -- failing this change for files
+      # the base branch merged after the baseline was taken. A shallow checkout
+      # here is the one way these gates break silently, so the depth is
+      # pinned per job by test_file_line_cap.py's
+      # TestWorkflowWiring::test_ratchet_gates_run_on_a_reachable_diff_base.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # No uv and no dependency install: every gate below is stdlib-only, so
+      # setup-python is the whole toolchain this job needs. The one backend step
+      # that DOES need the installed dev group -- the pip-audit dependency
+      # report -- runs in `backend-lint`, which already pays for that install;
+      # running it here would duplicate the install for a step that is
+      # `continue-on-error` and so cannot red anything it waits in front of.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       # Text-mode subprocess calls must pin their decode encoding: without one
       # the child's output decodes with the Windows ANSI code page (#5249).
       # Self-test first: it plants one probe per rule family, so a typo that
@@ -892,22 +975,6 @@ jobs:
       # shrink-only -- a paid-off entry fails the gate until it is deleted.
       - name: Check lockdown-before-publish (secret writers)
         run: python3 scripts/check_lockdown_before_publish.py
-
-      # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
-      #
-      # The two repo-root modules are named explicitly: `src/kiro_crew test` misses
-      # them, and between them they hold the host-protection floor for all three
-      # testpaths -- the isolation fixtures and the xdist worker budget -- so they
-      # are the last files that should go unlinted.
-
-      - name: Check imports (isort)
-        run: isort --check-only src/kiro_crew test conftest.py xdist_budget.py
-
-      - name: Lint (flake8)
-        run: flake8 src/kiro_crew test conftest.py xdist_budget.py
-
-      - name: Type check (mypy)
-        run: mypy src/kiro_crew/
 
   # The optional native credential pre-filter (native/kc_native) is used by
   # default wherever it is installed, and a wrong False from it would let a
@@ -2918,37 +2985,29 @@ jobs:
     runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
-      # persist-credentials retained: the i18n and phantom-classes gates below
-      # run `git fetch origin` against the same remote, through the shared
-      # diff-base resolver script.
-      # Depth 2 keeps HEAD^1 for the file line cap below, which is the only gate
-      # here that needs a diff base it cannot fetch for itself; the step after
-      # this one is what makes depth 2 sufficient.
+      # Nothing in THIS job reads history or the remote: tsc and eslint judge
+      # the checked-out tree alone. Every gate that resolved a diff base here --
+      # the file line cap through scripts/ratchet_scope.py, and the i18n and
+      # phantom-classes gates through their own `git fetch origin` -- now runs
+      # in `frontend-ratchets`, whose checkout carries what they need. So the
+      # bounded deepening step this job used to run for the cap gate is gone
+      # with it.
+      #
+      # Because nothing here reads the remote, nothing here needs the token
+      # either. The retention rationale this checkout carried on `main` belonged
+      # to the hardcoded-UI-strings gate, which has moved to
+      # `frontend-ratchets`; the credential moved with it. Opting out rather
+      # than leaving it unexplained is what
+      # test_workflow_checkout_credentials.py requires, and `backend-lint`
+      # already runs this way.
+      #
+      # The depth is the bounded one #26131 set while the cap gate still lived
+      # here. Nothing in this job needs even that now; tightening it further is
+      # a separate change from the gate split.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 2
-
-      # Same reasoning as Backend Lint's copy of this step, for the same shared
-      # scope resolver: `Check file line cap` reaches scripts/ratchet_scope.py,
-      # which confirms HEAD^1 is a base commit by ANCESTRY before it will diff
-      # HEAD^1..HEAD, and a depth-2 clone has neither ancestry nor origin/main.
-      # Without this the cap gate judges the whole tree and fails a frontend diff
-      # for an over-cap file the base branch merged. This job is the cap gate's
-      # only home on a frontend-only diff, because Backend Lint is skipped there.
-      # The i18n and phantom-classes gates are unaffected either way: both take
-      # an explicit base.sha and already fetch that one commit themselves.
-      - name: Give the file line cap its diff base (bounded)
-        run: |
-          # Same shape and same guard as Backend Lint's copy: a `--depth` fetch
-          # truncates a COMPLETE clone, so the deepening only runs on a clone
-          # that is already shallow.
-          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-            git fetch --no-tags --quiet --depth=50 origin main
-            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
-              echo "::notice::the base moved past the 50-commit window; unshallowing so the cap gate stays diff-scoped."
-              git fetch --no-tags --quiet --unshallow origin main
-            fi
-          fi
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
@@ -2990,6 +3049,66 @@ jobs:
         # is reviewable in the diff where a raised ceiling is not.
         run: npx eslint src/ --max-warnings 0
 
+      # The frontend ratchets -- jscpd, the i18n suite, the find_ui index and
+      # goldens, the phantom-class and restyle ratchets and the file line cap
+      # -- run in `frontend-ratchets`, which does NOT feed `lint-gate`. tsc and
+      # eslint are the two whose failure makes a test result meaningless, so
+      # they are the two on the gate path. The trade is written out on that
+      # job.
+
+  # The frontend ratchets, OFF the gate path, and the mirror of
+  # `backend-ratchets` -- read the trade stated there; it is the same one. Two
+  # jobs rather than one shared job because the condition is what keeps these
+  # gates honest: `frontend-lint` runs on `only_backend != 'true'` and
+  # `backend-lint` on `only_frontend != 'true'`, so a ratchet step has to carry
+  # the condition of the lint job whose surface it reads. A single sibling carrying both toolchains could
+  # only express that as a step-level `if:` on each of the thirteen steps, and a
+  # step skipped by a wrong `if:` writes no check run of its own -- the gate
+  # would go quiet with nothing to notice it. A job-level condition copied
+  # verbatim cannot drift that way, it is visible as its own check, and on a
+  # single-surface diff the whole irrelevant sibling skips instead of
+  # provisioning a toolchain for steps that will all skip anyway.
+  frontend-ratchets:
+    name: Frontend Ratchets & i18n
+    needs: [changes, await-fast-gate]
+    # Copied verbatim from `frontend-lint`, whose steps these are: they read
+    # website/** only, so a backend-only diff leaves every input
+    # byte-identical, and only_backend is the catch-all side of the same
+    # decision so an unclassifiable path still runs them.
+    if: needs.changes.outputs.only_backend != 'true'
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      # persist-credentials retained: frontend-ratchets/Check for new hardcoded
+      # UI strings and the i18n suite below run `git fetch origin` against the
+      # same remote, through the shared diff-base resolver script. Carried over
+      # verbatim in meaning from `frontend-lint`, these steps' old home, so the
+      # runtime behaviour of the moved gates is unchanged.
+      # Full history so the file line cap below can compute THIS change's scope
+      # through scripts/ratchet_scope.py, which confirms HEAD^1 is a base commit
+      # by ANCESTRY before it will diff HEAD^1..HEAD; a shallow clone has
+      # neither the ancestry nor origin/main, so the cap gate would fall back to
+      # judging the whole tree and fail a frontend diff for an over-cap file the
+      # base branch merged. This job is the cap gate's only home on a
+      # frontend-only diff, because `backend-ratchets` is skipped there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # CodeBuild images have no tool cache, so setup-node would resolve the
+      # major through a GitHub API manifest call on every run; seed the cache
+      # first (.github/actions/seed-node-tool-cache). No-op on hosted runners.
+      - uses: ./.github/actions/seed-node-tool-cache
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
       - name: Copy/paste detection
         working-directory: website
         run: npx jscpd .
@@ -3008,8 +3127,9 @@ jobs:
           # merged was billed 58 render findings for `WelcomeView` translations its head
           # simply did not have yet. `base.sha` makes the two sides consistent by
           # construction. On a push to main it is the commit the push replaced, so a merge
-          # that only breaks in combination with another merge is still charged to a diff. Note `frontend-lint`'s
-          # checkout is shallow, so it has to be fetched — see the step below.
+          # that only breaks in combination with another merge is still charged to a diff. A merge
+          # ref's base commit is not reachable from the base BRANCH tip, so it has to be fetched by
+          # SHA whatever this job's checkout depth is — see the step below.
           # `check-i18n-strings.mjs` falls back from the merge base to the base tip for
           # exactly that reason, and EXITS NON-ZERO if a configured ref cannot be
           # resolved rather than skipping itself green.
@@ -3065,8 +3185,9 @@ jobs:
         # those into the budget above would make an i18n regression indistinguishable
         # from a new `no-explicit-any`.
         run: |
-          # `actions/checkout` fetches depth 1, so the base branch is not present and
-          # `git show origin/main:…` would fail. Fetch just that one ref.
+          # A merge ref's base commit is not reachable from the base BRANCH tip, so
+          # `git show <base.sha>:…` fails whatever this checkout's depth is. Fetch
+          # just that one ref.
           #
           # `set -e` on the chain is the point: `check-source-strings.mjs` SKIPS ITSELF
           # and exits 0 when the base ref is unreadable, so a failed fetch used to sail
@@ -3098,9 +3219,9 @@ jobs:
             pyproject.toml
             setup.cfg
 
-      # The same file line cap gate as Backend Lint, which a frontend-only diff
-      # skips. Stdlib only, so it needs no install; scoped to this change through
-      # the full-history checkout above.
+      # The same file line cap gate as `backend-ratchets`, which a frontend-only
+      # diff skips. Stdlib only, so it needs no install; scoped to this change
+      # through the full-history checkout above.
       - name: Check file line cap (gate, baselined)
         run: |
           python3 scripts/check_file_line_cap.py --test

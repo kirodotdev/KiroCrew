@@ -71,7 +71,7 @@ export default memo(function NoticeCard({
   // strings, so a language switch must invalidate it.
   useLanguageGeneration()
   const parsed = parseNotice(content)
-  // A caller that already localized `content` (transientNotice.ts) has no emoji
+  // A caller that already localized `content` (gatewayNotice.ts) has no emoji
   // to parse a tone from, so it names the severity directly.
   const tone = toneOverride ?? parsed.tone
   const text = parsed.text

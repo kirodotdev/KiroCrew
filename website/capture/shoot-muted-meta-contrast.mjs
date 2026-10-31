@@ -1,9 +1,9 @@
 /**
  * Photographs capture/muted-meta-contrast.tsx (the REAL AssistantMessage
- * footer) in the default dark and light palettes, and prints the computed
- * colour of the credits line and the timestamp.
+ * footer) in each palette named in SHOT_THEMES (default `dark,light`), and
+ * prints the computed colour of the credits line and its surface.
  *
- * Usage (from website/): SHOT_PREFIX=before|after node capture/shoot-muted-meta-contrast.mjs <outDir>
+ * Usage (from website/): SHOT_PREFIX=before|after [SHOT_THEMES=nord-dark,…] node capture/shoot-muted-meta-contrast.mjs <outDir>
  */
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
@@ -13,6 +13,7 @@ import { chromiumExecutable } from '../scripts/lib/chromium-executable.mjs'
 const OUT = process.argv[2]
 mkdirSync(OUT, { recursive: true })
 const prefix = process.env.SHOT_PREFIX || 'shot'
+const themes = (process.env.SHOT_THEMES || 'dark,light').split(',').map(t => t.trim()).filter(Boolean)
 
 const server = await createServer({ configFile: './vite.config.ts', server: { host: '127.0.0.1', port: 5199, strictPort: false }, logLevel: 'warn' })
 await server.listen()
@@ -21,7 +22,7 @@ const browser = await chromium.launch({ executablePath: chromiumExecutable(), en
 const page = await browser.newPage({ viewport: { width: 900, height: 400 }, deviceScaleFactor: 2 })
 page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
 
-for (const theme of ['dark', 'light']) {
+for (const theme of themes) {
   await page.goto(`${base}/capture/muted-meta-contrast.html?theme=${theme}`)
   await page.locator('[data-testid="turn-stats"]').first().waitFor({ timeout: 30000 })
   await page.waitForTimeout(500)

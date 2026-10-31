@@ -56,6 +56,7 @@ from kiro_crew.embeddings_settings import (
     bulk_pace_delay,
     embedding_child_process_enabled,
     embedding_idle_evict_secs,
+    embedding_weight_repack,
     embedding_work,
 )
 from kiro_crew.metrics.provider import get_recorder
@@ -641,6 +642,11 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_threads_batch=threads,
                 verbose=False,
             )
+            if not embedding_weight_repack():
+                # Opt-out (memory.embedding_weight_repack: false): drop llama.cpp's
+                # CPU-repacked second copy of the weights. Passed only when off, so
+                # the default call is the one every earlier release made.
+                llama_kwargs["use_extra_bufts"] = False
             llm = _construct_llama(llama_cls, llama_kwargs, stamp)
             _install_metadata_kv_clear(llm)
             _install_bounded_decode(llm)

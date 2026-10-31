@@ -59,7 +59,7 @@ vi.mock('../pages/knowledge/SourcesList', () => ({
       <span>noExt:{String(acceptsNoExtension)}</span>
       <button onClick={() => onIngest([new File(['body'], 'notes.md', { type: 'text/markdown' })])}>stub-upload</button>
       <button onClick={() => setUploadNamespace('work')}>stub-set-ns</button>
-      <ul>{ingestionJobs.map(j => <li key={j.name}>job:{j.name}:{j.status}</li>)}</ul>
+      <ul>{ingestionJobs.map(j => <li key={j.name}>job:{j.name}:{j.status}{j.error ? `:${j.error}` : ''}</li>)}</ul>
     </div>
   ),
 }))
@@ -404,7 +404,7 @@ describe('KnowledgePage — sources tab and ingest', () => {
     render(<KnowledgePage />, { wrapper: Wrapper })
     await userEvent.click(await screen.findByRole('button', { name: /Sources/ }))
     await userEvent.click(await screen.findByRole('button', { name: 'stub-upload' }))
-    expect(await screen.findByText('job:notes.md:error: unsupported format')).toBeInTheDocument()
+    expect(await screen.findByText('job:notes.md:error:unsupported format')).toBeInTheDocument()
   })
 })
 

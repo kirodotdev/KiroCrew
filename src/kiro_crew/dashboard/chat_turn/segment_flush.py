@@ -1244,12 +1244,17 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             _turn_tool_calls,
             _turn_credits,
         )
+        from kiro_crew.dashboard import gateway_notice as gn
+
         slot.append(
             "notice",
             "ℹ️ The context was compacted mid-turn and the response stopped "
             "there — continuing automatically.",
             "msg msg-info",
-            meta={"kind": EMPTY_TURN_NOTICE_KIND},
+            meta={
+                "kind": EMPTY_TURN_NOTICE_KIND,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_COMPACTION_CONTINUING),
+            },
         )
         _queue_recovery(
             turn,
@@ -1309,6 +1314,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         # This is the ordinal of the turn just observed, which is what the
         # predecessor warning reported.
         _empty_attempt = slot._empty_response_retries + 1
+        from kiro_crew.dashboard import gateway_notice as gn
+
         # THE load-bearing guard. A productive turn must never have its
         # originating message replayed verbatim: rung 1 below re-queues
         # `message` itself, which on such a turn re-runs tool calls that
@@ -1380,6 +1387,10 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             # so a user watching repeated recoveries sees the ladder
             # advancing, not looping.
             _continue_no = max(slot._empty_response_retries - 1, 1)
+            # The localized copy names the ordinal only when the budget exceeds one.
+            _continue_args: dict = (
+                {} if _max_continues == 1 else {"n": _continue_no, "max": _max_continues}
+            )
             _empty_rung = EMPTY_RUNG_CONTINUE
             if _empty_activity.productive or slot._empty_episode_productive:
                 # Same rung, different words, because the words are read by
@@ -1401,7 +1412,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                         f"(recovery {_continue_no} of {_max_continues})."
                     ),
                     "msg msg-info",
-                    meta={"kind": EMPTY_TURN_NOTICE_KIND},
+                    meta={
+                        "kind": EMPTY_TURN_NOTICE_KIND,
+                        **gn.gateway_notice_meta(
+                            gn.GATEWAY_NOTICE_EMPTY_TURN_CONTINUING_AFTER_WORK, **_continue_args
+                        ),
+                    },
                 )
                 _empty_continue_msg = _ACTIVITY_NO_REPLY_CONTINUE_MSG
             else:
@@ -1414,7 +1430,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                         f"(recovery {_continue_no} of {_max_continues})."
                     ),
                     "msg msg-info",
-                    meta={"kind": EMPTY_TURN_NOTICE_KIND},
+                    meta={
+                        "kind": EMPTY_TURN_NOTICE_KIND,
+                        **gn.gateway_notice_meta(
+                            gn.GATEWAY_NOTICE_EMPTY_TURN_CONTINUING, **_continue_args
+                        ),
+                    },
                 )
                 _empty_continue_msg = _EMPTY_AUTO_CONTINUE_MSG
             _queue_recovery(
@@ -1450,11 +1471,19 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             # channel thread mirrored into this transcript reads one story.
             if _empty_activity.productive or slot._empty_episode_productive:
                 _empty_msg = EMPTY_TURN_NOTICE_AFTER_WORK
+                _empty_notice = gn.GATEWAY_NOTICE_EMPTY_TURN_AFTER_WORK
             elif slot._empty_response_retries > 0:
                 _empty_msg = EMPTY_TURN_NOTICE_AFTER_RECOVERY
+                _empty_notice = gn.GATEWAY_NOTICE_EMPTY_TURN_AFTER_RECOVERY
             else:
                 _empty_msg = EMPTY_TURN_NOTICE
-            slot.append("notice", _empty_msg, "msg msg-info", meta={"kind": EMPTY_TURN_NOTICE_KIND})
+                _empty_notice = gn.GATEWAY_NOTICE_EMPTY_TURN
+            slot.append(
+                "notice",
+                _empty_msg,
+                "msg msg-info",
+                meta={"kind": EMPTY_TURN_NOTICE_KIND, **gn.gateway_notice_meta(_empty_notice)},
+            )
         # ONE warning per empty verdict, emitted AFTER the rung is chosen so
         # the log line carries the decision rather than only the symptom. It
         # must distinguish a provider that generated nothing from a turn

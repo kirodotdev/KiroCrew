@@ -610,6 +610,73 @@ opens, and renaming, moving or deleting the person's folders stays refused. A
 member's folder list adds that home folder and its ancestors, the path its own
 `[FOLDER]` line already shows, so the walk resolves `Ops` instead of missing it.
 
+A mate is the exception, and keeps everything it creates in ONE folder of its
+own (`dashboard/mate_folders.py`, #25935). Its home folder is a top-level folder
+owned by `member:<store>` and marked `mate_home`; it is created on first use under
+the folder-store lock (one per store, however many creates race), named with the
+mate's display name, and renamed when that changes: by the agent-update route on
+a saved `display_name`, and by the next `ensure_mate_home` for any other writer.
+The store is the link, so a rename never re-points it. Only a member identity
+(an execution with a `member_id`) has a home; a legacy selection without one
+files where it asks, as before. A folder a member caller
+creates (`api_chat_folder_create`) at the top level, or under any folder outside
+that home, is filed under the home instead (`home_parent_for_create`); one inside
+the home keeps its parent. A create filed home out of an existing person's folder
+with no `project_dir` of its own takes the project that folder inherits
+(`home_create_target`), the same rule a conductor's re-filed session follows, and the
+MCP folder-path walk reaches it through this route. A session a mate's conductor chat opens
+(`session_create`, `mate_home_filing`; the conductor is told by
+`_conducts_for_a_worker`, the worker hand-off's own test, run off the loop
+so it never schedules an installed-agents rescan) is filed in the folder it named when that
+folder is inside the home, else in the home itself. A person's folder it named
+still supplies the child's project directory, as in Crew Mode (filing dropped,
+project kept), and the late folder re-check compares that folder's project; a
+named folder that does not exist, or one in another mate's home, supplies
+nothing and the home is used for both. Any other caller naming a
+folder in a mate's home is refused `mate_home_locked` (403), unless it runs on
+that mate's store (one of the mate's own workers). Moves are fenced the same
+way, refused `mate_folder_scope` (403) rather than redirected: a member caller
+may not re-parent its home folder, re-parent any folder to outside the home,
+move a folder from outside the home into it, since a person's chats filed there
+would be locked in too (`api_chat_folder_update`), or file a chat outside it
+(`api_chat_slot_folder`).
+The home is also closed to everyone else, the person included, refused
+`mate_home_locked` (403): the home itself takes only `collapsed` and `order`
+(no rename, move, recolor, project or delete, from anyone), and nothing outside
+the mate may create a folder or chat in its subtree, file a chat into it or out of it, move a
+folder into it, or edit or delete a folder inside it (`home_owner_of`,
+`refuses_write_into`). Every writer of the folder tree applies this: the shared
+create (`create_folder_record`, so the folder scaffold too) refuses it under the
+folder-store lock (`FolderMateHomeLockedError`), the empty-folder cleanup never
+lists a home or a folder inside one (`mate_home_subtree_ids`), `session_fork`
+and `session_revive` refuse a named folder in another mate's home
+(`refuse_foreign_home_filing`), a fork that would inherit its parent's folder
+in a mate's home the forker does not own (the person's Fork, or `session_fork`
+by anyone but that mate) is left unfiled (`inherited_folder`), a scheduled job
+is saved with a chat folder there only when it runs on that mate's store (the
+cron create and update routes refuse it `mate_home_locked` (403) and record the
+denial in the security event log, the Schedule form does not offer such a
+folder, and the tab placement re-checks it at run time and records a refusal
+the same way), and the name lookups that adopt an existing
+folder (a channel's `session_folder`, the import arrival folder, Code Review
+Sage's follow-up folder) never adopt one. Every route that refiles an EXISTING
+chat checks both ends of the move with one rule (`refuses_refile`): the slot
+folder PATCH (`api_chat_slot_folder`), a slot create that names an open slot
+(`api_chat_slot_create`), `session_revive` against the archived record's folder,
+and the cron update route against the job's current chat folder (with
+`move_cron_job_tab` re-checking it), so none of them moves a chat out of a mate's
+home it may not write. Deleting the mate releases its home:
+after the delete succeeds, the agent-delete route drops the `mate_home` marker
+from the home of the retired store's principal (`release_mate_home`, best-effort), so it becomes
+an ordinary folder the person may rename, move or delete. Agent sync does the
+same for each V2 store it retires (`installed_agents`). Nothing else unlocks a
+home; a config read that finds no mate never does. Accepted gap: a mate removed
+by hand-editing `config.json` leaves its home locked. The sidebar draws the subtree
+the same way: no menu, no new-chat control, no rename, no drag, no drop
+(`isMateManaged`). Folders a mate
+made before this rule are left where they are. Pinned in
+`test/test_mate_folders.py`.
+
 `session_create` also takes an optional `model` — the model the child starts
 on, pinned as the person's own pick in the model dropdown would be (same
 `_model_rejected_reason` guard, same pick-generation bump) — and an optional

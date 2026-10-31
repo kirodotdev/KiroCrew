@@ -54,6 +54,7 @@ mint, diagnostics, injection validation, run-marker, shared constants
 - [15. Federated session search (search every connected instance at once)](#15-federated-session-search-search-every-connected-instance-at-once)
 - [16. The Fargate connection method (`connection_method = "fargate"`)](#16-the-fargate-connection-method-connection_method--fargate)
 - [17. Chaining (a crew reached through another crew)](#17-chaining-a-crew-reached-through-another-crew)
+- [18. Crew-scoped session reads (the `crew=` MCP scope)](#18-crew-scoped-session-reads-the-crew-mcp-scope)
 
 ---
 
@@ -428,6 +429,7 @@ cannot drift.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
+| `instances.crew_reads_enabled` | `false` | Lets the **agent** read another crew's sessions through the `crew=` scope of the three session read tools (§18). A second opt-in on top of `enabled`, off by default because a peer's transcripts enter the agent's context as untrusted text. Read per call by the gateway route's gate (no restart); off, every crew read answers `403 crew_reads_disabled` before any caller is resolved or any peer is reached. The tools themselves are unchanged; only the `crew=` argument is refused. |
 | `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.default_destination` | `""` | Instance id that **Send a copy to** lists first and marks as the default (§14). Served with `GET /api/instances`; resolved against the registry only when the menu renders, so an id naming no registered crew marks nothing. A folder's `default_destination_crew` overrides it. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
@@ -3489,3 +3491,353 @@ top-level crew.
 SSM as the B-to-C transport. The hop A rides must be ssh, and a chained crew's own
 transport is whatever B uses to reach it -- which A never touches. Chaining a crew
 behind an SSM-reached parent is refused with a named code rather than half-working.
+
+---
+
+## 18. Crew-scoped session reads (the `crew=` MCP scope)
+
+§15 gives the **dashboard** a federated read; this gives the **agent** one. The
+three kirocrew-core session read tools — `search_chat_history`, `list_sessions`,
+`get_chat_session` — take an optional `crew=<id|name>`. Without it they read the
+local `ConversationLog` exactly as before; with it they read that remote crew's
+own sessions over the tunnel. The local (no-`crew`) path is byte-for-byte
+unchanged, so a peerless install and every existing call are unaffected.
+
+### 18.1 Why a new endpoint set, not the §15 route
+
+The MCP process is a separate process from the gateway and reaches it over the
+`X-Internal-Secret` handshake — it cannot present as an owner *dashboard*
+request, which is what `api_instances_search_sessions` (§15) requires. Rather
+than teach that bulk-disclosure route a second identity type (dual-auth on the
+one endpoint that fans every peer's titles/snippets is exactly the shape that
+invited the §6 proxy's repeated findings), the agent gets its own three GET
+endpoints:
+
+| endpoint | backs | peer route reached |
+|---|---|---|
+| `GET /api/crew-sessions/search?crew=&q=&limit=` | `search_chat_history` | `/api/sessions/search` |
+| `GET /api/crew-sessions/list?crew=&limit=` | `list_sessions` | `/api/sessions` |
+| `GET /api/crew-sessions/read?crew=&key=&max_messages=` | `get_chat_session` | `/api/sessions/{key}` |
+
+The handlers live in `handlers_instances_crew_reads.py`, an owner module of the
+`handlers_instances` facade beside `_gate` and `_peer`. They are **STRICT
+internal-secret** (`server_internal_paths._STRICT_INTERNAL_API_PATHS`, prefix
+`/api/crew-sessions`) — no browser calls them, exactly like
+`/api/sessions/summarize`. They are registered in `_register_mcp_routes`
+(`server_runtime/mcp_routes.py`), NOT the dashboard-only connections block, so
+both gateway entrypoints route them. A headless `--slack-only` gateway builds no
+tunnel manager, so there (and with `instances.enabled=false`) the handlers answer
+`instances_manager_unavailable` (`MANAGER_UNAVAILABLE_CODE`, the same answer every
+instances route gives without a manager) rather than a route miss the tool would
+read as "no such endpoint", and never `crew_unknown` for a crew that is in the
+registry. The binder imports the facade on first request, so the boot path does
+not pay for it. Each
+handler re-asserts authorization itself
+(`_authorize_crew_read`): strict is not self-enforcing at the handler, since
+a header-absent request falls through to cookie auth and a `local_only=False`
+deployment reclassifies strict paths as mixed, and these reads disclose remote
+session data. That assertion is **positive, not a denylist**, and it is the bar the
+guide routes already apply to a tool call that acts for the person: the gate
+delegates its shared arms to `handlers/guide.py`'s `_resolve_agent_caller`, the one
+caller resolver the guide, card and member routes share, and keeps only the arms a
+crew read adds. One resolver, so a fix to it reaches every gate at once. The arms, in
+order, each with its own refusal code so an audit reader sees which signal failed:
+
+0. **Feature flag** (`crew_reads_disabled`): `instances.crew_reads_enabled` (§5) is
+   read first, per call. Off (the default), the route refuses before anything is
+   resolved for the caller and before any peer is reached, and the refusal is
+   audited like every other arm. Its own code, so the tool can tell "disabled on
+   this install" from a refused identity. A separate switch from `instances.enabled`
+   because turning Remote Crew on for the dashboard must not, by itself, put a
+   peer's transcripts into the agent's context.
+1. **Owner-minted namespace** (`owner_only`): a declared `X-Session-Key` that is not
+   `is_owner_minted_session_key` (`dashboard:` or its persisted `dashboard_` spelling)
+   is refused before anything is resolved for it. `subagent`, `side`, `cron`, every
+   channel namespace, the legacy `channel:{id}:{agent}` shape, the workflow family and
+   anything minted by a transport added later all take this refusal, so an unforeseen
+   identity class fails closed. A positive test, because a denylist cannot secure
+   this: a channel-born session carries NO app claim and the app-platform `channel:`
+   prefix is absent from `CHANNEL_SESSION_NAMESPACES`, so each denylist addition
+   closes one reported class and leaves the next open. First, because it is a
+   property of the key's spelling and needs no trust, and because the resolver's
+   `caller_slot_key` maps a channel session key onto the dashboard slot that mirrors
+   it -- right for a guide, wrong here. An absent key is left to the resolver.
+2. **The shared caller resolver** (`_resolve_agent_caller`, called with
+   `instances.crew_{search,list,read}`, which are in its `_USER_TURN_OPERATIONS`), with
+   its own codes: the internal secret (`internal_secret_required`); no app claim
+   (`app_caller`); a present key (`missing_session_key`, 400) that the transport
+   attests (`unattested_caller`: the Unix-socket peer attestation `token_auth` sets, or
+   the signed per-session token the MCP launcher publishes and `_get` forwards as
+   `X-Session-Token` -- every same-machine process the gateway spawns holds the
+   internal secret, so a declared key with nothing behind it is the caller's word); a
+   live slot for it (`no_live_slot`, 409, which also covers an app-owned tab popped
+   with a call in flight); not app-scoped (`app_scoped_caller`); not an unattended cron
+   or workflow slot (`unattended_caller`); a turn running in it (`no_dashboard_turn`,
+   409, the arm that refuses a channel's own session answering a message the dashboard
+   merely mirrors); not a turn a channel participant opened or steered
+   (`channel_caller`, the `_turn_channel_origin` / `_turn_channel_narrowed` flags set
+   at the turn's outermost start or at a steer's admission and cleared at its end); and
+   a turn **a person sent** (`not_user_turn`, `_turn_user_sent`, which a `session_send`,
+   a cron or app injection, a loop wake and a sub-agent completion never set and a
+   steer that is not the user's clears). The MCP side resolves the caller through
+   `require_strict_session_key` **before** any crew read and sends the key that gate
+   returned, so a tool whose identity degraded refuses at the tool rather than
+   reaching this route headless; the key is a **required** parameter on all three crew
+   helpers. The resolver's refusal is re-audited here as a crew-read denial carrying
+   the caller's key.
+3. **Private-memory fence** (`private_memory`): the resolved key is checked with
+   `private_memory_store_for_session`; a session bound to a private member store is
+   refused, and so is one whose binding cannot be read (`OSError` / `ValueError`).
+   §18.4 describes the same fence in the three tools; it is held HERE too because the
+   tool process is not the only caller that can present the internal secret and an
+   attested key. A fenced member's own shell can read the sandbox-visible
+   `.local_secret` and call this route over the gateway's socket with its own
+   `X-Session-Key`, and `_verify_unix_peer` attests that key because the process IS
+   that session; only a gateway-side check stops that call, which is how
+   `workflows/service.py` holds the same fence.
+4. **The crew-specific slot arms** (`_slot_refusal`, read from gateway memory the turn
+   runner writes and clears, never the agent-writable metadata line): a turn **the
+   owner sent** (`not_owner_turn`, `_turn_owner_sent`, below); and not a slot
+   automation opened on another caller's behalf (`owner_only`, either the in-process
+   mint witness `_lineage_minted` or the restored `_created_by`).
+5. **Non-owner dashboard subject**: if a `user` claim is present at all (a
+   `!dashboard`-minted browser token reaching a mixed-internal route), it must be the
+   configured owner, delegated to `is_owner_dashboard_request` (§15.1's bar).
+
+**No ancestry is resolved, and `crew=` is an owner's-tab capability.** A delegated
+session carries a key the gateway minted, but a key says nothing about *for whom*:
+`spawn_run` mints `subagent:<id>` identically whether the parent is the person's tab
+or a Slack participant's thread. The records that could say so are each unfit to
+decide it, and each was found, in turn, to let a channel participant's or a cron's
+work read a peer with the owner's authority: a subagent's run folder is
+agent-writable (`subagent_persistence` writes `parent_session` into `state.json`
+there); a slot's `created_by` is restored from the agent-writable metadata line after
+a restart, so a worker's agent can clear it and come back as an unattributed tab;
+`CronJob.session_key` lives in `crons.json`, which `sandbox.py` exposes to the crew
+sandbox as a leaf `mcp_cron` "both reads and rewrites"; and a parent slot's turn
+provenance is reset when the parent's turn ends while a background child is still
+running, so a child spawned from a channel participant's turn would outlive the
+flags that refused it. So a delegated caller is refused by namespace, and a child
+that needs a peer's history asks its parent, which is where the person is. The
+adjacent security layer reaches the same conclusion about delegated callers:
+`mcp_dashboard._DELEGATED_CALLER_PREFIXES` refuses them because their absence of an
+app "proves nothing about who it runs for".
+
+**The user-sent arm is the one the authorization rests on.** A slot's creator can be
+cleared by its own agent or lost across a restart; the opener of the turn that is
+making the call cannot be invented, and the gateway holds it for exactly the turn's
+duration. The creator arm refuses the ordinary worker cheaply (a cron's
+`send_to_session` into its own worker reaches `chat_send` as a non-app sender and is
+stamped user-sent there, so the creator is what refuses it), and the one chain it
+cannot see, a worker whose restored attribution was cleared, is closed by the
+user-sent arm on its own: `cron_creator_admission` fences a cron to slots that still
+carry its `_created_by` (a blank one "matches no caller", `_created_by_other`), so the
+orphan's cron can no longer send into it; a `session_send` runs a turn that is not
+user-sent; and the only user-sent turn such a slot can run is the person opening the
+tab and typing, at which point the person *is* there. This also states the
+capability's shape plainly: a `crew=` read works from the turn the person is having
+with their agent, not from a loop wake, a cron's run or a delegated worker.
+
+**The owner arm says *which* person.** `_turn_user_sent` records that a person sent
+the turn, not who: `/kirocrew dashboard` on Telegram, Teams and Webex mints a
+dashboard token for a channel user the install allow-lists, and their sends reach
+`api_chat` as a non-app request exactly as the owner's do, so a turn they open in
+the owner's install is user-sent and passes every arm above. The tool call itself
+carries no `user` claim (identity on the internal-secret transport comes from the
+calling session), so arm 7 never sees them either. What these routes disclose is the
+owner's peer corpus, read with the owner's manager-held credential, so the gateway
+records the owner predicate for the request that dispatched each turn and keeps it
+for the turn's duration, as `_turn_owner_sent` on the slot (`slot_ladder`):
+
+- **passed by the dispatcher on the turn's own call**
+  (`_run_chat(_directive_owner_origin=)`), never written onto the slot: `api_chat`'s
+  idle send, `regenerate` and `rewind` each pass `is_owner_dashboard_request(request)`
+  (decided at request time). The mark lives in that one dispatch, so a dispatch that
+  never starts (a Shared Crew admission that expires or is refused, a task cancelled
+  before its first step) takes it with it;
+- **carried on a queued entry** as `_directive_owner_origin`, stamped by the
+  composer's busy-slot and held-behind-sub-agents paths and by the responsive path,
+  reset to the *editor's* on a queue edit, and never persisted
+  (`slot_queue_repository` drops it on restore with its two siblings, for the same
+  reason: the transcript line is agent-writable). The drain reduces it with **`all`**
+  over every entry a successor turn consumes, so a merged batch that folds another
+  dashboard user's words in with the owner's runs without the mark, and passes the
+  result on the successor's own `_run_chat` call;
+- **adopted at every turn's outermost entry** (`turn_entry`): the call's value is
+  read into `_turn_owner_sent` only when the opener is also user-sent, so a dispatch
+  that declares nothing (`openai_compat`, the spec-builder runtime, a loop wake, a
+  cron) starts from False and nothing an earlier dispatch or turn left on the slot is
+  ever read; and **cleared on every turn exit** (`queue_cycle`), the
+  handed-off depth-1 exit of a `/prompts get` expansion included, which the other
+  provenance flags' depth-0-only reset does not cover -- a mark that survived that
+  exit would be authority left on the slot, and clearing early costs only a refusal;
+- **narrowed by a steer that is not the owner's**: `steer_into_running_turn` takes an
+  `owner_origin` keyword, defaulting to False, and clears the running turn's mark at
+  admission, before the RPC, for the same reason it clears `_turn_user_sent` for a
+  non-user steer: the model can act on the injected text before the RPC returns. The
+  composer passes the owner predicate; every other caller (a peer's `session_send`, a
+  channel steer, a nudge) says nothing and narrows. A steer the turn ended before
+  consuming requeues with the mark its own sender earned, from a `_steer_owner_origin`
+  map kept in lockstep with the user and channel maps;
+- **carried by a recovery requeue as the dying turn held it**: `_queue_recovery`
+  (`turn_ledgers`), the one requeue every runtime-loss arm uses (the dead process,
+  the retryable ACP error, a Stop's recovery), stamps `_directive_owner_origin` from
+  the slot's `_turn_owner_sent` as it stands at the requeue, and never wider than
+  the user mark. A recovery is a second turn of the same request: without the stamp
+  the drain would compute False for the successor and the owner's retried lookup
+  would be refused as `not_owner_turn`; read off the slot rather than the turn, a
+  non-owner steer that narrowed the dying turn narrows its retry too. The entry is
+  process-local like every other carrier of the mark, so a durable restore still
+  drops it.
+
+The arm's absence is a refusal, not an admission: a slot double from before the field
+existed reads as not-owner. `openai_compat` and the spec-builder runtime dispatch
+user-origin turns without declaring, so their turns consume a False declaration and
+cannot `crew=` read; that is the fail direction, and neither is the dashboard composer.
+
+`crew` is a **query param** (not a `{id}` path segment) so the
+paths stay static and match the strict prefix set cleanly; the handler resolves
+it against the registry — an **exact id first, then a name** (so an id is never
+shadowed by another entry whose name collides with it) — off the loop, and 404s
+an unknown crew (`crew_unknown`). A name resolves only when **exactly one** crew
+carries it: the registry de-duplicates ids, never names, so a shared name is
+refused with `409 crew_ambiguous` and the agent is told to use the id, rather than
+silently reading whichever row came first. The caller's value arrives through
+`sanitize_string` (NFC, hidden characters dropped) while registry names are stored as
+typed, so a name is compared **through the same pipeline**: a name the owner typed with
+a decomposed accent still resolves, and two names that differ only in a form the
+pipeline folds away are `crew_ambiguous` rather than silently the first one (ids are
+slugs and compare as stored). The tool schema's `crew` pattern accepts any registry display
+name (spaces/Unicode; control characters barred), because the registry allows
+them and a tighter charset silently broke `crew=<name>` for ordinary names.
+
+### 18.2 Transport reuse — no fourth hand-rolled peer request
+
+All three legs ride the **generic `mgr.proxy_request` carrier** (§6) — `search`
+too, because it needs the peer's confirmation header and
+`mgr.search_sessions_remote` (§15.1) returns only the body — and the same
+`_peer_target`/`_peer_cookie_header` invariant holds: the token never leaves the
+manager, travels as the port-scoped cookie, and gets one transparent re-mint on
+`401/403`. So no new peer-request method is added; the handlers only read the
+response. Reading is delegated to `read_capped_response` (the helper the adopt
+path and the peer-slots read already use, §15) under
+`PEER_SESSIONS_REPLY_MAX_BYTES` (8 MiB) because a peer is untrusted input — an
+unbounded body must not exhaust hub memory before any per-field clamp runs, and a
+single `read(n)` on a chunked reply would resolve at the first buffered chunk and
+silently yield a truncated body. That cap is its own symbol rather than a reuse of
+`PEER_SLOTS_REPLY_MAX_BYTES`: this one is sized against a **full transcript**, not
+a row list, so the row-list bound would truncate honest payloads.
+
+### 18.3 Peer replies are untrusted input (same rule as §15.3)
+
+Every field a peer returns is re-shaped locally: only known keys are copied,
+types are checked, `key` is length-bounded, and human text is **redacted (local
+credential + exfiltration patterns) BEFORE any clamp** — the peer's own
+redaction is not taken on faith, and redacting first keeps a credential
+straddling `_PEER_FIELD_MAX_CHARS` from being split into an unmatched fragment.
+Search titles/snippets and list previews are then clamped to
+`_PEER_FIELD_MAX_CHARS`; transcript **message bodies are redacted without that
+short clamp** (legitimately long, already bounded by the 8 MB buffer cap). The
+decode and that re-shaping pass run as one unit, **off the event loop for a reply
+over `_OFF_LOOP_BYTES`** (64 KiB, the peer proxy's `_redact_sse_event_async`
+threshold): the gateway runs every chat stream and the liveness heartbeat on one
+loop, and a megabyte transcript's decode plus the multi-pattern redaction of every
+message would otherwise hold it for the whole pass; a small reply stays inline,
+where the thread hop would cost more than the work. The pass runs outside the peer
+time budget, since a thread cannot be cancelled and a slow redaction is not a slow
+peer. A **short field over `_FIELD_MAX_RAW_CHARS`** (four times the clamp) is
+**replaced by a placeholder, never cut**, so a hostile peer cannot put megabytes of
+redaction work behind a 2 KiB field; the field is judged whole or refused whole,
+because cutting the raw text can split a credential so its detector cannot see
+the shape (the chain strips hidden Unicode after any cut, so zero-width padding
+could move a secret's delimiter past a fixed cut and then vanish, leaving the
+secret inside the clamp). An honest short field never approaches the bound. A
+refused `key` on the read leg (separators, `..`, over-long) is audited as a
+denied `crew_read` with `crew_bad_key` before the 400, like every other arm's
+refusal, since the audit middleware skips GETs. Two
+guarantees of the local tools are carried onto the crew path: **incognito /
+temporary sessions are excluded**, on all three legs, and the exclusion is held to
+a **capability gate** on each ([#11954](https://github.com/kirodotdev/KiroCrew/issues/11954),
+shape 2). The hub sends `exclude_incognito=1` on every peer call, and the peer's
+three routes (`handlers/sessions_parts/history_reads.py`) answer every 200 of that
+arm with `INCOGNITO_EXCLUDED_HEADER` (`X-KiroCrew-Incognito-Excluded: 1`), their
+proof that the parameter was understood. A peer from before the arm existed ignores
+the unknown parameter, serves unfiltered rows and sets no header, and the hub
+refuses that reply **before reading its body** with `502 crew_peer_too_old` — the
+exclusion is enforced by the reader, never merely honored by the peer. The gate is
+on the reply itself rather than on a version table, so there is no list of which
+builds understand which parameter to keep current. The header is defined once,
+beside `INCOGNITO_MEMORY_MODES` in `history_derivation.py`, because it is the wire
+form of the same privacy contract.
+
+What the peer does under that arm is the same discipline on each route, because a
+row's `memory_mode` is a SNAPSHOT and the content beside it (a preview, a snippet,
+the rows) is a later read: a writer tightening the line between the two would
+otherwise ship restricted content under a persistent label. On `GET /api/sessions`
+restricted rows are dropped BEFORE paging (so `limit` counts eligible sessions and
+a restricted session at the head cannot hide an eligible one), then each page row's
+ON-DISK line is re-judged under its transcript lock in the same hold as its preview
+read (`transcript_withholds_derivation`), and a row whose line tightened, or cannot
+be read, goes with its preview. On `GET /api/sessions/search`
+(`_search_excluding_incognito`) the ranking is asked for its WHOLE bounded scan
+window (`_SEARCH_SCAN_WINDOW`, the same pull the local `search_chat_history` makes
+before it filters, because any window sized off the caller's limit is a count of
+restricted matches above which an eligible one goes silently missing), each match
+is re-judged against its on-disk line and its snippet RE-READ under one lock hold,
+restricted matches are dropped before the limit, and a busy lock drops the row
+("cannot vouch"). On `GET /api/sessions/{key}` the arm reads through the history
+DERIVATION seam (`ConversationLog.derive_messages`), the same seam the local
+`get_chat_session` uses: the on-disk line is validated with the rows under one
+lock hold, a restricted line answers `[]` (header still set), and a busy transcript
+lock or a line that cannot be read answers `503 transcript_busy` rather than `[]`
+(the seam raises `TranscriptBusy` for both: nothing about the session's privacy
+was measured), so a retryable state is never read as an empty conversation; every
+arm fails closed and none ships rows. The hub still drops any
+returned row whose `memory_mode` is restricted, through the canonical
+case-normalizing `is_incognito_transcript` (a peer is untrusted input, so
+`Incognito` refuses like `incognito`); that is the version-independent floor, and
+it costs nothing. And **`read` filters to
+`RECALL_ROLES`** before tail-capping, dropping the `system`/tool rows that
+`get_chat_session` also excludes. `read` additionally vets the `session_key` (no
+separator, no `..`) and percent-encodes it into the peer path so it cannot
+traverse — the same "validate then rebuild" discipline as the §6 proxy. The
+`list`/`read` proxy read is bounded by a total-time budget (`_CREW_PROXY_TIMEOUT`,
+under the MCP client's own read timeout) so a reachable-but-slow peer maps to a
+clean `504` rather than a false "unreachable". The peer's own answer survives the
+hop with its meaning intact (`_peer_status_error`): its `503` (the transcript lock
+the `exclude_incognito` arm reports as retryable) is `503 crew_peer_busy`, its
+`404` is `404 crew_session_not_found`, any other refusal is `502 crew_peer_refused`
+naming the status and nothing from the peer's body, and a reply over the read cap
+is `502 crew_reply_too_large`; `crew_malformed_reply` is reserved for a 2xx that is
+not JSON. Every call emits a SEL audit event
+(`instances_crew_search|crew_list|crew_read`) carrying the resolved instance id
+**and the originating MCP caller's session key**, so an audit reviewer can see
+which agent session read which remote crew's history.
+
+### 18.4 What the scope does NOT do
+
+- **Not on by default.** `instances.crew_reads_enabled` (§5) is a second opt-in on
+  top of `instances.enabled`; until it is set the gateway answers every crew read
+  `403 crew_reads_disabled` (§18.1 arm 0) and the tool reports that message.
+- **Search-and-read only.** There is no crew-scoped write, resume, or delete;
+  the agent cannot continue a remote session through these tools.
+- **Connected peers only.** An offline crew returns a clean "unreachable" error,
+  never a silent empty result.
+- **Not federated.** Unlike §15, a crew read targets exactly one named crew — it
+  does not fan out across every connection.
+- **No cross-scope filters.** Local-only knobs (`before`/`after`/
+  `all_workspaces` on search, `summarize` on list) do not apply in `crew` mode.
+- **Not available to a private-memory session.** A Crew Member fenced to a
+  private V2 store cannot use `crew` on any of the three tools. No local record can
+  adjudicate a peer key — a remote crew's transcripts carry no local private-store
+  provenance at all — and reading a peer crew's whole corpus is the boundary
+  crossing the fence exists to prevent. The three tools therefore resolve the
+  caller's own binding (`_caller_private_store`, over
+  `private_memory_store_for_session`) **before** the `crew` branch and refuse when
+  it returns a non-empty store name; `""` is an ordinary session. An unreadable
+  binding refuses too, since "unknown" on a cross-crew read has to fail closed.
+  The key resolved by each tool's entry `require_strict_session_key` is the key
+  used for this check *and* the key put on the wire, so no path checks one identity
+  and acts as another. The gateway route holds the same fence on the attested key
+  (§18.1 step 3), because the tool process is not the only caller that can reach the
+  route with the internal secret and that session's own attested key.

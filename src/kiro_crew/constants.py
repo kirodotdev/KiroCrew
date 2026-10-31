@@ -1656,6 +1656,50 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "unified",
 )
 
+
+def is_owner_minted_session_key(key: str) -> bool:
+    """True when *key*'s namespace alone proves the owner's gateway minted it.
+
+    Only ``dashboard`` clears the bar, in both separator spellings: a live session
+    key uses ``:`` and a persisted filename stem uses ``_`` (``history._safe_key``
+    folds one to the other), so a classifier reading only one spelling answers
+    False for the same session depending on where the key came from. A POSITIVE
+    test on purpose: a cross-crew read (``handlers_instances_crew_reads``) admits a
+    caller whose key passes this AND whose tab is, right now, running a turn the
+    owner sent; every other namespace is refused by name, with nothing resolved
+    on its behalf, so an unrecognised shape -- a legacy one, or one minted by a
+    transport added after this line -- is REFUSED. A denylist cannot secure this:
+    a channel-born session carries NO app claim, and the app-platform
+    ``channel:{id}:{agent}`` prefix is absent from
+    :data:`CHANNEL_SESSION_NAMESPACES`, so each denylist addition closes one
+    reported class and leaves the next unreported one open. Deliberately NOT
+    derived from ``messaging.link``'s telemetry roster, which exists to keep metric
+    series apart, contains ``channel``, and would silently widen authorization
+    when a label is added for telemetry.
+
+    Every DELEGATED namespace fails, and that is the design rather than a gap.
+    ``spawn_run`` mints ``subagent:<id>`` identically whether the parent is the
+    person's tab or a Slack participant's thread, so the name says nothing about
+    FOR WHOM, and the records that could say so are each unfit to decide it: a
+    subagent's run folder is agent-writable; a slot's ``created_by`` is restored
+    from the agent-writable metadata line after a restart; ``CronJob.session_key``
+    lives in ``crons.json``, which the crew sandbox lets the agent rewrite; and a
+    parent slot's turn provenance is reset when the parent's turn ends while a
+    background child still runs. ``side:<slot>:<gen>`` is a shape
+    ``derive_caller_app`` mishandles; ``secretary`` has no construction site in
+    ``src/`` and the session-address RFC asks whether an external app can mint it;
+    the workflow family and ``taskrunner`` derive their originating key from a
+    request header the workflow endpoints document as spoofable.
+    ``mcp_dashboard._DELEGATED_CALLER_PREFIXES`` refuses delegated callers for the
+    same reason. A child that needs a peer's history asks its parent.
+
+    A True answer is NOT authorization on its own: the gate then asks the slot the
+    key names whether the owner is speaking in it. An EMPTY key answers False; the
+    gate leaves an absent key to the shared caller resolver, which names that case.
+    """
+    return bool(key) and key.startswith(("dashboard:", "dashboard_"))
+
+
 #: The channels a PROACTIVE send may name -- ``send_message``'s ``channel_type``
 #: and its channel ``session`` values. Derived ONCE here rather than subtracted at
 #: each reader: the same subtraction was spelled in three places, which is the

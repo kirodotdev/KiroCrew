@@ -128,6 +128,9 @@ The instance bootstrap runs `install.sh --voice` on both its initial attempt and
 retry. This installs the existing `voice` extra (`boto3` and
 `amazon-transcribe`) before the gateway first imports its Transcribe provider;
 installing those SDKs after startup would otherwise require a gateway restart.
+Like every `install.sh` run it also downloads the pinned KAS engine into the
+instance's data home (`kirocrew kas install`); a failed download only warns, and
+`agent.kas_bundle` stays off.
 
 When the installed module belongs to a valid source checkout, the launcher
 packages that checkout and uploads it to a launcher-owned bucket

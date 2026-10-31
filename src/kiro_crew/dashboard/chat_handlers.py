@@ -231,6 +231,7 @@ from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     _check_new_slot_assignment,
     _created_slot_row,
     _default_template_stamp,
+    _mate_home_locked_response,
     _persist_app_agent_owner,
     _persist_birth_line,
     _retract_failed_newborn,

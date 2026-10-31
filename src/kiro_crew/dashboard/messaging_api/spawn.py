@@ -410,6 +410,13 @@ async def api_spawn(request: web.Request) -> web.Response:
     child_admission = await admit_subagent(request, state, parent_session)
     if child_admission.rejected:
         return child_admission.refusal_response()
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
+
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
@@ -442,6 +449,7 @@ async def api_spawn(request: web.Request) -> web.Response:
             _execution_context=admitted_execution.to_record(),
             _parent_spawn_policy=parent_spawn_policy,
             _parent_project_dirs=parent_dirs,
+            **({"_preassigned_id": run_id} if run_id else {}),
         )
     if not info or (info.done and info.error):
         await child_admission.abandon()
@@ -686,7 +694,13 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if child_admission.rejected:
         return child_admission.refusal_response()
     from kiro_crew.shared_crew.admission_entry import admitted_scope
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
 
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
     with admitted_scope(child_admission):
         info = await _continue_on_loop(
             state,
@@ -698,6 +712,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
             max_turns=max_turns,
             cwd=resumed_cwd,
             _memory_mode=admitted_mode,
+            **({"_preassigned_id": run_id} if run_id else {}),
         )
     if not info or (info.done and info.error):
         await child_admission.abandon()

@@ -17,6 +17,7 @@ import type { ChatMessage } from '../../types'
 import { withOriginLink } from '../../components/withOriginLink'
 import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { injectOpensTurn } from './RecoveryCard'
+import { resumeProseFor } from './gatewayNotice'
 
 /** Where a capability refusal's fix lives: the member's Approvals section in
  *  the crewmate editor, or the editor itself (its Built from field picks the
@@ -201,45 +202,16 @@ export function sessionStartFailureStreak(messages: readonly ChatMessage[]): num
 }
 
 /**
- * WIRE SHAPES, never rendered — the gateway's own English error prose, matched
- * byte-for-byte against `chat_runner.py` (`_emit_error` / `_emit_stale` /
- * `_emit_stall` and the `slot.append("error", …)` sites). On a row that offers
- * Resume, a match is replaced by the catalog copy beside it, so the banner
- * speaks the same verb as the button and translates with the rest of the card.
- * Anything that does not match renders verbatim, so an unknown or newer gateway
- * string still reaches the screen.
- *
- * Only "Connection lost" carries a detail — the process exit code, ` (exit N)` —
- * captured and re-interpolated so the diagnostic survives the swap.
- *
- * Keyed by wire id with literal catalog keys so `check-i18n-keys.mjs` can
- * resolve every `i18nT` target statically.
- */
-const RETRY_PROSE = {
-  connection_lost: {
-    key: 'pages.chat.errorCard.retry_connection_lost',
-    wire: /^⟳ Connection lost( \(exit -?\d+\))? — please retry\.$/,
-  },
-  session_busy: { key: 'pages.chat.errorCard.retry_session_busy', wire: /^⟳ Session busy — please retry\.$/ },
-  turn_stalled: { key: 'pages.chat.errorCard.retry_turn_stalled', wire: /^⟳ Turn stalled — please retry\.$/ },
-  tool_stalled: { key: 'pages.chat.errorCard.retry_tool_stalled', wire: /^⟳ Tool appeared stalled — please retry\.$/ },
-  backend_hiccup: { key: 'pages.chat.errorCard.retry_backend_hiccup', wire: /^⟳ Backend hiccup — please retry\.$/ },
-} as const
-
-/**
  * Localised, Resume-worded copy for a known gateway retry row, or `null` for
  * anything else. Call it ONLY for a row that renders the Resume button: on a
  * row with no control (a settled or historical error, or a surface with no turn
  * to resume) the wire text must stand, because "resume to pick up where it
  * stopped" beside nothing sends the reader looking for a button that is not
- * there.
+ * there. The wire shapes are the gateway-notice legacy table
+ * (`gatewayNotice.ts`), so this and the transcript resolver read one table.
  */
 export function retryProse(content: string): string | null {
-  for (const { key, wire } of Object.values(RETRY_PROSE)) {
-    const m = wire.exec(content)
-    if (m) return i18nT(key, { detail: m[1] ?? '' })
-  }
-  return null
+  return resumeProseFor(content)
 }
 
 export interface ErrorCardProps {
@@ -250,6 +222,12 @@ export interface ErrorCardProps {
    * equivalent (see {@link retryProse}).
    */
   content: string
+  /**
+   * The same notice worded for a row that offers Resume, when the caller has
+   * already localized `content` (a gateway notice row, `gatewayNotice.ts`).
+   * Shown in place of `content` only beside the Resume button.
+   */
+  resumeContent?: string
   meta?: ChatMessage['meta']
   /**
    * True on a `model_unentitled` row rendered by a surface that cannot offer
@@ -582,6 +560,7 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
  */
 export const ErrorCard = memo(function ErrorCard({
   content: wireContent,
+  resumeContent,
   meta,
   onContinue,
   continuing,
@@ -605,7 +584,7 @@ export const ErrorCard = memo(function ErrorCard({
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
   // Resume button. A row with no control keeps the wire text: telling the
   // reader to resume beside nothing is worse than the mismatch it would fix.
-  const content = (onContinue && retryProse(wireContent)) || wireContent
+  const content = (onContinue && (resumeContent ?? retryProse(wireContent))) || wireContent
   if (featureRequestFormUrl) {
     // A feature request the plan could not afford: the one action that still
     // ends it is the tracker's own form, which needs no agent turn. The prose

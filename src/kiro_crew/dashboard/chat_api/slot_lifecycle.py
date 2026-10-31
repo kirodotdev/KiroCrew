@@ -1343,6 +1343,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     Body: ``{"max_inactive_days": 3, "active_slot": "chat-1-123"}``
     Skips the active slot and pinned sessions.
     """
+    from kiro_crew.dashboard import gateway_notice as gn
+
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:
@@ -1583,6 +1585,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                     "cancelled. The tab was kept, but that turn did not finish "
                     "-- re-send to continue.",
                     "msg msg-err",
+                    meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED),
                 )
             failed.append(name)
             continue

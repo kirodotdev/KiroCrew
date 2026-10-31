@@ -3324,6 +3324,8 @@
       "root": "(root)"
     },
     "skillPickerMenu": {
+      "retry": "Retry",
+      "retrying": "Retrying…",
       "loading_skills_ctrl_enter_held": "Loading skills… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "loading_skills_enter_held": "Loading skills… — Enter won’t send yet; press Esc, then Enter sends the message",
       "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
@@ -3634,6 +3636,9 @@
       "title_md": "Medium width"
     },
     "slashCommandMenu": {
+      "commands_load_failed": "Couldn't load commands",
+      "retry": "Retry",
+      "retrying": "Retrying…",
       "loading_commands_enter_held": "Loading commands… — Enter won’t send yet; press Esc, then Enter sends the message",
       "loading_commands_ctrl_enter_held": "Loading commands… — Ctrl+Enter won’t send yet; press Esc, then Ctrl+Enter sends the message",
       "commands_load_failed_ctrl_enter_sends": "Couldn't load commands — Ctrl+Enter sends the message",
@@ -3716,7 +3721,7 @@
       "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
       "collect_failed": "Failed to collect diagnostics",
       "cancel": "Cancel",
-      "create_report": "Create report",
+      "create_report": "Prepare issue",
       "collecting": "Collecting…",
       "done": "Done",
       "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
@@ -6090,6 +6095,7 @@
     },
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",
+      "history_search_failed": "Search failed. Showing title matches only.",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
@@ -7941,6 +7947,7 @@
       },
       "crewmatesSection": {
         "title": "Mates",
+        "description": "Server settings for mates, not previews. They're saved on the server, so they apply on every device.",
         "reply_threads": "Reply threads on mate chat messages",
         "reply_threads_desc": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
         "failed_to_save": "Couldn't save the mate setting. Try again.",
@@ -7978,9 +7985,22 @@
       },
       "postureDisclosure": {
         "filter": "Filter {{label}}",
-        "filter_items": "Filter {{n}} {{unit}}…",
         "no_matches_for_query": "No matches for “{{query}}”.",
-        "live_count_unavailable": "The live count for this control is currently unavailable."
+        "live_count_unavailable": "The live count for this control is currently unavailable.",
+        "show_details": "Show {{label}} details — {{amount}}",
+        "hide_details": "Hide {{label}} details — {{amount}}",
+        "currently_unavailable": "currently unavailable",
+        "filter_amount": "Filter {{amount}}…",
+        "label_sensitive_paths": "Sensitive path blocking",
+        "label_write_protected_paths": "Write-protected paths",
+        "label_denied_commands": "Denied commands",
+        "label_suspicious_patterns": "Suspicious bash patterns",
+        "label_tool_schemas": "MCP input validation",
+        "label_redaction_paths": "Output redaction",
+        "label_credential_families": "Credential patterns",
+        "label_exfil_heuristics": "URL exfiltration detection",
+        "label_audit_surfaces": "SEL audit logging",
+        "label_token_auth": "Dashboard token auth"
       },
       "slackPanel": {
         "auto_link_sessions": "Connect new sessions to Slack automatically",

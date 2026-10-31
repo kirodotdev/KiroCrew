@@ -141,7 +141,23 @@ const CATEGORY_DESCRIPTION_KEY: Record<SoundCategory, string> = {
  *  `[added-lines]` i18n gate reads, and it is out of scope here — see the PR's
  *  follow-ups. */
 const PRIORITY_SENTINEL = 'Channel default'
-const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, 'critical', 'default', 'passive']
+/** Catalog KEY for each priority level's label. The object keys are the wire
+ *  values the backend stores and the select compares, so they never change;
+ *  only the rendered text is translated. Keys, not strings, for the same
+ *  module-load reason as the preset table: `priorityLabel()` resolves them
+ *  during render. */
+const PRIORITY_LABEL_KEYS: Record<string, string> = {
+  critical: 'pages.settings.notificationsPanel.priority_critical',
+  default: 'pages.settings.notificationsPanel.priority_default',
+  passive: 'pages.settings.notificationsPanel.priority_passive',
+}
+const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, ...Object.keys(PRIORITY_LABEL_KEYS)]
+
+/** The user-facing label for a priority wire value. A value this build does
+ *  not know (a newer backend) shows as-is rather than as a blank. */
+function priorityLabel(priority: string): string {
+  return Object.hasOwn(PRIORITY_LABEL_KEYS, priority) ? i18nT(PRIORITY_LABEL_KEYS[priority]) : priority
+}
 
 /** Shared style for the sound-preview buttons: the Sound card's "Test
  *  notification" button and the per-category "Test" buttons must stay
@@ -236,7 +252,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                       ? i18nT('pages.settings.notificationsPanel.channel_not_active_app_disabled_setting_retained')
                       : c.protected
                         ? i18nT('pages.settings.notificationsPanel.always_interrupts_cannot_be_muted_or_lowered')
-                        : i18nT('pages.settings.notificationsPanel.default_priority', { priority: c.default_priority || 'default' })}
+                        : i18nT('pages.settings.notificationsPanel.default_priority', { priority: priorityLabel(c.default_priority || 'default') })}
                   </div>
                 </div>
                 {c.protected ? (
@@ -256,7 +272,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                             <SelectItem key={opt} value={opt}>
                               {opt === PRIORITY_SENTINEL
                                 ? i18nT('pages.settings.notificationsPanel.channel_default')
-                                : opt}
+                                : priorityLabel(opt)}
                             </SelectItem>
                           ))}
                         </SelectContent>

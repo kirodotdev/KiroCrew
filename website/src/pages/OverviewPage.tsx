@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
+import { Uptime } from '../components/Uptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
 import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
@@ -192,6 +193,12 @@ function MemorySummaryCard({ onOpen }: { onOpen: () => void }) {
   )
 }
 
+/** The uptime tile. Its own component so the 1 Hz uptime tick re-renders this
+ *  card, not the whole Overview page. */
+function UptimeStatCard(props: { label: string; accent?: boolean; delay?: number }) {
+  return <StatCard {...props} value={useUptime()} />
+}
+
 type StatId = 'uptime' | 'sessions' | 'messages' | 'cronJobs' | 'subagents' | 'lessons'
 /**
  * Catalog key per status tile. A flat `Record` of full literal keys, indexed
@@ -212,7 +219,6 @@ export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
-  const uptime = useUptime()
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
@@ -259,7 +265,7 @@ export default function OverviewPage() {
             {connected && status ? i18nT('pages.overviewPage.all_systems_running') : status ? i18nT('pages.overviewPage.reconnecting') : i18nT('pages.overviewPage.connecting')}
           </div>
           <div className="text-[12.5px] text-muted mt-0.5">
-            {i18nT('pages.overviewPage.up')} {uptime}{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}
+            {i18nT('pages.overviewPage.up')} <Uptime />{status?.version ? <> {i18nT('pages.overviewPage.v')}{status.version}</> : null}
           </div>
         </div>
       </div>
@@ -267,7 +273,7 @@ export default function OverviewPage() {
       {/* Stat tiles */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
         {([
-          { id: 'uptime', value: uptime, accent: true },
+          { id: 'uptime', accent: true },
           { id: 'sessions', value: status?.sessions },
           { id: 'messages', value: status?.messages },
           { id: 'cronJobs', value: status?.cron_jobs },
@@ -276,7 +282,9 @@ export default function OverviewPage() {
         ] as { id: StatId; value?: string | number | null; accent?: boolean }[]).map((s, i) => (
           // Keyed on the stable id, not the label: a language switch changes the
           // label, which would remount every tile and replay the stagger animation.
-          <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
+          s.id === 'uptime'
+            ? <UptimeStatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} accent={s.accent} delay={i * 60} />
+            : <StatCard key={s.id} label={i18nT(STAT_LABEL_KEY[s.id])} value={s.value} accent={s.accent} delay={i * 60} />
         ))}
         <TunnelStatus delay={6 * 60} />
         {/* Extension slot: downstream-registered status cards (e.g. an edition

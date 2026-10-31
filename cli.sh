@@ -36,6 +36,14 @@
 #                                        of the managed default (sticky: later
 #                                        runs and updates keep the choice)
 #                                        (env KIROCREW_MANAGED_PYTHON=0)
+#   --no-kas                             skip downloading the KAS engine this
+#                                        release pins (env KIROCREW_INSTALL_KAS=0)
+#
+# KAS engine: after the wheel is installed, the installer runs the new
+# `kirocrew kas install`, which fetches the engine this release pins into the
+# data home (`engines/kas/`) and verifies it against the pin. A failed download
+# only warns and prints the command to retry; the install still succeeds. The
+# switch (agent.kas_bundle) is never turned on here.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -59,6 +67,9 @@ PIN_VERSION=""
 # value or flag always outranks the marker, so an operator can override a
 # sticky choice.
 MANAGED_PYTHON="${KIROCREW_MANAGED_PYTHON:-}"
+# 1 = run `kirocrew kas install` after the wheel is installed (the default);
+# 0 = skip it (--no-kas).
+INSTALL_KAS="${KIROCREW_INSTALL_KAS:-1}"
 
 # Pinned uv release used to provision a managed Python interpreter when the
 # system has none (or when --managed-python asks for one). uv is only ever
@@ -97,6 +108,8 @@ while [ $# -gt 0 ]; do
     --cdn=*) FEED_BASE="${1#*=}"; ARTIFACT_BASE="${1#*=}"; shift ;;
     --managed-python) MANAGED_PYTHON=1; shift ;;
     --system-python) MANAGED_PYTHON=0; shift ;;
+    --no-kas) INSTALL_KAS=0; shift ;;
+    --kas) INSTALL_KAS=1; shift ;;
     -h|--help)
       cat <<'EOF'
 KiroCrew CLI installer (channel / wheel based).
@@ -123,6 +136,10 @@ Options / env:
                                        instead of the managed default (sticky:
                                        later runs and updates keep the choice)
                                        (env KIROCREW_MANAGED_PYTHON=0)
+  --no-kas                             skip downloading the KAS engine this
+                                       release pins; by default the installer
+                                       runs `kirocrew kas install` once the
+                                       wheel is in (env KIROCREW_INSTALL_KAS=0)
   KIROCREW_VENV                        override the managed venv location
   KIROCREW_PYTHON_DIR                  override where uv-provisioned interpreters
                                        are stored (default: beside the data home,
@@ -1312,6 +1329,26 @@ case ":$PATH:" in
   *":$BIN:"*) : ;;
   *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
 esac
+
+# The KAS engine this release pins. The just-installed CLI fetches it from the
+# project's CDN and verifies it against the pin the wheel carries, into the
+# data home's read-only `engines/kas/` leaf (never the venv). It is a separate
+# download, not part of the wheel, so it must never fail the install: a host
+# that cannot reach the CDN keeps a working Kiro Crew and is told the exact
+# command to retry. A version already on disk is a success with no fetch, so a
+# re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
+# user's own step.
+_KAS_RETRY="$BIN/kirocrew kas install"
+if [ "$INSTALL_KAS" = "1" ]; then
+  echo ""
+  echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
+  if [ -x "$BIN/kirocrew" ] && "$BIN/kirocrew" kas install; then
+    :
+  else
+    echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
+    echo "Retry when online: $_KAS_RETRY" >&2
+  fi
+fi
 # Point at the actual next step, not just --help: a user who ran the one-liner
 # wants a running gateway. The persistent-service path (systemd/launchd) is
 # otherwise buried in the docs, which is the #1 remote-crew onboarding

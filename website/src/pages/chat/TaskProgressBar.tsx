@@ -295,7 +295,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
                     {t.completed
                       ? <CheckCircle2 size={12} className="mt-[3px] shrink-0 text-ok" aria-hidden="true" />
                       : <Circle size={12} className="mt-[3px] shrink-0 text-muted/50" aria-hidden="true" />}
-                    <span className={t.completed ? 'text-muted/60 line-through' : 'text-text'}>{text}</span>
+                    <span className={t.completed ? 'text-muted line-through' : 'text-text'}>{text}</span>
                   </li>
                 )
               }
@@ -324,7 +324,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
                       : t.completed
                         ? <CheckSquare2 size={13} className="mt-[2px] shrink-0 text-ok" aria-hidden="true" />
                         : <Square size={13} className="mt-[2px] shrink-0 text-accent/70" aria-hidden="true" />}
-                    <span className={t.completed ? 'text-muted/60 line-through' : 'text-text'}>
+                    <span className={t.completed ? 'text-muted line-through' : 'text-text'}>
                       {text}
                     </span>
                     {/* Visible, not just announced: the dimmed row alone read
@@ -335,7 +335,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
               )
             })}
             {tasks.length > MAX_VISIBLE_ROWS && (
-              <li className="text-[11px] text-muted/60 font-mono pl-[18px]">
+              <li className="text-[11px] text-muted font-mono pl-[18px]">
                 + {tasks.length - MAX_VISIBLE_ROWS} {i18nT('pages.chat.taskProgressBar.more')}
               </li>
             )}

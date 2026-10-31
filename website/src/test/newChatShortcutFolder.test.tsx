@@ -5,6 +5,7 @@
  *     pinned agent, and its project directory, like the folder's own "+".
  *   - Active chat unfiled: the create asks for the default folder, as before.
  *   - Folder no longer listed: the plain default-folder create.
+ *   - Folder a mate manages (its home or inside it): the default-folder create.
  *   - The folder's project directory is gone: the shell notice names the path.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -96,6 +97,19 @@ describe('Alt+Shift+N in a folder', () => {
 
   it('keeps the default-folder create when the folder is no longer listed', async () => {
     harness('f-gone')
+    press()
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
+    expect(call()[7]).toBeUndefined()
+    expect(call()[11]).toBe(true)
+  })
+
+  it.each(['f-home', 'f-mate-sub'])('keeps the default-folder create in a mate-managed folder (%s)', async (folder) => {
+    const mateFolders: ChatFolder[] = [
+      ...FOLDERS,
+      { id: 'f-home', name: 'Radar', order: 0, mate_home: true },
+      { id: 'f-mate-sub', name: 'PR review', order: 0, parent_id: 'f-home' },
+    ]
+    harness(folder, mateFolders)
     press()
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     expect(call()[7]).toBeUndefined()

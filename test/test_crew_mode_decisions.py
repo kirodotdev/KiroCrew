@@ -187,7 +187,7 @@ async def test_the_provider_side_switch_is_vetoed_on_a_crew_mode_root(monkeypatc
     # cannot reach: the phase keeps the slot's agent, audits the denial, shows it,
     # and ends the turn so the session resets onto the conductor.
     root = _slot("r", "kirocrew-conductor")
-    root.append = lambda role, text, cls: notices.append((role, text))
+    root.append = lambda role, text, cls, **_kw: notices.append((role, text))
     notices: list = []
     turn = _turn(root)
     event = SimpleNamespace(text="kirocrew")

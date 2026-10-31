@@ -1,9 +1,9 @@
 /**
- * Capture entry for #26268: the REAL AssistantMessage footer (credits line +
- * timestamp) in the default `dark` / `light` palettes, on the page surface
- * (`bg-bg`, the main chat row) and on a card (`bg-card`).
+ * Capture entry for #26268 / #26283: the REAL AssistantMessage footer (credits
+ * line + timestamp) in any built-in palette, on the page surface (`bg-bg`, the
+ * main chat row) and on a card (`bg-card`).
  *
- * Query string: ?theme=dark|light
+ * Query string: ?theme=<palette name> (default `dark`)
  */
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -13,10 +13,12 @@ import { store } from '../src/store'
 import AssistantMessage from '../src/pages/chat/AssistantMessage'
 import '../src/index.css'
 
-const theme = new URLSearchParams(location.search).get('theme') === 'light' ? 'light' : 'dark'
+const asked = new URLSearchParams(location.search).get('theme') ?? ''
+const theme = /^[a-z0-9-]+$/.test(asked) ? asked : 'dark'
+const mode = theme === 'light' || theme.endsWith('-light') ? 'light' : 'dark'
 localStorage.setItem('mc-theme', theme)
 document.documentElement.setAttribute('data-theme', theme)
-document.documentElement.setAttribute('data-mode', theme)
+document.documentElement.setAttribute('data-mode', mode)
 
 const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {

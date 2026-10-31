@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import type { PackMeta } from '../lib/appearancePacks/types'
 
@@ -192,12 +193,19 @@ async function mount() {
   return utils
 }
 
-/** The grid card for a pack — a role=button div wrapping the pack's name. */
+/** The grid card's "use this pack" button — it wraps the pack's name. */
 const cardFor = (name: string): HTMLElement => {
   const grid = document.querySelector('[style*="grid-template-columns"]') as HTMLElement
-  const card = within(grid).getByText(name).closest('[role="button"]')
+  const card = within(grid).getByText(name).closest('button')
   if (!card) throw new Error(`no card for ${name}`)
-  return card as HTMLElement
+  return card
+}
+
+/** The whole grid card: its "use this pack" button and, beside it, Manage. */
+const tileFor = (name: string): HTMLElement => {
+  const tile = cardFor(name).parentElement
+  if (!tile) throw new Error(`no card tile for ${name}`)
+  return tile
 }
 
 /** The dim layer a dialog is painted on — its click target for "outside". */
@@ -211,7 +219,7 @@ const EDIT = /Edit/
 
 /** Open a custom pack's detail sheet through its Manage affordance. */
 async function openDetail(name: string) {
-  const manage = cardFor(name).querySelector('button[aria-label="Manage"]')
+  const manage = tileFor(name).querySelector('button[aria-label="Manage"]')
   fireEvent.click(manage as HTMLElement)
   await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
 }
@@ -262,8 +270,19 @@ describe('gallery grid', () => {
 
   it('offers Manage on custom packs only — a built-in has nothing to manage', async () => {
     await mount()
-    expect(cardFor('Boba').querySelector('button[aria-label="Manage"]')).not.toBeNull()
-    expect(cardFor('Kiro').querySelector('button[aria-label="Manage"]')).toBeNull()
+    expect(tileFor('Boba').querySelector('button[aria-label="Manage"]')).not.toBeNull()
+    expect(tileFor('Kiro').querySelector('button[aria-label="Manage"]')).toBeNull()
+  })
+
+  it('lets the "use this pack" button fill its whole card, so every strip of it applies', async () => {
+    await mount()
+    // jsdom has no layout: assert the style that makes the button fill a card
+    // stretched to a taller neighbour's row height (the card is a flex column).
+    for (const name of ['Kiro', 'Boba']) {
+      expect(tileFor(name).style.flexDirection).toBe('column')
+      expect(cardFor(name).style.flexGrow).toBe('1')
+      expect(cardFor(name).style.width).toBe('100%')
+    }
   })
 
   it('surfaces a failed pack list as a dismissable banner', async () => {
@@ -304,15 +323,34 @@ describe('applying a pack from its card', () => {
   })
 
   it('applies on Enter, so the grid is reachable without a mouse', async () => {
+    const user = userEvent.setup()
     await mount()
-    fireEvent.keyDown(cardFor('Boba'), { key: 'Enter' })
+    cardFor('Boba').focus()
+    await user.keyboard('{Enter}')
     await waitFor(() => expect(api.gallerySetActive).toHaveBeenCalledWith('boba-pack'))
   })
 
+  it.each(['{Enter}', ' '])('opens Manage from the keyboard (%s) without applying the pack', async (key) => {
+    const user = userEvent.setup()
+    await mount()
+    const manage = tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
+    manage.focus()
+    await user.keyboard(key)
+
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+    // The card used to be a role="button" whose key handler took this keystroke
+    // and switched the avatar instead of opening Manage.
+    expect(api.gallerySetActive).not.toHaveBeenCalled()
+    // Manage must not sit inside another control.
+    expect(manage.parentElement?.closest('button, [role="button"]')).toBeNull()
+  })
+
   it('ignores a tap on the pack that is already active', async () => {
+    const user = userEvent.setup()
     await mount()
     fireEvent.click(cardFor('Kiro'))
-    fireEvent.keyDown(cardFor('Kiro'), { key: ' ' })
+    cardFor('Kiro').focus()
+    await user.keyboard(' ')
     await waitFor(() => expect(screen.getByText('Kiro')).toBeInTheDocument())
     expect(api.gallerySetActive).not.toHaveBeenCalled()
   })
@@ -428,7 +466,7 @@ describe('pack detail sheet', () => {
 
   it('toggles closed when Manage is pressed a second time', async () => {
     await mount()
-    const manage = cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
+    const manage = tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement
     await openDetail('Boba')
     fireEvent.click(manage)
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -454,7 +492,7 @@ describe('pack detail sheet', () => {
         : Promise.resolve(detailFor(builtin, {})),
     )
     await mount()
-    fireEvent.click(cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
+    fireEvent.click(tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
 
     expect(await screen.findByText('that manifest is corrupt')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -463,7 +501,7 @@ describe('pack detail sheet', () => {
   it('opens no sheet, and blames nothing, when the pack has no detail at all', async () => {
     await mount()
     api.galleryGetPackDetail.mockResolvedValue(null)
-    fireEvent.click(cardFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
+    fireEvent.click(tileFor('Boba').querySelector('button[aria-label="Manage"]') as HTMLElement)
 
     await waitFor(() => expect(api.galleryGetPackDetail).toHaveBeenLastCalledWith('boba-pack'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()

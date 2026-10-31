@@ -15,6 +15,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -211,31 +212,73 @@ def _value_withheld(entry: dict[str, Any]) -> bool:
     return bool(set(re.split(r"[-._%:]+", text)) & _SENSITIVE_SEGMENTS)
 
 
+#: Question words that name no setting ("how do I ..."). :func:`find_settings`
+#: drops them from a query unless nothing else is left.
+_FIND_STOPWORDS = frozenset(
+    "a an and are as at be by can could do does did for from get how i if in is it its"
+    " me my of on or our should so that the their them then there these this those to"
+    " up us was we what when where which who why will with would you your".split()
+)
+
+
+def _stems(text: str) -> frozenset[str]:
+    """The words of *text* and their stems, split on anything not a letter or digit
+    (so ``_``, ``-`` and ``.`` in an id or config key break words too). The raw
+    word stays in, so ``providers`` (stem ``provider``) still finds ``provider``
+    (stem ``provid``)."""
+    return frozenset(t for w in re.findall(r"[a-z0-9]+", text.lower()) for t in (w, _stem(w)))
+
+
+def _reaches(word: str, stems: frozenset[str]) -> bool:
+    """*word* starts one of *stems*: ``compact`` finds ``compaction``, ``do`` never
+    finds ``window``."""
+    return any(s.startswith(word) for s in stems)
+
+
+#: Endings that leave a word the same word: ``updat`` + ``e``, ``automatic`` + ``ally``.
+_FIND_TAILS = frozenset({"", "e", "s", "es", "ed", "er", "ing", "ly", "ally"})
+
+
+def _fit(word: str, stems: frozenset[str]) -> float:
+    """How well *word* meets *stems*: 1 for the same word, half for only the start
+    of a longer one, so ``mode`` ranks Mode above every ``model`` setting."""
+    if any(s.startswith(word) and s[len(word) :] in _FIND_TAILS for s in stems):
+        return 1.0
+    return 0.5 if _reaches(word, stems) else 0.0
+
+
 def find_settings(query: str) -> list[dict[str, Any]]:
     """Up to ten registry matches for *query*, best first. Never a credential value."""
-    words = [_stem(w) for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 1]
+    raw = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 1]
+    kept = [w for w in raw if w not in _FIND_STOPWORDS] or raw
+    words = list(dict.fromkeys(_stem(w) for w in kept))
     if not words:
         return []
     scored = []
     entries = settings_registry()
     hays = []
     for entry in entries:
-        title = f"{entry['id']} {entry.get('label', '')}".lower()
-        hay = f"{title} {_help_text(entry)} {entry.get('configKey', '')}".lower()
+        title = _stems(f"{entry['id']} {entry.get('label', '')}")
+        hay = title | _stems(f"{_help_text(entry)} {entry.get('configKey') or ''}")
         hays.append((title, hay))
-    # How many entries each word reaches: a tie goes to the entry whose words are
-    # rarer, so "verbosity" outranks a "reply" that a dozen channel settings share.
-    reach = {w: sum(1 for _t, hay in hays if w in hay) or 1 for w in words}
+    # How rare each word is: a word few settings hold weighs most, so "verbosity"
+    # outranks a "change" that dozens of rows share. Never zero, so a query of
+    # one common word still ranks the rows that hold it.
+    n = len(hays)
+    weight = {
+        w: math.log((n + 1) / (sum(1 for _t, h in hays if _reaches(w, h)) or 1)) for w in words
+    }
     for entry, (title, hay) in zip(entries, hays):
-        hit = [w for w in words if w in hay]
-        score = sum(3 if w in title else 1 for w in hit)
+        hit = [w for w in words if _reaches(w, hay)]
+        score = sum(weight[w] * max(3 * _fit(w, title), _fit(w, hay)) for w in hit)
         if entry["id"] == query.strip():
             score += 100
-        if score:
-            scored.append((score, sum(1 / reach[w] for w in hit), entry))
-    scored.sort(key=lambda row: (-row[0], -row[1], row[2]["id"]))
+        if hit:
+            # On a tie, the setting whose name says least besides the query wins.
+            scored.append((score, len(hit), len(title), entry))
+    scored.sort(key=lambda row: (-row[0], -row[1], row[2], row[3]["id"]))
     out = []
-    for _score, _rarity, entry in scored[:_FIND_LIMIT]:
+    for *_rank, entry in scored[:_FIND_LIMIT]:
         row: dict[str, Any] = {
             "setting_id": entry["id"],
             "label": entry.get("label", ""),

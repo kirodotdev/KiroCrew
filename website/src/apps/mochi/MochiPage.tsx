@@ -425,7 +425,7 @@ function ActivityList({ rows }: { rows: ReturnType<typeof formatActivity> }) {
       <div className="space-y-1 max-h-64 overflow-y-auto">
         {rows.slice(page * PER_PAGE, (page + 1) * PER_PAGE).map((e, i) => (
           <div key={i} className="flex items-start gap-3 px-2.5 py-1.5 text-[13px]">
-            <span className="text-muted/60 font-mono w-16 shrink-0 whitespace-nowrap">
+            <span className="text-muted font-mono w-16 shrink-0 whitespace-nowrap">
               {e.time}
             </span>
             <span
@@ -467,7 +467,7 @@ function PlanTimeline({ tasks }: { tasks: TimelineRow[] }) {
               t.done ? 'text-muted line-through' : 'text-text'
             }`}
           >
-            <span className="text-muted/60 font-mono w-16 shrink-0 whitespace-nowrap">
+            <span className="text-muted font-mono w-16 shrink-0 whitespace-nowrap">
               {t.time}
             </span>
             <span

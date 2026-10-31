@@ -1339,7 +1339,7 @@ async def test_dedupe_candidate_falls_back_to_lexical_without_judge_model(tmp_pa
 
 @pytest.mark.asyncio
 async def test_dedupe_candidate_uses_judge_when_configured(tmp_path):
-    """judge_model set → _dedupe_candidate drives metadata_dedupe through the
+    """judge_model set → _dedupe_candidate drives metadata_dedupe_verdict through the
     async judge, bridged from the worker thread back onto the loop."""
     from unittest.mock import MagicMock
 

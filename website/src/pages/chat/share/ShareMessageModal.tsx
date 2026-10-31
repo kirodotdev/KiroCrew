@@ -1,4 +1,4 @@
-import { downloadBlob } from '../../../utils/download'
+import { saveBlob } from '../../../utils/download'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, Copy, Download, Loader2 } from 'lucide-react'
 import {
@@ -180,7 +180,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
   const handleDownload = async () => {
     setBusy('download'); setFeedback(null); setExportError(null)
     try {
-      downloadBlob(await exportBlob(), `kiro-crew-share-${Date.now()}.png`)
+      await saveBlob(await exportBlob(), `kiro-crew-share-${Date.now()}.png`)
     } catch {
       setExportError(i18nT('pages.chat.share.export_failed'))
     } finally { setBusy(null) }
@@ -195,7 +195,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
       } else {
         // No clipboard (Firefox, permissions): the image still reaches the
         // user as a download rather than the button silently doing nothing.
-        downloadBlob(blob, `kiro-crew-share-${Date.now()}.png`)
+        await saveBlob(blob, `kiro-crew-share-${Date.now()}.png`)
         setFeedback('copy_unavailable')
       }
     } catch {
@@ -221,7 +221,7 @@ export default function ShareMessageModal({ onClose, messageText, prevUserText, 
       if (await copyImageWithText(blob, caption)) {
         setFeedback('copied')
       } else {
-        downloadBlob(blob, `kiro-crew-share-${Date.now()}.png`)
+        await saveBlob(blob, `kiro-crew-share-${Date.now()}.png`)
         setFeedback('copy_unavailable')
       }
     } catch {

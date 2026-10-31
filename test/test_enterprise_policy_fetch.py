@@ -236,6 +236,62 @@ class TestSuccess:
         assert governance.parse_policy(doc) is not None
 
 
+_DISABLED = json.dumps({"enterpriseManagementStatus": "DISABLED"}).encode()
+
+
+class TestDisabledRefresh:
+    """Smoke test N2: an unchanged DISABLED answer installs nothing."""
+
+    @pytest.fixture(name="installs")
+    def installs_fixture(self, monkeypatch):
+        """Each ceiling a refresh installs. Composing needs a booted gateway, so the
+        compose steps are stubbed: what is under test is whether an install happens."""
+        installed: list = []
+        monkeypatch.setattr(pd, "validate_ceiling", lambda ceiling: None)
+        monkeypatch.setattr(pd, "apply_ceiling", installed.append)
+        monkeypatch.setattr(pd, "_recompose_differs", lambda ceiling: False)
+        return installed
+
+    def test_disabled_twice_installs_once(self, enterprise, vault, cps, installs):
+        vault()
+        cps.reply = _DISABLED
+        assert pd.refresh_now(force=True).status == pd.REFRESH_APPLIED
+        outcome = pd.refresh_now()
+        assert outcome.status == pd.REFRESH_UNCHANGED, outcome.detail
+        assert len(installs) == 1
+        assert "manifestVersionId" not in cps.payload()
+
+    def test_disabled_then_a_policy_installs(self, enterprise, vault, cps, installs):
+        vault()
+        cps.reply = _DISABLED
+        governance.load_security_policy()
+        cps.reply = _envelope()
+        outcome = pd.refresh_now()
+        assert outcome.status == pd.REFRESH_APPLIED, outcome.detail
+        assert len(installs) == 1
+        assert "channels" in json.loads(pd.read_cache().body)
+
+    def test_a_policy_then_disabled_installs(self, enterprise, vault, cps, installs):
+        vault()
+        governance.load_security_policy()
+        cps.reply = _DISABLED
+        outcome = pd.refresh_now()
+        assert outcome.status == pd.REFRESH_APPLIED, outcome.detail
+        assert len(installs) == 1
+        assert "channels" not in json.loads(pd.read_cache().body)
+
+    def test_another_profiles_disabled_tag_is_not_unchanged(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        vault()
+        cps.reply = _DISABLED
+        first = epf.fetch(_request())
+        vault(_EU_ARN)
+        _restart(monkeypatch)
+        second = epf.fetch(_request(first.etag))
+        assert not second.not_modified and second.body and second.etag != first.etag
+
+
 class TestWrongHost:
     def test_the_host_comes_from_the_region_table(self, enterprise, vault, cps, monkeypatch):
         """No environment variable or local setting moves the address."""

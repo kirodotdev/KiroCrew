@@ -266,8 +266,17 @@ def build_spawn_impl(subagents: object) -> SpawnImpl:
             raise SpawnError(
                 f"fair admission refused the spawn for app {app!r} ({reason})", declined=True
             )
+        from kiro_crew.shared_crew.admission_link import link_spawn
+
         spawn_async = getattr(subagents, "spawn_async", None)
         try:
+            run_id = await link_spawn(admission, subagents)
+            if run_id is None:
+                raise SpawnError(
+                    f"fair admission could not record the spawn for app {app!r}", declined=True
+                )
+            if run_id:
+                spawn_kwargs["_preassigned_id"] = run_id
             with principal_scope(None if admission.work is None else admission.work.budget_key):
                 if inspect.iscoroutinefunction(spawn_async):
                     info = await spawn_async(task, **spawn_kwargs)

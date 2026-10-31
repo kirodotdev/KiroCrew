@@ -627,7 +627,7 @@ Each job stores an optional `timezone` field (IANA name, e.g. `America/Los_Angel
 
 The shared schedule formatter receives the saved job timezone at every display boundary, including `cron_add` and `cron_update` confirmations, `cron_list`, `kirocrew cron list` and `kirocrew cron add`, the Schedule page, and channel command listings. A job without its own timezone retains the published server-timezone fallback.
 
-The same zone reads a one-shot's clock time. `parse_time_string(s, tz_name)` resolves a wall clock (`"9am"`, `"tomorrow 17:30"`, `"2026-03-28 14:00"`) in `tz_name` when the caller passes the job's timezone and in the published config timezone otherwise; relative forms are zone-free. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. All three create doors pass the job's validated timezone: the `cron_add` tool (validated before `at_time` is parsed), `POST /api/crons` (`_resolve_one_shot_at(body, timezone)`, same order) and `kirocrew cron add --at ... --timezone`, which refuses `--timezone` only beside `--every`. A past-time refusal renders the resolved instant in that same zone for `cron_add` and `kirocrew cron add --at`; `POST /api/crons` answers "requested time is in the past" without the instant.
+The same zone reads a one-shot's clock time. `parse_time_string(s, tz_name)` resolves a wall clock (`"9am"`, `"tomorrow 17:30"`, `"2026-03-28 14:00"`) in `tz_name` when the caller passes the job's timezone and in the published config timezone otherwise. A relative second, minute or hour count (`"in 90 mins"`, `"in 2 hrs"`) is zone-free; a relative day or week count (`"in 3 days"`, `"in 1 week"`, `"in 2d"`) is calendar days in that same zone, so it keeps the clock time across a DST change the way `"tomorrow"` does, and a count past the calendar is refused. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. All three create doors pass the job's validated timezone: the `cron_add` tool (validated before `at_time` is parsed), `POST /api/crons` (`_resolve_one_shot_at(body, timezone)`, same order) and `kirocrew cron add --at ... --timezone`, which refuses `--timezone` only beside `--every`. A past-time refusal renders the resolved instant in that same zone for `cron_add` and `kirocrew cron add --at`; `POST /api/crons` answers "requested time is in the past" without the instant.
 
 ### Skip Dates
 
@@ -5778,9 +5778,11 @@ request's comments and reviews by body digest beside its checks, head and
 mergeability, so an unchanged pull request costs no turn, any change wakes the loop
 once, and the quiet floor still delivers a turn for what the reading cannot see.
 Its 48 cycles at 300 seconds cover its 14,400-second runtime.
-The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 288-cycle
+The kirocrew-prepare-pr recipe arms its poll loop the same way and pairs its 144-cycle
 poll budget with an explicit 24-hour runtime cap, so the four-hour default does
-not truncate its longer review loop. Both recipes keep interval x `max_cycles` at
+not truncate its longer review loop. Its 600-second interval paces the quiet floor
+as well as detection, so it is what decides how many turns a loop spends on a pull
+request where nothing is happening. Both recipes keep interval x `max_cycles` at
 or above `max_runtime_secs`, so the runtime, not the cycle cap, ends the loop.
 Legacy monitor MCP calls require positive cycle and runtime caps;
 omitted caps default to 24 cycles and 14,400 seconds. The controller persists

@@ -574,13 +574,20 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     # tab id and a shipped-catalog tag, only in memory.
     _guide_tab = request.headers.get("X-Guide-Tab")
     _ui_lang = request.headers.get("X-UI-Lang")
-    if _requested_key and (_guide_tab or _ui_lang) and _person_send:
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    # Whether the OWNER typed this send, not merely a person: ``_person_send``
+    # is true of every dashboard token, including one minted for a channel user
+    # (``/kirocrew dashboard``), and false for an agent-origin send. The turn
+    # this send opens, steers or queues inherits it as ``_directive_owner_origin``
+    # (on its ``_run_chat`` call or its queue entry) -- the one mark a crew-scoped
+    # session read accepts. Decided once, here, so the three delivery paths below cannot
+    # disagree about it.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
-        if is_owner_dashboard_request(request):
-            from kiro_crew.dashboard.guide_observe import note_chat_sender
+    _owner_sent = _person_send and is_owner_dashboard_request(request)
+    if _requested_key and (_guide_tab or _ui_lang) and _owner_sent:
+        from kiro_crew.dashboard.guide_observe import note_chat_sender
 
-            note_chat_sender(state, _requested_key, _guide_tab, _ui_lang)
+        note_chat_sender(state, _requested_key, _guide_tab, _ui_lang)
     # Ownership BEFORE get_or_create_slot below, whose memory-mode and
     # under-construction 409s would otherwise answer an app about a session it
     # may not see. Member, cron and workflow keys are refused here too. The
@@ -1162,6 +1169,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                 # earns a requeued entry the exemption from the drain's LINKED drop.
                 # Stated rather than defaulted, because the default fails closed.
                 user_origin=_person_send,
+                owner_origin=_owner_sent,
                 # Captured HERE, before the RPC suspends, for the same reason the peer
                 # path captures it: the requeue runs in the turn's teardown and a slot
                 # read there folds a mirror linked during the suspension into the
@@ -1238,6 +1246,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             slot,
             message,
             directive_user_origin=_person_send,
+            directive_owner_origin=_owner_sent,
             # A queued turn reaches the runner through the DRAIN, so the dispatch
             # keyword this handler passes for an IMMEDIATE send cannot carry the
             # actor here. It rides the entry's meta instead, which is what
@@ -1346,6 +1355,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             message,
             meta=_hold_meta,
             directive_user_origin=_person_send,
+            directive_owner_origin=_owner_sent,
         )
         _sc_entry.stamp_queued_work(slot, qid, _held_admission)
         _send_race.commit_request(request, message_id=qid)
@@ -1679,6 +1689,9 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
         _turn_kwargs: dict = {"_directive_user_origin": _person_send}
+        # The owner mark rides this dispatch's own call, so a turn that never
+        # starts takes it with it (``turn_entry``).
+        _turn_kwargs["_directive_owner_origin"] = _owner_sent
         if request_app:
             _turn_kwargs["_turn_actor"] = "app"
         elif cron_creator:

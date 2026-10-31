@@ -35,8 +35,8 @@ from typing import Any, Awaitable, Callable, Coroutine, Mapping, TypeVar
 
 from kiro_crew.config.sections_shared_crew import EffectiveLimits
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.shared_crew import admission_link as _link
 from kiro_crew.shared_crew import admission_parked as _parked
-from kiro_crew.shared_crew import admission_run_link as _run_link
 from kiro_crew.shared_crew import admission_runtime as _runtime
 from kiro_crew.shared_crew import admission_settle as _settle
 from kiro_crew.shared_crew import containment as _containment
@@ -1195,7 +1195,7 @@ class AdmissionService:
         assert self._store is not None
         work_id = live.work.work_id
         # Linked or not, an unstarted record's start may still attach: remember it.
-        unattached = live.work.state in _run_link.UNSTARTED
+        unattached = live.work.state in _link.UNSTARTED
         if live.work.state is S.QUEUED:
             self._scheduler.cancel_queued(work_id)
         try:
@@ -1499,7 +1499,7 @@ class AdmissionService:
             policy_version=self.policy_version(),
             request_digest=work.request_digest,
         )
-        if work.state in _run_link.UNSTARTED and not _run_link.linked(work, self._probes):
+        if work.state in _link.UNSTARTED and not _link.linked(work, self._probes, work_class):
             # Proven never started: ``running`` or a linked run id precedes any launch.
             work = await self._store.advance(work, S.RECONCILING)
             relaunch = self._relaunchers.get(work.operation)
@@ -1526,7 +1526,7 @@ class AdmissionService:
             )
             self._tell_reconciled(ended, payload)
             return
-        if work.state in _run_link.HELD_ON_RESTART:
+        if work.state in _link.HELD_ON_RESTART:
             work = await self._store.advance(work, S.RECONCILING, extra=detail_started)
         # RECONCILING: holds capacity until proven stopped.
         self._scheduler.hold(ticket)
@@ -1536,6 +1536,7 @@ class AdmissionService:
         if work_class is WorkClass.CHILD or (
             work.operation in self._probes and work.extra.get("execution_id")
         ):
+            await _link.restore(self, work, work_class)
             # Its owner (the subagent queue, the task runner, the workflow
             # registry) reconciles the run; the probe settles this record.
             live.awaiting_proof = False

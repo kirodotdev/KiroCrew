@@ -310,14 +310,39 @@ async def create_session(
     # directory, so a worker does its work in the folder's repository.
     in_crew_tree = _in_turned_on_crew_tree(state, str(getattr(caller_slot, "key", "") or ""))
     folder_ignored = bool(folder_id) and in_crew_tree
+    # A mate's own chat files everything it opens in the mate's home folder:
+    # a folder it names is kept only when it sits inside that home, and a
+    # person's folder it names still supplies the project directory. No other
+    # caller may file into a mate's home.
+    project_folder_id = folder_id
+    if not in_crew_tree:
+        from kiro_crew.dashboard.mate_folders import (
+            MateFolderError,
+            MateHomeLockedError,
+            mate_home_filing,
+        )
+
+        # The conductor test the worker hand-off below uses, off the loop: it
+        # reads the config and may rescan the installed agents inline.
+        conductor = await asyncio.to_thread(_conducts_for_a_worker, caller_slot, caller_execution)
+        try:
+            folder_id, project_folder_id = await mate_home_filing(
+                state, caller_execution, folder_id, conductor=conductor
+            )
+        except MateFolderError:
+            raise SessionControlError("folder cap reached", code="folder_cap_reached") from None
+        except MateHomeLockedError:
+            raise SessionControlError(
+                "this folder belongs to a mate", status=403, code="mate_home_locked"
+            ) from None
     if folder_id:
         folder_snapshot = await state.read_folders(
             lambda folders: [dict(folder) for folder in _safe_folder_tree(folders)]
         )
-        if not any(str(folder.get("id") or "") == folder_id for folder in folder_snapshot):
+        if not {folder_id, project_folder_id} <= {str(f.get("id") or "") for f in folder_snapshot}:
             raise SessionControlError("folder not found", code="folder_not_found")
         folder_project_raw, folder_project_error = _folder_declared_project(
-            folder_snapshot, folder_id
+            folder_snapshot, project_folder_id
         )
         if folder_project_error:
             raise SessionControlError(
@@ -325,7 +350,7 @@ async def create_session(
                 code="folder_project_invalid",
             )
         folder_project, folder_project_error = await asyncio.to_thread(
-            _resolve_folder_project_dir, folder_snapshot, folder_id
+            _resolve_folder_project_dir, folder_snapshot, project_folder_id
         )
         if folder_project_error:
             raise SessionControlError(
@@ -927,7 +952,7 @@ async def create_session(
         ) -> tuple[bool, str | None, str | None]:
             tree = _safe_folder_tree(folders)
             exists = any(str(folder.get("id") or "") == folder_id for folder in tree)
-            raw_project, error = _folder_declared_project(tree, folder_id)
+            raw_project, error = _folder_declared_project(tree, project_folder_id)
             return exists, raw_project, error
 
         folder_exists, current_folder_project, current_folder_error = await state.read_folders(

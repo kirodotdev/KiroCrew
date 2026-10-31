@@ -86,8 +86,8 @@ Usage::
     python3 scripts/check_file_line_cap.py --update-baseline  # prune after a split
     python3 scripts/check_file_line_cap.py --test             # self-test
 
-CI enforces the scoped verdict in Backend Lint and Frontend Lint, which check out
-the full history, and ``main-ratchet-audit.yml`` judges main's whole tree.
+CI enforces the scoped verdict in ci.yml's ``backend-ratchets`` and
+``frontend-ratchets`` jobs, which check out the full history, and ``main-ratchet-audit.yml`` judges main's whole tree.
 ``test/test_file_line_cap.py`` also runs the check in the backend test suite
 (Linux and Windows) on every change; its shallow checkout cannot resolve the
 change's scope, so there it reports violations without failing. Only tracked

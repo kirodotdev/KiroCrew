@@ -103,6 +103,8 @@ def _stop_pressed(turn) -> bool:
 
 async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     """Open the turn: its identity, provenance, consume veto, allowances and clocks."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _current_message = turn._current_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_self_wake = turn._directive_self_wake
@@ -221,6 +223,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
             "This chat ran on a remote crew and is read-only now. Open the "
             "crew's own session to keep going.",
             "msg msg-err",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY),
         )
         # The one exit with no tail: an archive's queue must never drain here.
         turn_exit.handed_off = True
@@ -241,6 +244,14 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = bool(_directive_channel_origin)
         slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
+        # The owner mark comes from THIS turn's own call (`_directive_owner_origin`,
+        # passed by a dashboard handler or the queue drain), never from the slot: a
+        # dispatch that declares nothing (`openai_compat`, the spec-builder
+        # runtime, a loop wake, a cron) starts from False, a dispatch that never
+        # started took its mark with it, and whatever the previous turn left in
+        # `_turn_owner_sent` is overwritten here. Adopted only for a turn the
+        # person sent.
+        slot._turn_owner_sent = turn._directive_owner_origin is True and slot._turn_user_sent
     # Dispatch appends the triggering row before entering this runner. Freeze
     # that row now, before await points, prompt expansion or new deliveries.
     _current_replay_message = _current_message

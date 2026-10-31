@@ -217,6 +217,8 @@ async def _on_clear_status(turn: _ChatTurn, event) -> None:
 
 async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     """An agent switch the session reports mid-turn."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _spec_hooks: list
     _spec_hooks_cwd: str | None
     _turn_project = turn._turn_project
@@ -270,6 +272,11 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
             f"📌 Agent switch to {new_agent} was blocked — this thread is "
             f"pinned to {pinned_member}. The next turn restarts on the pinned crew.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_PINNED,
+                agent=str(new_agent),
+                member=str(pinned_member),
+            ),
         )
         needs_session_reset = True
         turn.needs_session_reset = needs_session_reset
@@ -318,6 +325,9 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
             "Crew Mode, which stays on its conductor. The next turn restarts "
             "on the conductor.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CREW_MODE, agent=str(new_agent)
+            ),
         )
         needs_session_reset = True
         turn.needs_session_reset = needs_session_reset

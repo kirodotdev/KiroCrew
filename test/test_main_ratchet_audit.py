@@ -485,20 +485,31 @@ class TestGateParityWithCi:
             "integrated tree and its drift surfaces on an unrelated PR."
         )
 
+    #: The backend ratchet set the audit mirrors outright. It is two jobs, not
+    #: one: ``backend-ratchets`` holds the baselined gates that run off
+    #: ``lint-gate``'s path, and ``backend-lint`` holds black. Naming only
+    #: ``backend-lint`` would leave this pin measuring two scripts while the set
+    #: it claims to mirror sat next door -- a subset assertion that passes by
+    #: asking less, which is the failure the class docstring above warns about.
+    _MIRRORED_CI_JOBS = ("backend-lint", "backend-ratchets")
+
     def test_the_audit_mirrors_the_whole_backend_lint_ratchet_set(self) -> None:
         # The set this lane claims outright, kept separate from the accounting
         # above: an omission recorded in either set must never quietly cover a
-        # backend-lint ratchet, which is the set the workflow says it mirrors.
+        # backend ratchet, which is the set the workflow says it mirrors.
         ci = yaml.safe_load((_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8"))
         audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
-        expected = self._gate_scripts(ci["jobs"]["backend-lint"])
+        expected: set[str] = set()
+        for name in self._MIRRORED_CI_JOBS:
+            assert name in ci["jobs"], f"_MIRRORED_CI_JOBS names a job that is gone: {name}"
+            expected |= self._gate_scripts(ci["jobs"][name])
         actual = self._gate_scripts(audit["jobs"]["ratchet-gates"])
 
         assert expected <= actual, (
-            "ci.yml backend-lint runs ratchet gate(s) the Main Ratchet Audit does not: "
-            f"{sorted(expected - actual)}. This is the set the audit mirrors outright, so "
-            "it must be measured, not excused."
+            "ci.yml's backend lint/ratchet jobs run ratchet gate(s) the Main Ratchet Audit "
+            f"does not: {sorted(expected - actual)}. This is the set the audit mirrors "
+            "outright, so it must be measured, not excused."
         )
 
 
@@ -520,7 +531,7 @@ class TestFrontendCeilingParityWithCi:
 
     Scoped to ci.yml's ``bundle-size`` job against this lane's ``bundle-ceiling``
     job, which is the pair the workflow says it mirrors outright -- the same shape
-    as the ``backend-lint`` -> ``ratchet-gates`` pin. The wider frontend gate
+    as the ``backend-lint`` + ``backend-ratchets`` -> ``ratchet-gates`` pin. The wider frontend gate
     surface (the ``npm run lint:*`` lanes) is deliberately NOT claimed here: those
     run through package.json script aliases rather than a direct ``node
     scripts/...`` invocation, so pinning them needs a different scan and a

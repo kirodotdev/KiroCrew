@@ -345,10 +345,10 @@ function draftFrom(c: BotChannelConfigData): Draft {
 /** Status pill mirroring the run state of the channel. */
 function StatusBadge({ config }: { config: BotChannelConfigData }) {
   const [dot, text, cls] = config.connected
-    ? ['var(--ok)', 'Connected', 'text-ok']
+    ? ['var(--ok)', i18nT('pages.settings.channelsPanel.connected'), 'text-ok']
     : config.configured
-      ? ['var(--warn)', 'Not connected', 'text-warn']
-      : ['var(--muted)', 'Needs setup', 'text-muted']
+      ? ['var(--warn)', i18nT('pages.settings.channelsPanel.not_connected'), 'text-warn']
+      : ['var(--muted)', i18nT('pages.settings.channelsPanel.needs_setup'), 'text-muted']
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />

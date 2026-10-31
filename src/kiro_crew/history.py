@@ -107,6 +107,7 @@ from kiro_crew.history_consolidation import (  # noqa: F401 - facade re-exports
     _strip_skill_frontmatter,
 )
 from kiro_crew.history_derivation import (  # noqa: F401 - facade re-exports
+    INCOGNITO_EXCLUDED_HEADER,
     INCOGNITO_MEMORY_MODES,
     TRANSCRIPT_HEADER_MAX_BYTES,
     TranscriptBusy,

@@ -349,8 +349,8 @@ retry, on the same backoff curve capped at `CONNECTION_RETRY_MAX_DELAY` (30 s),
 and shows one standing "Connection unstable — retrying…" notice for the extra
 attempts rather than one per attempt. Stop, a landed turn and an exhausted
 window end it exactly as they end the fixed ladder. The dashboard settles that
-standing notice once the window closes (`resolveTransientNotice` in
-`website/src/pages/chat/transientNotice.ts`): it reads "Connection restored"
+standing notice once the window closes (`resolveGatewayNotice` in
+`website/src/pages/chat/gatewayNotice.ts`): it reads "Connection restored"
 when an answer follows it, and the muted past-tense "Connection interrupted"
 when the give-up row or any other error comes first, so it never stays
 "retrying…" above the red "please try again." row. A new user turn decides

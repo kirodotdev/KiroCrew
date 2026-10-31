@@ -214,6 +214,27 @@ const S = {
     alignItems: 'center',
     gap: 8,
   }),
+  // The card's "use this pack" button: it fills the card and takes over the
+  // card's padding and column layout, so the card looks and clicks as before.
+  // Its radius is the card's inner radius, so the keyboard focus ring follows
+  // the card's rounded corners instead of drawing a square inside them.
+  // It grows to the card's full height too: a card stretched to a taller
+  // neighbour's row height still applies its pack from its bottom strip.
+  cardSelect: (isActive: boolean, isSelected: boolean) => ({
+    width: '100%',
+    flexGrow: 1,
+    padding: isActive || isSelected ? 11 : 12,
+    border: 'none',
+    borderRadius: PANEL_RADIUS.card - (isActive || isSelected ? 2 : 1),
+    background: 'none',
+    color: 'inherit',
+    font: 'inherit',
+    cursor: 'pointer',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 8,
+  }),
   thumbnail: {
     width: 80,
     height: 80,
@@ -549,10 +570,42 @@ function PackCard({ pack, isActive, isSelected, onClick, onManage, thumbnailCont
   colorMap?: ColorMap | null
 }) {
   return (
-    <div role="button" tabIndex={0} aria-pressed={isActive} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick() } }} style={{ ...S.card(isActive, isSelected), position: 'relative' }} onClick={onClick} title={isActive ? undefined : i18nT('apps.crewCompanion.gallery.useNamed', { name: pack.name })}>
+    // A plain card holding two sibling buttons: "use this pack", which fills the
+    // card and carries its padding and layout, and Manage, drawn over its corner.
+    // Manage used to sit inside a role="button" card whose key handler took its
+    // Enter/Space and opened nothing.
+    <div style={{ ...S.card(isActive, isSelected), padding: 0, position: 'relative' }}>
+      <button
+        type="button"
+        aria-pressed={isActive}
+        onClick={onClick}
+        title={isActive ? undefined : i18nT('apps.crewCompanion.gallery.useNamed', { name: pack.name })}
+        style={S.cardSelect(isActive, isSelected)}
+      >
+        {pack.id === DEFAULT_PACK ? (
+          // Built-in ghost: bundled art, drawn like the live companion (see above).
+          <BuiltinThumbnail size={80} colorMap={colorMap} />
+        ) : thumbnailContent ? (
+          // Custom packs bake their own eyes in and are never recoloured through the
+          // built-in colour map, so no eye overlay or colour map here.
+          <AnimThumbnail content={thumbnailContent} format={entryFormat(pack)} size={80} spriteConfig={spriteConfig} />
+        ) : (
+          // A pack whose idle art could not be read: a neutral, empty thumbnail box —
+          // never an emoji stand-in.
+          <span style={{ ...S.thumbnail, display: 'block' }} />
+        )}
+        <span style={S.cardName}>{pack.name}</span>
+        <span style={S.cardAuthor}>{pack.author}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, minHeight: 20 }}>
+          {isActive
+            ? <span style={S.activeBadge}>{i18nT('apps.crewCompanion.gallery.active')}</span>
+            : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.crewCompanion.gallery.tapToUse')}</span>}
+        </span>
+      </button>
       {onManage && (
         <button
-          onClick={(e) => { e.stopPropagation(); onManage() }}
+          type="button"
+          onClick={onManage}
           title={i18nT('apps.crewCompanion.gallery.manage')}
           aria-label={i18nT('apps.crewCompanion.gallery.manage')}
           style={{
@@ -562,25 +615,6 @@ function PackCard({ pack, isActive, isSelected, onClick, onManage, thumbnailCont
           }}
         ><MoreHorizontal size={13} className="lucide-inline" aria-hidden="true" /></button>
       )}
-      {pack.id === DEFAULT_PACK ? (
-        // Built-in ghost: bundled art, drawn like the live companion (see above).
-        <BuiltinThumbnail size={80} colorMap={colorMap} />
-      ) : thumbnailContent ? (
-        // Custom packs bake their own eyes in and are never recoloured through the
-        // built-in colour map, so no eye overlay or colour map here.
-        <AnimThumbnail content={thumbnailContent} format={entryFormat(pack)} size={80} spriteConfig={spriteConfig} />
-      ) : (
-        // A pack whose idle art could not be read: a neutral, empty thumbnail box —
-        // never an emoji stand-in.
-        <div style={S.thumbnail} />
-      )}
-      <div style={S.cardName}>{pack.name}</div>
-      <div style={S.cardAuthor}>{pack.author}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, minHeight: 20 }}>
-        {isActive
-          ? <span style={S.activeBadge}>{i18nT('apps.crewCompanion.gallery.active')}</span>
-          : <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.crewCompanion.gallery.tapToUse')}</span>}
-      </div>
     </div>
   )
 }

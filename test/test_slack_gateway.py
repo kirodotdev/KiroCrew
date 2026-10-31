@@ -1008,6 +1008,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
 
         shutdown = asyncio.create_task(orch._shutdown())
         await _within_lost_run(started.wait(), "the cancellable AutoNudge drain start")
@@ -1021,6 +1022,7 @@ class TestShutdown:
         assert drained.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
@@ -1049,6 +1051,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.sessions = _mock_sessions()
 
         # Under the graceful bound ``_shutdown_and_exit`` applies. It returns
@@ -1061,6 +1064,7 @@ class TestShutdown:
         assert drain_cut.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
         orch.sessions.close_all.assert_awaited_once()
 
     @staticmethod
@@ -1265,6 +1269,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.cancel_all = AsyncMock()
@@ -1275,6 +1280,7 @@ class TestShutdown:
         await orch._shutdown()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_releases_the_subagent_task_store(self):

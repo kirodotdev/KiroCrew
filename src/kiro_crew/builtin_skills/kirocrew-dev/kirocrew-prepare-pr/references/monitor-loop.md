@@ -34,7 +34,7 @@ monitor_start(
           "Merged, terminal state, user stop, blocker or spent budget: "
           "report the outcome, overrides and open findings, then call "
           "autonudge_stop.",
-  interval_secs=300, max_cycles=288, max_runtime_secs=86400, judge=False,
+  interval_secs=600, max_cycles=144, max_runtime_secs=86400, judge=False,
   banner="kirocrew-prepare-pr: polling PR #123")
 ```
 

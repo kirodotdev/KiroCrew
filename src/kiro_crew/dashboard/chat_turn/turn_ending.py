@@ -65,6 +65,8 @@ def _stop_hook_configured(turn: _ChatTurn) -> bool:
 
 async def _turn_ending_chain(turn: _ChatTurn) -> None:
     """The chain deciding how the turn ends: leak notices, the L1 retry, promise-only and false-blocker recoveries."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _builtin_identity_trusted = turn._builtin_identity_trusted
     _compaction_dropped_leak = turn._compaction_dropped_leak
     _directive_user_origin = turn._directive_user_origin
@@ -124,6 +126,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "a new chat (or compact this one): the text stays in this chat's "
             "context, so a plain re-send often repeats it.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOL_CALL_AS_TEXT),
         )
         _noticed_leak = True
         turn._noticed_leak = _noticed_leak
@@ -163,6 +166,9 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "Check what landed before re-sending. If this happens again in "
             "this chat, start a new chat (or compact this one).",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_TOOL_CALL_AS_TEXT_PARTIAL, tool_calls=_turn_tool_calls
+            ),
         )
         _leak_card_posted = True
         turn._leak_card_posted = _leak_card_posted
@@ -216,6 +222,11 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                 f"— retrying it in {int(round(_l1.delay_secs))}s "
                 f"(attempt {_l1.attempt}).",
                 "msg msg-info",
+                meta=gn.gateway_notice_meta(
+                    gn.GATEWAY_NOTICE_CAPACITY_RETRYING,
+                    delay_secs=int(round(_l1.delay_secs)),
+                    attempt=_l1.attempt,
+                ),
             )
             # Honour the server's retry hint before re-queuing: the delay is
             # already capped by the policy, and the slot shows as recovering
@@ -263,6 +274,11 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                         else "the turn was stopped, the call was not retried."
                     ),
                     "msg msg-info",
+                    meta=gn.gateway_notice_meta(
+                        gn.GATEWAY_NOTICE_CAPACITY_RETRY_CANCELLED_SUPERSEDED
+                        if _l1_took_over
+                        else gn.GATEWAY_NOTICE_CAPACITY_RETRY_CANCELLED_STOPPED
+                    ),
                 )
                 # Hand the attempt back: it was counted for a retry that never
                 # ran, and a counter left standing shortens the next real L1
@@ -297,6 +313,9 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                 f"and the automatic retries are spent ({_l1.attempt}). Re-send "
                 "the request once the gateway has capacity.",
                 "msg msg-info",
+                meta=gn.gateway_notice_meta(
+                    gn.GATEWAY_NOTICE_CAPACITY_RETRIES_SPENT, attempt=_l1.attempt
+                ),
             )
     # Promise-only guard: the turn ended NORMALLY with visible text
     # whose FINAL segment only ANNOUNCES an immediate action ("I'll do that
@@ -388,6 +407,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                 "Auto-continue is skipped under auto-approve mode — re-send your "
                 "request to carry it out.",
                 "msg msg-info",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_INTENT_WITHOUT_ACTION_AUTO_APPROVE),
             )
             # A promise-only turn announced work it never did, so it must NOT
             # be recorded as a landed success — even in the yolo notice-only
@@ -418,6 +438,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                 "ℹ️ The model incorrectly stopped after read-only preparation — "
                 "retrying your request once.",
                 "msg msg-info",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_READ_ONLY_STOP_RETRYING),
             )
             _queue_recovery(
                 turn,
@@ -454,6 +475,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
                 "ℹ️ The model ended after saying it would act but didn't — "
                 "auto-continuing once.",
                 "msg msg-info",
+                meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_INTENT_WITHOUT_ACTION_CONTINUING),
             )
             _queue_recovery(
                 turn,
@@ -522,6 +544,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "one automatic retry is already spent — send the request again to "
             "perform the action.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_INTENT_WITHOUT_ACTION_SPENT),
         )
     # A long mixed turn may execute many tools and then end with a NEW
     # foreground-progress claim ("I'm continuing with the gate run"). The
@@ -554,6 +577,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "shown subagents or monitor loops, if any, continue on their own; "
             "otherwise send a message to resume.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_WORK_IN_PROGRESS_ENDED),
         )
     # A turn that closes on a DEFERRED follow-up promise ("I'll report back
     # when the build finishes") while nothing will wake this session: no
@@ -579,7 +603,12 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
         and not _stop_hook_configured(turn)
         and await background_wake_absent(state, slot)
     ):
-        slot.append("notice", DEFERRED_FOLLOWUP_NOTICE, "msg msg-info")
+        slot.append(
+            "notice",
+            DEFERRED_FOLLOWUP_NOTICE,
+            "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_DEFERRED_FOLLOWUP),
+        )
     # OUTSIDE the chain above, deliberately. Every arm in it owns the turn's
     # outcome -- it un-lands, re-drives or re-queues -- and two of them are
     # RECOVERIES (the L1 infrastructure retry and the promise-only guard).
@@ -618,6 +647,7 @@ async def _turn_ending_chain(turn: _ChatTurn) -> None:
             "just before the context was compacted — that call did not run. "
             "Any raw `<invoke>` text above is that leak, not a reply.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TOOL_CALL_LEAKED_AT_COMPACTION),
         )
     # On an empty-response re-queue the turn produced nothing and will
     # immediately re-run; _turn_persist_and_settle skips persistence entirely so we don't

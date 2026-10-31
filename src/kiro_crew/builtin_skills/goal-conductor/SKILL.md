@@ -98,6 +98,17 @@ Worked example — goal "resolve this repo's open issues":
 | Advise the user on issues nobody can action | Not a task. Run the needs-human checklist (Stop conditions). |
 | Write the summary report | Yours. A fold over the ledger. |
 
+### Worker debate
+
+When one open question — a design, a root cause, a plan, a review — needs
+several workers to argue it before anyone builds on the answer, run a worker
+debate: proposers and single-aspect critics argue in files, you relay and
+referee, and the human rules when it is stuck. Read
+`<this skill's dir>/references/worker-debate.md` and follow it. Its
+participants read each other's files by design, the one exception to
+Independent above, and the ledger carries only a short summary and the path to
+the debate note.
+
 ## The loop
 
 ### Round 0 — one plan, one gate
