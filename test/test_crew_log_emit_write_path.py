@@ -21,6 +21,7 @@ import threading
 import time
 
 import pytest
+from crew_log_drain import assert_drained
 from crew_log_emit_helpers import (  # noqa: F401 -- the autouse fixture registers by import
     SESSION,
     _assert_drained_for_shutdown,
@@ -410,7 +411,9 @@ def test_a_slow_writer_costs_memory_not_a_record_and_not_the_loop(monkeypatch):
         assert elapsed < 1.0, f"the producer blocked for {elapsed:.2f}s"
         assert emit.buffered_writes() > 0, "nothing was buffered -- the writer kept up"
         release.set()
-        assert emit.flush(timeout=20.0)
+        # The drain is 40 fsynced appends, so its length is the host's disk speed:
+        # wait while the writer keeps landing entries, not for a fixed time.
+        assert_drained()
 
     asyncio.run(_flood())
 
@@ -444,7 +447,9 @@ def test_the_backlog_is_reported_rather_than_shed(monkeypatch, caplog):
         for n in range(12):
             emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
         release.set()
-        assert emit.flush(timeout=20.0)
+        # Twelve fsynced appends: wait while the writer keeps landing them, not for a
+        # fixed time.
+        assert_drained()
 
     with caplog.at_level(logging.WARNING):
         asyncio.run(_flood())
