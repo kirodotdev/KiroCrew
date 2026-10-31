@@ -603,13 +603,22 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
     return identities
 
 
-def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600) -> int:
+def prune_stale_tombstones(
+    max_age_days: int = 7,
+    delivered_ttl_secs: int = 3600,
+    keep: Callable[[str, dict], bool] | None = None,
+) -> int:
     """Delete tombstoned folders past their retention window. Returns count pruned.
 
     Two windows: abnormal-exit tombstones (timeout / error / orphan) are kept for
     *max_age_days* for post-mortem diagnostics; ``cause="delivered"`` tombstones
     (successful deliveries retained so the parent can read the full transcript)
     are pruned after the shorter *delivered_ttl_secs* to bound disk growth.
+
+    *keep*, given the agent id and the tombstone, says a folder is retained past
+    its window regardless: the caller's own knowledge of what the tombstone is
+    still the only record of (the reaper keeps a refusal tombstone whose task
+    row has not settled, since the boot reconcile reads the row's ending from it).
     """
     now = time.time()
     default_cutoff = now - (max_age_days * 86400)
@@ -637,6 +646,8 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
             if ts.get("leaked_process") is True:
                 # The folder is the only record of a process still owed its end
                 # (``list_leaked_processes``); it is pruned once that flag clears.
+                continue
+            if keep is not None and keep(d.name, ts):
                 continue
             cutoff = delivered_cutoff if ts.get("cause") == "delivered" else default_cutoff
             died = _tombstone_died(ts, ts_path, now)

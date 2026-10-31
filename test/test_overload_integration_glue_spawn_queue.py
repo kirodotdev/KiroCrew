@@ -77,6 +77,44 @@ async def test_claim_unavailable_leaves_the_row_queued_instead_of_starting(
     await mgr.cancel_all()
 
 
+@pytest.mark.asyncio
+async def test_a_fenced_claim_is_unavailable_not_refused() -> None:
+    """A subagent row the dispatch fence keeps back is left queued, not reported stopped.
+
+    While the boot queued pass is incomplete the store cannot say what the row
+    owes, so the claim is the store's typed failure and the gate answers
+    ``CLAIM_UNAVAILABLE``: ``CLAIM_REFUSED`` would make the caller tell the
+    parent the user stopped a spawn whose row stays queued and later runs.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+
+    from overload_fakes import task_record as _rec
+
+    from kiro_crew import taskq as _taskq
+    from kiro_crew.subagent import SubagentManager
+
+    sessions = MagicMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
+    sessions.get_or_create = AsyncMock()
+    sessions.get_agent = MagicMock(return_value="")
+    sessions.get_approval_policy = MagicMock(return_value="auto")
+    ctx = MagicMock()
+    ctx.hooks.auto_approve_subagent_spawn = True
+    mgr = SubagentManager(sessions=sessions, ctx_builder=ctx)
+    await mgr.wait_taskq_ready()
+    store = mgr._admission.taskq_store()
+    assert store is not None
+    try:
+        store.accept([_rec("fenced-row")])
+        store.fence_dispatch(lambda: False)
+        gen, proceed, reason = mgr._admission.taskq_claim("fenced-row")
+        assert (gen, proceed, reason) == (0, False, mgr._admission.CLAIM_UNAVAILABLE)
+        assert store.state_of("fenced-row") == _taskq.QUEUED
+    finally:
+        await mgr.cancel_all()
+
+
 # ── mutable gates re-run after the memory read; a refused row is failed ──────
 
 
