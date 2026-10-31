@@ -58,7 +58,7 @@ describe('UninstalledBuiltinSkillsList', () => {
     mockApi.uninstalledBuiltinSkills.mockRejectedValue(new Error('500'))
     render(<Harness />)
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Could not load the uninstalled built-in skills',
+      'Could not load the deleted built-in skills',
     )
     expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument()
   })
