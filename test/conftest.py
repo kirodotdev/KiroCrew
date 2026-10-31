@@ -1049,6 +1049,7 @@ def _git_identity(_floor_monkeypatch, _git_global_config) -> None:
 #: deterministic local failure instead of dialling the operator's gateway.
 _REAL_MCP_POST_MODULES = frozenset(
     {
+        "test_artifact_comment_mcp_identity",
         "test_ephemeral_sessions",
         "test_ephemeral_sessions_recognition",
         "test_mcp_api_base_resolution",
