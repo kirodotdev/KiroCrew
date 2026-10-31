@@ -109,7 +109,8 @@ function paneCopy(_languageGeneration: number, facts: {
       : [],
     effortUnavailable: facts.effortUnavailable ? i18nT('pages.chatPage.effort_options_unavailable') : '',
     configFailed: facts.configFailed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : '',
-    switchSlotGone: switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : '',
+    switchSlotGone: switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name, switchSlotGone.gestureNeutral) : '',
+    openOlderSessions: i18nT('pages.chatPage.open_older_sessions'),
     unresumable: unresumableResume ? unresumableNoticeMessage(unresumableResume) : '',
     undeletable: undeletableHistory ? historyDeleteRefusalMessage(undeletableHistory) : '',
   }
@@ -253,7 +254,26 @@ export default function ChatPaneNotices({
       />
       {/* A click on a listed-but-gone session (#6372): the fact at the click
           locus, through the required ErrorNotice surface. The store carries
-          the NAME; the sentence resolves here so a locale switch re-renders it. */}
+          the NAME; the sentence resolves here so a locale switch re-renders it.
+
+          The Older Sessions footer is gated on `gestureNeutral`, NOT on
+          `kind === 'gone'`. A `gestureNeutral` gone notice is the nav-arrow
+          Back/Forward (or `?sid=` deep-link) landing on a session that was
+          CLOSED since it was visited: closing is the routine end of a session
+          and its transcript survives under Older Sessions ("Already finished —
+          transcript under Older Sessions"), so pointing there is honest and
+          the copy ("That session was closed. Find its transcript in Older
+          Sessions.") matches. A gone notice WITHOUT `gestureNeutral` is a
+          session-row / named gone (`announceOnMissing`), whose copy still reads
+          "… was deleted and cannot be opened" — offering "Open Older Sessions"
+          under that sentence would contradict it (one line says destroyed, the
+          next offers a way back). That copy is pre-existing and out of this
+          PR's scope, so those notices keep no footer. A `failed` kind is a
+          genuine open error with nothing closed, so it also gets no route. The
+          anchor is an `<a>` (not a Btn) for the same reason UnrestoredTabsNotice's
+          is: it navigates, so middle-click, copy-link and the browser's own
+          affordances work; styled in the notice's danger register so it reads
+          as part of the notice. */}
       <ErrorNotice
         message={copy.switchSlotGone}
         report={switchSlotGone?.report}
@@ -261,6 +281,13 @@ export default function ChatPaneNotices({
         askAgent
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="switch-slot-gone"
+        footer={switchSlotGone?.kind === 'gone' && switchSlotGone?.gestureNeutral === true
+          ? (
+              <a href="/chat?history=1" className="underline text-danger hover:text-danger/80" data-testid="switch-slot-gone-older-sessions">
+                {copy.openOlderSessions}
+              </a>
+            )
+          : undefined}
       />
       <VoicePlaybackNotice slot={activeSlot} onBlockedSlotChange={setVoiceRecoverySlot} />
       <ErrorNotice
