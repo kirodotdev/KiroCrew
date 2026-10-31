@@ -8,6 +8,7 @@ import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, S
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
 import { api } from '../../api/client'
+import { fmtNumber } from '../../i18n/format'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
 import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
 import {
@@ -17,7 +18,8 @@ import {
   normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
   VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
-  COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape,
+  COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape, COMPACT_CUSTOM, AUTOCOMPACT_PCT_MIN,
+  AUTOCOMPACT_PCT_MAX,
 } from './chatPanelOptions'
 import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
@@ -244,8 +246,9 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     setFolderRootError, folderRootSaved, setFolderRootSaved, folderRootErrorId,
     folderRootEditedRef, folderRootIme, folderRootMut, commitFolderRoot, localWaitSecs,
     setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
-    keepModeMut,
-  } = useChatPanelTypedFields({ qc, setSaveError, dashQ, mcQ, mcCfg })
+    keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
+    compactClampNotice, compactPctMut,
+  } = useChatPanelTypedFields({ qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg })
 
   const {
     availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
@@ -765,17 +768,32 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
             hint={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
-            value={String(mcCfg?.session?.autocompact_pct ?? 70)}
+            value={compactSelect}
             options={COMPACT_OPTIONS}
             optionLabels={compactLabels()}
-            onChange={v =>
-              api.patchConfig('session.autocompact_pct', Number(v))
-                .then(() => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }))
-                .catch(() => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold')))
-            }
+            onChange={pickCompact}
             disabled={!mcQ.isSuccess}
             configKey="session.autocompact_pct"
           />
+          {compactSelect === COMPACT_CUSTOM && (
+            <>
+              <SettingsInput
+                label={i18nT('pages.settings.chatPanel.auto_compact_exact')}
+                description={i18nT('pages.settings.chatPanel.auto_compact_exact_hint', { min: fmtNumber(AUTOCOMPACT_PCT_MIN), max: fmtNumber(AUTOCOMPACT_PCT_MAX) })}
+                type="number"
+                value={localCompactPct}
+                min={AUTOCOMPACT_PCT_MIN}
+                max={AUTOCOMPACT_PCT_MAX}
+                step={0.5}
+                onChange={editCompactPct}
+                onBlur={commitCompactPct}
+                onKeyDown={e => { if (e.key === 'Enter') commitCompactPct() }}
+                // Locked while a save is in flight, like the wait budget below.
+                disabled={!mcQ.isSuccess || compactPctMut.isPending}
+              />
+              <FieldHint message={compactClampNotice} />
+            </>
+          )}
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
             description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}

@@ -177,7 +177,7 @@ const LATE_MOUNT_ANCHORS: ReadonlySet<string> = new Set([
  * is fed to `querySelector`/`matches`, never rendered — so this is where the
  * selector literals live, exempted by callee in `eslint.i18n.config.js`.
  */
-function settingAnchorSelector(
+export function settingAnchorSelector(
   attr: 'data-setting-id' | 'data-setting-key' | 'data-setting-label',
   value: string,
 ): string {
