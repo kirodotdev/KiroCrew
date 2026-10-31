@@ -9,12 +9,15 @@ import asyncio
 import functools
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.spec_hooks import (
     crew_fired_spec_hooks,
     session_agent,
     spec_hook_events,
     spec_hooks_run_nowhere,
     spec_project_dir,
+    spec_steering_read_nowhere,
+    spec_steering_resources,
     withheld_project_spec_hooks,
 )
 from kiro_crew.dashboard.chat_utils import (
@@ -157,8 +160,12 @@ async def _prepare_spec_hooks(
     one notice row, and so does a spec with ``confirm: true`` hooks, which Crew
     skips because it cannot ask for the confirmation. A new session on a backend
     where nothing runs the spec's hooks (``spec_hooks_run_nowhere``) gets one
-    notice row naming their events. None of them runs silently.
+    notice row naming their events, and one where nothing loads the spec's
+    ``file://`` steering (``spec_steering_read_nowhere``) gets one naming those
+    entries. None of them runs silently.
     """
+    if is_new and spec_steering_read_nowhere(client):
+        await _notice_unread_steering(state, slot, client, agent)
     if not capabilities_of(client).crew_fires_spec_hooks:
         if is_new and spec_hooks_run_nowhere(client):
             await _notice_spec_hooks_run_nowhere(state, slot, client, agent)
@@ -238,6 +245,58 @@ async def _notice_spec_hooks_run_nowhere(
             _redact_display_text(_spec_hooks_run_nowhere_notice(agent, events)),
             "msg msg-info",
             meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+        )
+
+
+#: How many ``file://`` entries the unread-steering notice names before it counts the rest.
+_STEERING_NOTICE_ENTRIES = 3
+
+
+def _unread_steering_notice(agent: str, entries: list[str]) -> str:
+    """The session-start notice for ``file://`` steering this backend never loads from ``resources``.
+
+    It names the field, not the files: the same file can still reach the model by
+    another route (folder steering, a crew member's essentials), so the row must
+    not claim the file has no effect.
+    """
+    # Redact each whole entry before the cut: a cut can split a credential
+    # pattern into a shape the redactors do not match.
+    shown = ", ".join(_redact_display_text(e)[:120] for e in entries[:_STEERING_NOTICE_ENTRIES])
+    more = len(entries) - _STEERING_NOTICE_ENTRIES
+    if more > 0:
+        shown += f" and {more} more"
+    return (
+        f"ℹ Agent {agent} lists steering files in resources ({shown}). This backend "
+        "does not load them from that field. They can still reach the model through "
+        "folder steering or a crew member's own context."
+    )
+
+
+async def _notice_unread_steering(
+    state: "DashboardState", slot: "_ChatSlot", client: Any, agent: str
+) -> None:
+    """One notice row naming the custom agent's ``file://`` steering *client* never loads.
+
+    Only a custom agent: the default agent's steering trees reach a mirrored
+    harness by other routes (folder steering, member essentials), so a row there
+    could claim a loss that did not happen. Best-effort: a spec that cannot be
+    read renders no row rather than failing the turn.
+    """
+    agent = session_agent(client, agent)
+    if not agent or is_kirocrew_default_agent(agent):
+        return
+    try:
+        entries = await asyncio.to_thread(spec_steering_resources, agent, spec_project_dir(client))
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("agent spec resources for %r could not be read", agent, exc_info=True)
+        return
+    if entries:
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _redact_display_text(_unread_steering_notice(agent, entries)),
+            "msg msg-info",
         )
 
 

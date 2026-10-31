@@ -580,3 +580,132 @@ async def test_an_in_turn_switch_that_leaves_the_session_stale_stops_the_turn(
     # Refused BEFORE the switch is recorded: the slot keeps its agent.
     assert recorded == []
     assert slot.agent == "helper"
+
+
+# --- `file://` steering nothing loads on a mirrored harness ----------------------
+
+_UNREAD_STEERING = "does not load them"
+_MIRRORED = [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_GOOSE]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_a_mirrored_new_session_names_the_custom_agents_unread_steering(
+    backend, agents_dir, notices
+):
+    _write_spec(
+        agents_dir,
+        "a1",
+        resources=["skill://~/s/**/SKILL.md", "file://.kiro/steering/**/*.md"],
+    )
+    _prepare(_client(backend), "a1", is_new=True)
+    steering = [t for t in notices if _UNREAD_STEERING in t]
+    assert len(steering) == 1
+    assert "a1 lists steering files in resources (file://.kiro/steering/**/*.md)" in steering[0]
+    assert "skill://" not in steering[0]
+
+
+@pytest.mark.parametrize("backend", _MIRRORED)
+def test_the_unread_steering_notice_needs_a_new_session_and_a_file_entry(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _write_spec(agents_dir, "skills_only", resources=["skill://~/s/**/SKILL.md"])
+    _prepare(_client(backend), "a1", is_new=False)
+    _prepare(_client(backend), "skills_only", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_PI])
+def test_no_unread_steering_notice_where_resources_are_read_or_nothing_is_ruled(
+    backend, agents_dir, notices
+):
+    _write_spec(agents_dir, "a1", resources=["file://x.md"])
+    _prepare(_client(backend), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_default_agent_gets_no_unread_steering_notice(agents_dir, notices):
+    _write_spec(agents_dir, "kirocrew", resources=["file://.kiro/steering/**/*.md"])
+    _prepare(_client(ACP_BACKEND_CODEX), "kirocrew", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+def test_the_unread_steering_notice_counts_entries_past_three(agents_dir, notices):
+    _write_spec(agents_dir, "a1", resources=[f"file://s{i}.md" for i in range(5)])
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert "(file://s0.md, file://s1.md, file://s2.md and 2 more)" in notices[0]
+
+
+def test_an_unreadable_spec_renders_no_unread_steering_notice(agents_dir, notices):
+    (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
+    _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True)
+    assert not any(_UNREAD_STEERING in t for t in notices)
+
+
+@pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE])
+def test_the_resources_ruling_says_no_reader_not_injected_steering(backend):
+    from kiro_crew.agent_sdk.backend_mcp_ability import OFF_CARD_CONCERNS
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern
+
+    reason = mirror_for(backend).rulings()[Concern.RESOURCES].reason
+    assert reason.startswith("no-reader:")
+    assert "file:// steering is not loaded from this field" in reason
+    for text in (reason, OFF_CARD_CONCERNS["RESOURCES"]):
+        assert "steering files are injected as context text" not in text
+        # Folder steering and member essentials can still carry the same file.
+        assert "reaches nothing" not in text
+
+
+def test_the_unread_steering_notice_names_the_field_not_a_loss(agents_dir, notices):
+    """The row must not say the file has no effect: other routes may carry it."""
+    _write_spec(agents_dir, "a1", resources=["file://.kiro/steering/review.md"])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert "from that field" in row
+    assert "can still reach the model through folder steering" in row
+    assert "no effect" not in row
+    assert "only if" not in row
+
+
+def test_the_spec_fields_doc_no_longer_calls_the_resources_reasons_wrong():
+    """Footnote 6 names the reason each mirror gives ``resources``."""
+    from pathlib import Path
+
+    import kiro_crew
+
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "reason the\n   code does not support" not in doc
+    assert "issues/12215" not in doc
+    assert "the shared `no-reader`\n   reason (`RESOURCES_NO_READER`)" in doc
+
+
+def test_the_spec_fields_doc_gives_goose_its_withheld_ruling():
+    """Footnote 6 matches goose's real ``resources`` disposition."""
+    from pathlib import Path
+
+    import kiro_crew
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern, Disposition
+
+    assert mirror_for(ACP_BACKEND_GOOSE).rulings()[Concern.RESOURCES].disposition == (
+        Disposition.WITHHELD
+    )
+    doc = (Path(kiro_crew.__file__).parent / "docs" / "agent-spec-fields.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`goose` rules it `withheld` too" in doc
+    assert "`goose` rules it `no-channel`" not in doc
+
+
+def test_the_unread_steering_notice_redacts_an_entry_before_cutting_it(agents_dir, notices):
+    """A cut at 120 characters must not split a credential so it escapes redaction."""
+    secret = "Zq7xLw9pRt3vNk2sQ8"
+    head = "file://https://alice:"
+    entry = head + "a" * (120 - len(head) - len(secret)) + secret + "@example.com/x.md"
+    _write_spec(agents_dir, "a1", resources=[entry])
+    _prepare(_client(ACP_BACKEND_OPENCODE), "a1", is_new=True)
+    (row,) = [t for t in notices if _UNREAD_STEERING in t]
+    assert secret not in row

@@ -69,6 +69,24 @@ class Disposition(Enum):
     WITHHELD = "withheld"
 
 
+#: The ``RESOURCES`` reason for a mirror whose harness is handed no spec file. The
+#: doc's class for it is ``no-reader`` (``docs/agent-spec-fields.md``), so the
+#: reason opens with that name. ``skill://`` still arrives because Crew injects
+#: the mapped skill directory on every backend (``context._skills_injection_plan``);
+#: ``file://`` steering is not loaded from this field, because Crew's steering load
+#: is gated to the ``provider=claude_code`` seam; the same file can still arrive
+#: as folder steering or a crew member's essentials. A custom agent's new session is told when its
+#: spec lists any (``dashboard/chat_turn/turn_spec_hooks.py``).
+RESOURCES_NO_READER = (
+    "no-reader: the harness is handed no spec file, so it loads neither scheme. "
+    "skill:// still arrives as the skill directory Crew injects on every backend; "
+    "file:// steering is not loaded from this field, since Crew's steering load "
+    "serves only the provider=claude_code seam (folder steering and crew member "
+    "context are separate routes); a custom agent's new session gets a notice "
+    "naming those entries"
+)
+
+
 @dataclass(frozen=True)
 class Ruling:
     """A backend's answer for one concern.

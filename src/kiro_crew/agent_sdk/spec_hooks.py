@@ -598,6 +598,45 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     return _HOOKS_CONCERN in ability.no_channel or _HOOKS_CONCERN in ability.withheld
 
 
+def spec_steering_read_nowhere(provider: object) -> bool:
+    """Whether a session on *provider* loads none of its spec's ``file://`` steering.
+
+    True where the backend's mirror rules ``resources`` ``withheld`` or
+    ``no-channel``: the harness is handed no spec, and Crew's own steering load
+    serves only the ``provider=claude_code`` seam's default agent
+    (``providers.mirrors.base.RESOURCES_NO_READER``). False for a backend with no
+    mirror (kiro-cli and KAS read ``resources`` themselves) and for one whose
+    rulings cannot be read, about which nothing is established.
+    """
+    # circular import: the mirrors package reaches back into agent_sdk.
+    from kiro_crew.providers.mirrors import mirror_for
+    from kiro_crew.providers.mirrors.base import Concern, Disposition
+
+    try:
+        mirror = mirror_for(capabilities_of(provider).backend)
+        ruling = mirror.rulings().get(Concern.RESOURCES) if mirror is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable ruling establishes nothing
+        return False
+    return ruling is not None and ruling.disposition in (
+        Disposition.WITHHELD,
+        Disposition.NO_CHANNEL,
+    )
+
+
+def spec_steering_resources(agent_id: str, project_dir: str | None = None) -> list[str]:
+    """The ``file://`` entries of the active agent spec's ``resources``, in order.
+
+    For the session-start notice on a backend where
+    :func:`spec_steering_read_nowhere` holds. Read through the spec reader the
+    hooks use, so it is the spec the session runs. Raises when the spec cannot be
+    read. *project_dir* is :func:`spec_project_dir` of the session.
+    """
+    resources = _agent_spec(agent_id, project_dir).get("resources")
+    if not isinstance(resources, list):
+        return []
+    return [r for r in resources if isinstance(r, str) and r.startswith("file://")]
+
+
 def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]:
     """The events the active agent spec has hooks on, as an agent spec spells them.
 
