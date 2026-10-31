@@ -42,7 +42,6 @@ from typing import (
 import aiohttp
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
-from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 
 import kiro_crew._facade_mirror as _facade_mirror
@@ -147,6 +146,10 @@ from kiro_crew.slack.sessions_view import (
     _message_surface_limit,
     sessions_include_ended,
 )
+
+# The proxy-selecting subclass under the SDK client's name, which is this
+# module's patch surface for the Socket Mode client.
+from kiro_crew.slack.socket_mode_proxy import ProxySelectingSocketModeClient as WSSocketModeClient
 from kiro_crew.slack.transport_dispatch import flat_dm_session_key, handle_message_transport
 from kiro_crew.start_priority import person_priority
 from kiro_crew.stats import Stats

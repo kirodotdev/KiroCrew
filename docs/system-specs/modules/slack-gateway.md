@@ -206,6 +206,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/gateway.py` | `GatewayOrchestrator` — the composition facade: the class declares the orchestrator's fields and binds the methods its owners define. Entry point: `run_gateway()`, defined in `gateway_runtime/process_entry.py` and importable from here. See [Composition](#composition) |
 | `slack/gateway_runtime/` | Private owners the facade composes, one responsibility each (see [Composition](#composition)); nothing else imports them |
 | `slack/events.py` | Socket Mode event routing — dedup (`SeenCache`), slash commands, `member_joined_channel` tracking, message dispatch. The import path and patch surface of the `events_*` owners beside it; see [Event and interaction owners](#event-and-interaction-owners) |
+| `slack/socket_mode_proxy.py` | The Socket Mode client `init_socket_mode` builds (`events.WSSocketModeClient`): slack_sdk's websockets client with an explicit proxy choice. See "Socket Mode proxy choice" |
 | `slack/interactions.py` | Block Kit button routing — tool approval, OPTIONS choices, cron/subagent ack, session resume, track channel approve/deny. The import path and patch surface of the `interactions_*` owners beside it; see [Event and interaction owners](#event-and-interaction-owners) |
 | `slack/blocks.py` | Reusable Block Kit dict builders for slash command UIs (session list). Action IDs: `mc_<command>_<action>[_<id>]` |
 | `slack/allowlist.py` | Tracking-channel allowlist prompts (`prompt_allowlist`, `prompt_track_channel`) + config persistence (`persist_allowed_user`, `persist_tracking_channel`) |
@@ -1793,7 +1794,29 @@ Only ordinary `Exception`s are swallowed; `CancelledError` (BaseException)
 still propagates so real task cancellation is not masked. There is no
 background retry of the initial connect — Slack DM stays disabled until the
 next gateway restart. The "connected to Slack" banner prints only after a
-confirmed connect.
+confirmed connect. An exception carrying a `status_reason` (the SOCKS proxy
+error below) shows that text on the settings badge instead of its class name.
+
+**Socket Mode proxy choice** (`slack/socket_mode_proxy.py`). websockets 15
+detects a proxy itself and, for `wss://`, prefers a SOCKS entry over HTTPS. On
+macOS `urllib.request.getproxies()` reads the system proxy settings, which
+local proxy tools fill with HTTP, HTTPS and SOCKS together, and speaking SOCKS
+needs `python-socks`, which is not a dependency. slack_sdk passes no `proxy`
+to `websockets.connect`, so `ProxySelectingSocketModeClient.connect` (the
+parent's body with one added argument; the SDK's reconnects call it too)
+passes `select_socket_mode_proxy(url)`:
+
+| Configured | Socket Mode connects |
+|---|---|
+| host on the bypass list (matched as bare host and as `host:port`) | directly |
+| no proxy | directly |
+| SOCKS, `python-socks` importable | through SOCKS |
+| SOCKS without `python-socks`, plus an HTTPS or HTTP proxy | through that proxy (HTTPS first), the same entries `http_proxy.resolve_proxy` gives every other client |
+| SOCKS only, without `python-socks` | not at all: `SocksProxyUnavailable` names the fix; it never routes around a configured proxy |
+| any other proxy | through it |
+
+With websockets older than 15 nothing is passed and the connect is direct, as
+those releases never used a proxy.
 
 Config example (remote access via URL):
 ```json
