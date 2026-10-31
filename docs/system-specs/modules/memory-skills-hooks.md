@@ -767,6 +767,15 @@ The history consolidation prompt includes a `"lessons"` key that extracts only i
 
 Exposed on dashboard: Overview → Memory tab → Memory Settings card. Changes apply immediately to running consolidator via `PUT /api/memory/settings`.
 
+The PUT clamps, never refuses, an in-range type: `history_idle_hours` to 0.5–24 and
+`history_max_days` to 7–365. The card's inputs carry the same bounds and clamp before
+sending, so the box shows the stored value (an emptied box saves the minimum, not 0).
+The card sends only the fields edited since load, so a value set above a ceiling in
+`config.json` survives a Save that changed the other field. A refused PUT (403, 400)
+shows an error on the card instead of "Saved". The client parses every memory save
+(settings and the preferences / projects / history documents) with `j`, so a
+refused write rejects and its card reports it rather than clearing the draft.
+
 A plain `config.json` write reaches the same instance. `HistoryConsolidator`
 subscribes to `skills`, `memory.history_idle_hours` and `memory.migrated`, and
 `reconfigure(cfg)` re-copies the idle window, the migrated flag and the ten

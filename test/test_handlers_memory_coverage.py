@@ -491,6 +491,44 @@ class TestMemorySettings:
         assert data["agent"]["provider"] == "acp"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("idle", "days", "want_idle", "want_days"),
+        [
+            (99, 9000, 24.0, 365),
+            ("inf", 365, 24.0, 365),
+            (24, 365, 24.0, 365),
+            # Too large for a float: float() raises OverflowError, still clamped.
+            (10**400, 10**400, 24.0, 365),
+            (-(10**400), -(10**400), 0.5, 7),
+        ],
+        ids=["above", "inf", "at-ceiling", "huge-int", "huge-negative-int"],
+    )
+    async def test_put_clamps_to_the_tab_ceilings(
+        self, tmp_path: Path, idle: object, days: int, want_idle: float, want_days: int
+    ) -> None:
+        # The Memory tab's inputs stop at 24 hours and 365 days; the route clamps
+        # to the same ceilings (never a 400), and keeps a non-finite float out of
+        # config.json.
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(
+            state,
+            method="PUT",
+            json_body={"history_idle_hours": idle, "history_max_days": days},
+        )
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 200
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["history_idle_hours"] == want_idle
+        assert data["memory"]["history_max_days"] == want_days
+
+    @pytest.mark.asyncio
     async def test_put_rejects_non_numeric_idle_hours(self, tmp_path: Path) -> None:
         cfg_path = tmp_path / "config.json"
         state = _make_state()
