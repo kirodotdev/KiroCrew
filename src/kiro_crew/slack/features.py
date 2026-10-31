@@ -5,7 +5,7 @@ The switches are the ones registered in :data:`kiro_crew.slack_manifest.FEATURE_
 a switch there is all this module needs. Two layers decide whether one runs, and
 both are read here so every caller answers "is it on?" the same way:
 
-* the **toggle** -- ``slack.<feature>`` in ``config.json`` (Settings → Slack). It
+* the **toggle** -- ``slack.<feature>`` in ``config.json`` (Settings → Messaging Channels → Slack). It
   also decides what the generated app manifest asks Slack for
   (:func:`manifest_features`). Anything that is not a real ``True`` is off. Read
   live, so a flip applies on the next event.
