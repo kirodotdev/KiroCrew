@@ -10,6 +10,7 @@ swallow it, so neither the lines within this function nor the order in which
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 
 from aiohttp import web
@@ -21,6 +22,8 @@ from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
 from kiro_crew.edition_locks import local_enable_locked
+
+_log = logging.getLogger(__name__)
 
 
 def register(app: web.Application) -> None:
@@ -233,11 +236,27 @@ def register(app: web.Application) -> None:
     for _builtin_name in BUILTIN_NAMES:
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
-            if hasattr(_mod, "register_routes"):
-                _mod.register_routes(app)
         except ModuleNotFoundError as exc:
             if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
                 raise
+            continue
+        except OSError as exc:
+            # One optional app whose files cannot be READ -- an endpoint security
+            # agent denying a path, a damaged install -- must not take the gateway,
+            # the dashboard and every session down with it. Its routes stay
+            # unregistered and the reason is logged; every other app still loads.
+            # Only the IMPORT is guarded: an error while registering routes would
+            # leave the app half-registered, so it still aborts boot.
+            _log.warning(
+                "built-in app %r is unavailable: reading it failed (%s: %s); its routes "
+                "are not registered and the gateway continues without it",
+                _builtin_name,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        if hasattr(_mod, "register_routes"):
+            _mod.register_routes(app)
 
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)
