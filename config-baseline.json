@@ -2317,6 +2317,8 @@
         "embedding_weight_repack": true,
         "embedding_child_process": false,
         "consolidation_write_child_process": false,
+        "recall_pool_processes": 0,
+        "recall_pool_worker_max_mb": 3072,
         "embed_model_url": "",
         "embed_model_path": "",
         "embed_model_id": "",
@@ -2473,6 +2475,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "memory.recall_pool_processes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Recall Worker Processes",
+      "help": "Number of child processes that answer the memory reads of a turn's context (facts, episodes, lessons), so several sessions can build their context at the same time instead of taking turns on the gateway's interpreter lock. 0 (the default) keeps those reads inside the gateway. Each process holds its own copy of the store's search data, so it uses memory in proportion to the store; see Recall Worker Memory Limit. If a process cannot start or fails, the read runs in the gateway instead. Takes effect within a second.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
+    },
+    {
+      "path": "memory.recall_pool_worker_max_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Recall Worker Memory Limit (MB)",
+      "help": "Memory limit for one recall worker process. A worker is not started while less than this is free on the host, and a worker whose resident memory passes it after a read exits and is replaced by the next read. Only used when Recall Worker Processes is above 0.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3072
     },
     {
       "path": "memory.embed_model_url",

@@ -139,6 +139,29 @@ class MemoryConfig:
             "next consolidation pass.",
         ),
     )
+    recall_pool_processes: int = field(
+        default=0,
+        metadata=_meta(
+            "Recall Worker Processes",
+            "Number of child processes that answer the memory reads of a turn's context "
+            "(facts, episodes, lessons), so several sessions can build their context at "
+            "the same time instead of taking turns on the gateway's interpreter lock. "
+            "0 (the default) keeps those reads inside the gateway. Each process holds its "
+            "own copy of the store's search data, so it uses memory in proportion to the "
+            "store; see Recall Worker Memory Limit. If a process cannot start or fails, "
+            "the read runs in the gateway instead. Takes effect within a second.",
+        ),
+    )
+    recall_pool_worker_max_mb: int = field(
+        default=3072,
+        metadata=_meta(
+            "Recall Worker Memory Limit (MB)",
+            "Memory limit for one recall worker process. A worker is not started while "
+            "less than this is free on the host, and a worker whose resident memory "
+            "passes it after a read exits and is replaced by the next read. Only used "
+            "when Recall Worker Processes is above 0.",
+        ),
+    )
     embed_model_url: str = field(
         default="",
         metadata=_meta(

@@ -30,6 +30,7 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("cli_jail.py", "_child_argv"),
     ("embeddings_child.py", "_ChildState.spawn"),
     ("consolidation_write_child.py", "WriteChild._spawn"),
+    ("recall_pool.py", "RecallPool._spawn"),
     ("cli_server_restart.py", "_spawn_detached_gateway"),
     ("cli_server_update.py", "_refresh_agent_config"),
     ("computer_use/overlay.py", "CursorOverlay._spawn"),

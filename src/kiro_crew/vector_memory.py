@@ -1164,6 +1164,13 @@ class VectorMemoryStore:
         self, query_text: str = "", cap: int = 1500, *, facts_only: bool = False
     ) -> str:
         """Format semantic memory for prompt injection with hybrid retrieval."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self, "semantic", {"query_text": query_text, "cap": cap, "facts_only": facts_only}
+        )
+        if pooled is not None:
+            return pooled
         return _semantic.get_semantic_context(self, query_text, cap, facts_only=facts_only)
 
     def _semantic_candidates_v2(
@@ -1300,6 +1307,19 @@ class VectorMemoryStore:
         cap: int = 3000,
     ) -> str:
         """Format episodic search results for prompt injection."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        pooled = _recall_pool.offload(
+            self,
+            "episodic",
+            {
+                "query_embedding": None if query_embedding is None else list(query_embedding),
+                "query_text": query_text,
+                "cap": cap,
+            },
+        )
+        if pooled is not None:
+            return pooled
         return _episodic_search.get_episodic_context(self, query_embedding, query_text, cap)
 
     # ── Facets: reading a carve back out ──
@@ -1404,6 +1424,23 @@ class VectorMemoryStore:
         experience_budget: int = 0,
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
+        from kiro_crew import recall_pool as _recall_pool  # circular import at module level
+
+        if _recall_pool.pool_enabled():
+            job_args = _recall_pool.lessons_args(
+                self,
+                query_text,
+                cap,
+                project_dir,
+                recall_query,
+                background,
+                hard_cap,
+                directive_budget,
+                experience_budget,
+            )
+            pooled = _recall_pool.offload(self, "lessons", job_args)
+            if pooled is not None:
+                return pooled
         return _lessons.get_lessons_context(
             self,
             query_text,
