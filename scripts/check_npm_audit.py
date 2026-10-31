@@ -32,12 +32,18 @@ AUDIT_TIMEOUT_SECONDS = 180
 AUDIT_ATTEMPTS = 3
 AUDIT_RETRY_BACKOFF_SECONDS = (5.0, 20.0)
 # Wall-clock budget for ALL audits together, so retries cannot outgrow the CI
-# job's own timeout (15 minutes, leaving room for checkout and toolchain
+# job's own timeout (21 minutes, leaving room for checkout and toolchain
 # setup): an attempt never gets more than the time left, and no retry starts
-# with less than one full attempt's ceiling remaining. Three lockfiles at the
-# degraded pace above (one slow attempt each, one retry) fit; a registry that
-# stays down still fails closed inside it.
-AUDIT_TOTAL_BUDGET_SECONDS = 720
+# with less than one full attempt's ceiling remaining. Five lockfiles at the
+# degraded pace above take 600s in slow first attempts; one retry takes that
+# to 720s and a second to 840s, so 1080 holds the degraded shape with the
+# warm-up and the backoff pauses inside it as well, where 720 left nothing
+# over once the set grew from three lockfiles to five. A healthy registry is
+# nowhere near either number: on 2026-10-26 the five production audits took
+# about 10s together and the full run, warm-up and build-chain pass included,
+# under a minute. A registry that stays down still fails closed inside the
+# budget.
+AUDIT_TOTAL_BUDGET_SECONDS = 1080
 # Substrings that mark npm's own connection-level failures. A stderr carrying
 # one of them (with an exit status other than the documented 0/1 audit results)
 # is transient; every other stderr is treated as definitive.
@@ -71,10 +77,16 @@ EXCEPTIONS_FILENAME = ".vulnerability-exceptions.json"
 #: report immediately useful and gives it teeth against new debt, without
 #: holding existing debt against an unrelated PR.
 BUILD_CHAIN_BASELINE_FILENAME = "build-chain-audit-baseline.json"
+#: The first three are the shipped Node trees. The last two are CI-only
+#: trees whose binaries execute with credentials (the review CLIs run in
+#: lanes holding Bedrock OIDC credentials and write tokens; the real
+#: adapters run in CI), so they are audited on the same terms.
 AUDITED_LOCKFILES = (
     "website/package-lock.json",
     "website/electron/package-lock.json",
     "site/package-lock.json",
+    ".github/review-cli/package-lock.json",
+    "test/real_adapters/package-lock.json",
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -719,7 +731,7 @@ def measure_build_chain(
     Takes the caller's *deadline* rather than opening its own. The obvious-looking
     alternative -- a second budget so an advisory count can never eat the time the
     blocking pass needs -- adds its seconds to the wall clock instead, and the job
-    that gates release allows 900s while the blocking budget alone is 720s. Sharing
+    that gates release allows 1260s while the blocking budget alone is 1080s. Sharing
     the deadline bounds BOTH passes by that one number, and costs the blocking pass
     nothing, because this runs only once its verdict is already decided. What is
     left over is exactly what the advisory pass may spend.
