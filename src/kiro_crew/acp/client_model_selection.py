@@ -29,7 +29,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
-from kiro_crew.acp import runtime_models
+from kiro_crew.acp import launch_tuning, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
@@ -188,15 +188,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         raise AcpError("Cannot set model before session is initialized")
     if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
         # The harness took its model when it started and has no wire channel to
-        # move it; an unchanged pin is already in force.
-        if model_id == self._model:
-            return
-        raise AcpError(
-            f"{self.backend} takes its model when it starts, so a running session "
-            "cannot switch to another one. Start a new chat on that model.",
-            transient=False,
-            user_worded=True,
-        )
+        # move it: the switch relaunches the process and reloads this session.
+        await launch_tuning.switch_launch_model(self, model_id)
+        return
     # This path deliberately does not scope: an explicit pick must reach the
     # adapter because its advertised list can omit an entitlement the adapter
     # accepts, and inherited pins are already scoped by their callers.

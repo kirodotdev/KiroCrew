@@ -25,8 +25,10 @@ own, each measured on the verified release (``STRANDS_VERIFIED_VERSION``):
 * **Provider keys come from Crew's vault** (``agent.strands_env``), validated against
   the provider names the CLI reads, and the gate withholds them from every shell and
   code child the agent runs.
-* **The model is a launch argument.** The CLI takes ``--model`` at start and offers no
-  ACP model channel in this mode, so ``auto`` launches with the project's own default.
+* **The model and effort are launch arguments.** The CLI takes ``--model`` and
+  ``--effort`` at start and offers no ACP channel for either in this mode, so ``auto``
+  launches with the project's own default, and a change relaunches the process and
+  reloads the session (``acp.launch_tuning``).
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import asyncio
 import functools
 import io
 import json
+import logging
 import os
 import shutil
 import stat
@@ -67,6 +70,7 @@ from kiro_crew.agent_sdk.backends import (
     STRANDS_NODE_FLOOR,
     STRANDS_PYTHON_REQUIREMENT,
     STRANDS_VERIFIED_VERSION,
+    launch_effort_supported,
 )
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
@@ -79,12 +83,16 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
 )
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "STRANDS_ENV_NAMES",
     "STRANDS_GATE_SHA256",
     "StrandsLaunch",
     "strands_gate_module_path",
     "strands_installed_version",
+    "strands_effort_args",
+    "strands_model_is_foreign",
     "strands_mcp_config",
     "strands_project_dir",
     "strands_python",
@@ -553,6 +561,20 @@ def discard_strands_mcp_config(path: str) -> None:
             os.remove(path)
 
 
+def strands_model_is_foreign(model: str) -> bool:
+    """Whether *model* is another harness's id, which the Strands CLI cannot run.
+
+    A ``<provider>/<model>`` id whose provider the CLI knows is Strands' own, even when
+    another harness's catalog holds the same spelling (pi and opencode advertise ids
+    of the same shape). Any other id is foreign when another catalog claims it: a
+    kiro-cli id picked before switching harness, or a fallback chain entry.
+    """
+    provider, sep, rest = model.partition("/")
+    if sep and rest and provider in STRANDS_PROVIDERS:
+        return False
+    return bool(model_scope.foreign_namespaces(model, "strands"))
+
+
 def strands_model_args(model: str | None) -> list[str]:
     """``["--model", <id>]`` for a model the CLI should run, or ``[]`` for its default.
 
@@ -562,12 +584,7 @@ def strands_model_args(model: str | None) -> list[str]:
     """
     if not model or model == DEFAULT_MODEL:
         return []
-    provider, sep, rest = model.partition("/")
-    # A ``<provider>/<model>`` id naming a Strands provider is Strands' own spelling,
-    # whatever another harness's cached catalog also lists: kept as picked.
-    if sep and rest and provider in STRANDS_PROVIDERS:
-        return ["--model", model]
-    if model_scope.foreign_namespaces(model, "strands"):
+    if strands_model_is_foreign(model):
         return []
     return ["--model", model]
 
@@ -590,6 +607,22 @@ def strands_launch_model_args(chat_model: str | None, configured: Callable[[], s
 def strands_launched_model(model_args: list[str]) -> str:
     """The model a Strands launch passes as ``--model``, or ``""`` when it passes none."""
     return model_args[1] if len(model_args) == 2 and model_args[0] == "--model" else ""
+
+
+def strands_effort_args(session: Any) -> list[str]:
+    """``["--effort", <level>]`` for the level the session launches with, else ``[]``.
+
+    ``_launch_effort`` is set by the provider (the slot's level) and by a switch
+    (``acp.launch_tuning``). No level, or one the CLI does not know, passes no flag,
+    so the project's own default runs rather than a CLI that exits on its argv.
+    """
+    level = getattr(session, "_launch_effort", "") or ""
+    if not level:
+        return []
+    if not launch_effort_supported(ACP_BACKEND_STRANDS, level):
+        logger.info("Strands: effort %r is not a CLI level; launching on its default", level)
+        return []
+    return ["--effort", level]
 
 
 # ── the read-back ──
@@ -899,7 +932,7 @@ class StrandsLaunch(ProcessAdapter):
             )
         except ValueError as exc:
             raise AcpError(str(exc), transient=False, user_worded=True) from None
-        argv = [*argv, "--agent", sealed_module, *model_args]
+        argv = [*argv, "--agent", sealed_module, *model_args, *strands_effort_args(session)]
         # What the session reports as its model is what it launched with: a pin
         # this harness left out (another harness's) never ran, so it is not kept.
         session._model = strands_launched_model(model_args) or DEFAULT_MODEL

@@ -33,7 +33,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
-from kiro_crew.acp import disposed_session, pi_steer_turn
+from kiro_crew.acp import disposed_session, launch_tuning, pi_steer_turn
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -698,7 +698,8 @@ async def send_message(self: AcpClient, message: str, timeout: float | None = No
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
 
     req_id = await self._send_prompt(message)
     return await self._read_prompt_response(req_id, timeout)
@@ -716,7 +717,8 @@ async def send_message_stream(
     # streaming subagent adopts this method, mirror that Pre/Post instrumentation here.
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
 
     req_id = await self._send_prompt(message)
     self.last_prompt_stats = self.last_prompt_stats.carry_over()
@@ -844,7 +846,8 @@ async def stream_events(
     timeout = await _effective_prompt_timeout_async(timeout)
     self._cancelled = False
     self._turn_done.clear()
-    await self.ensure_ready()
+    async with launch_tuning.switch_barrier(self):
+        await self.ensure_ready()
     req_id = await self._send_prompt(message, allow_image=allow_image)
     # aclosing(): a consumer that closes this stream early must close the
     # dispatcher too, so its finally records the turn's unanswered steers

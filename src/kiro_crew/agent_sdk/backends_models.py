@@ -534,10 +534,41 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
 #: Backends that take their model as a LAUNCH argument and have no model channel on
 #: the ACP wire. The Strands CLI's Python-project mode reads ``--model`` when it
 #: starts and answers no ``session/set_model`` or model config option, so a member's
-#: startup apply sends nothing (the spawn already passed the pin) and a mid-session
-#: switch is refused with a "start a new chat" remedy instead of an unknown-method
-#: error from the harness.
+#: startup apply sends nothing (the spawn already passed the pin). A switch on an idle
+#: session replaces the process with one launched on the new model, and that process
+#: ``session/load``s the same session id, so the harness replays its own history
+#: (``acp.launch_tuning``). Strands' own TUI switches the same way: it restarts its
+#: worker on the new model. Such a harness advertises no model list either, so its
+#: picker offers ``auto`` and the model Kiro Crew's settings name for it, and an id
+#: another harness's catalog owns is refused rather than relaunched on.
 ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: Backends that take their reasoning effort as a LAUNCH argument, by the same
+#: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is
+#: applied at spawn and a change relaunches the process and reloads the session. A
+#: separate set from the model one because the two flags are separate facts of the
+#: CLI, and a harness can take one at launch and the other on the wire.
+ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.
+#: Strands: ``EFFORT_LEVELS`` in ``@strands-agents/harness``, read by
+#: ``cli/arguments.js`` in the pinned 0.2.3; each of Crew's own levels is spelled the
+#: same there.
+EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND: Mapping[str, FrozenSet[str]] = {
+    ACP_BACKEND_STRANDS: frozenset(
+        {"auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"}
+    ),
+}
+
+
+def launch_effort_supported(backend: str, level: str) -> bool:
+    """Whether a launch-effort harness's CLI takes *level* on its argv.
+
+    The one vocabulary a live change, every cold start and the launch argv judge a
+    level by, so a level the switch accepted is the level the next start launches
+    with. ``False`` for any backend outside the table.
+    """
+    return bool(level) and level in EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND.get(backend, ())
 
 
 def model_registry_namespace(backend: str) -> str:

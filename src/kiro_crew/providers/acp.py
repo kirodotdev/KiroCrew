@@ -156,6 +156,7 @@ class AcpProvider(LLMProvider):
         acp_backend: str = "",
         effort_per_model: dict[str, str] | None = None,
         unbound_effort: str = "",
+        launch_default_effort: str = "",
         effort_defaults: object = None,
         tool_search: bool | None = None,
         tool_search_min_pct: object = None,
@@ -275,6 +276,10 @@ class AcpProvider(LLMProvider):
         # and bound to that model on every (re)start (``_bind_unbound_effort``).
         self._unbound_effort: str = unbound_effort or ""
         self._unbound_effort_drop_logged: bool = False
+        # A launch-effort harness (Strands): the level a session inherits with no
+        # slot override (crew pin, role default, ``agent.reasoning_effort``), the
+        # one a cold start resolves. A cleared override relaunches on it.
+        self._launch_default_effort: str = launch_default_effort or ""
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
