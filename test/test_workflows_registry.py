@@ -261,3 +261,52 @@ async def test_terminal_handoff_counts_until_driver_exits() -> None:
     finally:
         release.set()
         await task
+
+
+def test_runhandle_bounds_retained_fallback_fields() -> None:
+    # A field the run RETAINS must be bounded where it is stored, not only at
+    # delivery: a direct POST can forward a body value that skipped the MCP
+    # schema. __post_init__ caps both on every construction path.
+    handle = RunHandle(
+        run_id="wf_b",
+        name="n",
+        fallback_title="x" * 5000,
+        fallback_folder_id="y" * 5000,
+    )
+    assert len(handle.fallback_title) == 200
+    assert len(handle.fallback_folder_id) == 64
+
+
+def test_runhandle_redacts_title_credential_before_the_cap() -> None:
+    # A credential that crosses the length cap must be REDACTED, not sliced:
+    # cutting first would leave a partial token below the redactor's threshold,
+    # and that partial would then survive checkpoint/snapshot redaction and
+    # reach disk/the dashboard. Redaction runs on the full title before the cap.
+    token = "ghp_" + "A" * 36  # a full 40-char credential the redactor catches
+    handle = RunHandle(run_id="wf_sec", name="n", fallback_title="x" * 175 + token)
+    assert "ghp_" not in handle.fallback_title
+    assert token not in handle.fallback_title
+    assert "A" * 36 not in handle.fallback_title
+    assert len(handle.fallback_title) <= 200
+
+
+def test_runhandle_coerces_non_string_fallback_fields() -> None:
+    # A non-string slipped past typing is coerced to "" rather than retained.
+    handle = RunHandle(run_id="wf_c", name="n", fallback_title=123, fallback_folder_id=object())  # type: ignore[arg-type]
+    assert handle.fallback_title == ""
+    assert handle.fallback_folder_id == ""
+
+
+def test_runhandle_restore_bounds_fallback_fields() -> None:
+    # Restore from a stored record also bounds the fields (same chokepoint).
+    handle = RunHandle.from_store_json(
+        {
+            "run_id": "wf_r",
+            "name": "n",
+            "status": STATUS_FINISHED,
+            "fallback_title": "t" * 5000,
+            "fallback_folder_id": "f" * 5000,
+        }
+    )
+    assert len(handle.fallback_title) == 200
+    assert len(handle.fallback_folder_id) == 64

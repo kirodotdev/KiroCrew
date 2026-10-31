@@ -1314,6 +1314,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The label leaves the process only through sinks registered in security_posture_sinks_*.py (the
         # sub-agent frames and snapshots, which redact it again).
         "spawn_label.py",
+        # Same shape as spawn_label: `RunHandle.__post_init__` redacts a workflow
+        # run's retained fallback-slot title BEFORE applying its length cap, so
+        # the cap cannot slice a credential into a fragment the egress redactors
+        # would miss. The title leaves the process only through the registered
+        # snapshot/injection sinks, which redact again; this is retained-input
+        # hygiene, not an output boundary.
+        "workflows/registry.py",
     }
 )
 
