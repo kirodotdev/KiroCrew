@@ -1195,6 +1195,16 @@ def _spent(ask: QuickAsk) -> bool:
     return bool(ask.outcome) or asyncio.get_running_loop().time() >= ask.deadline
 
 
+def _still_live(ask: QuickAsk) -> None:
+    """Right before a dispatch that changes the page: the ask has not ended meanwhile.
+
+    The awaits before it (re-verification, node resolution, focus) can outlast the
+    ask: Stop folds it while they run. Raises ``cancelled`` then, so nothing lands.
+    """
+    if _spent(ask):
+        raise AskError(CANCELLED)
+
+
 def _enroll(frames: Any, login: _Login) -> None:
     """Before a write into a same-process cross-origin frame, have the frame guards
     (``FrameOps.count``: the screenshot and typing guards) look into it too: the top
@@ -1207,25 +1217,27 @@ def _enroll(frames: Any, login: _Login) -> None:
 
 async def _write(ask: QuickAsk, login: _Login, node: int, value: str) -> None:
     """:func:`fill`'s write, into one node the walk just checked, while the ask is live."""
+    _still_live(ask)
     await login.probe._send("DOM.focus", {"backendNodeId": node})
     await login.probe.call(node, login.ctx, _PREPARE_JS)
     # Last thing before the value leaves the gateway: the ask is still live.
-    if _spent(ask):
-        raise AskError(CANCELLED)
+    _still_live(ask)
     if await login.probe.call(node, login.ctx, _INSERT_JS, value, login.origin) is not True:
         raise AskError(ORIGIN_CHANGED)
 
 
-async def _press_enter(top: PageProbe, login: _Login, node: int) -> None:
+async def _press_enter(ask: QuickAsk, top: PageProbe, login: _Login, node: int) -> None:
     """Enter, on the field just written, while it still holds focus. Carries no value."""
     if await login.probe.call(node, login.ctx, _FOCUSED_JS) is not True:
         raise AskError(ORIGIN_CHANGED)
+    _still_live(ask)
     key = {"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
     await top._send("Input.dispatchKeyEvent", {"type": "keyDown", **key, "text": "\r"})
     await top._send("Input.dispatchKeyEvent", {"type": "keyUp", **key})
 
 
-async def _click(top: PageProbe, login: _Login) -> None:
+async def _click(ask: QuickAsk, top: PageProbe, login: _Login) -> None:
+    _still_live(ask)
     x, y, w, h = login.rects["action"]
     ox, oy = login.offset
     point = {"x": round(ox + x + w / 2, 2), "y": round(oy + y + h / 2, 2), "button": "left"}
@@ -1268,19 +1280,19 @@ async def sign_in(
             if login.user and not user_done:
                 await _write(ask, login, login.user, user)  # type: ignore[arg-type]
             await _write(ask, login, login.password, password)
-            await _press_enter(probe, login, login.password)
+            await _press_enter(ask, probe, login, login.password)
             return
         now = loop.time()
         if login is not None and login.user:
             if not user_done:
                 await _write(ask, login, login.user, user)  # type: ignore[arg-type]
-                await _press_enter(probe, login, login.user)
+                await _press_enter(ask, probe, login, login.user)
                 user_done = True
                 deadline, nudge_at = now + STEP_WAIT_S, now + STEP_NUDGE_S
             elif user is None:
                 raise AskError(NO_FIELD)  # the page wants a username the person left out
             elif nudge_at and now >= nudge_at and login.action:
-                await _click(probe, login)
+                await _click(ask, probe, login)
                 nudge_at = 0.0
         if now >= deadline:
             raise AskError(NO_FIELD)
@@ -1360,8 +1372,10 @@ async def fill(probe: PageProbe, ask: QuickAsk, values: dict[str, str]) -> None:
         value = values.get(b.role)
         if value is None:
             continue
+        _still_live(ask)
         await fprobe._send("DOM.focus", {"backendNodeId": b.node})
         await fprobe.call(b.node, ctx, _PREPARE_JS)
+        _still_live(ask)
         if await fprobe.call(b.node, ctx, _INSERT_JS, value, ask.origin) is not True:
             raise AskError(ORIGIN_CHANGED)
 
@@ -1377,6 +1391,7 @@ async def click_once(probe: PageProbe, ask: QuickAsk) -> None:
         "button": "left",
         "clickCount": 1,
     }
+    _still_live(ask)
     await probe._send("Input.dispatchMouseEvent", {"type": "mousePressed", **point})
     await probe._send("Input.dispatchMouseEvent", {"type": "mouseReleased", **point})
 

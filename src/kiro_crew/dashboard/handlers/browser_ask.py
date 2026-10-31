@@ -343,6 +343,10 @@ async def _act(
     finally:
         if values is not None:
             values.clear()  # the person's values die with this answer
+    if ask.outcome:
+        # The ask ended while the last dispatch was in flight (Stop folded it): the
+        # answer is not reported as done on top of the settled outcome.
+        return _fail(409, "stale")
     await _finish(hub, key, ask, action, outcome)
     return _ok(outcome=outcome)
 

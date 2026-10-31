@@ -864,6 +864,49 @@ async def test_confirm_clicks_the_bound_button_exactly_once() -> None:
     assert len(page.clicks()) == 2
 
 
+def _stop_on_first(page: Any, hub: Any, method: str, declaration: str | None = None) -> None:
+    """The turn ends (Stop) the first time *method* is sent, as the answer re-checks."""
+    original = page.send
+    fired = {"done": False}
+
+    async def send(m: str, params: Any = None, session_id: Any = None) -> Any:
+        hit = m == method and (
+            declaration is None or (params or {}).get("functionDeclaration") == declaration
+        )
+        if hit and not fired["done"]:
+            fired["done"] = True
+            hub.turn_ended(KEY)
+        return await original(m, params, session_id)
+
+    page.send = send  # type: ignore[method-assign]
+
+
+async def test_a_fill_the_turn_ended_during_lands_nothing_and_is_not_filled() -> None:
+    page = FakePage()
+    page.add("e7", type="text")
+    hub, _rec, ask = await _asked(
+        page, {"kind": "otp", "targets": ["otp=e7"], "reason": "r", "digits": 6}
+    )
+    _stop_on_first(page, hub, "Runtime.callFunctionOn", qa._PREPARE_JS)
+    status, out, _ = await _answer(
+        {"ask_id": ask.id, "action": "fill", "values": {"otp": "123456"}}
+    )
+    assert (status, out.get("error")) == (409, "stale"), (status, out)
+    assert page.written() == []
+
+
+async def test_a_confirm_the_turn_ended_during_clicks_nothing() -> None:
+    page = FakePage()
+    page.add("e2", tag="button", text="Buy")
+    hub, _rec, ask = await _asked(
+        page, {"kind": "confirm", "targets": ["action=e2"], "reason": "Buy", "summary": "Pay"}
+    )
+    _stop_on_first(page, hub, "Runtime.callFunctionOn")
+    status, out, _ = await _answer({"ask_id": ask.id, "action": "confirm"})
+    assert (status, out.get("error")) == (409, "stale"), (status, out)
+    assert page.clicks() == []
+
+
 async def test_confirm_on_a_covered_button_clicks_nothing() -> None:
     page = FakePage()
     page.add("e2", tag="button", text="Buy")
