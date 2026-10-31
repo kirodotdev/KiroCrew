@@ -27,6 +27,10 @@ So this module adds a second read over the SAME store, for the other caller:
   "is this worker running" on a page that may not receive the key.
 
 The conductor's route is not touched, so nothing reading it today can break.
+
+The action route also carries ``open``, the one action that RETURNS a worker's session
+key: to the dashboard owner's own host, so it can navigate there. See
+:func:`api_work_ledger_board_action` for the exact contract.
 """
 
 from __future__ import annotations
@@ -109,6 +113,11 @@ _INVALID_CONDUCTOR = (
 #: invented here.
 _TAKE_OVER_AVAILABLE = False
 _TAKE_OVER_UNAVAILABLE_CODE = "no_server_primitive"
+
+#: The third action. It is not in :data:`_BOARD_ACTIONS` because it is addressed by the
+#: dashboard the page is drawn on, not by a conductor key, and it is not limited to
+#: orphaned items.
+_OPEN_ACTION = "open"
 
 #: Source label on the SEL line this surface's stop writes.
 _STOP_SOURCE = "crew_board"
@@ -430,21 +439,182 @@ def _refuse(code: str, message: str, status: int) -> web.Response:
     return web.json_response({"ok": False, "error": message, "code": code}, status=status)
 
 
+def _refuse_open(
+    caller: str, label: str, item_id: str, code: str, message: str, status: int
+) -> web.Response:
+    """A refused ``open``: audited as a denial, answered without any session key."""
+    _audit(
+        caller,
+        "crew_board_action",
+        "denied",
+        resources=f"dashboard={label} item={item_id}:{code}",
+    )
+    return _refuse(code, message, status)
+
+
+class _OpenRefused(Exception):
+    """An ``open`` the route answers with this code, message and status."""
+
+    def __init__(self, code: str, message: str, status: int) -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.status = status
+
+
+async def _dashboard_slot_of(state: DashboardState, dashboard: dict[str, Any]) -> tuple[str, str]:
+    """``(slot, audit label)`` for the dashboard an ``open`` names; raises :class:`_OpenRefused`.
+
+    The same resolution the dashboard's own read does, so ``open`` searches the fold the
+    page was drawn from: a session dashboard is the slot itself and must be a ROOT
+    session (:func:`~kiro_crew.dashboard.card_lifecycle.is_root_session`); a member
+    dashboard is the crewmate's DM slot (``member_dashboard.dashboard_slot``).
+    """
+    kind = dashboard.get("kind")
+    if kind == "session":
+        slot_key = dashboard.get("slot")
+        if not isinstance(slot_key, str) or not slot_key.strip():
+            raise _OpenRefused("invalid_dashboard", "a session dashboard needs its slot", 400)
+        slot_key = slot_key.strip()
+        from kiro_crew.dashboard.card_lifecycle import root_session_refusal
+
+        refusal = root_session_refusal(state.get_slot(slot_key))
+        if refusal is not None:
+            raise _OpenRefused(refusal[0], refusal[1], 404)
+        return slot_key, f"session:{slot_key}"
+    if kind == "member":
+        slug = dashboard.get("slug")
+        member = dashboard.get("member")
+        if not isinstance(slug, str) or not isinstance(member, str) or not slug or not member:
+            raise _OpenRefused(
+                "invalid_dashboard", "a member dashboard needs its slug and member", 400
+            )
+        # Deferred: the member handler imports half the dashboard, and this module is
+        # imported by the gateway's route table before it.
+        from kiro_crew.dashboard.handlers import member_dashboard
+
+        # The dashboard read's own resolver, so a name it accepts is a name `open` accepts.
+        resolved = await member_dashboard.resolve_names(slug, member)
+        if isinstance(resolved, member_dashboard.NameRefusal):
+            raise _OpenRefused(resolved.code, resolved.message, resolved.status)
+        slug, member = resolved
+        member_slot = await asyncio.to_thread(member_dashboard.dashboard_slot, member, slug)
+        return member_slot, f"member:{slug}"
+    raise _OpenRefused("invalid_dashboard", "dashboard.kind must be 'session' or 'member'", 400)
+
+
+async def _open_worker_session(
+    request: web.Request, body: dict[str, Any], caller: str
+) -> web.Response:
+    """``open``: the slot key of the worker session an org-chart card stands for.
+
+    Body: ``{"action": "open", "item_id": "it_...", "dashboard": {"kind": "session",
+    "slot": KEY} | {"kind": "member", "slug": SLUG, "member": NAME}}``. Answers
+    ``{"ok": true, "action": "open", "item_id": ..., "slot": WORKER_SLOT}``.
+
+    Addressed by the DASHBOARD, not by a conductor, because the page cannot know a
+    conductor key: a card holds a per-render board alias and an item id, and the alias
+    table is never stored. The server instead reads the ``workstreams`` fold of the
+    dashboard's own slot, the state the page was drawn from, and finds the item there
+    (:func:`~kiro_crew.crew_log.projection_readers.workstream_item_workers`). An id on more
+    than one board is refused 409 ``ambiguous_item``: the alias cannot break the tie.
+
+    The caller is the dashboard owner (the route's gate ran before this), and the owner's
+    browser already holds every session key on the gateway through ``/api/chat/slots``, so
+    returning this one adds no information surface. It goes to the host's JavaScript only.
+    """
+    item_id = str(body.get("item_id") or "").strip()
+    dashboard = body.get("dashboard")
+    label = "unresolved"
+    if "conductor" in body and dashboard is not None:
+        return _refuse_open(
+            caller,
+            label,
+            item_id[:32],
+            "invalid_body",
+            "name the dashboard or the conductor, not both",
+            400,
+        )
+    if not work_ledger._ITEM_ID_RE.fullmatch(item_id):
+        return _refuse_open(
+            caller, label, item_id[:32], "invalid_item_id", "item_id is not an item id", 400
+        )
+    if not isinstance(dashboard, dict):
+        return _refuse_open(
+            caller, label, item_id, "invalid_dashboard", "a dashboard object is required", 400
+        )
+
+    state: DashboardState = request.app["state"]
+    try:
+        slot_key, label = await _dashboard_slot_of(state, dashboard)
+    except _OpenRefused as refusal:
+        return _refuse_open(caller, label, item_id, refusal.code, refusal.message, refusal.status)
+
+    # Deferred like the other store calls in the dashboard handlers: the crew log is an
+    # optional subsystem and the boot path must not load it.
+    from kiro_crew.crew_log import projection
+
+    try:
+        workers = await asyncio.to_thread(projection.workstream_item_workers, slot_key, item_id)
+    except Exception:
+        logger.warning("crew board: workstreams read failed for open", exc_info=True)
+        return _refuse_open(
+            caller, label, item_id, "workstreams_unavailable", "the workstreams read failed", 503
+        )
+    if not workers:
+        return _refuse_open(
+            caller, label, item_id, "item_not_found", "no such item on this dashboard", 404
+        )
+    if len(workers) > 1:
+        return _refuse_open(
+            caller,
+            label,
+            item_id,
+            "ambiguous_item",
+            "this item id is on more than one board; open the session from the sidebar",
+            409,
+        )
+    worker_key = workers[0]
+    if not worker_key:
+        return _refuse_open(
+            caller, label, item_id, "no_worker_bound", "this item has no bound worker to open", 409
+        )
+    worker = _find_slot(state, worker_key)
+    if worker is None:
+        return _refuse_open(
+            caller,
+            label,
+            item_id,
+            "worker_closed",
+            "this item's worker session is no longer open",
+            409,
+        )
+    _audit(caller, "crew_board_action", "ok", resources=f"dashboard={label} item={item_id}:open")
+    return web.json_response(
+        {"ok": True, "action": _OPEN_ACTION, "item_id": item_id, "slot": str(worker.key)}
+    )
+
+
 async def api_work_ledger_board_action(request: web.Request) -> web.Response:
-    """POST /api/crew-board/action — act on one orphaned item.
+    """POST /api/crew-board/action — act on one item.
 
-    Body: ``{"conductor": KEY, "item_id": "it_...", "action": "stop"|"take_over"}``.
+    Body: ``{"conductor": KEY, "item_id": "it_...", "action": "stop"|"take_over"}``,
+    or, for ``open``, ``{"action": "open", "item_id": "it_...", "dashboard": {...}}``
+    (see :func:`_open_worker_session`).
 
-    The worker session key is resolved HERE, from the store, and never leaves: it
-    is not accepted from the body and not returned, which is what lets the page
+    The worker session key is resolved HERE, from the store, and is never accepted from
+    the body. ``stop`` and ``take_over`` never return it, which is what lets the page
     drive an affordance whose target it is not allowed to see. The masking on the
     read is what makes this route necessary at all — a browser that cannot learn
-    the key cannot reach that session itself.
+    the key cannot reach that session itself. ``open`` returns it to its caller, whom
+    the owner gate below has already established as the dashboard owner, so the host can
+    navigate to that session. The host must never pass it into a dashboard frame.
 
-    Scoped to ORPHANED items, per Phase 4: that is the state the affordances are
-    named for, and it is the state in which nothing is left reading the worker's
-    reports. Anything else is ``409`` rather than a quiet no-op, so a page working
-    from a stale poll is told its view has moved on.
+    ``stop`` and ``take_over`` are scoped to ORPHANED items, per Phase 4: that is the
+    state the affordances are named for, and it is the state in which nothing is left
+    reading the worker's reports. Anything else is ``409`` rather than a quiet no-op, so
+    a page working from a stale poll is told its view has moved on. ``open`` works on any
+    item whose worker session is still open.
 
     Delegates the stop to ``chat_handlers.stop_slot_turn``, the single primitive the
     Stop button and ``session_control.stop_target`` both already use — not to
@@ -476,9 +646,12 @@ async def api_work_ledger_board_action(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         return _refuse("invalid_body", "a JSON object body is required", 400)
 
+    action = str(body.get("action") or "").strip()
+    if action == _OPEN_ACTION:
+        return await _open_worker_session(request, body, caller)
+
     requested = str(body.get("conductor") or "").strip()
     item_id = str(body.get("item_id") or "").strip()
-    action = str(body.get("action") or "").strip()
     if not requested:
         return _refuse("missing_conductor", "a conductor session key is required", 400)
     if not item_id:
