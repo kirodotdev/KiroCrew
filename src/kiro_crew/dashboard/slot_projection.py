@@ -441,6 +441,9 @@ class SlotProjection:
             "crew_mode_agent": redact(getattr(slot, "crew_mode_agent", "") or ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
+            # The chat's picked backend ("" = gateway default); the composer's
+            # backend chip reads this, so it rides on every slot row.
+            "backend": getattr(slot, "backend", "") or "",
             # Whether this session's turns ask Jev which model tier to run on
             # (the picker's "Auto (Jev)" entry). Shipped on every slot, not only
             # the routed ones, so the picker branches on a field that is always
