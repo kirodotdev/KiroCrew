@@ -244,8 +244,8 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'developer.decisions-jev entry deep-links to',
   },
   'DisplayPanel.tsx': {
-    counts: { SimpleSelect: 1, Input: 1 },
-    reason: 'theme-install form (source picker + location) — transient install flow, not settings',
+    counts: { SimpleSelect: 1, Input: 1, input: 1 },
+    reason: 'theme-install form (source picker + location, plus the hidden zip file picker behind the upload source) — transient install flow, not settings',
   },
   'InstanceFormFields.tsx': {
     counts: { SimpleSelect: 1, input: 9 },

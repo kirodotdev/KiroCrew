@@ -8886,18 +8886,17 @@
       "var_warning": "경고"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• 어시스턴트가 테마에 맞는 페르소나를 사용합니다(보안과 정확성은 항상 우선하며, 언제든지 페르소나를 없애 달라고 요청할 수 있습니다).",
-      "enable_experience": "체험 사용",
       "enable_named_experience": "‘{{name}}’ 체험을 사용할까요?",
       "keep_colors_only": "색만 유지",
       "mute_theme_sounds": "테마 사운드 음소거",
       "persona_text": "페르소나 텍스트",
       "persona_that_will_be_added_to_the_assistant_s_sy": "어시스턴트의 시스템 프롬프트에 추가될 페르소나:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• 테마 사운드를 재생합니다(음소거 설정과 모션 줄이기 설정을 따릅니다).",
-      "show_animated_visual_overlays": "• 애니메이션 시각 오버레이를 표시합니다.",
       "theme_overlay": "테마 오버레이 {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "이 테마는 체험 테마입니다. 사용하면 다음과 같이 동작합니다:",
-      "unmute_theme_sounds": "테마 사운드 음소거 해제"
+      "unmute_theme_sounds": "테마 사운드 음소거 해제",
+      "save": "저장",
+      "sounds": "사운드",
+      "overlays": "오버레이",
+      "persona": "페르소나"
     },
     "timezoneSelect": {
       "render_timezone": "표시 시간대"
@@ -17001,6 +17000,7 @@
         "installed_theme_could_not_be_loaded": "설치된 테마를 불러올 수 없습니다. 다시 설치하거나 다른 테마를 선택하세요.",
         "custom_theme_could_not_be_loaded": "이 테마를 불러올 수 없습니다. 다른 테마를 선택하거나 이 테마를 편집하세요.",
         "local_folder": "로컬 폴더",
+        "zip_file": "Zip 파일",
         "mode": "모드",
         "native_window_zoom_tip": "네이티브 창 확대/축소로, {{mod}}+ / {{mod}}−와 동일한 설정입니다(50%–300%). 다시 실행해도 유지됩니다.",
         "new_theme": "+ 새 테마",
@@ -17086,7 +17086,14 @@
         "desktop_app": "데스크톱 앱",
         "keep_running_when_window_closed": "창을 닫아도 앱을 백그라운드에서 계속 실행",
         "keep_running_when_window_closed_desc": "창을 닫으면 {{productName}}이(가) 숨겨지고 세션과 작업은 계속 실행됩니다. 이 옵션을 끄면 닫기 버튼이 앱을 종료합니다. 이 앱이 시작한 게이트웨이는 함께 중지되고, 연결만 된 게이트웨이는 계속 실행됩니다.",
-        "keep_running_when_window_closed_save_failed": "이 설정을 저장하지 못했습니다. 아무것도 변경되지 않았습니다. 다시 시도하세요."
+        "keep_running_when_window_closed_save_failed": "이 설정을 저장하지 못했습니다. 아무것도 변경되지 않았습니다. 다시 시도하세요.",
+        "choose_zip_file": ".zip 파일 선택",
+        "theme_experience": "체험",
+        "theme_experience_sounds": "사운드",
+        "theme_experience_overlays": "오버레이",
+        "theme_experience_persona": "페르소나",
+        "theme_experience_persona_text": "페르소나 텍스트",
+        "theme_experience_persona_save": "저장"
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

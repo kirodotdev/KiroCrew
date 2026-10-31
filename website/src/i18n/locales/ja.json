@@ -8886,18 +8886,17 @@
       "var_warning": "警告"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• アシスタントで設定されたペルソナを採用する（セキュリティと正確性は常に優先。任意の時点でペルソナを削除するよう依頼できます）。",
-      "enable_experience": "エクスペリエンスを有効にする",
       "enable_named_experience": "「{{name}}」エクスペリエンスを有効にしますか？",
       "keep_colors_only": "色のみ保持",
       "mute_theme_sounds": "テーマサウンドをミュート",
       "persona_text": "ペルソナテキスト",
       "persona_that_will_be_added_to_the_assistant_s_sy": "アシスタントのシステムプロンプトに追加されるペルソナ:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• テーマサウンドを再生する（ミュートトグルと動きを減らす設定を尊重）。",
-      "show_animated_visual_overlays": "• アニメーション視覚オーバーレイを表示。",
       "theme_overlay": "テーマオーバーレイ {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "これはエクスペリエンステーマです。有効にすると:",
-      "unmute_theme_sounds": "テーマサウンドをミュート解除"
+      "unmute_theme_sounds": "テーマサウンドをミュート解除",
+      "save": "保存",
+      "sounds": "サウンド",
+      "overlays": "オーバーレイ",
+      "persona": "ペルソナ"
     },
     "timezoneSelect": {
       "render_timezone": "タイムゾーンをレンダリング"
@@ -17001,6 +17000,7 @@
         "installed_theme_could_not_be_loaded": "インストール済みのテーマを読み込めませんでした。再インストールするか、別のテーマを選択してください。",
         "custom_theme_could_not_be_loaded": "このテーマを読み込めませんでした。別のテーマを選択するか、このテーマを編集してください。",
         "local_folder": "ローカルフォルダー",
+        "zip_file": "Zip ファイル",
         "mode": "モード",
         "native_window_zoom_tip": "ネイティブウィンドウのズーム（{{mod}}+ / {{mod}}− と同じ設定、50%〜300%）。次回起動後も保持されます。",
         "new_theme": "+ 新しいテーマ",
@@ -17086,7 +17086,14 @@
         "desktop_app": "デスクトップアプリ",
         "keep_running_when_window_closed": "ウィンドウを閉じてもアプリをバックグラウンドで実行し続ける",
         "keep_running_when_window_closed_desc": "ウィンドウを閉じると {{productName}} は非表示になり、セッションとジョブは実行を続けます。オフにすると、閉じるボタンでアプリが終了します。このアプリが起動したゲートウェイは一緒に停止し、接続しているだけのゲートウェイは実行を続けます。",
-        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。"
+        "keep_running_when_window_closed_save_failed": "この設定を保存できませんでした。何も変更されていません。もう一度お試しください。",
+        "choose_zip_file": ".zip ファイルを選択",
+        "theme_experience": "エクスペリエンス",
+        "theme_experience_sounds": "サウンド",
+        "theme_experience_overlays": "オーバーレイ",
+        "theme_experience_persona": "ペルソナ",
+        "theme_experience_persona_text": "ペルソナテキスト",
+        "theme_experience_persona_save": "保存"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

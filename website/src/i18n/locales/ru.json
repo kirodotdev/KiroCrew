@@ -9300,18 +9300,17 @@
       "var_warning": "Предупреждение"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• Ассистент примет тематическую роль (безопасность и точность всегда в приоритете; вы можете в любой момент попросить отказаться от роли).",
-      "enable_experience": "Включить оформление",
       "enable_named_experience": "Включить оформление «{{name}}»?",
       "keep_colors_only": "Оставить только цвета",
       "mute_theme_sounds": "Отключить звуки темы",
       "persona_text": "Текст роли",
       "persona_that_will_be_added_to_the_assistant_s_sy": "Роль, которая будет добавлена в системный промпт ассистента:",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• Будут воспроизводиться тематические звуки (учитывается отключение звука и режим уменьшенной анимации).",
-      "show_animated_visual_overlays": "• Будут показываться анимированные визуальные наложения.",
       "theme_overlay": "наложение темы {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "Это тема с оформлением. Её включение приведёт к следующему:",
-      "unmute_theme_sounds": "Включить звуки темы"
+      "unmute_theme_sounds": "Включить звуки темы",
+      "save": "Сохранить",
+      "sounds": "Звуки",
+      "overlays": "Оверлеи",
+      "persona": "Персона"
     },
     "timezoneSelect": {
       "render_timezone": "Часовой пояс отображения"
@@ -17889,6 +17888,7 @@
         "installed_theme_could_not_be_loaded": "Не удалось загрузить установленную тему. Переустанови её или выбери другую тему.",
         "custom_theme_could_not_be_loaded": "Не удалось загрузить эту тему. Выбери другую тему или отредактируй эту.",
         "local_folder": "Локальная папка",
+        "zip_file": "Zip-файл",
         "mode": "Режим",
         "native_window_zoom_tip": "Родной масштаб окна — та же настройка, что и {{mod}}+ / {{mod}}− (50–300 %). Сохраняется между запусками.",
         "new_theme": "+ Новая тема",
@@ -17974,7 +17974,14 @@
         "desktop_app": "Настольное приложение",
         "keep_running_when_window_closed": "Оставлять приложение работать в фоне после закрытия окна",
         "keep_running_when_window_closed_desc": "При закрытии окна {{productName}} скрывается, а твои сеансы и задания продолжают работать. Отключи это, чтобы кнопка закрытия завершала приложение. Шлюз, запущенный этим приложением, останавливается вместе с ним, а шлюз, к которому оно только подключается, продолжает работать.",
-        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз."
+        "keep_running_when_window_closed_save_failed": "Не удалось сохранить этот параметр. Ничего не изменилось. Попробуй ещё раз.",
+        "choose_zip_file": "Выбрать файл .zip",
+        "theme_experience": "Оформление",
+        "theme_experience_sounds": "Звуки",
+        "theme_experience_overlays": "Оверлеи",
+        "theme_experience_persona": "Персона",
+        "theme_experience_persona_text": "Текст роли",
+        "theme_experience_persona_save": "Сохранить"
       },
       "importPanel": {
         "agent_data": "Данные агента",

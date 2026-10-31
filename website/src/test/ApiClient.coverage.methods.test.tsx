@@ -589,6 +589,8 @@ describe('every api method issues one well-formed /api request', () => {
     // not a defect: a real caller hands this a Blob, exactly as here, and a Blob
     // body is left alone the same way a FormData one is.
     importSessionFromFile: [new Blob(['{}'], { type: 'application/gzip' })],
+    // `installThemeZip(file)` posts the archive's bytes the same way.
+    installThemeZip: [new Blob(['PK'], { type: 'application/zip' })],
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
     // The second argument is the list of routes the dashboard cannot open; a

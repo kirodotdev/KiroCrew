@@ -8886,18 +8886,17 @@
       "var_warning": "警告"
     },
     "themeExperienceLayer": {
-      "adopt_a_themed_persona_in_the_assistant_security": "• 让助手采用主题化人格（安全与准确性始终优先；你可以随时要求它取消人格）。",
-      "enable_experience": "启用体验",
       "enable_named_experience": "启用“{{name}}”体验？",
       "keep_colors_only": "仅保留配色",
       "mute_theme_sounds": "静音主题音效",
       "persona_text": "人格文本",
       "persona_that_will_be_added_to_the_assistant_s_sy": "将添加到助手系统提示词中的人格：",
-      "play_themed_sounds_respects_your_mute_toggle_and": "• 播放主题音效（遵循你的静音开关和减弱动效设置）。",
-      "show_animated_visual_overlays": "• 显示动画视觉覆盖层。",
       "theme_overlay": "主题覆盖层 {{id}}",
-      "this_is_an_experience_theme_enabling_it_will": "这是一个体验主题。启用后将会：",
-      "unmute_theme_sounds": "恢复主题音效"
+      "unmute_theme_sounds": "恢复主题音效",
+      "save": "保存",
+      "sounds": "音效",
+      "overlays": "叠加层",
+      "persona": "角色设定"
     },
     "timezoneSelect": {
       "render_timezone": "显示时区"
@@ -17001,6 +17000,7 @@
         "installed_theme_could_not_be_loaded": "无法加载已安装的主题。重新安装，或选择其他主题。",
         "custom_theme_could_not_be_loaded": "无法加载此主题。选择其他主题，或编辑此主题。",
         "local_folder": "本地文件夹",
+        "zip_file": "Zip 文件",
         "mode": "模式",
         "native_window_zoom_tip": "原生窗口缩放，与 {{mod}}+ / {{mod}}− 是同一项设置（50%–300%）。重新启动后仍保留。",
         "new_theme": "+ 新建主题",
@@ -17086,7 +17086,14 @@
         "desktop_app": "桌面应用",
         "keep_running_when_window_closed": "关闭窗口后让应用在后台继续运行",
         "keep_running_when_window_closed_desc": "关闭窗口时隐藏 {{productName}}，会话和任务继续运行。关闭此选项后，关闭按钮将退出应用。由本应用启动的网关会随之停止，仅连接的网关会继续运行。",
-        "keep_running_when_window_closed_save_failed": "无法保存此设置。未做任何更改。请重试。"
+        "keep_running_when_window_closed_save_failed": "无法保存此设置。未做任何更改。请重试。",
+        "choose_zip_file": "选择 .zip 文件",
+        "theme_experience": "体验",
+        "theme_experience_sounds": "音效",
+        "theme_experience_overlays": "叠加层",
+        "theme_experience_persona": "角色设定",
+        "theme_experience_persona_text": "人格文本",
+        "theme_experience_persona_save": "保存"
       },
       "importPanel": {
         "agent_data": "代理数据",
