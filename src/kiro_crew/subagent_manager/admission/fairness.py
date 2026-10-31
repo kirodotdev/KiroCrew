@@ -508,6 +508,9 @@ class _FairnessMixin(ManagerComponent):
             return resolved[key] if key in resolved else self.lane_for_session(key)
 
         for params in self._manager._queue:
+            # A resident run's resume is counted below, as its live info.
+            if self.entry_is_resident_resume(params):
+                continue
             bucket(self.lane_of_entry(params, resolved))["queued"] += 1
         for lane, n in pending.items():
             bucket(lane)["queued"] += n
