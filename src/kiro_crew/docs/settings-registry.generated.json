@@ -594,6 +594,12 @@
       "hint": "When off, a double-click on your message selects a word as in any text."
     },
     {
+      "id": "chat.exact-threshold",
+      "label": "Exact Threshold (%)",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=chat.exact-threshold"
+    },
+    {
       "id": "chat.fallback-model",
       "label": "Fallback model",
       "tab": "chat",

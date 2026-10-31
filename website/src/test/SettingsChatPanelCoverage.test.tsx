@@ -107,6 +107,7 @@ import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelLi
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
 import { DURABLE_PREF_KEYS } from '../lib/uiPrefs'
+import { useSettingHighlight } from '../hooks/useSettingHighlight'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -749,7 +750,171 @@ describe('ChatPanel — Context', () => {
       '70% (Default)',
       '80%',
       '90%',
+      'Custom…',
     ])
+  })
+
+  const exactField = () => screen.findByRole('spinbutton', { name: 'Exact Threshold (%)' })
+
+  it('shows a stored value off the presets as Custom, with the exact value typed out', async () => {
+    seedMc({ session: { autocompact_pct: 63.5 } })
+    wrap('advanced')
+    const trigger = await screen.findByRole('combobox', { name: 'Auto-Compact Threshold' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Custom…'))
+    const input = await exactField()
+    await waitFor(() => expect(input).toHaveValue(63.5))
+    expect(input).toHaveAttribute('min', '5')
+    expect(input).toHaveAttribute('max', '90')
+    expect(screen.getByText(/Type any value from 5 to 90/)).toBeInTheDocument()
+  })
+
+  it('hides the exact field while a preset is picked, and opens it from Custom… without saving', async () => {
+    wrap('advanced')
+    await screen.findByRole('combobox', { name: 'Auto-Compact Threshold' })
+    expect(screen.queryByRole('spinbutton', { name: 'Exact Threshold (%)' })).not.toBeInTheDocument()
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    expect(input).toHaveValue(90)
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('PATCHes a typed exact value on Enter', async () => {
+    patchConfigMock.mockImplementation(() => Promise.resolve({}))
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '63.5' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session.autocompact_pct', 63.5)
+    )
+    expect(screen.queryByText(/outside the allowed range/)).not.toBeInTheDocument()
+  })
+
+  it('clamps a typed value into 5-90 before saving, and says so', async () => {
+    patchConfigMock.mockImplementation(() => Promise.resolve({}))
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '2' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session.autocompact_pct', 5)
+    )
+    expect(input).toHaveValue(5)
+    expect(await screen.findByRole('status')).toHaveTextContent('Saved 5%. 2% is outside the allowed range (5% to 90%).')
+  })
+
+  it('says "Saved" for a clamped value only once the server took it', async () => {
+    seedMc({ session: { autocompact_pct: 70 } })
+    let settle: (v: unknown) => void = () => {}
+    patchConfigMock.mockImplementationOnce(() => new Promise(r => { settle = r }) as never)
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '95' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(input).toBeDisabled())
+    expect(screen.queryByText(/outside the allowed range/)).not.toBeInTheDocument()
+    settle({})
+    expect(await screen.findByText('Saved 90%. 95% is outside the allowed range (5% to 90%).')).toBeInTheDocument()
+  })
+
+  it('keeps the field and its notice when a typed value clamps onto a preset', async () => {
+    // Stored off the presets, so Custom… shows only because of the stored value.
+    let stored = 63.5
+    kirocrewConfigMock.mockImplementation(() =>
+      Promise.resolve({ ...BASE_MC, session: { autocompact_pct: stored } })
+    )
+    patchConfigMock.mockImplementation(((_p: string, v: number) => { stored = v; return Promise.resolve({}) }) as never)
+    wrap('advanced')
+    const input = await exactField()
+    await waitFor(() => expect(input).toHaveValue(63.5))
+    fireEvent.change(input, { target: { value: '95' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledWith('session.autocompact_pct', 90))
+    await waitFor(() => expect(kirocrewConfigMock.mock.calls.length).toBeGreaterThan(1))
+    expect(await screen.findByText('Saved 90%. 95% is outside the allowed range (5% to 90%).')).toBeInTheDocument()
+    expect(await exactField()).toHaveValue(90)
+    expect(screen.getByRole('combobox', { name: 'Auto-Compact Threshold' })).toHaveTextContent('Custom…')
+  })
+
+  it('sends a preset pick only after a pending typed save settles', async () => {
+    let settle: (v: unknown) => void = () => {}
+    patchConfigMock.mockImplementationOnce(() => new Promise(r => { settle = r }) as never)
+    patchConfigMock.mockImplementation(() => Promise.resolve({}))
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '63.5' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(1))
+    await pickOption('Auto-Compact Threshold', 3)
+    // The 70 pick waits behind the pending 63.5 write instead of racing it.
+    for (let i = 0; i < 5; i++) await act(async () => {})
+    expect(patchConfigMock).toHaveBeenCalledTimes(1)
+    settle({})
+    await waitFor(() => expect(patchConfigMock).toHaveBeenCalledTimes(2))
+    expect(patchConfigMock.mock.calls.map(c => (c as unknown[])[1])).toEqual([63.5, 70])
+  })
+
+  it('opens Custom… for a deep link to the exact field, without saving', async () => {
+    // A preset is stored (90), so only the deep link can reveal the field.
+    function Highlighter() { useSettingHighlight(); return null }
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=chat&sub=advanced&highlight=chat.exact-threshold']}>
+        <Provider store={createTestStore()}>
+          <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+            <Highlighter />
+            <ChatPanel />
+          </QueryClientProvider>
+        </Provider>
+      </MemoryRouter>
+    )
+    const input = await exactField()
+    await waitFor(() => expect(input).toHaveValue(90))
+    expect(screen.getByRole('combobox', { name: 'Auto-Compact Threshold' })).toHaveTextContent('Custom…')
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('shows no "Saved" notice when the clamped save fails', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '2' } })
+    fireEvent.blur(input)
+    expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
+    expect(screen.queryByText(/outside the allowed range/)).not.toBeInTheDocument()
+  })
+
+  it('clears its own failure banner when a retry saves', async () => {
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 0)
+    expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
+    await pickOption('Auto-Compact Threshold', 1)
+    await waitFor(() =>
+      expect(screen.queryByText(/Failed to save auto-compact threshold/)).not.toBeInTheDocument()
+    )
+  })
+
+  it('saves nothing for an empty or unchanged exact value', async () => {
+    wrap('advanced')
+    await pickOption('Auto-Compact Threshold', 6)
+    const input = await exactField()
+    await waitFor(() => expect(input).not.toBeDisabled())
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(input).toHaveValue(90))
+    fireEvent.change(input, { target: { value: '90' } })
+    fireEvent.blur(input)
+    expect(patchConfigMock).not.toHaveBeenCalled()
   })
 
   it('shows a stored 90 without calling it the default', async () => {

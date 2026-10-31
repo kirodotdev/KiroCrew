@@ -44,7 +44,9 @@ vi.mock('../api/client', () => ({
     voiceConfig: () => Promise.resolve({ enabled: false, voice: 'Ruth', engine: 'neural', rate: '100%', autoSpeak: false, aws_profile: '', region: '' }),
     sttConfig: () => Promise.resolve({ enabled: false, provider: '', model: '', available: false, streaming: false, transcribe_region: '', transcribe_profile: '', language_code: 'en-US', models: {}, language_codes: [] }),
     // user_role 'other': the Describe your role input renders only for it.
+    // autocompact_pct off the presets: the Exact Threshold field renders only for it.
     kirocrewConfig: () => Promise.resolve({
+      session: { autocompact_pct: 63.5 },
       agent: { completion_keep: 'head', completion_keep_chars: 3000, model: 'auto', reasoning_effort: '' },
       dashboard: { user_role: 'other', user_role_other: 'SRE', user_technical_level: 'expert' },
     }),
