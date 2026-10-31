@@ -21,8 +21,7 @@ from kiro_crew.shared_crew.contracts import CapabilityState
 
 SETUP_TAILSCALE = "tailscale"
 SETUP_KIRO_LOGIN = "kiro_login"
-SETUP_SYSTEMS_MANAGER = "systems_manager"
-SETUP_PATHS: tuple[str, ...] = (SETUP_TAILSCALE, SETUP_KIRO_LOGIN, SETUP_SYSTEMS_MANAGER)
+SETUP_PATHS: tuple[str, ...] = (SETUP_TAILSCALE, SETUP_KIRO_LOGIN)
 
 REASON_NOT_IN_THIS_BUILD = "not_in_this_build"
 REASON_NOT_CONFIGURED = "not_configured"

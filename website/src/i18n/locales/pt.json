@@ -16741,7 +16741,12 @@
       "jobs_table": "Tarefas agendadas",
       "type_crewmate": "Colega",
       "filter_by_crewmate": "Filtrar por colega",
-      "all_crewmates": "Todos os colegas"
+      "all_crewmates": "Todos os colegas",
+      "details_tab": "Detalhes",
+      "logs_tab": "Logs",
+      "delete_n_selected_jobs_one": "Excluir {{count}} job selecionado",
+      "delete_n_selected_jobs_many": "Excluir {{count}} jobs selecionados",
+      "delete_n_selected_jobs_other": "Excluir {{count}} jobs selecionados"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

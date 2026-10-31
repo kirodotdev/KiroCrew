@@ -663,9 +663,9 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: layer reads a client-sent relay header, the
 #: deny-audit boundary is outer to every barrier that can refuse, the SEL request
 #: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
-#: and the audit record, and the workflow and crewmate-prune gates and the
-#: change-card hook (innermost, after auth has classified the caller) are appended
-#: after the explicit list.
+#: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
+#: team-config gate and the change-card hook (innermost, after auth has classified
+#: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
@@ -682,6 +682,7 @@ _DASHBOARD_CHAIN = (
     ("spa_fallback", "_install_dashboard_middlewares.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
     ("_crewmate_prune_gate", "_register_crewmate_prune_gate.<locals>."),
+    ("team_config_middleware", "team_config_middleware"),
     ("_change_card_hook", "_register_change_card_hook.<locals>."),
 )
 _API_CHAIN = (
@@ -695,6 +696,7 @@ _API_CHAIN = (
     ("middleware", "token_auth_middleware.<locals>."),
     ("sel_audit_middleware", "_install_api_middlewares.<locals>."),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
+    ("team_config_middleware", "team_config_middleware"),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
 )
 
@@ -791,7 +793,8 @@ _DASHBOARD_BOOT = tuple("""
     _dist_file_handler _dist_file_handler _dist_file_handler discover_app_window_entries
     register_app_window_paths _install_asset_cache_control_finalizer
     tailnet_effective_allowed_logins tailnet_identity_unknown degraded_config_files
-    build_allowed_origins _make_host_validation_middleware _make_csrf_middleware
+    build_allowed_origins _make_host_validation_middleware
+    _make_csrf_middleware
     _make_deny_audit_middleware resolve_dashboard_host build_host_canonical_redirect
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
     relay_ingress_middleware
@@ -1051,6 +1054,9 @@ async def test_the_dashboard_boot_keeps_its_chain_hooks_and_order(
 ) -> None:
     import test_dashboard_server_startup_coverage as harness
 
+    # The pinned chain is the Shared Crew preview boot: without the preview the
+    # team-config gate and the Shared Crew hooks are not installed at all.
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
     runner, state, boot, teardown = await _traced_dashboard(tmp_path, monkeypatch)
     try:
         app = runner.app
@@ -1073,6 +1079,9 @@ async def test_the_headless_boot_keeps_its_chain_hooks_and_order(
 ) -> None:
     import test_dashboard_server_startup_coverage as harness
 
+    # The pinned chain is the Shared Crew preview boot: without the preview the
+    # team-config gate and the Shared Crew hooks are not installed at all.
+    monkeypatch.setenv("KIROCREW_SHARED_CREW_PREVIEW", "1")
     runner, _state, boot, teardown = await _traced_api(tmp_path, monkeypatch)
     try:
         app = runner.app

@@ -10,7 +10,7 @@ rule verifies that stamp and is the only layer that honors one. Both middleware
 chains (the dashboard's and the headless API server's) run
 :func:`relay_header_strip_middleware` just inside that rule, ahead of every barrier
 and auth layer. Every listener serves one of those two apps through its runner: the
-main TCP and Unix listeners, the second loopback family, and the loopback port that
+main TCP and Unix listeners, the second loopback family, the tailnet direct listener, and the loopback port that
 ``tailscale serve`` and the tunnel forward to. The app-backend proxy drops the same
 names with :func:`is_relay_header`.
 

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _communicate_capped,
         _context_matches,
         _decode_capped,
+        _governance_pinned_command_ids,
         _read_capped_stream,
         _script_hooks_capability_denied,
         _tool_matches,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         redact_via_context,
+        security,
         validate_hook_fields,
         webhooks,
     )
@@ -98,6 +100,13 @@ class ScriptHookResult:
     exit_code: int = -1
     error: str = ""
     duration_ms: int = 0
+    #: A policy (governance or the shell deny list) refused the hook, so it never
+    #: ran. ``exit_code`` stays 2 so a Hooks-page hook still blocks, fail-closed.
+    refused: bool = False
+    #: An agent spec's own hook, run by Crew in the harness's place. Taken from
+    #: the hook's in-memory ``spec_origin``, never from its id, which a
+    #: hand-written ``hooks.json`` controls.
+    from_spec: bool = False
 
     @property
     def blocked(self) -> bool:
@@ -107,6 +116,29 @@ class ScriptHookResult:
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0
+
+    @property
+    def pre_tool_blocks(self) -> bool:
+        """Whether this PreToolUse result blocks the tool call.
+
+        A Hooks-page hook fails closed: anything but exit 0 blocks. A spec hook
+        follows kiro-cli, which runs it on the kiro-cli backend: only a delivered
+        exit 2 blocks. A spec hook that a policy refused, or that crashed, was
+        killed or timed out, is a warning and the tool goes ahead, so one broken
+        hook in an agent package cannot stop every tool call.
+        """
+        if not self.from_spec:
+            return self.exit_code != 0
+        return self.exit_code == 2 and not self.refused
+
+    @property
+    def failure_detail(self) -> str:
+        """Why the hook failed, for logs: the refusal or error first, then stderr."""
+        if self.error:
+            return self.error[:200]
+        if self.stderr:
+            return self.stderr[-200:]
+        return f"exited with code {self.exit_code}"
 
 
 async def run_script_hook(
@@ -158,6 +190,7 @@ async def run_script_hook(
             event=hook.event,
             error=f"Blocked by governance policy: {gov_denied}",
             exit_code=2,  # PreToolUse "block tool" convention
+            refused=True,
             duration_ms=int((time.monotonic() - start) * 1000),
         )
     # Shell deny-list: the command runs via ``/bin/sh -c`` (``cmd /c`` on Windows)
@@ -176,12 +209,35 @@ async def run_script_hook(
     # itself, so no extra audit here. Off the loop like the governance check above: the
     # resolve reads the keystone file and the match runs regexes, neither of which
     # belongs on the gateway's shared event loop.
+    #
+    # A user-level agent spec's own hook skips the operator's own deny rules. The
+    # deny list stops commands a model or a sandboxed process chose; this one was
+    # written by the operator into the user-level agents tree, which every
+    # sandboxed process sees read-only, so no agent can plant or edit it. kiro-cli
+    # runs the same hook with no such vet, and 0.10 did too. An administrator's
+    # governance pins and the edition overlay still bind it: those are not the
+    # operator's to waive. A project spec's hook (a checkout an agent can write)
+    # and a Hooks-page hook (``hooks.json`` is writable in-sandbox) stay fully
+    # vetted. ``spec_origin`` is in-memory only, so a hand-written ``hooks.json``
+    # cannot claim the exemption. Governance above still applies to every hook.
     if hook.command:
 
         def _shell_deny_reason() -> str | None:
-            reason = current_context().security.is_denied(
-                hook.command, denied_regexes=effective_denied_regexes_from_config()
-            )
+            denied: list[str] | None = None
+            if hook.spec_origin == "user":
+                try:
+                    denied = security.compute_effective_denied(
+                        list(security.BUILTIN_DENIED_RULES) + security.edition_denied_rules(),
+                        (),
+                        True,
+                        (),
+                        _governance_pinned_command_ids(None),
+                    )
+                except Exception:  # fail closed to the full vet below
+                    logger.debug("governance pin resolution failed", exc_info=True)
+            if denied is None:
+                denied = effective_denied_regexes_from_config()
+            reason = current_context().security.is_denied(hook.command, denied_regexes=denied)
             return redact_via_context(reason) if reason else None
 
         deny_reason = await asyncio.to_thread(_shell_deny_reason)
@@ -197,6 +253,7 @@ async def run_script_hook(
                 error=deny_reason,
                 # PreToolUse "block tool" convention, as the governance deny above.
                 exit_code=2,
+                refused=True,
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
     # Build hook event JSON for STDIN
@@ -913,6 +970,7 @@ class ScriptHookStore:
                 continue
             if id(hook) in extra_ids:
                 result = await run_script_hook(hook, context, extra_event, **extra_run)
+                result.from_spec = bool(hook.spec_origin)
             else:
                 result = await run_script_hook(hook, context, hook_event)
             results.append(result)

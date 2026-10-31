@@ -118,10 +118,12 @@ class TestTranslation:
         # (`test_kas_allowed_commands.py`), so only the path allows are named.
         assert _lost(settings) == ["read.allowedPaths", "write.allowedPaths"]
 
-    def test_deny_by_default_is_reported_not_translated(self):
+    def test_deny_by_default_is_carried_as_no_rule(self):
+        """Crew's gate enforces it (``spec_shell_allowlist``), so the notice does not
+        name it; the engine still gets no rule for it."""
         settings = {"shell": {"allowedCommands": ["git status"], "denyByDefault": True}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["shell.denyByDefault"]
+        assert _lost(settings) == []
 
     def test_write_fallback_deny_is_reported_not_translated(self):
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}

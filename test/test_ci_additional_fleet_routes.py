@@ -260,6 +260,54 @@ def test_readiness_never_checks_out_pr_code():
         assert step["with"]["persist-credentials"] is False
 
 
+@pytest.mark.parametrize(
+    "event,repo,pr_head,actor,actors,admitted",
+    [
+        # A same-repository head from a listed actor uses the fleet, and the
+        # review event is admitted too: this policy names no event.
+        ("pull_request", _REPO, _REPO, "101", _ACTORS, True),
+        ("pull_request_review", _REPO, _REPO, "202", _ACTORS, True),
+        # Executing here but not admitted. On a review event the actor is the
+        # REVIEWER, who is commonly outside the list, so this is the ordinary
+        # path rather than an edge case.
+        ("pull_request", _REPO, _REPO, "999", _ACTORS, False),
+        ("pull_request_review", _REPO, _REPO, "999", _ACTORS, False),
+        ("pull_request", _REPO, _REPO, "101", "", False),
+        ("pull_request", _REPO, _REPO, "101", "[]", False),
+        # A fork pull request against this repository executes HERE, so the
+        # group is reachable even though the head is a fork's.
+        ("pull_request", _REPO, _FORK, "101", _ACTORS, False),
+        # A fork running this workflow in its OWN repository cannot reach an
+        # organization group. Dropping the middle branch's repository guard
+        # fails these two rows, which is the point: a job asking there for a
+        # label no runner carries waits out GitHub's pending limit.
+        ("pull_request", _FORK, _FORK, "101", _ACTORS, False),
+        ("pull_request_review", _FORK, _FORK, "101", _ACTORS, False),
+    ],
+)
+def test_sensitive_change_review_route_truth_table(event, repo, pr_head, actor, actors, admitted):
+    context = {
+        "github.repository": repo,
+        "github.event_name": event,
+        "github.event.pull_request.head.repo.full_name": pr_head,
+        "github.actor_id": actor,
+        "vars.CODEBUILD_ACTOR_IDS": actors,
+        "github.run_id": "456",
+        "github.run_attempt": "3",
+    }
+    # Read off the policy's own expression, the same way the shared truth table
+    # above does, so rolling this policy back to the hosted tail needs no edit
+    # here -- and so a dropped fork branch still fails the fork rows.
+    moved = parity._GROUP_THEN_HOSTED_TAIL in parity._CANONICAL_BASE_ONLY_PR_EXPR
+    if admitted:
+        expected = "codebuild-kirocrew-gha-linux-456-3"
+    elif moved and repo == _REPO:
+        expected = "kirocrew-linux-4-core"
+    else:
+        expected = "ubuntu-latest"
+    assert _evaluate(parity._CANONICAL_BASE_ONLY_PR_EXPR, context) == expected
+
+
 @pytest.mark.parametrize("shape", ["no-actor", "wrong-fork", "literal-array", "folded"])
 def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
     expression = parity._CANONICAL_ROUTING_EXPR

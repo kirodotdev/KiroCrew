@@ -218,6 +218,15 @@ export function useDrivePageFiles(account: string) {
     menuLayer.openLayer(() => setMoveTarget(key))
   }
   const returnFocusToOpener = menuLayer.returnFocus
+  /** The rename field took focus from its menu, so closing it would leave
+   *  focus on `body`. Hand it back to the menu's opener once the field has
+   *  unmounted, unless the reader has already moved focus somewhere else. */
+  const returnFocusIfDropped = () => {
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (!active || active === document.body) returnFocusToOpener()
+    })
+  }
   /** Whether the Move picker is on screen, readable from a mutation callback
    *  that may fire after the reader has already dismissed it. */
   const moveDialogOpenRef = useRef(false)
@@ -510,6 +519,7 @@ export function useDrivePageFiles(account: string) {
       if (renamingRef.current === fromKey) {
         setRenaming(null)
         setRenameError('')
+        returnFocusIfDropped()
       }
       qc.invalidateQueries({ queryKey: appKey(['drive-list', account]) })
       // A rename from a search hit must re-run the search so the new name
@@ -545,10 +555,15 @@ export function useDrivePageFiles(account: string) {
     },
   })
 
+  // Opened from a row menu's Rename item: the inline field mounts after the
+  // menu's close, so the closing menu neither traps its autofocus nor hands
+  // focus back to the ⋯ trigger (`useMenuOpensDialog`).
   const openRename = (key: string) => {
-    setRenaming(key)
-    setRenameValue(key.split('/').pop() ?? key)
-    setRenameError('')
+    menuLayer.openLayer(() => {
+      setRenaming(key)
+      setRenameValue(key.split('/').pop() ?? key)
+      setRenameError('')
+    })
   }
 
   const closeRename = () => {
@@ -559,6 +574,7 @@ export function useDrivePageFiles(account: string) {
     if (renameMut.isPending && renameMut.variables?.fromKey === renaming) return
     setRenaming(null)
     setRenameError('')
+    returnFocusIfDropped()
     // Another row's rename may still be flying; resetting the observer would
     // drop its pending state while the request runs on.
     if (!renameMut.isPending) renameMut.reset()

@@ -147,9 +147,15 @@ CREW_ANSWERED_BUILTINS_KEY = "_crewAnsweredBuiltins"
 #: the session's own record, like :data:`CREW_ANSWERED_BUILTINS_KEY`.
 CREW_ANSWERED_COMMANDS_KEY = "_crewAnsweredCommands"
 
+#: The key a projected entry carries its :func:`spec_shell_allowlist` under, for
+#: the session's own record, like :data:`CREW_ANSWERED_COMMANDS_KEY`. Present only
+#: when the spec sets ``denyByDefault``; the gate then refuses every shell call no
+#: entry of the list matches.
+CREW_SHELL_ALLOWLIST_KEY = "_crewShellAllowlist"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
-    {CREW_ANSWERED_BUILTINS_KEY, CREW_ANSWERED_COMMANDS_KEY}
+    {CREW_ANSWERED_BUILTINS_KEY, CREW_ANSWERED_COMMANDS_KEY, CREW_SHELL_ALLOWLIST_KEY}
 )
 
 #: The ``toolsSettings`` keys kiro-cli reads its shell settings under.
@@ -220,6 +226,40 @@ def crew_answered_commands(tools_settings: Any) -> list[str]:
     Pure: the caller asks the governance ceiling about the shell tool.
     """
     return _usable_allowed_commands(tools_settings)[:_MAX_ALLOWED_COMMANDS]
+
+
+def shell_denies_by_default(tools_settings: Any) -> bool:
+    """Whether *tools_settings* sets ``denyByDefault`` on either shell key.
+
+    Any value other than ``False``/``None``/absent counts, so a malformed value
+    restricts rather than lifts the restriction.
+    """
+    if not isinstance(tools_settings, dict):
+        return False
+    for key in _SHELL_SETTINGS_KEYS:
+        settings = tools_settings.get(key)
+        if isinstance(settings, dict) and settings.get("denyByDefault") not in (None, False):
+            return True
+    return False
+
+
+def spec_shell_allowlist(tools_settings: Any) -> list[str] | None:
+    """The only shell commands a ``denyByDefault`` spec lets run, or ``None``.
+
+    ``None`` when neither shell key sets ``denyByDefault``. Otherwise the usable
+    ``allowedCommands`` patterns of both keys (:func:`crew_answered_commands`'s
+    subset and bound), possibly empty. The gate's ``spec-shell-allowlist`` tier
+    REFUSES a shell call of the session's own agent that no pattern here matches,
+    the way kiro-cli refuses it, on every approval policy. An entry outside the
+    subset, or past the bound, allows nothing: its commands are refused, never let
+    through (fail closed), and the session-start notice names it.
+
+    Read whatever the governance ceiling says: it is a restriction, not a grant.
+    A command it keeps still prompts unless :func:`crew_answered_commands` answers it.
+    """
+    if not shell_denies_by_default(tools_settings):
+        return None
+    return crew_answered_commands(tools_settings)
 
 
 def crew_answered_builtins(allowed_tools: Any) -> frozenset[str]:
@@ -1443,9 +1483,9 @@ def tools_settings_to_permissions(
             continue
         # Only shapes run live on KAS are carried: the plain deny lists, and the
         # `subagent` rules below (a deny with an `exclude`, and a name-scoped
-        # allow). The other deny-all-but shapes (`denyByDefault`,
-        # `fallbackAction: "deny"`) match a command or a path, where `exclude`
-        # has not been run, so they are named in the notice instead of guessed at.
+        # allow). `fallbackAction: "deny"` matches a path, where `exclude` has
+        # not been run, so it is named in the notice instead of guessed at. The
+        # shell's `denyByDefault` is enforced by Crew's gate instead (below).
         handled: set[str] = set()
 
         if family == "shell":
@@ -1454,6 +1494,9 @@ def tools_settings_to_permissions(
                 f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
             )
             rules.extend(_chunked_rules("shell", "deny", denied))
+            # No rule either: Crew's gate refuses every shell call the spec's
+            # usable `allowedCommands` do not match (`spec_shell_allowlist`).
+            handled.add("denyByDefault")
             # No rule: Crew answers the shell requests these match itself, at
             # the gate (`crew_answered_commands`). Only an entry it cannot use
             # is named.

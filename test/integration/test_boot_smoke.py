@@ -472,8 +472,10 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.diag.recorder", "_recorder"): "replaced per boot",
     ("kiro_crew.hooks", "_BUILTIN_APP_AGENTS"): "replaced per boot",
     ("kiro_crew.hooks", "_global_script_hook_store"): "replaced per boot",
-    # Shared crew: the boot's admission host hooks; the harness resets them to
-    # a fresh default, a new object every boot.
+    # Shared crew: the boot's host hooks and what its tailnet setup resolved to.
+    # The harness resets each to a fresh default, a new object every boot.
+    ("kiro_crew.shared_crew.access", "_direct_tailnet"): "replaced per boot",
+    ("kiro_crew.shared_crew.access", "_forwarded_attribution"): "replaced per boot",
     ("kiro_crew.shared_crew.admission_gate", "_HOOKS"): "replaced per boot",
     # The lock that serializes building the admission service; the harness drops
     # the service and gives each boot a fresh lock for the one it builds.

@@ -2193,6 +2193,10 @@ spec the same way kiro-cli v2 does where the wire allows it:
   skip the permission request Crew's deny floor runs on. Crew answers a matching
   command at that request itself, through the gate's `spec-builtin-grant` row
   ([security](security.md) § KAS spec built-in grant).
+- `toolsSettings.shell.denyByDefault` travels as no rule either: Crew's gate
+  refuses every shell call of that agent that no usable `allowedCommands` entry
+  matches whole, on every approval policy, through its `spec-shell-allowlist` row
+  ([security](security.md) § KAS spec shell allowlist).
 - The spec's `hooks` run from Crew's turn loop (`agent_sdk/spec_hooks.py`); a
   PostToolUse spec hook's tool matcher is matched on the id the call's permission
   request stated, or for a call the frame classified as a shell command, KAS's

@@ -9,6 +9,7 @@ import FolderMoveSubmenu from '../FolderMoveSubmenu'
 import OfflineMenuReason, { OfflineReasonRow } from '../OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
 import { useConnected } from '../../hooks/useConnected'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { DndDraggable, DndDroppable } from '../dnd'
 import { childFolders, isDescendantFolder, folderSubtreeStats } from '../../utils/artifactFolderTree'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -213,10 +214,8 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
 
           The copy promises only what the draft actually has. It survives for as
           long as this input stays mounted and no longer — unmounting the host
-          discards it, and from the folder menu that happens as soon as the menu
-          closes (characterized in ArtifactsPageCoverage's rename case). So the
-          note names that cost outright instead of asking for the field to be
-          kept open and leaving the consequence unsaid. */}
+          discards it. So the note names that cost outright instead of asking
+          for the field to be kept open and leaving the consequence unsaid. */}
       {!connected && (
         <OfflineReasonRow id={noteId} testId="folder-name-offline-held" className="mt-1" message={i18nT('utils.offline.name_not_saved_keep_field_open')} />
       )}
@@ -229,6 +228,12 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
 export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; folders: ArtifactFolder[]; actions: FolderActions }) {
   const moveTargets = folders.filter(f => !isDescendantFolder(folders, folder.id, f.id))
   const connected = useConnected()
+  // Rename mounts an autofocused inline field. Opened straight from `onSelect`,
+  // the menu's focus trap pulls focus back out of it and the close then
+  // restores the trigger; the field's blur commits the unchanged name and
+  // rename mode ends before a key is typed. `openLayer` opens it after the
+  // menu's close commit and keeps that close from restoring the trigger.
+  const menuLayer = useMenuOpensDialog()
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -242,9 +247,9 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
           <MoreVertical size={13} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()} onCloseAutoFocus={menuLayer.onCloseAutoFocus}>
         <DropdownMenuItem
-          {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'), () => actions.onRename(folder))}
+          {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'), () => menuLayer.openLayer(() => actions.onRename(folder)))}
         >
           <Pencil size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.rename')}
         </DropdownMenuItem>

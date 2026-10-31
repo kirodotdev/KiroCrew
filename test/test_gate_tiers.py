@@ -148,6 +148,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         },
     ),
     Scenario(
+        "spec-shell-allowlist",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="mkfifo /tmp/fifo",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_shell_allowlist=("touch /tmp/allowed",),
+        ),
+    ),
+    Scenario(
         "app-own-server",
         TOOL_AUTO_APPROVE,
         ToolCall(
@@ -362,6 +375,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("mcp-auto-deny", "deny"),
         ("search-target", "deny"),
         ("governance", "deny_policy"),
+        ("spec-shell-allowlist", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
@@ -540,7 +554,12 @@ _DENY_UNDER_GRANT = (
         pytest.param(scenario, grant, id=f"{grant}-{scenario.tier}")
         for scenario in _DENY_SCENARIOS
         for grant in ("operator", "app-own-server")
-        if not (grant == "app-own-server" and scenario.call.mcp_server)
+        # The spec's shell allowlist binds the agent's own shell built-in, never a
+        # call addressed to an MCP server, so the app-own-server re-address skips it.
+        if not (
+            grant == "app-own-server"
+            and (scenario.call.mcp_server or scenario.tier == "spec-shell-allowlist")
+        )
     ]
     + [
         # A command/cmd argument deny under the operator grant. The app-own-server grant
@@ -576,7 +595,9 @@ def test_every_deny_beats_every_grant(scenario: Scenario, grant: str) -> None:
             kas_builtin_ids=True,
             spec_granted_builtins=frozenset({"execute_bash"}),
         )
-        granted = dataclasses.replace(call, title="Run Command", command="make build")
+        granted = dataclasses.replace(
+            call, title="Run Command", command="make build", spec_shell_allowlist=None
+        )
         assert (
             HookManager().judge(granted).tier == "spec-builtin-grant"
         ), "the grant must approve the same call shape without the deny trigger"

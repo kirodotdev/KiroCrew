@@ -894,7 +894,7 @@ export default function SchedulePage() {
                     }}
                     onNewFolder={handleNewFolder}
                   />
-                  <Btn danger onClick={openBatchConfirm} title={`Delete ${selectedIds.size} selected job(s)`}>
+                  <Btn danger onClick={openBatchConfirm} title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: selectedIds.size })}>
                     <span className="flex items-center gap-1.5"><Trash2 size={14} /> {i18nT('pages.schedulePage.delete')} {selectedIds.size} {i18nT('pages.schedulePage.selected')}</span>
                   </Btn>
                 </div>
@@ -1752,8 +1752,8 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
           <div className="flex items-center justify-between">
             <SegmentedControl
               segments={[
-                { key: 'details' as const, label: 'Details' },
-                { key: 'logs' as const, label: 'Logs' },
+                { key: 'details' as const, label: i18nT('pages.schedulePage.details_tab') },
+                { key: 'logs' as const, label: i18nT('pages.schedulePage.logs_tab') },
               ]}
               value={detailTab}
               onChange={setDetailTab}

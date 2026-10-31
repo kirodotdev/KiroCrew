@@ -494,9 +494,9 @@ describe('ArtifactsPage — folder cards in the gallery', () => {
     // the component tree to the card. Enter on an item must reach only the item.
     rename.focus()
     await user.keyboard('{Enter}')
-    // The item ran (the menu closed on it); rename mode itself exits at once,
-    // the defect characterized in 'drops out of rename mode as soon as ...'.
+    // The item ran: the menu closed on it and the rename field took focus.
     await waitFor(() => expect(screen.queryByRole('menuitem', { name: /Rename/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Rename folder')))
     expect(screen.getByText('outside one')).toBeInTheDocument()
     expect(screen.queryByText('inside one')).not.toBeInTheDocument()
   })
@@ -769,24 +769,67 @@ describe('ArtifactsPage — folder menu', () => {
     await waitFor(() => expect(m.deleteArtifactFolder).toHaveBeenCalledWith('deep', false))
   })
 
-  // DEFECT (characterized, not endorsed): picking Rename opens the inline field,
-  // but Radix returns focus to the "…" trigger when the menu closes. That blurs
-  // the autofocused field, whose blur handler commits the unchanged initial
-  // name — so rename mode exits in the same tick and a folder can never be
-  // renamed from this menu. Verified by observing the field being added and
-  // immediately removed from the DOM, with focus landing back on the trigger.
-  it('drops out of rename mode as soon as the menu closes, writing nothing', async () => {
+  /** Picks Rename from the ⋯ menu by mouse or keyboard, then waits for the
+   *  inline field and checks it holds focus with the whole name selected.
+   *  The menu used to hand focus back to its trigger on close, which blurred
+   *  the field and ended rename mode before a key was typed. */
+  const startRename = async (user: ReturnType<typeof userEvent.setup>, via: 'mouse' | 'keyboard') => {
+    if (via === 'mouse') {
+      await user.click(folderMenuFor('Ops'))
+      await user.click(await screen.findByRole('menuitem', { name: /Rename/ }))
+    } else {
+      folderMenuFor('Ops').focus()
+      await user.keyboard('{Enter}')
+      ;(await screen.findByRole('menuitem', { name: /Rename/ })).focus()
+      await user.keyboard('{Enter}')
+    }
+    const field = (await screen.findByLabelText('Rename folder')) as HTMLInputElement
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    expect(field.value).toBe('Ops')
+    expect([field.selectionStart, field.selectionEnd]).toEqual([0, 3])
+    return field
+  }
+
+  it.each(['mouse', 'keyboard'] as const)('renames a folder from the menu (%s): type, then Enter saves', async (via) => {
     const user = userEvent.setup()
     const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
     renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
 
-    await user.click(folderMenuFor('Ops'))
-    await user.click(await screen.findByText('Rename'))
+    await startRename(user, via)
+    // The name is selected, so typing replaces it.
+    await user.keyboard('Runbooks{Enter}')
 
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
     expect(screen.queryByLabelText('Rename folder')).not.toBeInTheDocument()
+  })
+
+  it.each(['mouse', 'keyboard'] as const)('cancels a menu rename on Escape (%s), writing nothing', async (via) => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
+
+    await startRename(user, via)
+    await user.keyboard('Runbooks{Escape}')
+
+    await waitFor(() => expect(screen.queryByLabelText('Rename folder')).not.toBeInTheDocument())
     expect(m.updateArtifactFolder).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(folderMenuFor('Ops'))
+    expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument()
+  })
+
+  it('saves a menu rename when the field loses focus', async () => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open folder Ops' })).toBeInTheDocument())
+
+    await startRename(user, 'mouse')
+    await user.keyboard('Runbooks')
+    await user.click(screen.getByText('Your Artifacts'))
+
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
   })
 })
 
@@ -827,6 +870,22 @@ describe('ArtifactsPage — folder tree table', () => {
     await user.click(screen.getByText('Ops'))
     await waitFor(() => expect(screen.queryByText('filed one')).not.toBeInTheDocument())
     expect(JSON.parse(localStorage.getItem('mc-artifact-folders-expanded') || '[]')).not.toContain('ops')
+  })
+
+  it('renames a folder row from its menu: the field keeps focus until Enter', async () => {
+    const user = userEvent.setup()
+    const m = seed({ artifacts: [mkArtifact('loose-one')], folders: [mkFolder('ops', 'Ops')] })
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
+    await waitFor(() => expect(screen.getByText('loose one')).toBeInTheDocument())
+
+    await user.click(folderMenuFor('Ops'))
+    await user.click(await screen.findByRole('menuitem', { name: /Rename/ }))
+    const field = (await screen.findByLabelText('Rename folder')) as HTMLInputElement
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await waitFor(() => expect(document.activeElement).toBe(field))
+    await user.keyboard('Runbooks{Enter}')
+
+    await waitFor(() => expect(m.updateArtifactFolder).toHaveBeenCalledWith('ops', { name: 'Runbooks' }))
   })
 
   it('ignores a corrupt expansion record instead of failing to render', async () => {

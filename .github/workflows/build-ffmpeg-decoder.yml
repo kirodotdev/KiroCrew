@@ -143,7 +143,13 @@ jobs:
   publish:
     if: inputs.publish
     needs: [build, verify-windows]
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. Named by its runner
+    # LABEL, not by `group:`: the group belongs to the kirodotdev organization,
+    # so a fork running its own copy cannot reach it and would wait forever for
+    # a runner. The `||` leg keeps a fork on the hosted image. The `build` legs
+    # above keep their pinned images, which are a toolchain decision.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: write

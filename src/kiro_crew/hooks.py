@@ -97,6 +97,7 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 # bound here, not only in gate_tiers.
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
+    _command_matches_any,
     _operator_confirms,
     _rule_exfil,
     _rule_sensitive_bash,
@@ -112,6 +113,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_read_only,
     _tier_search_target,
     _tier_spec_builtin_grant,
+    _tier_spec_shell_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
     _tier_write_protected,
@@ -192,6 +194,7 @@ from kiro_crew.hook_runtime.stream_caps import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     ToolCall,
+    _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
     _context_matches,
@@ -759,6 +762,7 @@ class HookManager:
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
+        spec_shell_allowlist: tuple[str, ...] | None = None,
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -796,6 +800,9 @@ class HookManager:
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
                 spec_granted_commands=tuple(spec_granted_commands),
+                spec_shell_allowlist=(
+                    None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
+                ),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -1603,6 +1610,10 @@ class ScriptHook:
       ``ScriptHookResult.error``, then stderr, then "exited with code N").
       Every other event stays warn-only (stderr shown to user). There is no
       per-hook advisory/fail-open opt-out.
+    - Exception: an agent spec's own hook (``spec_origin`` set, see
+      :mod:`kiro_crew.agent_sdk.spec_hooks`) follows kiro-cli, which runs it on
+      the kiro-cli backend. Only a delivered exit 2 blocks; a refused, failed,
+      killed or timed-out spec hook warns and the tool runs.
     """
 
     id: str = ""
@@ -1622,9 +1633,17 @@ class ScriptHook:
     last_status: str = ""  # "ok", "error", "timeout", "blocked"
     last_error: str = ""  # human-readable reason for the most recent non-ok status
     run_count: int = 0
+    #: Where an agent spec's own hook came from: ``"user"`` (the user-level agents
+    #: tree, read-only to every sandboxed process), ``"project"`` (a trusted
+    #: checkout's spec), or ``""`` for a Hooks-page hook. Set only in memory by
+    #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
+    #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
+    spec_origin: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("spec_origin", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ScriptHook":
@@ -1792,6 +1811,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("mcp-auto-deny", "deny", _tier_mcp_auto_deny),
     GateTier("search-target", "deny", _tier_search_target),
     GateTier("governance", "deny_policy", _tier_governance),
+    GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

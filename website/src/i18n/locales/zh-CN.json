@@ -16165,7 +16165,10 @@
       "jobs_table": "计划任务",
       "type_crewmate": "队友",
       "filter_by_crewmate": "按队友筛选",
-      "all_crewmates": "所有队友"
+      "all_crewmates": "所有队友",
+      "details_tab": "详情",
+      "logs_tab": "日志",
+      "delete_n_selected_jobs_other": "删除 {{count}} 个选中的任务"
     },
     "servicesTab": {
       "channels": "聊天平台",

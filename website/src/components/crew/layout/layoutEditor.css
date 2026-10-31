@@ -180,6 +180,7 @@
   box-shadow: 0 0 0 2.5px var(--muted), 0 4px 16px rgba(0, 0, 0, 0.28);
 }
 .le-bar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -194,6 +195,24 @@
 }
 .le-bar:active {
   cursor: grabbing;
+}
+/* The drag handle carries the bar's icon and title. Its hit area stretches
+ * over the whole bar, so a press anywhere starts the drag, as when the bar was
+ * the handle. The close button is positioned after it, so it stays on top. */
+.le-bar-handle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 5px;
+}
+.le-bar-handle::after {
+  content: '';
+  position: absolute;
+  /* -1px takes in the bar's bottom border; the top corners follow the card's. */
+  inset: 0 0 -1px;
+  border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
 }
 .le-bar-icon {
   width: 18px;
@@ -222,6 +241,7 @@
   color: var(--muted);
   border-radius: 5px;
   cursor: pointer;
+  position: relative;
 }
 .le-close:hover {
   color: var(--danger);

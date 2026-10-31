@@ -16453,7 +16453,11 @@
       "jobs_table": "शेड्यूल किए गए जॉब",
       "type_crewmate": "क्रूमेट",
       "filter_by_crewmate": "क्रूमेट के अनुसार फ़िल्टर",
-      "all_crewmates": "सभी क्रूमेट"
+      "all_crewmates": "सभी क्रूमेट",
+      "details_tab": "विवरण",
+      "logs_tab": "लॉग",
+      "delete_n_selected_jobs_one": "{{count}} चयनित जॉब हटाओ",
+      "delete_n_selected_jobs_other": "{{count}} चयनित जॉब हटाओ"
     },
     "servicesTab": {
       "channels": "चैट प्लेटफ़ॉर्म",

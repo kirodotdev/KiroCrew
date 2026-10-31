@@ -17029,7 +17029,13 @@
       "jobs_table": "Запланированные задания",
       "type_crewmate": "Товарищ по команде",
       "filter_by_crewmate": "Фильтр по товарищу по команде",
-      "all_crewmates": "Все товарищи по команде"
+      "all_crewmates": "Все товарищи по команде",
+      "details_tab": "Подробности",
+      "logs_tab": "Журналы",
+      "delete_n_selected_jobs_one": "Удалить {{count}} выбранную задачу",
+      "delete_n_selected_jobs_few": "Удалить {{count}} выбранные задачи",
+      "delete_n_selected_jobs_many": "Удалить {{count}} выбранных задач",
+      "delete_n_selected_jobs_other": "Удалить {{count}} выбранной задачи"
     },
     "servicesTab": {
       "channels": "Чат-платформы",

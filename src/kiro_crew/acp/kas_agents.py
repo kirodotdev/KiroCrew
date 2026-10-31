@@ -75,11 +75,13 @@ from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
     CREW_ANSWERED_BUILTINS_KEY,
     CREW_ANSWERED_COMMANDS_KEY,
+    CREW_SHELL_ALLOWLIST_KEY,
     allowed_tools_to_permissions,
     auto_approved_capabilities,
     crew_answered_builtins,
     crew_answered_commands,
     merge_user_permissions,
+    spec_shell_allowlist,
     tools_settings_to_permissions,
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
@@ -1220,6 +1222,12 @@ def to_client_custom_agent(
     answered_commands = crew_answered_commands(spec.get("toolsSettings"))
     if answered_commands and not _allowed_commands_withheld(spec, permissions):
         out[CREW_ANSWERED_COMMANDS_KEY] = answered_commands
+    # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.
+    # A restriction, so recorded whatever the ceiling says; the gate refuses every
+    # other shell call of this agent (`spec-shell-allowlist` tier).
+    shell_allowlist = spec_shell_allowlist(spec.get("toolsSettings"))
+    if shell_allowlist is not None:
+        out[CREW_SHELL_ALLOWLIST_KEY] = shell_allowlist
 
     description = spec.get("description")
     if isinstance(description, str) and description:
@@ -1490,6 +1498,21 @@ def _entry_crew_answered_commands(entry: Any) -> tuple[str, ...]:
     return tuple(p for p in raw if isinstance(p, str) and p)
 
 
+def _entry_shell_allowlist(entry: Any) -> tuple[str, ...] | None:
+    """The :data:`CREW_SHELL_ALLOWLIST_KEY` patterns of one projected entry.
+
+    ``None`` when the entry has no such key (no ``denyByDefault``). A value that is
+    present but not a list of strings reads as ``()``, which allows no command: a
+    restriction is never lifted by a malformed record.
+    """
+    if not isinstance(entry, dict) or CREW_SHELL_ALLOWLIST_KEY not in entry:
+        return None
+    raw = entry[CREW_SHELL_ALLOWLIST_KEY]
+    if not isinstance(raw, list):
+        return ()
+    return tuple(p for p in raw if isinstance(p, str) and p)
+
+
 def _registered_entry(custom_agents: Any, agent_id: str) -> Any:
     entries = [a for a in custom_agents if isinstance(a, dict)] if custom_agents else []
     return next((a for a in entries if a.get("id") == agent_id), None)
@@ -1510,6 +1533,17 @@ def switched_crew_answered_commands(custom_agents: Any, mode_id: str) -> tuple[s
     """Those patterns once a KAS mode switch moves the session to *mode_id*,
     matched like :func:`switched_crew_answered`."""
     return _entry_crew_answered_commands(_switched_entry(custom_agents, mode_id))
+
+
+def projected_shell_allowlist(custom_agents: Any, agent_id: str) -> tuple[str, ...] | None:
+    """The ``denyByDefault`` shell allowlist of *agent_id*'s registered entry, or
+    ``None``, matched like :func:`projected_crew_answered_commands`."""
+    return _entry_shell_allowlist(_registered_entry(custom_agents, agent_id))
+
+
+def switched_shell_allowlist(custom_agents: Any, mode_id: str) -> tuple[str, ...] | None:
+    """That allowlist once a KAS mode switch moves the session to *mode_id*."""
+    return _entry_shell_allowlist(_switched_entry(custom_agents, mode_id))
 
 
 def projected_crew_answered(custom_agents: Any, agent_id: str) -> frozenset[str]:

@@ -605,6 +605,11 @@ class KasHarness(MembershipHarness):
         handle.kas_crew_answered_commands = kas_agents_mod.projected_crew_answered_commands(
             custom_agents, active_agent
         )
+        # A `denyByDefault` spec's shell allowlist: the gate refuses every other
+        # shell call of this agent (`spec-shell-allowlist` tier).
+        handle.kas_spec_shell_allowlist = kas_agents_mod.projected_shell_allowlist(
+            custom_agents, active_agent
+        )
         handle.kas_projected_agent = active_agent if custom_agents else ""
         handle.kas_registered_agents = list(custom_agents) if custom_agents else []
         handle.kas_agent_prompt_notice = self.agent_prompt_notice if custom_agents else ""

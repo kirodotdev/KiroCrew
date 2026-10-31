@@ -60,6 +60,8 @@ def _patch_whois(monkeypatch, result: dict | None) -> MagicMock:
     """Mock the CLI at the ``_run_json_detail`` seam (result, transient=False)."""
     mock = MagicMock(return_value=(result, False))
     monkeypatch.setattr(tailnet, "_run_json_detail", mock)
+    # The loopback client stands in for the daemon behind ``tailscale serve``.
+    monkeypatch.setattr(tailnet, "loopback_client_is_daemon", lambda *_a: True)
     return mock
 
 

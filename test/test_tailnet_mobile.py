@@ -1102,6 +1102,50 @@ class TestQrRefusals:
         assert "boot" not in (captured["extra"] or {})
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("preview", [True, False], ids=["preview", "no-preview"])
+    async def test_a_host_that_cannot_prove_the_proxy_mints_the_boot_bound_shape(
+        self, _unrestricted, _quiet_audit, preview: bool
+    ) -> None:
+        """No ``require_peer`` link where the proxy proof can never succeed (macOS).
+
+        Only under the preview: without it the proof never runs, so the
+        operator's persistent session keeps its shape.
+        """
+        captured: dict[str, object] = {}
+
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        with _machine(
+            qr_session_persist_across_restart=True,
+            trust_identity=True,
+            allowed_logins=("someone@example.com",),
+        ):
+            with (
+                patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+                patch(
+                    "kiro_crew.dashboard.tailnet_proxy_proof.proof_support",
+                    return_value="platform_unprovable",
+                ),
+                patch.object(tailnet_mobile, "preview_enabled", return_value=preview),
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(
+                    _request(tailnet_host=_HOST, cookie_token=_owner_session_token())
+                )
+        assert resp.status == 200
+        extra = captured["extra"] or {}
+        if preview:
+            assert "require_peer" not in extra
+            assert "boot" in extra
+        else:
+            assert extra.get("require_peer") == "1"
+            assert "boot" not in extra
+
+    @pytest.mark.asyncio
     async def test_persistent_shape_drops_the_boot_bound(self, _unrestricted, _quiet_audit) -> None:
         """Opted in WITH identity trust: no ``boot``, so one scan outlives a restart.
 
@@ -1124,6 +1168,7 @@ class TestQrRefusals:
                 patch.object(
                     tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
                 ),
+                patch("kiro_crew.dashboard.tailnet_proxy_proof.proof_support", return_value=""),
             ):
                 resp = await tailnet_mobile.api_tailnet_mobile_qr(
                     _request(tailnet_host=_HOST, cookie_token=_owner_session_token())

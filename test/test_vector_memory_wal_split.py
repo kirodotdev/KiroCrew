@@ -24,13 +24,15 @@ from kiro_crew.vector_memory import VectorMemoryStore
 
 pytestmark = pytest.mark.xdist_group(name="vector_memory_wal_split")
 
-_DRIVER_KEEPS_WAL = hasattr(_sqlite_compat.sqlite3.connect(":memory:"), "setconfig")
-
 _SECOND_PROCESS = """
 import sys
 from pathlib import Path
+from kiro_crew import sqlite_wal
 from kiro_crew.vector_memory import VectorMemoryStore
 
+if sys.argv[2] == "without-setconfig":
+    # What a driver with no Connection.setconfig (pysqlite3) reports.
+    sqlite_wal.keep_wal_on_close = lambda conn: False
 store = VectorMemoryStore(db_path=Path(sys.argv[1]))
 store.init()
 store.get_all_semantic()
@@ -39,14 +41,21 @@ store.close()
 
 
 def _drop_this_process_locks(db: Path) -> None:
-    """What a plain open + read + close of the live database does to its locks."""
-    with open(db, "rb") as handle:
-        handle.read(16)
+    """What a plain open + read + close of the live files does to their locks.
+
+    Losing the lock on ``memory.db`` alone is not enough: the ``-shm`` lock still
+    stops the other process's close from deleting the ``-wal``.
+    """
+    for name in (str(db), f"{db}-shm"):
+        with open(name, "rb") as handle:
+            handle.read(16)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX record-lock semantics")
-@pytest.mark.skipif(not _DRIVER_KEEPS_WAL, reason="driver has no Connection.setconfig")
-def test_another_process_close_keeps_the_wal_a_lockless_writer_uses(tmp_path: Path, opened):
+@pytest.mark.parametrize("second_driver", ["store-driver", "without-setconfig"])
+def test_another_process_close_keeps_the_wal_a_lockless_writer_uses(
+    tmp_path: Path, opened, second_driver: str
+):
     db = tmp_path / "memory.db"
     gateway = opened(VectorMemoryStore(db_path=db))
     gateway.init()
@@ -56,7 +65,7 @@ def test_another_process_close_keeps_the_wal_a_lockless_writer_uses(tmp_path: Pa
     _drop_this_process_locks(db)
 
     subprocess.run(
-        [sys.executable, "-c", _SECOND_PROCESS, str(db)],
+        [sys.executable, "-c", _SECOND_PROCESS, str(db), second_driver],
         cwd=tmp_path,
         check=True,
         timeout=120,
@@ -75,7 +84,12 @@ def test_another_process_close_keeps_the_wal_a_lockless_writer_uses(tmp_path: Pa
     assert {"pref.before", "pref.after"} <= keys
 
 
-def test_a_closed_store_leaves_no_wal_content_behind(tmp_path: Path, opened):
+@pytest.mark.parametrize("driver", ["store-driver", "without-setconfig"])
+def test_a_closed_store_leaves_no_wal_content_behind(
+    tmp_path: Path, opened, monkeypatch, driver: str
+):
+    if driver == "without-setconfig":
+        monkeypatch.setattr(sqlite_wal, "keep_wal_on_close", lambda conn: False)
     db = tmp_path / "memory.db"
     store = opened(VectorMemoryStore(db_path=db))
     store.init()
@@ -90,6 +104,28 @@ def test_a_closed_store_leaves_no_wal_content_behind(tmp_path: Path, opened):
     finally:
         reader.close()
     assert keys == ["pref.editor"]
+
+
+def test_close_keeping_wal_still_closes_when_the_holder_cannot_open(tmp_path: Path, monkeypatch):
+    conn = stdlib_sqlite3.connect(tmp_path / "plain.db")
+    conn.execute("CREATE TABLE t(x)")
+
+    def _refuse(*_args, **_kwargs):
+        raise stdlib_sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(stdlib_sqlite3, "connect", _refuse)
+    sqlite_wal.close_keeping_wal(conn)
+
+    with pytest.raises(stdlib_sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_close_keeping_wal_closes_an_in_memory_connection():
+    conn = stdlib_sqlite3.connect(":memory:")
+    sqlite_wal.close_keeping_wal(conn)
+
+    with pytest.raises(stdlib_sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
 
 
 def test_keep_wal_on_close_reports_a_driver_without_setconfig():

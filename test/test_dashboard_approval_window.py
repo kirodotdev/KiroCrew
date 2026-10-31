@@ -19,7 +19,6 @@ import inspect
 import logging
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -63,6 +62,7 @@ from kiro_crew.constants import (
 )
 from kiro_crew.dashboard import turn_dispatch as td
 from kiro_crew.dashboard.state import REFUSAL_RECOVERY_PREFIX
+from kiro_crew.hook_runtime.script_hooks import ScriptHookResult
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE
 
 
@@ -485,8 +485,12 @@ class _BlocksToolA:
     async def fire(self, event: str, *args: Any, **kwargs: Any) -> list[Any]:
         if event == HOOK_EVENT_PRE_TOOL_USE and kwargs.get("tool_name") == "tool_a":
             return [
-                SimpleNamespace(
-                    exit_code=2, stdout="", stderr="blocked by rule X", error="", hook_name="rule"
+                ScriptHookResult(
+                    hook_id="rule",
+                    hook_name="rule",
+                    event=event,
+                    exit_code=2,
+                    stderr="blocked by rule X",
                 )
             ]
         return []

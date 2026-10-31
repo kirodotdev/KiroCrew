@@ -90,7 +90,7 @@ _CANONICAL_BASE_ONLY_PR_EXPR = (
     + _ACTOR_PREDICATE
     + " && github.event.pull_request.head.repo.full_name == github.repository && "
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
-    "|| 'ubuntu-latest' }}"
+    + _GROUP_THEN_HOSTED_TAIL
 )
 # PR Readiness runs only default-branch code too. Only its pull_request_target
 # runs use the fleet: workflow_run carries the in_progress merge-guard hold,
@@ -173,6 +173,15 @@ _PERMANENT_EXCEPTIONS = {
 # filesystem layout and no fleet credentials, so every isolation contract above
 # still holds. Pinned per job rather than waived: a lane that drifts to some
 # third runner must still fail this check.
+#
+# Two spellings reach the same group. `group:` resolves only inside the owning
+# organization, so a fork running its own copy of the workflow finds no runner
+# and the job waits forever; the LABEL spelling carries its own fork fallback in
+# the `||` leg. A lane a fork never runs may use either, so both appear here.
+_GROUP_LABEL_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    "'kirocrew-linux-4-core' || 'ubuntu-latest' }}"
+)
 _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("first-principles-review.yml", "first-principles-review"): {"group": "kirocrew-runners"},
     ("ux-review.yml", "ux-review"): {"group": "kirocrew-runners"},
@@ -186,6 +195,9 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fork-pr-description.yml", "describe"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "guard"): {"group": "kirocrew-runners"},
     ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
+    ("issue-summary.yml", "summarize"): _GROUP_LABEL_EXPR,
+    ("issue-triage.yml", "triage"): _GROUP_LABEL_EXPR,
+    ("nightly.yml", "version"): _GROUP_LABEL_EXPR,
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
     # These dispatchable jobs use the group label upstream, but a personal

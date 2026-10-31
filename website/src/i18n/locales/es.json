@@ -16741,7 +16741,12 @@
       "jobs_table": "Tareas programadas",
       "type_crewmate": "Compañero",
       "filter_by_crewmate": "Filtrar por compañero",
-      "all_crewmates": "Todos los compañeros"
+      "all_crewmates": "Todos los compañeros",
+      "details_tab": "Detalles",
+      "logs_tab": "Registros",
+      "delete_n_selected_jobs_one": "Eliminar {{count}} trabajo seleccionado",
+      "delete_n_selected_jobs_many": "Eliminar {{count}} trabajos seleccionados",
+      "delete_n_selected_jobs_other": "Eliminar {{count}} trabajos seleccionados"
     },
     "servicesTab": {
       "channels": "Plataformas de chat",

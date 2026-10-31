@@ -6203,6 +6203,7 @@ deny blocked:
 | `mcp-auto-deny` | deny | the operator's `auto_deny_tools` globs against the `_meta.kiro` `@server/tool` identity, verified or not (a deny can only deny) |
 | `search-target` | deny | the operator's own rules against a file search's synthesized scope target |
 | `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
+| `spec-shell-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.shell.denyByDefault`: its own shell call whose command no usable `allowedCommands` entry matches whole (`ToolCall.spec_shell_allowlist`) |
 | `app-own-server` | grant | a builtin app agent calling its own declared MCP server |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, unless a `confirm_tools` pattern names the call or the list is unknown |
 | `read-only` | classify | the read-only classifier, except for an MCP call `confirm_tools` names (or any MCP call while the list is unknown) and a shell command that runs `git` at any command position (`readonly_bash.command_invokes_git`), which falls through to the surface's own approval; the only auto-approve under `classifier_only` |

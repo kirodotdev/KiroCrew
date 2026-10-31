@@ -474,6 +474,7 @@ if TYPE_CHECKING:
         SubagentManager,
         TaskRunner,
     )
+    from kiro_crew.dashboard.tailnet_direct import DirectGate, GateRef  # noqa: F401
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 # aiohttp's static file handler uses its own ``mimetypes.MimeTypes()`` instance
@@ -902,6 +903,17 @@ async def start_dashboard(
     # slices in the table's original sequence -- see that package's docstring.
     register_all(app)
 
+    # Shared Crew is preview-only: without KIROCREW_SHARED_CREW_PREVIEW=1 none of
+    # its modules is imported on the boot path (no-new-work-on-gateway-boot-path).
+    from kiro_crew.shared_crew.preview import no_maintenance, preview_enabled
+
+    _shared_crew_preview = preview_enabled()
+    start_shared_crew_maintenance: Callable[[], None] = no_maintenance
+    if _shared_crew_preview:
+        from kiro_crew.shared_crew import lifecycle
+
+        start_shared_crew_maintenance = lifecycle.install_lifecycle(app)
+
     # Register built-in apps (idempotent — surfaces baked-in features in App Store).
     # Runs on the executor: escalation cleanup can traverse/delete legacy app
     # dirs, which must not block the event loop during startup.
@@ -1041,6 +1053,16 @@ async def start_dashboard(
         _ts_cfg = _cfg.dashboard.tailscale
         _tailnet_host = await tailnet.resolve_tailnet_host(_ts_cfg.enabled)
         _tailnet_trust = await _resolve_tailnet_trust(_cfg)
+        # Shared Crew: record the tailnet path. The middleware chain carries an
+        # empty holder for the direct tailnet listener's gate (off by default);
+        # the daemon read that fills it runs after the bind.
+        _direct: GateRef | None = None
+        if _shared_crew_preview:
+            from kiro_crew.dashboard import tailnet_direct_listener
+
+            _direct = tailnet_direct_listener.prepare_at_start(
+                _cfg, host=_tailnet_host, trust=_tailnet_trust, local_only=local_only
+            )
         if _tailnet_host:
             logger.info(
                 "tailnet access enabled: trusting origin https://%s (bind and auth unchanged)",
@@ -1117,6 +1139,7 @@ async def start_dashboard(
             tailnet_host=_tailnet_host,
             configured_host=configured_host,
             dashboard_url=dashboard_url,
+            tailnet_direct=_direct,
         )
 
         # Register only after the final allowed-origin set is selected.  The startup
@@ -1165,6 +1188,11 @@ async def start_dashboard(
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)
+        # Shared Crew team-config gate for tailnet people.
+        if _shared_crew_preview:
+            from kiro_crew.shared_crew import lifecycle
+
+            lifecycle.install(app)
         _register_change_card_hook(app)
 
         # Unix-socket cleanup hook — registered before runner.setup freezes the
@@ -1207,6 +1235,7 @@ async def start_dashboard(
     # The listener is up -- keep it up. One failed accept() on Windows would
     # otherwise close it for the life of the process (see listener_guard).
     _arm_listener_guard(state, runner, site)
+    start_shared_crew_maintenance()
     # One-time prune of the crewmates an enrol-on-mount agent sync generated
     # from the user's own specs (see crewmate_prune_migration). Kicked here,
     # right after the bind, as a tracked background task -- its cost scales
@@ -1234,6 +1263,13 @@ async def start_dashboard(
     # nothing listens on and leave the real one free for anyone to take.
     _bound_port = _resolved_bound_port(runner, port)
     _second_loopback = await _start_secondary_loopback_site(runner, _bound_port, _bind_ip)
+    # The direct tailnet sites, on the same port; nothing when the gate is off.
+    if _direct is not None:
+        from kiro_crew.dashboard import tailnet_direct_listener
+
+        await tailnet_direct_listener.start_after_bind(
+            app, runner, _bound_port, _cfg, _direct, local_only=local_only
+        )
 
     # Port bind succeeded — now safe to write the secret file. Offloaded:
     # _write_secret_file does blocking fs I/O (os.open/os.close, plus the
