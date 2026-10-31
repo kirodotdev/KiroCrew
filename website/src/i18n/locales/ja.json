@@ -15848,6 +15848,32 @@
         "resting": "休憩中",
         "wizard_tower_scene": "魔法使いの塔のシーン",
         "wizard_tower_spell_text": "魔法使いの塔の呪文テキスト"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "ハノイ旧市街",
+        "hoan_kiem_lakeside": "ホアンキエム湖畔",
+        "at_the_cafe": "カフェに {{n}}/{{total}} 人",
+        "coding_at_the_cafe": "カフェでコーディング",
+        "egg_coffee_break": "エッグコーヒー休憩",
+        "hanoi_old_quarter_animation": "ハノイ旧市街のアニメーション",
+        "hanoi_old_quarter_text_overlay": "ハノイ旧市街のテキストオーバーレイ",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "もうデプロイした？",
+        "chat_deploy_reply": "ビルド中！",
+        "chat_coffee_ask": "エッグコーヒー？",
+        "chat_coffee_reply": "一杯ください！",
+        "chat_review_ask": "プルリク大丈夫？",
+        "chat_review_reply": "良さそう！",
+        "chat_bug_ask": "バグ直った？",
+        "chat_bug_reply": "完了！",
+        "chat_tea_ask": "アイスティー？",
+        "chat_tea_reply": "二杯！",
+        "chat_latency_ask": "レイテンシ高い？",
+        "chat_latency_reply": "スケール中！",
+        "scene_label": "ハノイ",
+        "scene_desc": "ホアンキエム湖畔の旧市街"
       }
     },
     "schedulePage": {
@@ -18887,6 +18913,7 @@
       "playing_in_popout_window": "ポップアウトウィンドウで再生中",
       "pop_out_to_separate_window": "別ウィンドウにポップアウト",
       "present": "在席、",
+      "scene_aria_label": "{{label}}シーン：{{desc}}",
       "show_controls": "コントロールを表示",
       "slot_other": "{{count}} スロット"
     },

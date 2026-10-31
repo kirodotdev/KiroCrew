@@ -7622,6 +7622,32 @@
         "resting": "resting",
         "wizard_tower_scene": "Wizard tower scene",
         "wizard_tower_spell_text": "Wizard tower spell text"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "Hà Nội Old Quarter",
+        "hoan_kiem_lakeside": "Hoàn Kiếm lakeside",
+        "at_the_cafe": "{{n}}/{{total}} at the café",
+        "coding_at_the_cafe": "coding at the café",
+        "egg_coffee_break": "egg-coffee break",
+        "hanoi_old_quarter_animation": "Hà Nội old quarter animation",
+        "hanoi_old_quarter_text_overlay": "Hà Nội old quarter text overlay",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "Deployed yet?",
+        "chat_deploy_reply": "Building now!",
+        "chat_coffee_ask": "Egg coffee?",
+        "chat_coffee_reply": "One cup, please!",
+        "chat_review_ask": "PR look OK?",
+        "chat_review_reply": "Looks good!",
+        "chat_bug_ask": "Bug fixed?",
+        "chat_bug_reply": "All done!",
+        "chat_tea_ask": "Iced tea?",
+        "chat_tea_reply": "Two glasses!",
+        "chat_latency_ask": "Latency high?",
+        "chat_latency_reply": "Scaling up!",
+        "scene_label": "Hà Nội",
+        "scene_desc": "Old Quarter by Hoàn Kiếm Lake"
       }
     },
     "schedulePage": {

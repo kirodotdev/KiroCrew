@@ -10812,6 +10812,7 @@
       "playing_in_popout_window": "Playing in popout window",
       "pop_out_to_separate_window": "Pop out to separate window",
       "present": "present,",
+      "scene_aria_label": "{{label}} scene: {{desc}}",
       "slot_one": "{{count}} slot",
       "slot_other": "{{count}} slots"
     },

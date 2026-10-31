@@ -16123,6 +16123,32 @@
         "resting": "ruht",
         "wizard_tower_scene": "Zauberturm-Szene",
         "wizard_tower_spell_text": "Zauberspruchtext des Zauberturms"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "Altstadt von Hanoi",
+        "hoan_kiem_lakeside": "Am Hoàn-Kiếm-See",
+        "at_the_cafe": "{{n}}/{{total}} im Café",
+        "coding_at_the_cafe": "codet im Café",
+        "egg_coffee_break": "Eierkaffee-Pause",
+        "hanoi_old_quarter_animation": "Animation der Altstadt von Hanoi",
+        "hanoi_old_quarter_text_overlay": "Textüberlagerung der Altstadt von Hanoi",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "Schon deployt?",
+        "chat_deploy_reply": "Baut gerade!",
+        "chat_coffee_ask": "Eierkaffee?",
+        "chat_coffee_reply": "Eine Tasse, bitte!",
+        "chat_review_ask": "PR in Ordnung?",
+        "chat_review_reply": "Sieht gut aus!",
+        "chat_bug_ask": "Bug behoben?",
+        "chat_bug_reply": "Alles erledigt!",
+        "chat_tea_ask": "Eistee?",
+        "chat_tea_reply": "Zwei Gläser!",
+        "chat_latency_ask": "Latenz hoch?",
+        "chat_latency_reply": "Skaliere hoch!",
+        "scene_label": "Hanoi",
+        "scene_desc": "Altstadt am Hoàn-Kiếm-See"
       }
     },
     "schedulePage": {
@@ -19201,6 +19227,7 @@
       "playing_in_popout_window": "Wird im ausgekoppelten Fenster abgespielt",
       "pop_out_to_separate_window": "In ein separates Fenster auskoppeln",
       "present": "vorhanden,",
+      "scene_aria_label": "Szene {{label}}: {{desc}}",
       "show_controls": "Steuerung anzeigen",
       "slot_one": "{{count}} Slot",
       "slot_other": "{{count}} Slots"

@@ -16123,6 +16123,32 @@
         "resting": "आराम कर रहा है",
         "wizard_tower_scene": "जादूगर की मीनार का दृश्य",
         "wizard_tower_spell_text": "जादूगर की मीनार का मंत्र टेक्स्ट"
+      },
+      "hanoiScene": {
+        "hanoi_old_quarter": "हनोई पुराना शहर",
+        "hoan_kiem_lakeside": "होआन कीएम झील के किनारे",
+        "at_the_cafe": "{{n}}/{{total}} कैफ़े में",
+        "coding_at_the_cafe": "कैफ़े में कोडिंग",
+        "egg_coffee_break": "एग-कॉफ़ी ब्रेक",
+        "hanoi_old_quarter_animation": "हनोई पुराने शहर का एनिमेशन",
+        "hanoi_old_quarter_text_overlay": "हनोई पुराने शहर का टेक्स्ट ओवरले",
+        "sign_egg_coffee": "CÀ PHÊ TRỨNG",
+        "sign_pho": "PHỞ BÒ",
+        "sign_iced_tea": "TRÀ ĐÁ",
+        "chat_deploy_ask": "डिप्लॉय हो गया?",
+        "chat_deploy_reply": "बिल्ड चल रहा है!",
+        "chat_coffee_ask": "एग कॉफ़ी?",
+        "chat_coffee_reply": "एक कप, प्लीज़!",
+        "chat_review_ask": "पीआर ठीक है?",
+        "chat_review_reply": "बढ़िया लग रहा है!",
+        "chat_bug_ask": "बग ठीक हुआ?",
+        "chat_bug_reply": "सब हो गया!",
+        "chat_tea_ask": "आइस्ड टी?",
+        "chat_tea_reply": "दो गिलास!",
+        "chat_latency_ask": "लेटेंसी ज़्यादा?",
+        "chat_latency_reply": "स्केल कर रहे हैं!",
+        "scene_label": "हनोई",
+        "scene_desc": "होआन कीम झील के पास पुराना शहर"
       }
     },
     "schedulePage": {
@@ -19201,6 +19227,7 @@
       "playing_in_popout_window": "पॉपआउट विंडो में चल रहा है",
       "pop_out_to_separate_window": "अलग विंडो में पॉप आउट करें",
       "present": "मौजूद,",
+      "scene_aria_label": "{{label}} दृश्य: {{desc}}",
       "show_controls": "नियंत्रण दिखाएँ",
       "slot_one": "{{count}} स्लॉट",
       "slot_other": "{{count}} स्लॉट"
