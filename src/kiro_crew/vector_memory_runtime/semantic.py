@@ -16,7 +16,6 @@ import re
 import struct
 import sys
 import threading
-from bisect import bisect_left
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
@@ -87,11 +86,6 @@ _SCORING_SELECT = (
     "SELECT key, value_json, updated_at, embedding, source FROM semantic_memory "
     "WHERE is_deleted = 0 AND key NOT LIKE 'lesson.%'"
 )
-
-
-def scoring_sql() -> str:
-    """The query that reads the scoring population; a caller may append ``AND ...``."""
-    return _SCORING_SELECT
 
 
 def row_bytes(row: dict[str, object]) -> int:
@@ -1132,7 +1126,7 @@ def semantic_scoring_set(store: VectorMemoryStore) -> _SemanticScoringSet | None
 
     ``PRAGMA data_version`` catches another process changing the database;
     the in-process generation catches this store's own commits (a write patches the
-    resident set in place, see :func:`patch_semantic_scoring`, and a write that
+    resident set in place, see :mod:`semantic_scoring_patch`, and a write that
     cannot be patched drops it). A snapshot that would exceed the retention budget
     (``vm._semantic_scoring_max_bytes``, the memory-scaled clamp of a 64 MiB
     floor, 1/16 of available memory and a 1 GiB ceiling) is refused for that exact
@@ -1192,7 +1186,17 @@ def _lookup_resident(store: VectorMemoryStore):
         and resident.generation == store._semantic_scoring_generation
         and resident.data_version == version
     ):
+        if store._semantic_scoring_pending:
+            # Rows patched in before their transaction ended: check them against
+            # what the table holds now, because a rollback leaves no other trace.
+            from kiro_crew.vector_memory_runtime import semantic_scoring_patch
+
+            resident = semantic_scoring_patch.reconcile_pending(store, resident)
+            store._semantic_scoring = resident
+            if resident is None:
+                return False, None, version
         return True, resident, version
+    store._semantic_scoring_pending.clear()
     if store._semantic_scoring_refused == (store._semantic_scoring_generation, version):
         return True, None, version
     return False, None, version
@@ -1247,148 +1251,6 @@ def _install_scoring_set(
     store._semantic_scoring_refused = None
     store._semantic_scoring = built
     return built
-
-
-# -- Patching the resident set across a write ---------------------------------
-#
-# Keep the resident semantic scoring set current across a write, in place.
-#
-# A write to one fact used to drop the whole resident set, so the next recall re-read
-# every row and re-derived the row vectors and the term index, even though one row
-# had changed. :func:`patch_semantic_scoring` instead swaps that one row in the set
-# and in what is derived from it, and installs the result under the new scoring
-# generation. A recall after the patch ranks exactly what a recall after a full
-# rebuild ranks: the patched set holds the same rows (order aside, and the ranking
-# breaks ties by key rather than by row order), and every derived piece is a
-# function of one row, changed for that row alone.
-#
-# The patch gives up, and the set is dropped for the next recall to rebuild, whenever
-# it cannot be sure it is current: no resident set, a set from an older generation,
-# another process has committed since the set was read (``PRAGMA data_version``), the
-# set would pass its byte budget, or anything in the patch raises. Dropping is always
-# safe; it is what every write did before.
-#
-# Called with the store's ``_db_lock``; the row is read back on the shared connection,
-# so a write the caller has not committed yet (a consolidation batch) is visible to it.
-
-
-def patch_semantic_scoring(store: VectorMemoryStore, key: str) -> None:
-    """Bump the scoring generation and bring the resident set up to date for *key*."""
-    with store._db_lock:
-        resident = store._semantic_scoring
-        previous = store._semantic_scoring_generation
-        store._semantic_scoring_generation = previous + 1
-        store._semantic_scoring = None
-        if resident is None or resident.generation != previous:
-            return
-        version = store._sqlite_data_version()
-        if version is None or version != resident.data_version:
-            return
-        try:
-            store._semantic_scoring = _patched(store, resident, key, version, previous + 1)
-        except Exception:  # pragma: no cover - defensive; a failed patch must only cost a rebuild
-            logger.debug(
-                "semantic scoring patch failed for %r; dropping the set", key, exc_info=True
-            )
-
-
-def _patched(
-    store: VectorMemoryStore,
-    resident: _SemanticScoringSet,
-    key: str,
-    version: int,
-    generation: int,
-) -> _SemanticScoringSet | None:
-    fetched = store._fetch_all_locked(f"{scoring_sql()} AND key = ?", (key,))
-    new_row = dict(fetched[0]) if fetched else None
-    rows = resident.rows
-    pos = next((i for i, row in enumerate(rows) if row["key"] == key), None)
-    old_row = None if pos is None else rows[pos]
-    if old_row == new_row:
-        # Nothing the set holds changed (a lesson, a repeated write): same rows,
-        # same derived work, new generation.
-        return _SemanticScoringSet(rows, generation, version, resident.derived)
-
-    old = resident.derived
-    used = old.get("used_bytes")
-    limit = old.get("max_bytes")
-    if used is None or limit is None:
-        return None
-    used += (row_bytes(new_row) if new_row else 0) - (row_bytes(old_row) if old_row else 0)
-    if used > limit:
-        return None
-
-    kept = rows if pos is None else rows[:pos] + rows[pos + 1 :]
-    new_rows = kept + ((new_row,) if new_row is not None else ())
-    derived: dict = {"used_bytes": used, "max_bytes": limit}
-    # Keyed on the text itself, so an entry for a text no row carries any more
-    # is dead weight (bounded by the memo's byte cap) and never a wrong answer.
-    if "tokens" in old:
-        derived["tokens"] = old["tokens"]
-        derived["token_bytes"] = old.get("token_bytes", 0)
-    for name, value in tuple(old.items()):
-        if isinstance(name, tuple) and name[0] == "vectors":
-            derived[name] = _patched_vectors(value, name[1], pos, new_row, len(new_rows) - 1)
-        elif name == "term_index":
-            patched = _patched_term_index(value, pos, new_row)
-            if patched is not _DROPPED:
-                derived[name] = patched
-    return _SemanticScoringSet(new_rows, generation, version, derived)
-
-
-def _patched_vectors(
-    cached: tuple[list[int], list[bytes], list[float]],
-    width: int,
-    pos: int | None,
-    new_row: dict[str, object] | None,
-    new_pos: int,
-) -> tuple[list[int], list[bytes], list[float]]:
-    """The row vectors of one width, minus the row at *pos* and plus *new_row* at *new_pos*."""
-    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
-
-    index, blobs, norms = cached
-    cut = len(index) if pos is None else bisect_left(index, pos)
-    held = pos is not None and cut < len(index) and index[cut] == pos
-    skip = cut + 1 if held else cut
-    new_index = index[:cut] + ([i - 1 for i in index[skip:]] if pos is not None else index[skip:])
-    new_blobs = blobs[:cut] + blobs[skip:]
-    new_norms = norms[:cut] + norms[skip:]
-    blob = new_row.get("embedding") if new_row is not None else None
-    if isinstance(blob, bytes) and len(blob) == width * 4:
-        np = vm.np
-        new_index.append(new_pos)
-        new_blobs.append(blob)
-        new_norms.append(
-            float(np.linalg.norm(np.frombuffer(blob, dtype=np.float32).astype(np.float64)))
-        )
-    return new_index, new_blobs, new_norms
-
-
-_DROPPED = object()
-
-
-def _patched_term_index(cached, pos: int | None, new_row: dict[str, object] | None):
-    """``(index, key texts)`` minus the row at *pos* and plus *new_row*, or ``_DROPPED``.
-
-    A built-and-refused index (``None``) stays refused. The new row's key text is
-    its bare key; a row that carries an identity label scores through the per-text
-    memo instead, because the loop only trusts an indexed key text equal to the
-    one it computes now.
-    """
-    if cached is None:
-        return None
-    index, key_texts = cached
-    texts: list[str] = []
-    added: list[str] = []
-    if new_row is not None:
-        key_text = str(new_row["key"]).replace("_", " ").replace(".", " ")
-        added.append(key_text)
-        texts = [key_text, str(new_row["value_json"]).lower()]
-    patched = index.patched(pos, texts)
-    if patched is None:
-        return _DROPPED
-    kept = key_texts if pos is None else key_texts[:pos] + key_texts[pos + 1 :]
-    return patched, kept + tuple(added)
 
 
 def get_semantic_context(

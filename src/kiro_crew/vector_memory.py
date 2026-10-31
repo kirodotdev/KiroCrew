@@ -134,6 +134,9 @@ from kiro_crew.vector_memory_runtime import migration as _migration
 from kiro_crew.vector_memory_runtime import recall as _recall
 from kiro_crew.vector_memory_runtime import retirement as _retirement
 from kiro_crew.vector_memory_runtime import semantic as _semantic
+from kiro_crew.vector_memory_runtime import (  # noqa: F401
+    semantic_scoring_patch as _semantic_scoring_patch,
+)
 from kiro_crew.vector_memory_runtime import store_bookkeeping as _store_bookkeeping
 from kiro_crew.vector_memory_runtime import term_index as _term_index  # noqa: F401
 from kiro_crew.vector_memory_runtime.embedding import (  # noqa: F401
@@ -668,6 +671,8 @@ class VectorMemoryStore:
         self._semantic_scoring_generation = 0
         # One rebuild of the resident set at a time; taken before ``_db_lock``, never inside it.
         self._semantic_scoring_build_lock = threading.Lock()
+        # Keys patched into the resident set while their transaction was still open.
+        self._semantic_scoring_pending: set[str] = set()
         self._semantic_scoring_supported = True
         self._semantic_scoring_refused: tuple[int, int] | None = None
         # Promotion keys already refused: the refusal is deterministic, so warn once per store

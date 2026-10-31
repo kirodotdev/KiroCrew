@@ -72,10 +72,11 @@ def _warm(store: VectorMemoryStore) -> None:
 
 def _assert_matches_rebuild(store: VectorMemoryStore, reference: VectorMemoryStore) -> None:
     """The patched set and its derived work equal what a rebuild produces."""
-    patched = store._semantic_scoring
-    assert patched is not None, "the write must patch the resident set, not drop it"
+    assert store._semantic_scoring is not None, "the write must patch the resident set, not drop it"
     for query in _QUERIES:
         assert store._semantic_candidates_v1(query) == reference._semantic_candidates_v1(query)
+    patched = store._semantic_scoring
+    assert patched is not None
     rebuilt = reference._semantic_scoring
     assert rebuilt is not None
     by_key = lambda rows: sorted(rows, key=lambda r: r["key"])  # noqa: E731
@@ -259,3 +260,79 @@ def test_a_write_during_a_rebuild_keeps_the_stale_read_from_being_installed(pair
     for query in _QUERIES + ["during rebuild"]:
         assert store._semantic_candidates_v1(query) == reference._semantic_candidates_v1(query)
     assert "project.during.fact" in {r["key"] for r in store._semantic_scoring.rows}
+
+
+def _deferred_write(store: VectorMemoryStore, key: str, value: str) -> None:
+    """A consolidation-style write: applied on the connection, committed by the caller."""
+    import json
+
+    with store._db_lock:
+        assert (
+            store._write_semantic(key, json.dumps(value), 1.0, "user_explicit", _consolidation=True)
+            is None
+        )
+
+
+def _keys(store: VectorMemoryStore) -> set[str]:
+    return {row["key"] for row in store._semantic_scoring.rows}
+
+
+def test_a_rolled_back_write_leaves_nothing_in_the_set(pair) -> None:
+    store, reference = pair
+    _warm(store)
+    scans = _count_scans(store)
+
+    _deferred_write(store, "project.rolled_back.fact", "rolled back tokyo gateway")
+    _deferred_write(store, "project.item_3.fact", "rewritten then rolled back python note")
+    assert "project.rolled_back.fact" in _keys(store), "the open transaction's own rows are visible"
+    store.db.rollback()
+
+    _assert_matches_rebuild(store, reference)
+    assert "project.rolled_back.fact" not in _keys(store)
+    assert scans["n"] == 0, "the rollback is repaired by patching, not by a rescan"
+    assert not store._semantic_scoring_pending
+
+
+def test_a_later_transaction_does_not_hide_an_earlier_rollback(pair) -> None:
+    store, reference = pair
+    _warm(store)
+    _deferred_write(store, "project.rolled_back.fact", "rolled back tokyo gateway")
+    store.db.rollback()
+    _deferred_write(store, "project.second.fact", "second batch deploy memory")
+    assert "project.rolled_back.fact" not in _keys(store)
+    assert "project.second.fact" in _keys(store)
+    store.db.commit()
+    _assert_matches_rebuild(store, reference)
+    assert "project.second.fact" in _keys(store)
+    assert not store._semantic_scoring_pending
+
+
+def test_a_committed_batch_keeps_its_patched_rows(pair) -> None:
+    store, reference = pair
+    _warm(store)
+    scans = _count_scans(store)
+    for i in range(5):
+        _deferred_write(store, f"project.batch_{i}.fact", f"batch tokyo deploy {i}")
+    store.db.commit()
+    _assert_matches_rebuild(store, reference)
+    assert {f"project.batch_{i}.fact" for i in range(5)} <= _keys(store)
+    assert scans["n"] == 0
+    assert not store._semantic_scoring_pending
+
+
+def test_the_term_index_vocabulary_is_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(term_index, "VOCAB_GROWTH_SLACK", 2)
+    index = term_index.RowTermIndex.build(["alpha beta", "gamma delta", "alpha", "beta"], np)
+    assert index is not None
+    built = len(index._terms)
+    bound = built + max(2, built)
+    grown = index
+    for i in range(1, 20):
+        # Replace a row with one of fresh words: the live texts stay
+        # the same size while the vocabulary only gains.
+        grown = grown.patched(0, [f"fresh{i}a fresh{i}b", "alpha"])
+        if grown is None:
+            break
+        assert len(grown._terms) <= bound
+    assert grown is None, "the index must be dropped once the vocabulary outgrows its bound"
+    assert len(index._terms) > bound, "the drop happens past the bound, not before it"

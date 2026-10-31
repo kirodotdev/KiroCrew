@@ -76,6 +76,7 @@ RUNTIME_MODULES = frozenset(
         "recall",
         "retirement",
         "semantic",
+        "semantic_scoring_patch",
         "store_bookkeeping",
         "term_index",
         "text_scoring",

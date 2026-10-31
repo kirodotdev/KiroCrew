@@ -860,6 +860,7 @@ nothing reads either. New code for a member goes to the module that owns it. In
 | `migration` | Legacy `lessons.jsonl` parsing, Markdown parsing through the `MemoryFiles` the store resolves, the episode clustering promotion uses, and promotion's key inference (`infer_semantic_key`) |
 | `text_scoring` | Stemming, the row-token memo, keyword and hybrid scores, MMR, the dense-script keyword floor and the list-search predicate |
 | `term_index` | The resident set's compact row-term index: every row's key and value terms as ids into one vocabulary, and one query's matched terms per text |
+| `semantic_scoring_patch` | Patching the resident `_SemanticScoringSet` (rows, per-width row vectors, term index) for one written key under the new generation, and checking keys patched inside an unfinished transaction against the table so a rollback leaves nothing behind |
 | `write_outcomes` | What a write reports: `SemanticRejectCode`, `LessonWriteOutcome`, `EpisodicWriteOutcome` and `LessonWriteResult`, which keep `kiro_crew.vector_memory` as their `__module__` |
 | `lesson_write` | `write_lesson` (refusal screens, the scope-local dedup scan and its authority pre-pass, deferred supersede, the lesson vector) and `embed_lesson` |
 | `episodic_write` | `write_episodic` and `write_episodic_outcome` (screens, dedup, capacity, the FAISS add; the facade's `_injection_audit_snippet` redacts the injection-refusal snippet), forget, restore, cap eviction and row reads |

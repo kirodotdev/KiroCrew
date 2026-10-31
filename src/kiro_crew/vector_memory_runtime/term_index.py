@@ -24,18 +24,26 @@ from kiro_crew.vector_memory_runtime import text_scoring as _text_scoring
 #: the per-text memo path, which bounds itself in bytes.
 MAX_TERM_IDS = 16 * 1024 * 1024
 
+#: Distinct terms :meth:`RowTermIndex.patched` may add to the vocabulary beyond what
+#: the last full build held, or as many again as that build held if more. Terms no
+#: surviving text carries stay in the shared vocabulary, so past this bound the
+#: index is dropped and rebuilt from the live texts, which keeps only the terms in use.
+VOCAB_GROWTH_SLACK = 65536
+
 
 class RowTermIndex:
     """Terms of a fixed sequence of texts, as ids into one vocabulary."""
 
-    __slots__ = ("_vocab", "_terms", "_flat", "_offsets", "_np")
+    __slots__ = ("_vocab", "_terms", "_flat", "_offsets", "_np", "_built_vocab")
 
-    def __init__(self, vocab, terms, flat, offsets, np: Any):
+    def __init__(self, vocab, terms, flat, offsets, np: Any, built_vocab: int | None = None):
         self._vocab = vocab
         self._terms = terms
         self._flat = flat
         self._offsets = offsets
         self._np = np
+        # Vocabulary size at the last full build; patches grow it from there.
+        self._built_vocab = len(terms) if built_vocab is None else built_vocab
 
     @classmethod
     def build(cls, texts: list[str], np: Any) -> RowTermIndex | None:
@@ -76,7 +84,8 @@ class RowTermIndex:
         after the surviving ones, exactly as :meth:`build` would index them at the
         end of the sequence. The vocabulary is shared with this index and only
         ever grows: an id no surviving text carries is never matched. ``None``
-        past :data:`MAX_TERM_IDS` terms, as :meth:`build` answers.
+        past :data:`MAX_TERM_IDS` terms, as :meth:`build` answers, and ``None`` once the
+        vocabulary has grown past :data:`VOCAB_GROWTH_SLACK` since the last full build.
         """
         np = self._np
         flat, offsets = self._flat, self._offsets
@@ -100,6 +109,8 @@ class RowTermIndex:
             tail_offsets.append(base + len(tail))
         if base + len(tail) > MAX_TERM_IDS:
             return None
+        if len(terms) > self._built_vocab + max(VOCAB_GROWTH_SLACK, self._built_vocab):
+            return None
         if new_texts:
             flat = np.concatenate([flat, np.frombuffer(tail, dtype=np.uint32)])
             offsets = np.concatenate([offsets, np.frombuffer(tail_offsets, dtype=np.int64)])
@@ -109,6 +120,7 @@ class RowTermIndex:
             flat.astype(np.uint32, copy=False),
             offsets.astype(np.int64, copy=False),
             np,
+            self._built_vocab,
         )
 
     def query(self, query_terms: set[str]) -> QueryHits:
