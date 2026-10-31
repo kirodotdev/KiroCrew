@@ -1627,6 +1627,8 @@ def _format_acp_error_worded(
                 "rotated, or mistyped) — refresh your AWS credentials."
                 f"{req_id_suffix}"
             )
+        elif _RE_AUTH.search(haystack) and host_auth.bedrock_auth_remedy(backend):
+            formatted = host_auth.bedrock_auth_remedy(backend) + req_id_suffix
         elif _RE_AUTH.search(haystack):
             # Bedrock auth failure — almost always missing/expired AWS
             # credentials.

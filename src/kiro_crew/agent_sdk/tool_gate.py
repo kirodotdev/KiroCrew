@@ -67,6 +67,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     Readback,
     Routing,
     gate_probe_command_for,
@@ -931,10 +932,57 @@ def gate_marker_issue(
                 "transport whose programs reach Node's own APIs around the gate"
             )
         return _deepseek_child_env_issue(marker.get("child_env"), child_scrub_names)
+    if backend == ACP_BACKEND_STRANDS:
+        # The Strands gate module proves the same property on a child of the local
+        # sandbox it patched, in the same proof shape, and also proves the keys
+        # reached it through the one-time file rather than a launch environment.
+        return _deepseek_child_env_issue(
+            marker.get("child_env"), child_scrub_names, mapping="agent.strands_env"
+        ) or _strands_keys_route_issue(marker.get("keys"), child_scrub_names)
     return ""
 
 
-def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> str:
+def _strands_keys_route_issue(proof: object, expected_names: Sequence[str]) -> str:
+    """Why the Strands marker does not prove the one-time key route, or ``""``.
+
+    A launch environment stays readable from ``/proc/<pid>/environ`` by every shell
+    the process's descendants run, so the keys must arrive by file, the file must be
+    gone, neither the worker's nor the Node CLI's launch environment may carry them,
+    and on Linux the worker must have made itself non-dumpable. Names only, never
+    values, in every message.
+    """
+    expected = sorted(set(expected_names))
+    if not expected:
+        return ""
+    if not isinstance(proof, dict):
+        return "the gate's load marker carries no key-route proof"
+    if proof.get("loaded") != expected:
+        return (
+            f"the gate loaded {proof.get('loaded')!r} from the key file rather than the "
+            f"configured agent.strands_env names {expected!r}"
+        )
+    if proof.get("file_left") is not False:
+        return "the gate left the one-time provider key file in place"
+    for field, owner in (("launch_env", "worker"), ("parent_launch_env", "Strands CLI")):
+        held = proof.get(field)
+        if held:
+            return (
+                f"the {owner}'s launch environment carries {sorted(held)!r}, which every "
+                "shell the agent runs could read"
+            )
+        if held is None and platform_compat.IS_LINUX:
+            return f"the gate could not read the {owner}'s launch environment to prove it clean"
+    if platform_compat.IS_LINUX and proof.get("dumpable") != "linux-non-dumpable":
+        return (
+            "the gate could not make its worker non-dumpable "
+            f"({proof.get('dumpable')!r}), so a shell could read the keys from its memory"
+        )
+    return ""
+
+
+def _deepseek_child_env_issue(
+    proof: object, expected_names: Sequence[str], *, mapping: str = "agent.deepseek_env"
+) -> str:
     """Why the marker's child-env proof does not clear the vault-fed names, or ``""``.
 
     *proof* is the plugin's ``child_env`` snapshot; *expected_names* the names Crew
@@ -974,7 +1022,7 @@ def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> s
     if sorted(set(names)) != expected:
         return (
             f"the gate's child-environment proof covers {sorted(set(names))!r} rather than "
-            f"the configured agent.deepseek_env names {expected!r}, so it does not vouch "
+            f"the configured {mapping} names {expected!r}, so it does not vouch "
             "for the key this session would inject"
         )
     if parent_missing:
