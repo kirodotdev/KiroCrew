@@ -208,7 +208,13 @@ def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: 
     if not is_shell:
         return ""
     # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.harness_tool_names import ENVELOPE_NAMED_TOOL_BACKENDS
     from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
+
+    # On Strands the shell verdict a card carries is the CLI's guess from the tool
+    # name, so only the id the gate envelope stated names the call.
+    if capabilities_of(provider).backend in ENVELOPE_NAMED_TOOL_BACKENDS:
+        return ""
 
     shell_ids = KAS_TOOL_IDS_BY_KIRO_TOOL.get("execute_bash") or ()
     return shell_ids[0] if shell_ids else ""
