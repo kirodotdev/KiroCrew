@@ -124,11 +124,11 @@ KIROCREW_CONNECTIONS_GOOGLE_CALENDAR_CLIENT_ID=1234567890-abc.apps.googleusercon
 KIROCREW_CONNECTIONS_GOOGLE_CALENDAR_CLIENT_SECRET=GOCSPX-...
 ```
 
-After saving, the Google Calendar card on **Capabilities → Connections** switches from "Needs configuration" to "Connect".
+After saving, the Google Calendar card on **Customize → Connections** switches from "Needs configuration" to "Connect".
 
 ## 6. Verify the connection
 
-1. On **Capabilities → Connections**, click **Connect** on the Google Calendar card. Sign in with the calendar owner's account. On External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list the three read-only Calendar permissions (calendar list, events, free/busy) and nothing that says "edit" or "delete".
+1. On **Customize → Connections**, click **Connect** on the Google Calendar card. Sign in with the calendar owner's account. On External/Testing you first see "Google hasn't verified this app"; click **Continue**. The consent page should list the three read-only Calendar permissions (calendar list, events, free/busy) and nothing that says "edit" or "delete".
 2. Approve. The browser lands on `http://127.0.0.1:48105/callback?...`. Locally the page closes itself; on a remote install paste the URL back into the dashboard.
 3. The card shows **Connected**.
 4. In a chat session, ask: **"When is my next meeting with Ariel?"** (use a real attendee). Google's test description: "The client checks your schedule using `calendar.list_events` and details your next meeting with Ariel."
