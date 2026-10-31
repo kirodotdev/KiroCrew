@@ -2234,6 +2234,7 @@
         "embedding_idle_evict_secs": 3600,
         "embedding_weight_repack": true,
         "embedding_child_process": false,
+        "consolidation_write_child_process": false,
         "embed_model_url": "",
         "embed_model_path": "",
         "embed_model_id": "",
@@ -2373,6 +2374,20 @@
       "tags": [],
       "label": "Run Embeddings in a Child Process",
       "help": "Load the embedding model and run inference in a separate low-priority process, so embedding work never competes with the gateway itself. Off by default: the model runs inside the gateway. Takes effect at the next model load.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "memory.consolidation_write_child_process",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Run Consolidation Memory Writes in a Child Process",
+      "help": "Run the memory writes that history consolidation makes (extracted facts, episodes and lessons) in a separate low-priority process, so they never compete with turn context building for the gateway's interpreter lock. Off by default: the writes run inside the gateway. Takes effect at the next consolidation pass.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

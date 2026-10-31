@@ -171,6 +171,9 @@ class TestMemoryTuningPlumbing:
         "apps/builtins/ops_mission_control/backend/routes.py",
         # Named stores, through declared_store.
         "context.py",
+        # The consolidation write child opens the gateway's store file with the
+        # loaded config, at the gateway store's own embedding width.
+        "consolidation_write_child.py",
     )
     # Every other file that constructs a store, with the reason the AST guard does
     # not check it. The inventory test fails on a new construction site that is in

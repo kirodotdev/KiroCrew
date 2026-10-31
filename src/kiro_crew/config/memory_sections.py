@@ -128,6 +128,17 @@ class MemoryConfig:
             "model load.",
         ),
     )
+    consolidation_write_child_process: bool = field(
+        default=False,
+        metadata=_meta(
+            "Run Consolidation Memory Writes in a Child Process",
+            "Run the memory writes that history consolidation makes (extracted facts, "
+            "episodes and lessons) in a separate low-priority process, so they never "
+            "compete with turn context building for the gateway's interpreter lock. "
+            "Off by default: the writes run inside the gateway. Takes effect at the "
+            "next consolidation pass.",
+        ),
+    )
     embed_model_url: str = field(
         default="",
         metadata=_meta(
