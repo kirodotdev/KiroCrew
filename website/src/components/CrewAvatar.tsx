@@ -62,6 +62,8 @@ import {
   DEFAULT_POSE_BG,
   iconMotionVars,
   poseBodyDataUri,
+  poseEyesDataUri,
+  poseEyeVars,
   poseDataUri,
   resolvePoseBg,
 } from '../lib/avatarPoses'
@@ -449,10 +451,15 @@ export default function CrewAvatar({
   // `done` / `error` with no reaction draw the still frame.
   //
   // The working icon is NOT an animated SVG. The tile is this element's own
-  // background, and one still image of the silhouette is moved by page CSS
-  // (`crewIconMotion.css`). An animation inside the image's SVG is re-rastered
-  // every frame, and iOS Safari re-rastered it in pieces, so the head, the tail
-  // and one eye drew out of step. A still raster moved as one layer cannot tear.
+  // background and stays still. Two still images, the silhouette and its eyes,
+  // are moved by page CSS (`crewIconMotion.css`): the body chain moves both, and
+  // the eyes add their own blink and glance, like the ghost tier. An animation
+  // inside an image's SVG is re-rastered every frame, and iOS Safari re-rastered
+  // it in pieces, so the head, the tail and one eye drew out of step. A still
+  // raster moved by transforms is never repainted in parts.
+  // Both icon branches paint the same tile behind the art, so the still frame
+  // and the moving one match before the image has decoded.
+  const iconTile = icon ? resolvePoseBg(icon.bg) : undefined
   if (icon && shownState === 'working') {
     return (
       <span
@@ -462,7 +469,7 @@ export default function CrewAvatar({
           ...iconMotionVars(),
           width: size,
           height: size,
-          backgroundColor: resolvePoseBg(icon.bg),
+          backgroundColor: iconTile,
         }}
         className={`crew-icon-motion shrink-0 rounded-full border border-border ${className}`}
       >
@@ -471,6 +478,13 @@ export default function CrewAvatar({
             <span className="crew-icon-bob">
               <span className="crew-icon-sq">
                 <img src={poseBodyDataUri(icon.pose)} alt="" width={size} height={size} />
+                <span className="crew-icon-eyes" data-testid="crew-icon-eyes">
+                  <span className="crew-icon-look">
+                    <span className="crew-icon-blink" style={poseEyeVars(icon.pose)}>
+                      <img src={poseEyesDataUri(icon.pose)} alt="" width={size} height={size} />
+                    </span>
+                  </span>
+                </span>
               </span>
             </span>
           </span>
@@ -486,8 +500,8 @@ export default function CrewAvatar({
         aria-hidden="true"
         width={size}
         height={size}
-        style={{ width: size, height: size }}
-        className={`shrink-0 rounded-full border border-border bg-bg-elevated ${className}`}
+        style={{ width: size, height: size, backgroundColor: iconTile }}
+        className={`shrink-0 rounded-full border border-border ${className}`}
       />
     )
   }
@@ -538,6 +552,16 @@ export default function CrewAvatar({
   }
 
   return ghost
+}
+
+/**
+ * The element that draws an avatar's frame (its border and round corner) inside
+ * `host`. A working icon draws its frame on the motion root, and the image inside
+ * it has none; every other tier draws it on its one image. The root is listed
+ * first because `querySelector` returns the first match in document order.
+ */
+export function avatarFrameIn(host: ParentNode): HTMLElement | null {
+  return host.querySelector<HTMLElement>('[data-testid="crew-icon-motion"], img')
 }
 
 /** The name-derived traits for a seed — the builder's pre-fill, its "reset to

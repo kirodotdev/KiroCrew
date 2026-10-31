@@ -115,6 +115,10 @@ def test_the_mcp_trust_verdict_is_what_admits_project_hooks(
     monkeypatch.setattr(session_mcp, "_project_mcp_trusted", _trusted)
     assert _chat(backend, repo) == ([_REPO_CMD, _REPO_CMD], False)
     assert seen and all(str(w) == str(repo) for w in seen)
+    # A checkout's hooks are tagged project, so they stay deny-list vetted: an
+    # agent can write a checkout, unlike the user-level agents tree.
+    turn = asyncio.run(spec_hooks.turn_spec_hooks(_provider(backend, str(repo)), _AGENT))
+    assert turn.hooks and {h.spec_origin for h in turn.hooks} == {"project"}
 
 
 @pytest.mark.parametrize("backend", _MIRRORS)

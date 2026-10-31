@@ -684,15 +684,19 @@ def _close_shared(db: sqlite3.Connection, *, wal_kept_on_close: bool) -> None:
     """Close the store's shared connection without deleting a ``-wal`` another process uses.
 
     A connection set up by ``sqlite_wal.keep_wal_on_close`` does not checkpoint on
-    close, so the ``-wal`` is emptied here first. That keeps a stopped store's
-    ``-wal`` at zero bytes, so a later replace of the
-    database file never meets a ``-wal`` full of the old file's pages.
+    close. On a driver where that option could not be set, the close goes through
+    ``sqlite_wal.close_keeping_wal``, which does not checkpoint either. Either way
+    the ``-wal`` is emptied here first. That keeps a stopped store's ``-wal`` at
+    zero bytes, so a later replace of the database file never meets a ``-wal``
+    full of the old file's pages.
     """
     try:
-        if wal_kept_on_close:
-            sqlite_wal.truncate_wal_before_close(db)
+        sqlite_wal.truncate_wal_before_close(db)
     finally:
-        db.close()
+        if wal_kept_on_close:
+            db.close()
+        else:
+            sqlite_wal.close_keeping_wal(db)
 
 
 def _release_store_use_lock(self: VectorMemoryStore) -> None:

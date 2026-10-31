@@ -602,7 +602,7 @@ describe('New mate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a just-created mate at work on its greeting moves as one picture in its row, with nothing animating inside it', async () => {
+  it('a just-created mate at work on its greeting moves its body and eyes in one chain in its row, with nothing animating inside them', async () => {
     // Right after create the greeting turn runs, so the new row is the first
     // place the working icon shows. An SVG that animates itself is re-rastered
     // in pieces on iOS Safari: head, tail and one eye out of step.
@@ -628,13 +628,17 @@ describe('New mate dialog', () => {
     // Running, as a fresh mate is while it greets: the presence dot is on.
     await within(radar).findByTestId('member-presence-dot', undefined, PANE_READY)
     const motion = await within(radar).findByTestId('crew-icon-motion', undefined, PANE_READY)
-    // One moving root and one picture in the row: the silhouette and its eyes
-    // are the same image, so they share every transform.
+    // One moving root in the row, holding the silhouette and one eye layer
+    // inside the same body-motion wrappers, so they share every body transform.
     expect(within(radar).getAllByTestId('crew-icon-motion')).toHaveLength(1)
+    expect(within(radar).getAllByTestId('crew-icon-eyes')).toHaveLength(1)
     const imgs = radar.querySelectorAll('img')
-    expect(imgs).toHaveLength(1)
-    expect(motion.contains(imgs[0])).toBe(true)
-    expect(decodeURIComponent(imgs[0].getAttribute('src') ?? '')).not.toMatch(/<style|animation|@keyframes/)
+    expect(imgs).toHaveLength(2)
+    const sq = motion.querySelector('.crew-icon-sq') as HTMLElement
+    for (const img of imgs) {
+      expect(sq.contains(img)).toBe(true)
+      expect(decodeURIComponent(img.getAttribute('src') ?? '')).not.toMatch(/<style|animation|@keyframes/)
+    }
   })
 
   it('a mate not created on the dashboard asks for no greeting when opened', async () => {

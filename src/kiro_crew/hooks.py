@@ -1610,6 +1610,10 @@ class ScriptHook:
       ``ScriptHookResult.error``, then stderr, then "exited with code N").
       Every other event stays warn-only (stderr shown to user). There is no
       per-hook advisory/fail-open opt-out.
+    - Exception: an agent spec's own hook (``spec_origin`` set, see
+      :mod:`kiro_crew.agent_sdk.spec_hooks`) follows kiro-cli, which runs it on
+      the kiro-cli backend. Only a delivered exit 2 blocks; a refused, failed,
+      killed or timed-out spec hook warns and the tool runs.
     """
 
     id: str = ""
@@ -1629,9 +1633,17 @@ class ScriptHook:
     last_status: str = ""  # "ok", "error", "timeout", "blocked"
     last_error: str = ""  # human-readable reason for the most recent non-ok status
     run_count: int = 0
+    #: Where an agent spec's own hook came from: ``"user"`` (the user-level agents
+    #: tree, read-only to every sandboxed process), ``"project"`` (a trusted
+    #: checkout's spec), or ``""`` for a Hooks-page hook. Set only in memory by
+    #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
+    #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
+    spec_origin: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("spec_origin", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "ScriptHook":

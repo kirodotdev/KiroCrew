@@ -289,7 +289,11 @@ def test_a_kas_turn_with_an_unreadable_spec_says_so(agents_dir):
 
 def _spec_hook(matcher: str = "Read*") -> ScriptHook:
     return ScriptHook(
-        id="spec:a1:PreToolUse:0", event=HOOK_EVENT_PRE_TOOL_USE, matcher=matcher, command="g"
+        id="spec:a1:PreToolUse:0",
+        event=HOOK_EVENT_PRE_TOOL_USE,
+        matcher=matcher,
+        command="g",
+        spec_origin="user",
     )
 
 
@@ -313,6 +317,63 @@ def test_the_gate_runs_stored_and_spec_hooks_and_blocks_on_no_verdict(
     )
     assert ran == [("p", "ReadFile", None), ("g", "ReadFile", "/w")]
     assert (reason is not None) is blocked
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "refused", "blocked"),
+    [
+        (0, False, False),
+        (2, False, True),  # a delivered deny still blocks
+        (1, False, False),  # a hook error warns, as on kiro-cli
+        (-9, False, False),  # killed (e.g. by endpoint security)
+        (-1, False, False),  # timed out
+        (2, True, False),  # refused by the shell deny list, never ran
+    ],
+    ids=["allow", "deny", "error", "killed", "timeout", "refused"],
+)
+def test_a_spec_hook_keeps_kiro_cli_exit_semantics_at_the_gate(
+    tmp_path, monkeypatch, exit_code, refused, blocked
+):
+    """One broken spec hook must not stop every tool call: on kiro-cli only a
+    delivered exit 2 blocks, and the same spec behaves the same on KAS."""
+
+    async def fake_run(hook, context="", hook_event=None, cwd=None):
+        return ScriptHookResult(
+            hook_id=hook.id,
+            hook_name=hook.name,
+            event=hook.event,
+            exit_code=exit_code,
+            refused=refused,
+            error="Blocked by security policy: x" if refused else "",
+        )
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    store = ScriptHookStore(config_dir=tmp_path)
+    reason = asyncio.run(
+        hooks_mod.permission_pre_tool_block(store, [_spec_hook()], "/w", "Running: ReadFile")
+    )
+    assert (reason is not None) is blocked
+
+
+def test_a_refused_hooks_page_hook_still_blocks_and_names_the_refusal(tmp_path, monkeypatch):
+    """A Hooks-page hook stays fail-closed; the block reason is the refusal,
+    not a bare 'hook denied' that reads like the hook asked to block."""
+
+    async def fake_run(hook, context="", hook_event=None, cwd=None):
+        return ScriptHookResult(
+            hook_id=hook.id,
+            hook_name=hook.name,
+            event=hook.event,
+            exit_code=2,
+            refused=True,
+            error="Blocked by security policy: rule-x",
+        )
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
+    store = ScriptHookStore(config_dir=tmp_path)
+    store._hooks = {"page": ScriptHook(id="page", event=HOOK_EVENT_PRE_TOOL_USE, command="p")}
+    reason = asyncio.run(hooks_mod.permission_pre_tool_block(store, [], None, "ReadFile"))
+    assert reason is not None and "rule-x" in reason
 
 
 def _gate_runs(tmp_path, monkeypatch, matcher, title, **identity) -> list:
