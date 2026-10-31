@@ -559,6 +559,14 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
             {"error": "workspace must be a string", "code": "invalid_workspace"}, status=400
         )
     workspace = _raw_workspace.strip()
+    # Same rule as the update route: the loader reads these as strings, but
+    # only on the next load, so a wrong type is refused before it is stored.
+    for _text_field in ("description", "triggers", "source"):
+        if _text_field in body and not isinstance(body[_text_field], str):
+            return web.json_response(
+                {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
+                status=400,
+            )
     pending_reason = await _revalidate_crew_pin(model, request)
     if pending_reason:
         return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)

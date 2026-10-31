@@ -295,6 +295,15 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Strictly strings, like display_name: the loader reads each as a string and
+    # turns any other type into the default, but only on the NEXT load, so a
+    # stored int or list would sit in the live record until then.
+    for _text_field in ("workspace", "description", "triggers", "source"):
+        if _text_field in body and not isinstance(body[_text_field], str):
+            return web.json_response(
+                {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
+                status=400,
+            )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -471,6 +480,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             "display_name": agent.display_name,
         }
         changed: list[str] = []
+        warnings: list[str] = []
         if "kiro_agent" in body:
             try:
                 owner = await asyncio.to_thread(
@@ -495,8 +505,27 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 )
             agent.kiro_agent = body["kiro_agent"]
             changed.append("kiro_agent")
-        if "workspace" in body:
-            agent.workspace = body["workspace"]
+        # Empty or whitespace keeps the current binding: "" is the create-only
+        # "a workspace of its own" sentinel and is never stored.
+        if "workspace" in body and body["workspace"].strip():
+            from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+            _ws = body["workspace"]
+            # Saved as before, but a new name missing from ``workspaces`` falls
+            # back to another workspace's directory (which one depends on the
+            # reader), silently sharing it, so the caller is told. ``default``
+            # always resolves.
+            if (
+                _ws != agent.workspace
+                and _ws not in cfg.workspaces
+                and _ws not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+            ):
+                logger.warning("crew %r bound to unconfigured workspace %r", name, _ws)
+                warnings.append(
+                    f"workspace '{_ws}' is not configured; "
+                    "the crew shares a fallback workspace directory"
+                )
+            agent.workspace = _ws
             changed.append("workspace")
         if "model" in body:
             # "auto"/"" both mean inherit; store the single "" spelling so the
@@ -964,5 +993,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"{name} ({','.join(changed)})",
     )
-    result = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    result: dict = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    if warnings:
+        result["warnings"] = warnings
     return web.json_response(result)
