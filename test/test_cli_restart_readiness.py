@@ -60,6 +60,7 @@ class TestRestartReadinessVerdict:
                 "kiro_crew.cli_server.service_controller.is_service_active",
                 return_value=False,
             ),
+            patch("kiro_crew.cli_server.service_controller.installed_unit_path", return_value=None),
             patch(
                 "kiro_crew.cli_server.platform_compat.find_listening_pids",
                 return_value=[],

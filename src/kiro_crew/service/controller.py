@@ -9,6 +9,7 @@ directly. This keeps the dispatch logic in one place and makes the
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -72,6 +73,26 @@ def installed_unit_path() -> "Path | None":
     if plat == Platform.LAUNCHD and macos.PLIST_PATH.is_file():
         return macos.PLIST_PATH
     return None
+
+
+def unit_is_ours(unit: Path) -> bool:
+    """False for a system unit file that is an alias of another unit."""
+    if unit == linux.UNIT_PATH:
+        return linux.system_unit_is_ours()
+    return True
+
+
+def start_command(unit: Path) -> str:
+    """Start the stopped service from its definition on disk, never rewriting it."""
+    if unit == macos.PLIST_PATH:
+        plist = shlex.quote(str(unit))
+        return (
+            f"launchctl bootstrap gui/$(id -u) {plist}\n"
+            f"   Over SSH with no desktop login:  launchctl bootstrap user/$(id -u) {plist}"
+        )
+    if unit == linux.UNIT_PATH:
+        return " ".join([*linux._privilege_prefix(), "systemctl", "start", "kirocrew"])
+    return "systemctl --user start kirocrew"
 
 
 def installed_service_has_managed_marker() -> "bool | None":
