@@ -3026,7 +3026,14 @@ derived worker, conductor and service-agent specs and the read-only side spec al
 that refusal, so the worker's stale mirror raises `DerivedSpecStale` rather than
 re-deriving, and the dashboard spec editor and the MCP toggle, remove, sync and apply
 handlers answer HTTP 409 `agent_home_not_owned` (listed in learn-cron-dashboard.md)
-instead of recording a change the file never took. Every admitted or refused shared-home
+instead of recording a change the file never took. The app MCP registry writer
+(`apps/bridges_mcp_config.py` `_write_mcp_json_unlocked`, the other writer of
+`kirocrew.json`) asks the same guard and writes nothing when refused, so a non-default
+home's app registration, deregistration and prune leave a foreign-owned
+`kirocrew.json` byte-identical. A first shared-directory write from a relocated
+home includes the existing `kirocrew-core` entry, whose `KIROCREW_HOME` pin proves
+ownership on later app writes. The app agent spec and launch-copy removals raise
+`SharedAgentHomeRefused` (app-kit-platform.md section 1). Every admitted or refused shared-home
 write is audited as the SEL `agent_home_write` operation, allowed or denied.
 The provider applier only schedules the switch: `reload_provider_factory` clears
 the session registry and then shuts the retired providers down one at a time,

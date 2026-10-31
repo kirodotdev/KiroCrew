@@ -54,10 +54,15 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     covered the day it is added, and such a writer cannot forget the check. It
     is NOT every spec write in the tree — ``apps/bridges_agents.py`` renders app agent
     specs into the same directory through :func:`atomic_write`, a different
-    primitive this guard never sees; that writer, the auto_improvement runner's
-    self-registration call this function themselves, under
-    :func:`agents_spec_lock`. What this covers on its own is the set that goes
-    through
+    primitive this guard never sees; that writer, the app MCP registry writer
+    (``apps/bridges_mcp_config.py`` ``_write_mcp_json_unlocked``, the other
+    writer of ``kirocrew.json`` itself) and the auto_improvement runner's
+    self-registration call this function themselves, the first under
+    :func:`agents_spec_lock` and the second under the file's own ``_mcp_lock``.
+    The app removals in the same directory (``_deregister_agents`` and the agent
+    prune in ``_prune_stale_app_resources``) ask it once per sweep, through
+    ``apps/bridges_agents.py`` ``_owned_agents_dir``.
+    What this covers on its own is the set that goes through
     :func:`_atomic_json_write`: ``worker_agent``, the conductor agents, the
     service agents, the default-spec commit, the fork refresh and the read-only
     side spec. The decision itself is not re-implemented — it is the same
