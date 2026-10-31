@@ -613,7 +613,7 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.episodic_max_results` | Max episodic memories injected per session | `8` |
 | `memory.episodic_max_count` | Max total episodic memories stored | `10000` |
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
-| `memory.history_idle_hours` | Hours of inactivity before history consolidation | `3.0` |
+| `memory.history_idle_hours` | Hours of inactivity before history consolidation. At least `0.5`: a smaller value is raised to it, and in `config.json` a value that is not a positive number uses the default | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
 | `memory.backup_enabled` | Periodic rotating backups of every active memory store (the default store, named V1 stores and member V2 stores); retention does not delete active memories | `true` |
 | `memory.backup_keep` | Backup copies retained per store, with a minimum of one | `7` |
