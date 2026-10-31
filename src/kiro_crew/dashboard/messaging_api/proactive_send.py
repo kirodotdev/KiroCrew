@@ -917,11 +917,13 @@ async def _deliver_send_message_fallback(
             )
         )
     if channel_type:
-        outcome.sent_channel = await _deliver_to_channel(
-            state,
-            _channel_delivery_key(state, caller_session, declared_session),
-            _with_source_line(channel_text, source_line if is_cron_caller else ""),
-            channel_type=channel_type,
+        outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
+            await _deliver_to_channel(
+                state,
+                _channel_delivery_key(state, caller_session, declared_session),
+                _with_source_line(channel_text, source_line if is_cron_caller else ""),
+                channel_type=channel_type,
+            )
         )
     # Opt-in "Open session" deep-link button: resolved (server-side) only
     # when the caller asked for it AND this send actually reaches Slack.
@@ -1262,7 +1264,7 @@ def _send_message_response(
 
     if outcome.channel_code:
         safe_detail = redact(outcome.channel_detail)
-        detail = f"{channel_target} delivery failed: {safe_detail}"
+        detail = f"{channel_target or channel_type} delivery failed: {safe_detail}"
         # Both responses are spelled out inline, with a literal status and a
         # literal body, rather than sharing a hoisted dict or computing the
         # status. `test_error_code_contract` ratchets BOTH of those shapes for the

@@ -44,7 +44,7 @@ async def _send(
 
     async def _own(_state, _key, text, *, channel_type=""):
         sent.append(text)
-        return True
+        return True, "", ""
 
     monkeypatch.setattr(mod, "_deliver_channel_dm", _dm)
     monkeypatch.setattr(mod, "_deliver_to_channel", _own)

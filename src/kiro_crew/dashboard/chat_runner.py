@@ -194,6 +194,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
     _authorize_recipient,
+    _recipient_principal,
     _resolve_channel_target,
     _resolve_mirror_target,
 )
