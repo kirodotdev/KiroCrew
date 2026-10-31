@@ -46,9 +46,6 @@ _PREAMBLE = crewmate_prompts.text("wake.preamble")
 _GUIDANCE = crewmate_prompts.text("worker_report.guidance")
 
 
-#: Said under a report whose worker names a capability it lacks
-#: (``mate_worker.MISSING_CAPABILITY_PREFIX``).
-_MISSING_CAPABILITY_NOTE = crewmate_prompts.text("worker_report.missing_capability")
 _MISSING_CAPABILITY_CHARS = 240
 _LINE_DECORATION = " \t*_`#>-"
 
