@@ -60,6 +60,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/file-grep", handlers.api_file_grep)
     app.router.add_get("/api/file-sheet", handlers.api_file_sheet)
     app.router.add_get("/api/browse-dirs", handlers.api_browse_dirs)
+    app.router.add_post("/api/browse-dirs/create", handlers.api_browse_create_dir)
     app.router.add_get("/api/browse-files", handlers.api_browse_files)
     app.router.add_get("/api/project/git", _local_files(handlers.api_project_git))
     app.router.add_get("/api/project/git/status", _local_files(handlers.api_project_git_status))

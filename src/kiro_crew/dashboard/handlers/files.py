@@ -44,6 +44,7 @@ import sys  # noqa: F401
 import tempfile  # noqa: F401
 import threading  # noqa: F401
 import time
+import unicodedata  # noqa: F401
 import urllib.parse  # noqa: F401
 import uuid  # noqa: F401
 import zipfile  # noqa: F401
@@ -112,12 +113,15 @@ from kiro_crew.dashboard.file_api import transfer as _owner_transfer
 from kiro_crew.dashboard.file_api import uploads as _owner_uploads
 from kiro_crew.dashboard.file_api import workspaces as _owner_workspaces
 from kiro_crew.dashboard.file_api.browse import (  # noqa: F401
+    _browse_dir_name_is_valid,
     _browse_dirs_sync,
     _browse_drives_sync,
     _browse_entry_is_dir,
     _browse_files_sync,
     _browse_parent,
+    _create_browse_dir_sync,
     _is_windows_drive_root,
+    api_browse_create_dir,
 )
 from kiro_crew.dashboard.file_api.channel_upload import (  # noqa: F401
     _gate_upload_file,
@@ -1085,6 +1089,19 @@ _FILE_DIFF_MAX_BYTES = 32 * 1024 * 1024
 #: answers ``C:\\`` for ``C:\\``, which the browser reads as "no parent" and
 #: hides its Back control on, stranding the user on one drive.
 _WIN_DRIVE_ROOT_RE = re.compile(r"[A-Za-z]:[\\/]?")
+
+#: The longest folder name ``POST /api/browse-dirs/create`` accepts, in UTF-8 bytes:
+#: ``NAME_MAX`` on the Linux and macOS filesystems the gateway runs on.
+_CREATE_DIR_NAME_MAX_BYTES = 255
+#: Characters Windows refuses in a file or folder name, beyond the separators and
+#: control characters every platform's check already refuses.
+_WIN_INVALID_DIR_NAME_CHARS = frozenset('<>:"|?*')
+#: Windows device names, refused as a folder name with or without an extension:
+#: ``COM`` and ``LPT`` take the digits 0-9 and the superscripts 1-3.
+_WIN_RESERVED_DIR_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{dev}{n}" for dev in ("COM", "LPT") for n in (*"0123456789", "¹", "²", "³")}
+)
 
 
 async def api_browse_dirs(request: web.Request) -> web.Response:

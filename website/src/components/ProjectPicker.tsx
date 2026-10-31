@@ -6,6 +6,7 @@ import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { usePointerMotion } from '../hooks/usePointerMotion'
 import ErrorNotice from './ErrorNotice'
+import { NewFolderForm, NewFolderToggle } from './ProjectPickerNewFolder'
 import { reportForError, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
 import { searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
@@ -219,6 +220,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // list on screen.
   const [favoriteBusy, setFavoriteBusy] = useState<string | null>(null)
   const [browseSel, setBrowseSel] = useState(0)
+  // The New folder field under the Browse pane's favourite row. It belongs to the directory the
+  // pane shows, so it closes whenever that changes (a drill, Back, the folder it just made), on a
+  // tab switch and on every open.
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
   // The listing read that failed last: a directory (`browse`) or the drive list
   // (`browseDrives`). The related path, cause, and report live in the same state
   // object so the notice and its agent hand-off always describe one failure.
@@ -305,6 +310,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // with no fallback, and its Retry re-asks that path.
   const browse = useCallback((path?: string, preserveInput = false, homeOnGone = false, carried?: { path: string; err: unknown }) => {
     const ticket = ++listingSeq.current
+    // Leaving the directory on screen closes its New folder field now, not when the listing
+    // lands: unmounting the form drops a pending create's own callback, so a create that answers
+    // after this navigation began cannot pull the pane back to the folder it made.
+    setNewFolderOpen(false)
     setListingInFlight(true)
     api.browseDirs(path).then(d => {
       if (ticket !== listingSeq.current) return
@@ -341,6 +350,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // lists the mounted drives so the user can cross to D:\ without typing it.
   const browseDrives = useCallback(() => {
     const ticket = ++listingSeq.current
+    setNewFolderOpen(false)
     setListingInFlight(true)
     api.browseDrives().then(d => {
       if (ticket !== listingSeq.current) return
@@ -627,6 +637,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // Reset the Browse highlight whenever the visible list changes (tab switch,
   // drill into a new dir, or filter edit).
   useEffect(() => { setBrowseSel(0) }, [tab, input, browsePath])
+  useEffect(() => { setNewFolderOpen(false) }, [tab, browsePath, open])
   // Browse keeps its own selection, so it asks the shared motion check directly:
   // hover moves the highlight only on real pointer motion (see usePointerMotion).
   const browsePointerMoved = usePointerMotion(open && tab === 'browse')
@@ -983,6 +994,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                   // Enter path is claimed — arrow navigation stays untouched.
                   if (!ime.claimEnter(e)) return
                   if (e.metaKey || e.ctrlKey) commit()                               // ⌘/Ctrl+Enter commits the current dir
+                  else if (e.shiftKey && browsePath) setNewFolderOpen(true)           // Shift+Enter opens New folder: Tab closes the picker, so the toggle has no tab stop
                   else if (n > 0 && filteredBrowse[browseSel]) browse(filteredBrowse[browseSel].path)  // Enter drills into the highlighted folder
                   else commit()                                                       // nothing to drill into -> commit typed path
                 }
@@ -1009,9 +1021,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
           {/* Favourite the directory the pane is ON, without committing it as the project. Its
               own row, labelled, rather than a third control beside Back and Select. Gated on
               there BEING one: the drive list has no path of its own, and a typed path that has
-              not listed yet is not a directory the gateway would accept. */}
+              not listed yet is not a directory the gateway would accept. The same row carries
+              New folder, which makes a folder in that directory, for the same reason. */}
           {browsePath && (
-            <div className="px-2 py-0.5 border-b border-border flex">
+            <div className="px-2 py-0.5 border-b border-border flex items-center gap-1">
               <FavoriteStar
                 path={browsePath}
                 on={favoriteSet.has(browsePath)}
@@ -1019,9 +1032,20 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 onToggle={toggleFavorite}
                 testId="pp-browse-star"
                 labelled
-                className="max-w-full"
+                className="min-w-0"
               />
+              <NewFolderToggle open={newFolderOpen} parent={browsePath} onToggle={() => setNewFolderOpen(o => !o)} />
             </div>
+          )}
+          {browsePath && newFolderOpen && (
+            <NewFolderForm
+              parent={browsePath}
+              ime={ime}
+              // Listing the new folder closes the field (the pane's directory changed) and puts
+              // its path in the field above, so Select commits it.
+              onCreated={path => browse(path)}
+              onCancel={() => { setNewFolderOpen(false); requestAnimationFrame(() => inputRef.current?.focus()) }}
+            />
           )}
           {browseNotice && (
             <div className="px-3 py-2 border-b border-border flex items-center gap-2" aria-busy={noticeRetry?.busy || undefined}>
