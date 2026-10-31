@@ -11,6 +11,7 @@ module never imports that facade.
 from __future__ import annotations
 
 from kiro_crew.validation_parts.app_schemas import (
+    APP_REQUEST_SCHEMA,
     DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     ISSUE_RADAR_CREW_READ_SCHEMA,
     ISSUE_RADAR_CREW_RECORD_SCHEMA,
@@ -223,6 +224,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,
     "pod_ls": POD_LS_SCHEMA,
+    "app_request": APP_REQUEST_SCHEMA,
     # Registered even though ``issue_radar_crew_read`` takes no arguments: an
     # unregistered tool's args pass through raw, and the empty-field schema is
     # also what makes an unknown arg an "Error:" string instead of a stdio-loop

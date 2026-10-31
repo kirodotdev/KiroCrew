@@ -12,9 +12,10 @@ lifecycle points. An app that declares no hooks is a no-op.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from aiohttp import web
 
@@ -34,7 +35,13 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.job_routes import register_job_routes
 from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
-from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
+from kiro_crew.apps.manager import (
+    APP_MANIFEST_FILENAME,
+    app_dir,
+    approved_manifest_permissions,
+    list_apps,
+)
+from kiro_crew.apps.manifest import MAX_AGENT_ROUTES_PER_APP, parse_agent_route
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
@@ -81,8 +88,9 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
     Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
     code never forces a reload: the app version, a digest of the declared hook
     source files' (path, mtime, size), the ``.app_secret`` mtime (a reinstall
-    rotates it, and the live module must pick up the new secret), and the
-    approved events in ``approvedGrants`` (approving them changes what the hook context's
+    rotates it, and the live module must pick up the new secret), the declared
+    ``agentRoutes`` (the registry caches them once per load), and the approved
+    events in ``approvedGrants`` (approving them changes what the hook context's
     event bus may publish, and the bus is built once per load). Deliberately
     EXCLUDES two things:
 
@@ -138,6 +146,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
         # owner approving held-back events (``installed.json`` only, no code
         # change) must reload the hooks, or the bus keeps refusing them.
         _approved_events_marker(app_info),
+        _agent_routes_marker(name, manifest),
     )
 
 
@@ -315,6 +324,57 @@ def init_hooks_system(
 def get_route_registry() -> RouteRegistry | None:
     """Get the global RouteRegistry instance."""
     return _route_registry
+
+
+def _declared_agent_routes(app_name: str, manifest: Any) -> list[object]:
+    """The ``agentRoutes`` list that governs *app_name*, or empty when absent or malformed.
+
+    For a shipped builtin the list is read from the immutable package manifest,
+    never from *manifest* (the writable persisted copy under ``apps/<name>/``).
+    The builtin's hook CODE loads from that same package root (``_app_hook_root``),
+    so a persisted copy that added a declaration would open one of the builtin's
+    cookie-only handlers to any agent able to edit that file. A shipped manifest
+    that is missing, unreadable or not an object declares nothing. An installed
+    app's own manifest is the declaration it signed, so it is used as given.
+    """
+    shipped_root = shipped_builtin_app_root(app_name)
+    if shipped_root is not None:
+        manifest = _shipped_manifest(shipped_root)
+    declared = manifest.get("agentRoutes") if isinstance(manifest, dict) else None
+    return list(declared) if isinstance(declared, list) else []
+
+
+def _shipped_manifest(shipped_root: Path) -> dict[str, Any] | None:
+    """The package ``app.json`` under *shipped_root* as a dict, or None when unreadable."""
+    try:
+        data = json.loads((shipped_root / APP_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _agent_routes_marker(app_name: str, manifest: Any) -> tuple[str, ...]:
+    """A stable marker for the agent-route declarations cached by the registry."""
+    declared = _declared_agent_routes(app_name, manifest)
+    if len(declared) > MAX_AGENT_ROUTES_PER_APP:
+        return ("<invalid>",)
+    routes: list[str] = []
+    for route in declared:
+        parsed, _reason = parse_agent_route(route)
+        if parsed is None:
+            return ("<invalid>",)
+        routes.append(cast(str, route))
+    return tuple(sorted(routes))
+
+
+def agent_route_arm(resolved_route: object) -> bool:
+    """Whether *resolved_route* is the live registry's catch-all.
+
+    The predicate ``token_auth`` consults before arming the agent-route path.
+    False before the hooks system is initialized, so nothing arms during startup.
+    """
+    registry = _route_registry
+    return registry is not None and registry.agent_route_arm(resolved_route)
 
 
 def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
@@ -503,7 +563,14 @@ async def on_app_enable(
     routes_hook = hooks.get("routes", "")
     if routes_hook and _route_registry:
         app_root = _app_hook_root(app_name)
-        registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
+        agent_routes = await asyncio.to_thread(_declared_agent_routes, app_name, manifest)
+        registered = await _route_registry.register_app_routes(
+            app_name,
+            app_root,
+            routes_hook,
+            ctx,
+            agent_routes=agent_routes,
+        )
         if registered:
             result["hooks_routes"] = registered
 
@@ -914,7 +981,14 @@ async def on_gateway_startup(
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
         if routes_hook and _route_registry:
-            await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
+            agent_routes = await asyncio.to_thread(_declared_agent_routes, name, manifest)
+            await _route_registry.register_app_routes(
+                name,
+                _app_hook_root(name),
+                routes_hook,
+                ctx,
+                agent_routes=agent_routes,
+            )
 
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")
