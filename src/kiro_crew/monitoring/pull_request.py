@@ -208,6 +208,15 @@ class PullRequestFacts:
     #: body rewritten in place -- so it is the digest that catches a verdict a
     #: thread or status digest cannot see.
     pr_comment_body_digest: str = ""
+    #: Digests over comments and submitted reviews by people other than the PR author.
+    #: Unlike ``pr_comment_body_digest``, these can wake a review-only PENDING watch.
+    pr_human_comment_digest: str = ""
+    pr_human_review_digest: str = ""
+    #: Passing rows beyond the per-bucket cap were cut. They carry no verdict, so
+    #: this is deliberately NOT ``checks_complete``: the board's completeness is
+    #: untouched, but the canonical says the cut so a saturated list is never
+    #: mistaken for the whole list.
+    checks_passed_overflow: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in PULL_REQUEST_MONITOR_KINDS:
@@ -242,6 +251,12 @@ class PullRequestFacts:
             raise ValueError("checks_complete must be a boolean")
         if not isinstance(self.pr_comment_body_digest, str):
             raise ValueError("pr_comment_body_digest must be a string")
+        if not isinstance(self.pr_human_comment_digest, str):
+            raise ValueError("pr_human_comment_digest must be a string")
+        if not isinstance(self.pr_human_review_digest, str):
+            raise ValueError("pr_human_review_digest must be a string")
+        if not isinstance(self.checks_passed_overflow, bool):
+            raise ValueError("checks_passed_overflow must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -289,15 +304,10 @@ def build_pull_request_probe_result(
             supplemental_provider_error=supplemental_provider_error,
             reason_code=reason_code,
             head_changed=head_changed,
-            # Conditions are carried only for an ACTIONABLE subject, because the
-            # coalescing window is the only thing that reads them and nothing
-            # else is put through it. A PENDING subject naming conditions would
-            # be state with no reader, which is the shape that rots.
-            conditions=(
-                pull_request_conditions(canonical)
-                if status is MonitorObservationStatus.ACTIONABLE
-                else ()
-            ),
+            # Actionable blockers retain their existing conditions. A pending
+            # GitHub PR carries only its one-time green-check and human-activity
+            # signals, which the decision layer now routes through the same window.
+            conditions=pull_request_conditions(canonical, status=status),
         ),
     )
 
@@ -325,8 +335,13 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
         state: sorted(check.identity for check in facts.checks if check.state == state)
         for state in PULL_REQUEST_CHECK_FIELDS
     }
+    # Extra passing rows are safe to omit from the verdict: they cannot change it.
+    # Failed, pending and unknown overflow still signals that the bounded board is
+    # incomplete, and passing overflow is carried beside the verdict as its own
+    # marker below, so the cut is said out loud either way.
     overflow = not facts.checks_complete or any(
-        len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET for values in buckets.values()
+        state != "passed" and len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
+        for state, values in buckets.items()
     )
     checks = {
         state: values[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET] for state, values in buckets.items()
@@ -381,17 +396,24 @@ def canonical_pull_request_facts(facts: PullRequestFacts) -> dict[str, object]:
         "target": facts.target,
         "unresolved_review_threads": facts.unresolved_review_threads,
     }
-    # Present ONLY when there is a digest to carry, so a subject with no PR-level
-    # comment bodies keeps the exact canonical shape every provider shared before
-    # this field existed -- a hard requirement, because the shape is pinned by
-    # full-dict equality tests and hashed into the fingerprint. It is deliberately
-    # NOT in ``PULL_REQUEST_OBSERVATION_FIELDS``: that list drives the public
-    # projection, which fail-closes on an absent field and would inject an
-    # always-present key into the projected observation. This is a per-condition
-    # wake signal that ``pull_request_conditions`` reads, not a projected public
-    # fact.
+    # Digest signals are present only when non-empty, preserving the established
+    # canonical shape for ordinary subjects. They stay out of
+    # ``PULL_REQUEST_OBSERVATION_FIELDS`` (the public projection): the condition
+    # builder reads them for dedupe, but they are not public readiness facts.
     if facts.pr_comment_body_digest:
         canonical["pr_comment_body_digest"] = facts.pr_comment_body_digest
+    if facts.pr_human_comment_digest:
+        canonical["pr_human_comment_digest"] = facts.pr_human_comment_digest
+    if facts.pr_human_review_digest:
+        canonical["pr_human_review_digest"] = facts.pr_human_review_digest
+    if facts.checks_passed_overflow:
+        # Present only when the passing bucket was cut, so the canonical shape --
+        # and with it the fingerprint -- is unchanged for every other subject. It
+        # is deliberately NOT ``checks_complete``: extra passing rows cannot
+        # change the verdict, so they must not hold a green board pending, but a
+        # reader that sees a saturated ``passed`` list without this marker would
+        # take it, and the count derived from it, for the whole list.
+        canonical["checks_passed_overflow"] = True
     return canonical
 
 
@@ -437,8 +459,12 @@ def _check_condition_key(identity: str) -> str:
     return f"{key[: MAX_MONITOR_CONDITION_KEY_CHARS - len(digest) - 1]}-{digest}"
 
 
-def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCondition, ...]:
-    """Name every actionable condition a pull request is carrying at once.
+def pull_request_conditions(
+    canonical: Mapping[str, object],
+    *,
+    status: MonitorObservationStatus = MonitorObservationStatus.ACTIONABLE,
+) -> tuple[MonitorCondition, ...]:
+    """Name actionable blockers plus pending completion/activity wake signals.
 
     One base derivation for all four pull-request kinds: every adapter funnels
     through :func:`build_pull_request_probe_result`, so the conditions come from
@@ -465,16 +491,18 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
     that is already actionable. ``behind`` is not urgent in that way: the branch
     still builds, so waiting continues to observe something.
 
-    Conditions are capped, and the cap is on the CHECK expansion alone because it
-    is the only unbounded one: the canonical projection already bounds each check
-    bucket, and the review conditions are three fixed keys.
+    The status selects which signals are carried. ACTIONABLE retains every
+    existing blocker; PENDING carries only successful-check completion and human
+    activity; terminal success carries only human activity that arrived with the
+    terminal transition. The condition cap covers the bounded check expansion and
+    the fixed review/activity signals.
     """
     checks = canonical.get("checks")
     if not isinstance(checks, Mapping):
         raise ValueError("canonical pull-request checks are malformed")
     conditions: list[MonitorCondition] = []
     failed = checks.get("failed")
-    if isinstance(failed, (list, tuple)):
+    if status is MonitorObservationStatus.ACTIONABLE and isinstance(failed, (list, tuple)):
         for identity in list(failed)[:MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET]:
             if isinstance(identity, str) and identity:
                 conditions.append(
@@ -485,7 +513,10 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
                         resets_on=MonitorResetsOn.REVISION,
                     )
                 )
-    if canonical.get("review_decision") == "changes_requested":
+    if (
+        status is MonitorObservationStatus.ACTIONABLE
+        and canonical.get("review_decision") == "changes_requested"
+    ):
         conditions.append(
             MonitorCondition(
                 key="changes_requested",
@@ -495,7 +526,12 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
             )
         )
     unresolved = canonical.get("unresolved_review_threads")
-    if isinstance(unresolved, int) and not isinstance(unresolved, bool) and unresolved > 0:
+    if (
+        status is MonitorObservationStatus.ACTIONABLE
+        and isinstance(unresolved, int)
+        and not isinstance(unresolved, bool)
+        and unresolved > 0
+    ):
         conditions.append(
             MonitorCondition(
                 key="unresolved_threads",
@@ -505,7 +541,7 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
             )
         )
     mergeability = canonical.get("mergeability")
-    if mergeability == "conflicting":
+    if status is MonitorObservationStatus.ACTIONABLE and mergeability == "conflicting":
         conditions.append(
             MonitorCondition(
                 key="conflict",
@@ -514,7 +550,7 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
                 resets_on=MonitorResetsOn.REVISION,
             )
         )
-    elif mergeability == "behind":
+    elif status is MonitorObservationStatus.ACTIONABLE and mergeability == "behind":
         conditions.append(
             MonitorCondition(
                 key="behind",
@@ -523,8 +559,55 @@ def pull_request_conditions(canonical: Mapping[str, object]) -> tuple[MonitorCon
                 resets_on=MonitorResetsOn.REVISION,
             )
         )
+    if (
+        status is MonitorObservationStatus.PENDING
+        and canonical.get("kind") == "github_pull_request"
+        and canonical.get("draft") is False
+        and canonical.get("state") == "open"
+        and isinstance(canonical.get("head_revision"), str)
+        and bool(canonical.get("head_revision"))
+        and canonical.get("checks_complete") is True
+        and bool(checks.get("passed"))
+        and not checks.get("failed")
+        and not checks.get("pending")
+        and not checks.get("unknown")
+    ):
+        conditions.append(
+            MonitorCondition(
+                key="checks_complete",
+                severity=MonitorSeverity.WAKE,
+                brief="all pull-request checks completed successfully",
+                resets_on=MonitorResetsOn.REVISION,
+            )
+        )
+    for field, prefix, brief in (
+        (
+            "pr_human_comment_digest",
+            "human_comment_activity",
+            "a person commented on the pull request",
+        ),
+        (
+            "pr_human_review_digest",
+            "human_review_activity",
+            "a person reviewed the pull request",
+        ),
+    ):
+        activity_digest = canonical.get(field)
+        if isinstance(activity_digest, str) and activity_digest:
+            conditions.append(
+                MonitorCondition(
+                    key=f"{prefix}:{activity_digest}",
+                    severity=MonitorSeverity.WAKE,
+                    brief=brief,
+                    resets_on=MonitorResetsOn.NEVER,
+                )
+            )
     comment_digest = canonical.get("pr_comment_body_digest")
-    if isinstance(comment_digest, str) and comment_digest:
+    if (
+        status is MonitorObservationStatus.ACTIONABLE
+        and isinstance(comment_digest, str)
+        and comment_digest
+    ):
         # The digest is inside the KEY, not only the brief: the engine dedupes
         # per condition key, so a stable key with a changing brief would be
         # masked and never wake again. A bot rewrites a verdict comment IN PLACE

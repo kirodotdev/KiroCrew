@@ -266,9 +266,9 @@ def _decide_effect(
     """Select the effect alone.
 
     Budget checks lead because a spent bound must never buy one additional
-    unattended turn. Provider failures are classified without a model. An
-    actionable change passes through the coalescing window before it may wake
-    the owning session.
+    unattended turn. Provider failures are classified without a model. Actionable
+    changes and explicitly named pending/success activity signals pass through the
+    same coalescing window before they may wake the owning session.
     """
     if state.version != MONITOR_STATE_VERSION:
         return MonitorDecision.STOP_BLOCKED
@@ -293,6 +293,26 @@ def _decide_effect(
         _reset_revision_memory(state)
     if observation.status is MonitorObservationStatus.ACTIONABLE:
         return _coalesce_actionable(state, observation, now=now)
+    if observation.status is MonitorObservationStatus.PENDING and observation.conditions:
+        # A pending PR can still carry a newly completed green-check board or
+        # human activity. These named signals wake once per re-alert interval,
+        # while the pending status itself remains unsettled and therefore never
+        # advances the stall count.
+        if not state.last_fingerprint:
+            _record_signal_baseline(state, observation, now=now)
+        return _coalesce_actionable(state, observation, now=now)
+    if observation.status is MonitorObservationStatus.SUCCESS and observation.conditions:
+        # A review can turn a review-only PENDING PR directly into success. Give
+        # its activity condition one wake before the terminal success is recorded;
+        # on the next identical probe the condition is masked and normal success
+        # handling stops the watch. A watch ARMED on an already-approved PR has
+        # no transition to report: its first observation baselines the activity
+        # instead, so the terminal success stops the watch without a turn.
+        if not state.last_fingerprint:
+            _record_signal_baseline(state, observation, now=now)
+        conditioned = _coalesce_actionable(state, observation, now=now)
+        if conditioned is not MonitorDecision.NO_CHANGE:
+            return conditioned
     # Any non-actionable outcome settles the subject, so no window stays open.
     _close_window(state, now=now)
     if observation.supplemental_provider_error is not None:
@@ -308,6 +328,42 @@ def _decide_effect(
     if observation.status is MonitorObservationStatus.PENDING:
         return MonitorDecision.RECORD_ONLY
     return MonitorDecision.STOP_BLOCKED
+
+
+def _record_signal_baseline(
+    state: MonitorState,
+    observation: MonitorObservation,
+    *,
+    now: float,
+) -> None:
+    """Record a watch's FIRST observation's named signals as already seen.
+
+    The pending/success signals are LEVELS, not edges: a digest over the human
+    comments a PR already has, or a board that completed before the watch was
+    armed, reads the same on tick 500 as on tick 1. The per-watch dedupe maps
+    start empty, so without this stamp the first reading always finds the level
+    unmasked and wakes on activity that arrived before the watch existed -- the
+    same timer-like noise the named signals were meant to remove.
+
+    Stamping the re-alert map directly (without a wake and without opening a
+    window) records the pre-existing level as the baseline: nothing is delivered,
+    and a level that LATER changes -- a new person comment moves the digest, or
+    checks finish on a head that was pending at arm time -- arrives under a key
+    this map has never seen and wakes normally. The stamp then expires with the
+    ordinary re-alert interval, so a signal that sits unchanged for that long
+    re-asserts exactly like any other condition.
+
+    Only a watch that has never recorded a successful observation baselines
+    (``last_fingerprint`` empty), so a signal that appears AFTER the watch
+    started is never mistaken for pre-existing activity. Both drivers persist
+    the fingerprint of every non-provider-error observation after
+    ``decide_monitor`` returns, which is what makes the empty read detectable
+    here -- and it means a watch whose first ticks were provider errors still
+    baselines on its first READABLE read, which is exactly the tick where any
+    digest it meets could have existed before the watch.
+    """
+    for key, _severity in _window_entries(observation):
+        state.coalesce_alerted.setdefault(key, now)
 
 
 def _window_entries(
