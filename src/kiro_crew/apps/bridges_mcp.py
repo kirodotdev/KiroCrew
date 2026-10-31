@@ -30,6 +30,7 @@ from kiro_crew.apps.bridges_mcp_config import (
     _health_reconcile_guard,
     _mcp_lock,
     _read_mcp_json_unlocked,
+    _sync_app_tool_refs,
     _write_mcp_json_unlocked,
 )
 from kiro_crew.apps.bridges_sources import _registration_denied, _registration_source
@@ -1085,6 +1086,7 @@ def _register_mcp_servers(
                 third_party={k for k in servers if k.startswith(f"{app_name}:")},
             )
         )
+        _sync_app_tool_refs(mcp_data, app_name)
         _write_mcp_json_unlocked(mcp_data)
     logger.info(
         "Registered %d MCP server(s) for app %s (live_port=%s); skipped %d HTTP server(s) "
@@ -1272,7 +1274,9 @@ def _deregister_mcp_servers(app_name: str) -> int:
         to_remove = [k for k in servers if k.startswith(prefix)]
         for k in to_remove:
             del servers[k]
-        if to_remove:
+        before = mcp_data.get("tools")
+        _sync_app_tool_refs(mcp_data, app_name)
+        if to_remove or mcp_data.get("tools") != before:
             _write_mcp_json_unlocked(mcp_data)
     # NOT scrubbed here: the legacy shared ~/.kiro/settings/mcp.json is held by
     # OTHER processes (Kiro IDE, other kiro-cli agents), so its cross-process
