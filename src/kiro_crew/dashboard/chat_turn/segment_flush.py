@@ -1021,7 +1021,6 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     first_word = turn.first_word
     full_message = turn.full_message
     is_new = turn.is_new
-    message = turn.message
     resumed = turn.resumed
     slot = turn.slot
     state = turn.state
@@ -1309,6 +1308,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             had_thinking=_turn_thought,
             billed=_turn_billed,
         )
+        turn._empty_verdict_left_prompt_unanswered = not _empty_activity.productive
         _empty_cause = classify_empty_turn(_empty_activity)
         # Snapshot BEFORE the rungs, each of which may increment the counter.
         # This is the ordinal of the turn just observed, which is what the
@@ -1337,10 +1337,13 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
             # turn-complete report is still True would drop that callback
             # and strand a durable producer after the replay succeeds.
             await _report_consumed(turn, False)
+            # Without this turn's merge-card frames: _retrying_empty keeps
+            # the turn from landing, so _run_chat's finally puts those contexts
+            # back and the replay turn drains them itself.
             _queue_recovery(
                 turn,
                 0,
-                message,
+                turn._message_without_merge_cards,
                 kind=SYNTHETIC_RECOVERY_KIND,
                 # Verbatim replay: ORIGINAL only if the incoming text was the
                 # user's. On a recovery turn it is the runner's continuation.

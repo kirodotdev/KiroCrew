@@ -16,7 +16,6 @@ from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.llm_helpers import (
     _NO_PRIOR_STATS,
     provider_active_model,
-    record_interaction_event,
     usage_has_billing,
 )
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
         read_context_tokens,
         read_effective_agent,
         read_turn_model,
+        record_interaction_event,
         telemetry_channel_of,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _turn_rows
@@ -304,6 +304,109 @@ def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     surface that can say ``exhausted``).
     """
     return turn_outcome(stop_reason, exhausted=exhausted)
+
+
+def _kiro_cli_kept_the_prompt(turn: _ChatTurn) -> bool:
+    """Whether kiro-cli kept the prompt this turn sent, so its native session holds it.
+
+    The one definition of the rule the first-turn history settle in
+    ``_turn_settle_debts`` (chat_turn/prompt_assembly.py) applies
+    (``_first_turn_history_delivered``, whose comment there gives the premise
+    and the exclusions) and the merge-card consumption reads through
+    ``_merge_cards_reached_the_model``.
+    """
+    _compaction_completed = turn._compaction_completed
+    _had_empty_response_verdict = turn._had_empty_response_verdict
+    _recovering_compaction = turn._recovering_compaction
+    _stop_reason = turn._stop_reason
+    _terminal_synthetic = turn._terminal_synthetic
+    _turn_emitted = turn._turn_emitted
+    return (
+        (
+            _stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not _had_empty_response_verdict
+        )
+        or (
+            _turn_emitted
+            and _stop_reason != STOP_REASON_CANCELLED
+            and not _had_empty_response_verdict
+        )
+        or (_recovering_compaction and _compaction_completed)
+    )
+
+
+def _native_session_lacks_the_prompt(turn: _ChatTurn) -> bool:
+    """Whether the native session the next turn runs on does NOT hold this turn's prompt.
+
+    kiro-cli appends a prompt to its log only once the model has answered
+    it (``replay.py``'s ``build_interrupted_turn_preamble`` states the
+    contract), so a conversation reloaded or replaced mid-answer lacks the
+    prompt even when output had streamed. That is the case when the native
+    conversation is discarded, when the session is reset before the model
+    reached a real ``end_turn`` (the first clause of
+    ``_kiro_cli_kept_the_prompt``), or when the stream ended with the
+    retryable ``failed`` stop class, the ``error:`` family whose runtime
+    the next claim replaces without any reset flag. A reset AFTER a real
+    ``end_turn`` (an agent switch recorded once the answer landed) keeps
+    the prompt: the reloaded session holds it. Derived here, from facts the
+    turn already records, so no recovery arm has to remember the card rule.
+    Read by ``_merge_cards_reached_the_model`` only.
+    """
+    _had_empty_response_verdict = turn._had_empty_response_verdict
+    _stop_reason = turn._stop_reason
+    _terminal_synthetic = turn._terminal_synthetic
+    needs_conversation_discard = turn.needs_conversation_discard
+    needs_session_reset = turn.needs_session_reset
+    model_finished_answering = (
+        _stop_reason == STOP_REASON_END_TURN
+        and not _terminal_synthetic
+        and not _had_empty_response_verdict
+    )
+    runtime_died_under_the_turn = classify_stop_reason(_stop_reason).retryable
+    return (
+        needs_conversation_discard
+        or (needs_session_reset and not model_finished_answering)
+        or runtime_died_under_the_turn
+    )
+
+
+def _merge_cards_reached_the_model(turn: _ChatTurn) -> bool:
+    """Whether the prompt carrying this turn's merge-card frames stays in the native session.
+
+    The frames went out inside the prompt, so the question is whether
+    kiro-cli kept it (``_kiro_cli_kept_the_prompt``), landed or not, and
+    whether the session the next turn runs on still holds it
+    (``_native_session_lacks_the_prompt``). An exit that kept the prompt
+    on a session that stays in place (a promise-only turn, a leaked tool
+    call, a capacity retry or a backend error after output streamed, a
+    completed compaction) must not restore its cards: that would prepend
+    the same frame to a session that already holds it. An exit that did
+    not keep it (a Stop, an empty-response re-queue), or whose reset,
+    discard or runtime death leaves the next session without it, restores
+    them, so the recovery turn's bare requeue carries the frame once more.
+    ``_turn_lands`` is read as well: a landed turn whose consumption stamp
+    write was cancelled (a Stop pressed during
+    ``_record_consumed_merge_contexts``) reaches the finally as cancelled,
+    yet its prompt was answered and kept. A retrying empty-response verdict
+    restores its cards, and a landed empty-response give-up restores them
+    when its own attempt leaves the prompt unanswered. A productive empty
+    attempt has already flushed text, run a tool or thought, so its give-up
+    consumes its cards. Productivity is read from this attempt alone, never
+    from the recovery episode, whose slot state outlives a discarded
+    continuation: a give-up after an earlier productive attempt restores the
+    card, and the next turn repeats a frame the session holds rather than
+    losing one it lacks. A reset or discard before a real ``end_turn`` wins over
+    landing: a vetoed agent switch on a pinned member thread breaks the
+    stream mid-answer with no terminal, so the turn lands while the
+    finally's reset kills a runtime that may still be answering, and the
+    reloaded session may lack the prompt. The card is delivered again
+    rather than lost.
+    """
+    return (
+        (turn._turn_lands and not turn._empty_verdict_left_prompt_unanswered)
+        or _kiro_cli_kept_the_prompt(turn)
+    ) and not _native_session_lacks_the_prompt(turn)
 
 
 def _emit_turn_metric(
@@ -967,14 +1070,8 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
     from kiro_crew.dashboard import responsive_chat
 
     _escalation = turn._escalation
-    _noticed_leak = turn._noticed_leak
-    _recovering_compaction = turn._recovering_compaction
-    _recovering_infra = turn._recovering_infra
-    _recovering_promise = turn._recovering_promise
     _responsive_owner = turn._responsive_owner
     _responsive_turn = turn._responsive_turn
-    _retrying_empty = turn._retrying_empty
-    _stop_reason = turn._stop_reason
     client = turn.client
     session_key = turn.session_key
     slot = turn.slot
@@ -992,14 +1089,7 @@ async def _turn_context_usage(turn: _ChatTurn) -> None:
         state.sessions.check_context_usage(session_key, client)
     pct = client.context_usage_pct()
     state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
-    if (
-        _stop_reason != STOP_REASON_CANCELLED
-        and not _retrying_empty
-        and not _recovering_promise
-        and not _recovering_compaction
-        and not _noticed_leak
-        and not _recovering_infra
-    ):
+    if turn._turn_lands:
         # An unacted turn (promise-only, or a tool call leaked as text) is
         # deliberately NOT recorded as a landed success: it announced or
         # serialized work it never did, so counting it would tell the

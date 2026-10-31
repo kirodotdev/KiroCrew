@@ -106,6 +106,26 @@ def _split_transcript_bytes(data: bytes) -> list[str]:
     return _split_transcript_head(data)[0]
 
 
+def metadata_record_for_update(metadata: dict, fields: dict, *, healing_corrupt_line: bool) -> dict:
+    """Build the exact metadata object a metadata update serializes.
+
+    Shared by the writer and by callers that must bound the line before writing it.
+    """
+    if healing_corrupt_line:
+        record = {
+            "_type": "metadata",
+            "last_consolidated": 0,
+            "memory_mode": STRICTEST_MEMORY_MODE,
+        }
+    else:
+        record = dict(metadata)
+    record.update(fields)
+    if healing_corrupt_line:
+        record["memory_mode"] = STRICTEST_MEMORY_MODE
+        record.pop("memory_store", None)
+    return record
+
+
 class SessionMetadataProjection:
     """Locked metadata mutation and permanent session deletion operations."""
 
@@ -504,15 +524,12 @@ class SessionMetadataProjection:
                     STRICTEST_MEMORY_MODE,
                 )
                 healing_corrupt_line = True
-                metadata = {
-                    "_type": "metadata",
-                    "last_consolidated": 0,
-                    "memory_mode": STRICTEST_MEMORY_MODE,
-                }
-            if not isinstance(metadata, dict):
-                return False
-            if metadata.get("_type") != "metadata":
-                return False
+                metadata = {}
+            if not healing_corrupt_line:
+                if not isinstance(metadata, dict):
+                    return False
+                if metadata.get("_type") != "metadata":
+                    return False
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -522,10 +539,9 @@ class SessionMetadataProjection:
             }
             lines = [""]
 
-        metadata.update(fields)
-        if healing_corrupt_line:
-            metadata["memory_mode"] = STRICTEST_MEMORY_MODE
-            metadata.pop("memory_store", None)
+        metadata = metadata_record_for_update(
+            metadata, fields, healing_corrupt_line=healing_corrupt_line
+        )
         lines[0] = json.dumps(metadata) + "\n"
 
         # This hot one-line edit remains crash-atomic without paying for an

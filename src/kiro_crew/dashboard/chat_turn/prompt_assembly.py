@@ -53,7 +53,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _STARTUP_QUERY_PREWARM_SECS,
         MAX_PROMPT_BYTES,
-        STOP_REASON_CANCELLED,
         STOP_REASON_END_TURN,
         DashboardState,
         _ChatSlot,
@@ -87,10 +86,12 @@ if TYPE_CHECKING:
         _detach_appended_context,
         _folder_steering_turn,
         _startup_query_prewarm_applies,
-        drain_pending_context,
+        resolve_turn_transcript_identity,
+        take_turn_context,
     )
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
+    from kiro_crew.dashboard.chat_turn.turn_stats import _kiro_cli_kept_the_prompt
 
 
 # How long a context-bearing turn waits to ENTER the memory embed pool before it
@@ -764,8 +765,16 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             message = _sender + message
             turn.message = message
         # Drain pending context injections (silent background context
-        # from apps/subagents).  Expired entries are discarded.
-        _ctx_prefix = drain_pending_context(slot)
+        # from apps/subagents).  Expired entries are discarded. A merge card
+        # queued on another slot of this session is this turn's as well; the
+        # transcript identity that admits it is read off the loop first.
+        _turn_identity = await resolve_turn_transcript_identity(state, slot)
+        _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
+        _ctx_prefix = _turn_context.prefix
+        turn._drained_merge_contexts = _turn_context.consumed
+        slot._inflight_merge_contexts = turn._drained_merge_contexts
+        _message_without_merge_cards = _turn_context.prefix_without_cards + message
+        turn._message_without_merge_cards = _message_without_merge_cards
         if _ctx_prefix:
             message = _ctx_prefix + message
             turn.message = message
@@ -1076,8 +1085,6 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
 
 async def _turn_settle_debts(turn: _ChatTurn) -> None:
     """Settle the turn's prompt debts: replay, re-injection, skill bodies, first-turn history."""
-    _compaction_completed = turn._compaction_completed
-    _recovering_compaction = turn._recovering_compaction
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _responsive_recovery = turn._responsive_recovery
     _responsive_turn = turn._responsive_turn
@@ -1222,19 +1229,7 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
     # never streamed, so the history did NOT reach the provider and the debt
     # correctly stays armed for the re-queue to rebuild.
-    _first_turn_history_delivered = (
-        (
-            turn._stop_reason == STOP_REASON_END_TURN
-            and not _terminal_synthetic
-            and not turn._had_empty_response_verdict
-        )
-        or (
-            turn._turn_emitted
-            and turn._stop_reason != STOP_REASON_CANCELLED
-            and not turn._had_empty_response_verdict
-        )
-        or (_recovering_compaction and _compaction_completed)
-    )
+    _first_turn_history_delivered = _kiro_cli_kept_the_prompt(turn)
     if turn._first_turn_history_assembled and _first_turn_history_delivered:
         try:
             state.sessions.consume_first_turn_history_owed(session_key)

@@ -10,20 +10,21 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: none.
 
-Instance fields read: none.
+Instance fields read: ``_read_projection``.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from kiro_crew.execution_context import MEMORY_MODES
 from kiro_crew.history_files import transcript_lock_stems
 from kiro_crew.history_locks import HistoryLockTimeout
+from kiro_crew.history_projection import drop_persisted_tail_prefix
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -287,6 +288,66 @@ def derive_messages_chained(self: ConversationLog, key: str) -> list[dict]:
     return rows
 
 
+def derive_messages_chained_full_with_keys(
+    self: ConversationLog, key: str
+) -> tuple[list[dict], tuple[str, ...]]:
+    """Return guarded full chained rows and the exact chain validated with them.
+
+    The full corpus includes each chain member's rotated archive head. The
+    chain is resolved, locked and validated exactly as it is for
+    :meth:`derive_messages_chained_with_keys`, then only that settled set is
+    read. Returning the settled keys lets a publication revalidate the same
+    chain after work derived from these rows is ready to commit.
+    """
+    return self._derive_settled_chain_rows(key, self._read_messages_with_rotated_head)
+
+
+def _read_messages_with_rotated_head(self: ConversationLog, key: str) -> list[dict]:
+    """One chain member's rotated archive head followed by its live rows.
+
+    The live rows drop the prefix the archive already holds (a rotation
+    that has moved rows aside but not yet rewritten the live file), so a
+    row is never served twice. Always a fresh list.
+    """
+    live = self._read_messages(key)
+    rotated = self._read_projection.read_rotated_messages(key)
+    return rotated + drop_persisted_tail_prefix(rotated, live)
+
+
+def _derive_settled_chain_rows(
+    self: ConversationLog, key: str, read_member_rows: Callable[[str], list[dict]]
+) -> tuple[list[dict], tuple[str, ...]]:
+    """Resolve, lock, revalidate and withhold *key*'s chain, then read it.
+
+    The one fence behind :meth:`derive_messages_chained_with_keys` and
+    :meth:`derive_messages_chained_full_with_keys`: the two differ only in
+    *read_member_rows*, called once per settled member, in chain order, after
+    every member's line has been validated inside the hold.
+    """
+    keys = self.chained_keys(key) or [key]
+    stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
+    with self.derivation_hold(stems):
+        settled_chain = self.chained_keys(key)
+        settled = settled_chain or [key]
+        if set(settled) - set(keys):
+            # The chain grew between the resolve and the hold: its new member
+            # is not locked, so refuse rather than read it unvalidated. A
+            # membership change is "cannot vouch right now", not a privacy
+            # verdict, so it is the retryable refusal.
+            raise TranscriptBusy(f"transcript chain for {key!r} changed while it was being locked")
+        for chained in settled:
+            self._withhold_if_restricted(chained)
+        validated_keys = tuple(settled)
+        if not settled_chain:
+            # Preserve read_messages_chained's shared-cache identity when the
+            # index knows no chain for this key.
+            return read_member_rows(key), validated_keys
+        rows: list[dict] = []
+        for chained in settled:
+            rows.extend(read_member_rows(chained))
+        return rows or read_member_rows(key), validated_keys
+
+
 def derive_messages_chained_with_keys(
     self: ConversationLog, key: str
 ) -> tuple[list[dict], tuple[str, ...]]:
@@ -308,28 +369,7 @@ def derive_messages_chained_with_keys(
     the session's privacy was measured, so a person-facing caller says retry
     rather than private.
     """
-    keys = self.chained_keys(key) or [key]
-    stems = {stem for chained in keys for stem in transcript_lock_stems(chained)}
-    with self.derivation_hold(stems):
-        settled_chain = self.chained_keys(key)
-        settled = settled_chain or [key]
-        if set(settled) - set(keys):
-            # The chain grew between the resolve and the hold: its new member
-            # is not locked, so refuse rather than read it unvalidated. A
-            # membership change is "cannot vouch right now", not a privacy
-            # verdict, so it is the retryable refusal.
-            raise TranscriptBusy(f"transcript chain for {key!r} changed while it was being locked")
-        for chained in settled:
-            self._withhold_if_restricted(chained)
-        validated_keys = tuple(settled)
-        if not settled_chain:
-            # Preserve read_messages_chained's shared-cache identity when the
-            # index knows no chain for this key.
-            return self._read_messages(key), validated_keys
-        rows: list[dict] = []
-        for chained in settled:
-            rows.extend(self._read_messages(chained))
-        return rows or self._read_messages(key), validated_keys
+    return self._derive_settled_chain_rows(key, self._read_messages)
 
 
 def derive_recent(
