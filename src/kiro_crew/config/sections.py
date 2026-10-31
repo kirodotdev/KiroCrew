@@ -119,6 +119,7 @@ from kiro_crew.config.sections_agent_env import (  # noqa: F401
     CHILD_ENV_DEFAULT_MAX,
     CHILD_ENV_DEFAULT_MIN,
     CHILD_ENV_DEFAULT_NAMES,
+    STRANDS_PROVIDER_CHOICES,
     _agent_env_denied,
     _agent_env_entry_refusal,
     _agent_env_home_override_names,

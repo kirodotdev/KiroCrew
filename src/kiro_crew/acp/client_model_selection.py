@@ -37,6 +37,7 @@ from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpPro
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     METHOD_INITIALIZE,
@@ -185,6 +186,17 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     """Switch model on a running session (used by warm pool post-claim)."""
     if not self._session_id:
         raise AcpError("Cannot set model before session is initialized")
+    if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
+        # The harness took its model when it started and has no wire channel to
+        # move it; an unchanged pin is already in force.
+        if model_id == self._model:
+            return
+        raise AcpError(
+            f"{self.backend} takes its model when it starts, so a running session "
+            "cannot switch to another one. Start a new chat on that model.",
+            transient=False,
+            user_worded=True,
+        )
     # This path deliberately does not scope: an explicit pick must reach the
     # adapter because its advertised list can omit an entitlement the adapter
     # accepts, and inherited pins are already scoped by their callers.
@@ -834,6 +846,12 @@ async def _apply_startup_model(self: AcpClient) -> None:
     the base window. Same call as :meth:`set_model` uses, so an explicit switch
     and a startup application agree on one exact spelling.
     """
+    if self.backend in ACP_BACKENDS_MODEL_AT_LAUNCH:
+        # The launch passed the pin as an argument (the adapter's own model
+        # scoping applies there); nothing is sent on the wire.
+        self._resolved_model_id = self._model or DEFAULT_MODEL
+        logger.info("ACP model: %s (a launch argument)", self._model or "auto")
+        return
     if not self._model or self._model == DEFAULT_MODEL:
         logger.info(
             "ACP model: %s (from agent config; backend reports %s)",

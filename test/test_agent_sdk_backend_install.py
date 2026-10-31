@@ -115,6 +115,12 @@ def _stub_resolvers(
     answers.update(self_served or {})
     monkeypatch.setattr(client, "_resolve_self_served_bin", lambda backend: answers[backend])
     monkeypatch.setattr(client, "_self_served_bin_caches", {})
+    # The Strands probe also reads its Python environment and its release, each a
+    # host fact, so both answer "ready" here like the binaries above.
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    monkeypatch.setattr(acp_driver, "strands_python_env_missing", lambda: ("", ""))
+    monkeypatch.setattr(acp_driver, "strands_wrong_version", lambda: "")
 
 
 # ── The opencode driver seams ──
@@ -1020,6 +1026,7 @@ class TestEndpointPayloadShape:
             "kiro",
             "opencode",
             "pi",
+            "strands",
         ]
         for row in rows:
             assert set(row) == {

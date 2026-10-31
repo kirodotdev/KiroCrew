@@ -28,6 +28,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
@@ -168,6 +169,20 @@ class SelfServedLaunch:
 #: Re-measure against a fresh capture before raising it.
 COPILOT_VERIFIED_VERSION = "1.0.100"
 
+#: The one Strands CLI release Crew's Strands gate was measured against: its
+#: Python-project ACP server forwards a Strands interrupt as
+#: ``session/request_permission`` and refuses a non-empty ``session/new``
+#: ``mcpServers`` array, and its worker reads the project and session overrides the
+#: gate module depends on. The install hint pins it; another release is named at the
+#: handshake (``acp.harness.strands``). Re-measure against a fresh capture before
+#: raising it.
+STRANDS_VERIFIED_VERSION = "0.2.3"
+#: The Python packages the Strands CLI's project worker imports, at the versions the
+#: gate was measured on. Installed into the project environment Crew runs Strands in.
+STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
+#: The CLI's own ``engines.node`` floor.
+STRANDS_NODE_FLOOR = (22, 0, 0)
+
 #: Harness id -> the fixed facts of LAUNCHING it, for the harnesses whose own binary
 #: serves ACP.
 #:
@@ -252,6 +267,21 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
         install_command=f"npm i -g @github/copilot@{COPILOT_VERIFIED_VERSION}",
         protocol_version=1,
         missing_hint="No adapter package is needed: this harness serves ACP itself.",
+    ),
+    # ``--acp-server`` is the CLI's own ACP mode; the project it runs (``--agent``)
+    # and the MCP file (``--mcp-config``) are per-launch values the Strands adapter
+    # appends, because their paths carry this gateway's data home.
+    ACP_BACKEND_STRANDS: SelfServedLaunch(
+        label="Strands",
+        binary="strands",
+        acp_args=("--acp-server",),
+        bin_env_var="STRANDS_BIN",
+        install_command=f"npm i -g @strands-agents/cli@{STRANDS_VERIFIED_VERSION}",
+        protocol_version=1,
+        missing_hint=(
+            "Install the official Strands CLI; its default --acp-server profile is "
+            "not used, Kiro Crew starts it on a Python project it gates."
+        ),
     ),
 }
 

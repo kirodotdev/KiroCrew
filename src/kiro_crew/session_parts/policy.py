@@ -102,6 +102,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_remote_environment",
         "bypass_backend_override",
         "bypass_effort",
+        "bypass_model_at_launch",
         "disabled",
         "other",
     }
