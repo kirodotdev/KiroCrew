@@ -108,6 +108,7 @@ from kiro_crew.computer_use.types import (
     MAX_TREE_DEPTH_LIMIT,
     MAX_TREE_NODES_LIMIT,
     MAX_TYPE_TEXT_LEN,
+    MAX_WINDOW_ID,
     MIN_CLICK_COUNT,
     MIN_DRAG_STEPS,
     MIN_SCREEN_COORD,
@@ -121,6 +122,7 @@ from kiro_crew.computer_use.types import (
     TOOL_GET_STATE,
     TOOL_LAUNCH_APP,
     TOOL_LIST_APPS,
+    TOOL_LIST_WINDOWS,
     TOOL_PERFORM_ACTION,
     TOOL_PRESS_KEY,
     TOOL_SCROLL,
@@ -290,7 +292,7 @@ def _coord_prop(description: str) -> dict[str, Any]:
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    """The eleven tool definitions.
+    """The twelve tool definitions.
 
     Bounds mirror ``validation.MCP_COMPUTER_SCHEMAS`` (which is the enforcement
     point — this is advertisement, so a mismatch would only produce a confusing
@@ -317,6 +319,17 @@ def _tool_definitions() -> list[dict[str, Any]]:
             f"{TOOL_GET_STATE} again."
         ),
     }
+    window_prop = {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": MAX_WINDOW_ID,
+        "description": (
+            f"Optional. The window of the app to address, from {TOOL_LIST_WINDOWS} "
+            f"or the 'Window id' line of a {TOOL_GET_STATE} result. Omit to use the "
+            "app's default window. Pass the same id on every action that uses "
+            f"indices from a {TOOL_GET_STATE} call that named it."
+        ),
+    }
     button_prop = {
         "type": "string",
         "enum": list(MOUSE_BUTTONS),
@@ -331,6 +344,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "you do not already know how the user names the app."
             ),
             "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": TOOL_LIST_WINDOWS,
+            "description": (
+                "List one application's on-screen windows, front to back, with "
+                "each window's window_id, title and screen rect. Use it when an "
+                "app has more than one window (a get_state result says so) or the "
+                "window you got is not the one you want, then pass window_id to "
+                f"{TOOL_GET_STATE} and to every action on that window."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"app": app_prop},
+                "required": ["app"],
+            },
         },
         {
             "name": TOOL_LAUNCH_APP,
@@ -378,6 +406,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "text_limit": {
                         "type": "integer",
                         "minimum": 1,
@@ -421,6 +450,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "element_index": dict(
                         index_prop,
                         description=(
@@ -492,6 +522,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "from_x": _coord_prop("Start X screen coordinate."),
                     "from_y": _coord_prop("Start Y screen coordinate."),
                     "to_x": _coord_prop("End X screen coordinate."),
@@ -554,6 +585,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "text": {
                         "type": "string",
                         "maxLength": MAX_TYPE_TEXT_LEN,
@@ -588,6 +620,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "key": {
                         "type": "string",
                         "maxLength": MAX_KEY_LEN,
@@ -620,6 +653,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "element_index": index_prop,
                     "value": {
                         "type": "string",
@@ -640,6 +674,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "element_index": index_prop,
                     "direction": {
                         "type": "string",
@@ -669,6 +704,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "app": app_prop,
+                    "window_id": window_prop,
                     "element_index": index_prop,
                     "action": {
                         "type": "string",

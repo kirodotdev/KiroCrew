@@ -259,6 +259,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CU_MOUSE_BUTTONS,
         _CU_OPTIONAL_ELEMENT_FIELD,
         _CU_SCROLL_DIRECTIONS,
+        _CU_WINDOW_ID_FIELD,
         MCP_COMPUTER_SCHEMAS,
         _cu_coord_field,
     )

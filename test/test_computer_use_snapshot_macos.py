@@ -892,7 +892,7 @@ class TestMacOSPointerPaths:
         """
         from kiro_crew.computer_use import apps_macos
 
-        monkeypatch.setattr(apps_macos, "pid_owns_point", lambda pid, x, y: True)
+        monkeypatch.setattr(apps_macos, "pid_owns_point", lambda pid, x, y, window_id=0: True)
 
     def _events(self, fakes: _Fakes) -> list[tuple]:
         return [a for (n, a) in fakes.cg.calls if n == "CGEventCreateMouseEvent"]
@@ -1367,7 +1367,7 @@ class TestReviewerFoundRegressions:
         from kiro_crew.computer_use import apps_macos, macos_driver
         from kiro_crew.computer_use.types import ClickRequest
 
-        monkeypatch.setattr(apps_macos, "pid_owns_point", lambda pid, x, y: False)
+        monkeypatch.setattr(apps_macos, "pid_owns_point", lambda pid, x, y, window_id=0: False)
         result = macos_driver.MacOSBackend().click(
             _APP,
             None,
