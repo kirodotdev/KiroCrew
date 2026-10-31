@@ -1,0 +1,2740 @@
+openapi: 3.1.0
+info:
+  title: Crew API shared components
+  version: 1.0.0-draft
+  description: Components shared by crew-public.yaml and crew-owner.yaml. Components only, no paths.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+- url: https://{crew_endpoint}
+  variables:
+    crew_endpoint:
+      default: crew.example.invalid
+paths: {}
+components:
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      description: Unified error body. Shape follows OpenAI. Clients treat an unknown code by its HTTP status.
+      properties:
+        error:
+          type: object
+          required:
+          - type
+          - code
+          - message
+          - request_id
+          properties:
+            type:
+              $ref: '#/components/schemas/ErrorType'
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+            param:
+              type:
+              - string
+              - 'null'
+              description: Name of the field in error.
+            request_id:
+              type: string
+              pattern: ^req_
+              description: Same as X-Request-Id.
+            oldest_seq:
+              type: integer
+              description: 'Always present on a 410 resync_required: the oldest seq that can still be replayed.'
+            latest_seq:
+              type: integer
+              description: 'Always present on a 410 resync_required: resync starts here.'
+            supported:
+              type: object
+              description: Only on unsupported_api_version.
+              properties:
+                min:
+                  type: string
+                max:
+                  type: string
+            final:
+              type: object
+              description: 'Only on approval_already_resolved: the final result.'
+              additionalProperties: true
+    ErrorType:
+      type: string
+      description: 'Open enum: clients must accept unknown values.'
+      enum:
+      - authentication_error
+      - capability_error
+      - conflict_error
+      - invalid_request_error
+      - not_found_error
+      - permission_error
+      - rate_limit_error
+      - resync_required_error
+      - server_error
+    ErrorCode:
+      type: string
+      description: Open enum; see the error table in the RFC.
+      enum:
+      - invalid_request
+      - unsupported_parameter
+      - unsupported_tool_type
+      - unsupported_api_version
+      - invalid_token
+      - token_revoked
+      - third_party_disabled
+      - insufficient_scope
+      - approval_requires_first_party
+      - tool_not_registered
+      - connector_definition_changed
+      - use_responses_api
+      - not_found
+      - model_not_found
+      - method_not_supported
+      - response_in_progress
+      - approval_already_resolved
+      - resync_required
+      - payload_too_large
+      - capability_unavailable
+      - idempotency_key_reused
+      - rate_limited
+      - concurrency_limit
+      - quota_exhausted
+      - grant_paused
+      - notification_limited
+      - internal_error
+      - instance_unavailable
+    Metadata:
+      type: object
+      maxProperties: 16
+      propertyNames:
+        maxLength: 64
+      additionalProperties:
+        type: string
+        maxLength: 512
+      description: At most 16 pairs; keys up to 64 characters, values up to 512 (same as OpenAI).
+    Timestamp:
+      type: integer
+      description: Unix seconds.
+    ListEnvelope:
+      type: object
+      required:
+      - object
+      - data
+      - has_more
+      description: 'Paged list. Page by id cursor: the next page passes `after=last_id`.'
+      properties:
+        object:
+          const: list
+        data:
+          type: array
+          items: {}
+        first_id:
+          type:
+          - string
+          - 'null'
+        last_id:
+          type:
+          - string
+          - 'null'
+        has_more:
+          type: boolean
+    InputText:
+      type: object
+      required:
+      - type
+      - text
+      properties:
+        type:
+          const: input_text
+        text:
+          type: string
+    MessageInput:
+      type: object
+      required:
+      - role
+      - content
+      properties:
+        type:
+          const: message
+        role:
+          enum:
+          - user
+          - assistant
+          - developer
+          - system
+        content:
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              $ref: '#/components/schemas/InputText'
+      description: '`input_image` and `input_file` are an open question; until settled only text is accepted and
+        other content types get 400.'
+    FunctionCallOutputInput:
+      type: object
+      required:
+      - type
+      - call_id
+      - output
+      description: Answers the previous turn's client-side tool call. Needs the `client_tools` capability.
+      properties:
+        type:
+          const: function_call_output
+        call_id:
+          type: string
+        output:
+          type: string
+    McpApprovalResponseInput:
+      type: object
+      required:
+      - type
+      - approval_request_id
+      - approve
+      description: The user's own credential (Owner) only. A delegated credential and the embed credential both
+        get 403 `approval_requires_first_party`; the embed credential answers only through POST /v1/crew/approvals/{id}/decision.
+      properties:
+        type:
+          const: mcp_approval_response
+        approval_request_id:
+          type: string
+          pattern: ^apr_
+        approve:
+          type: boolean
+    InputItem:
+      oneOf:
+      - $ref: '#/components/schemas/MessageInput'
+      - $ref: '#/components/schemas/FunctionCallOutputInput'
+      - $ref: '#/components/schemas/McpApprovalResponseInput'
+    FunctionTool:
+      type: object
+      required:
+      - type
+      - name
+      description: Client-side tool. Needs the `client_tools` capability and must match the tool of the same name
+        in the consented manifest.
+      properties:
+        type:
+          const: function
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+    McpTool:
+      type: object
+      required:
+      - type
+      - server_label
+      - server_url
+      description: 'Must be a subset of the consented manifest: name, server_url, parameter schema and approval
+        setting all match, and always cannot become never.'
+      properties:
+        type:
+          const: mcp
+        server_label:
+          type: string
+        server_url:
+          type: string
+          format: uri
+        allowed_tools:
+          type: array
+          items:
+            type: string
+        require_approval:
+          oneOf:
+          - enum:
+            - always
+            - never
+          - type: object
+    Tool:
+      oneOf:
+      - $ref: '#/components/schemas/FunctionTool'
+      - $ref: '#/components/schemas/McpTool'
+    CreateResponseRequest:
+      type: object
+      required:
+      - model
+      - input
+      description: 'Rule: support what can be done and refuse the rest with 400, never silently ignore; sampling
+        parameters are the exception. `reasoning`, `include`, `truncation`, `prompt`, `service_tier`, `user`, `parallel_tool_calls`,
+        `max_tool_calls` and `top_logprobs` always get 400 `unsupported_parameter`.'
+      properties:
+        model:
+          type: string
+          description: 'For a delegated credential: the connector''s agent.id, or a mate id in the grant''s mates.
+            The owner may also pass a template name. Anything else gets 404 model_not_found.'
+        input:
+          oneOf:
+          - type: string
+          - type: array
+            items:
+              $ref: '#/components/schemas/InputItem'
+        instructions:
+          type: string
+          description: Appended after the agent's own prompt; cannot replace it.
+        conversation:
+          type: string
+          pattern: ^conv_
+          description: Omit to create a new conversation.
+        previous_response_id:
+          type: string
+          pattern: ^resp_
+          description: Either this or conversation; if both are given they must point to the same conversation,
+            else 400.
+        stream:
+          type: boolean
+          default: false
+        background:
+          type: boolean
+          default: false
+          description: Returns queued at once. A background run started by a delegated credential ends incomplete
+            with reason grant_unverified if its grant can no longer be verified.
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+          description: Without it, every tool in the consented manifest is used. `web_search`, `file_search`, `code_interpreter`,
+            `computer_use` and `image_generation` get 400 `unsupported_tool_type`.
+        tool_choice:
+          enum:
+          - auto
+          - none
+        store:
+          const: true
+          description: Only true is accepted; false gets 400.
+        text:
+          type: object
+          properties:
+            format:
+              type: object
+              properties:
+                type:
+                  const: text
+          description: Only text is supported; json_schema is an open question.
+        temperature:
+          type: number
+          description: Accepted and ignored; listed in crew.ignored_parameters.
+        top_p:
+          type: number
+          description: Accepted and ignored.
+        max_output_tokens:
+          type: integer
+          description: Accepted and ignored.
+    OutputText:
+      type: object
+      required:
+      - type
+      - text
+      properties:
+        type:
+          const: output_text
+        text:
+          type: string
+        annotations:
+          type: array
+          maxItems: 0
+          items: {}
+    MessageItem:
+      type: object
+      required:
+      - type
+      - id
+      - role
+      - content
+      - status
+      properties:
+        type:
+          const: message
+        id:
+          type: string
+          pattern: ^msg_
+        role:
+          enum:
+          - user
+          - assistant
+        status:
+          enum:
+          - in_progress
+          - completed
+          - incomplete
+        content:
+          type: array
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/OutputText'
+            - $ref: '#/components/schemas/InputText'
+    FunctionCallItem:
+      type: object
+      required:
+      - type
+      - id
+      - call_id
+      - name
+      - arguments
+      description: Needs the client_tools capability.
+      properties:
+        type:
+          const: function_call
+        id:
+          type: string
+        call_id:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+        status:
+          enum:
+          - in_progress
+          - completed
+    McpCallItem:
+      type: object
+      required:
+      - type
+      - id
+      - server_label
+      - name
+      description: Arguments and output are summaries only. A delegated credential sees only its own connector's
+        tool names; built-in tools show as "internal tool".
+      properties:
+        type:
+          const: mcp_call
+        id:
+          type: string
+        server_label:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+          description: Summary.
+        output:
+          type:
+          - string
+          - 'null'
+          description: Summary.
+        error:
+          type:
+          - string
+          - 'null'
+    McpApprovalRequestItem:
+      type: object
+      required:
+      - type
+      - id
+      - server_label
+      - name
+      description: The id is the instance-wide approval id.
+      properties:
+        type:
+          const: mcp_approval_request
+        id:
+          type: string
+          pattern: ^apr_
+        server_label:
+          type: string
+        name:
+          type: string
+        arguments:
+          type: string
+          description: Summary.
+    OutputItem:
+      oneOf:
+      - $ref: '#/components/schemas/MessageItem'
+      - $ref: '#/components/schemas/FunctionCallItem'
+      - $ref: '#/components/schemas/McpCallItem'
+      - $ref: '#/components/schemas/McpApprovalRequestItem'
+      discriminator:
+        propertyName: type
+        mapping:
+          message: '#/components/schemas/MessageItem'
+          function_call: '#/components/schemas/FunctionCallItem'
+          mcp_call: '#/components/schemas/McpCallItem'
+          mcp_approval_request: '#/components/schemas/McpApprovalRequestItem'
+    Usage:
+      type:
+      - object
+      - 'null'
+      description: Filled when token counts are known; otherwise the whole field is null, never 0.
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        credits:
+          type:
+          - number
+          - 'null'
+          description: 'Added by Crew: present only on engines that bill in credits.'
+    ResponseStatus:
+      enum:
+      - queued
+      - in_progress
+      - completed
+      - failed
+      - cancelled
+      - incomplete
+    IncompleteReason:
+      enum:
+      - turn_token_limit
+      - tool_call_limit
+      - turn_time_limit
+      - grant_unverified
+      - approval_expired
+      - cancelled
+      description: Open enum.
+    Response:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      - status
+      - model
+      - output
+      properties:
+        id:
+          type: string
+          pattern: ^resp_
+        object:
+          const: response
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        status:
+          $ref: '#/components/schemas/ResponseStatus'
+        model:
+          type: string
+        output:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutputItem'
+        error:
+          type:
+          - object
+          - 'null'
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+        incomplete_details:
+          type:
+          - object
+          - 'null'
+          properties:
+            reason:
+              $ref: '#/components/schemas/IncompleteReason'
+        conversation:
+          type: object
+          properties:
+            id:
+              type: string
+              pattern: ^conv_
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        usage:
+          $ref: '#/components/schemas/Usage'
+        crew:
+          type: object
+          description: Fields added by Crew.
+          properties:
+            ignored_parameters:
+              type: array
+              items:
+                type: string
+    ResponseStreamEvent:
+      type: object
+      required:
+      - type
+      - sequence_number
+      description: 'SSE events of `POST /v1/responses` (stream=true) and `GET /v1/responses/{id}?stream=true`. Each
+        SSE `event:` line carries the type and each `data:` line is this object as JSON. `sequence_number` increases
+        only within this turn''s stream and is used by `starting_after`; it is unrelated to the event stream''s
+        `seq`. Not sent: `response.reasoning_*`, `response.refusal.*`, `response.output_text.annotation.added`,
+        `response.web_search_call.*`, `response.file_search_call.*`, `response.code_interpreter_call.*`, `response.image_generation_call.*`.
+        Clients skip `crew.*` events they do not know.'
+      properties:
+        type:
+          enum:
+          - response.created
+          - response.queued
+          - response.in_progress
+          - response.completed
+          - response.failed
+          - response.incomplete
+          - response.output_item.added
+          - response.output_item.done
+          - response.content_part.added
+          - response.content_part.done
+          - response.output_text.delta
+          - response.output_text.done
+          - response.function_call_arguments.delta
+          - response.function_call_arguments.done
+          - response.mcp_call.in_progress
+          - response.mcp_call.completed
+          - response.mcp_call.failed
+          - error
+          - crew.notice
+        sequence_number:
+          type: integer
+          minimum: 0
+        response:
+          $ref: '#/components/schemas/Response'
+          description: For response.* lifecycle events.
+        output_index:
+          type: integer
+        content_index:
+          type: integer
+        item_id:
+          type: string
+        item:
+          $ref: '#/components/schemas/OutputItem'
+        part:
+          $ref: '#/components/schemas/OutputText'
+        delta:
+          type: string
+        text:
+          type: string
+        arguments:
+          type: string
+        code:
+          type: string
+          description: Only on error.
+        message:
+          type: string
+        level:
+          enum:
+          - info
+          - warning
+          description: Only on crew.notice.
+      x-crew-sse-events:
+      - response.created
+      - response.queued
+      - response.in_progress
+      - response.completed
+      - response.failed
+      - response.incomplete
+      - response.output_item.added
+      - response.output_item.done
+      - response.content_part.added
+      - response.content_part.done
+      - response.output_text.delta
+      - response.output_text.done
+      - response.function_call_arguments.delta
+      - response.function_call_arguments.done
+      - response.mcp_call.in_progress
+      - response.mcp_call.completed
+      - response.mcp_call.failed
+      - error
+      - crew.notice
+    Conversation:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^conv_
+        object:
+          const: conversation
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        crew:
+          type: object
+          properties:
+            title:
+              type:
+              - string
+              - 'null'
+            model:
+              type: string
+            latest_seq:
+              type: integer
+              description: This conversation stream's latest seq (for resync).
+            status:
+              enum:
+              - idle
+              - running
+              - needs_approval
+    CreateConversationRequest:
+      type: object
+      properties:
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        items:
+          type: array
+          maxItems: 0
+          items: {}
+          description: Initial items are not accepted (they would put a conversation that never happened into history).
+    UpdateConversationRequest:
+      type: object
+      required:
+      - metadata
+      properties:
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+      additionalProperties: false
+    ConversationItem:
+      oneOf:
+      - $ref: '#/components/schemas/MessageItem'
+      - $ref: '#/components/schemas/FunctionCallItem'
+      - $ref: '#/components/schemas/McpCallItem'
+      - $ref: '#/components/schemas/McpApprovalRequestItem'
+    ConversationList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Conversation'
+    ConversationItemList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ConversationItem'
+    InputItemList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ConversationItem'
+    Model:
+      type: object
+      required:
+      - id
+      - object
+      - owned_by
+      properties:
+        id:
+          type: string
+        object:
+          const: model
+        created:
+          $ref: '#/components/schemas/Timestamp'
+        owned_by:
+          type: string
+          description: '`crew`, or the connector''s client_id.'
+        crew:
+          type: object
+          properties:
+            kind:
+              enum:
+              - agent
+              - mate
+              - connector
+            name:
+              type: string
+            description:
+              type: string
+    ModelList:
+      type: object
+      required:
+      - object
+      - data
+      properties:
+        object:
+          const: list
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+    Capabilities:
+      type: object
+      required:
+      - api_version
+      - features
+      description: Filtered by the caller's permissions; a delegated credential sees only the agents it can use.
+      properties:
+        api_version:
+          type: object
+          properties:
+            current:
+              type: string
+            min_supported:
+              type: string
+        features:
+          type: object
+          additionalProperties:
+            type: boolean
+          properties:
+            background:
+              type: boolean
+            client_tools:
+              type: boolean
+            mcp_tools:
+              type: boolean
+            approvals:
+              type: boolean
+            fork:
+              type: boolean
+            mid_turn_question:
+              type: boolean
+            instance_events:
+              type: boolean
+            webhooks:
+              type: boolean
+        agents:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              engine:
+                type: string
+              tools_closed_by_default:
+                type: boolean
+              input_modalities:
+                type: array
+                items:
+                  type: string
+              resumable_elsewhere:
+                type: boolean
+        limits:
+          type: object
+          properties:
+            max_input_bytes:
+              type: integer
+            rate_limit_per_minute:
+              type: integer
+            max_concurrent_turns:
+              type: integer
+            max_queued_turns:
+              type: integer
+        quota:
+          $ref: '#/components/schemas/Quota'
+    Quota:
+      type: object
+      description: This grant's quota and usage.
+      properties:
+        daily_credits:
+          type: number
+        used_credits:
+          type: number
+        reserved_credits:
+          type: number
+        resets_at:
+          $ref: '#/components/schemas/Timestamp'
+        max_turn_tokens:
+          type: integer
+        max_turn_tool_calls:
+          type: integer
+        max_turn_secs:
+          type: integer
+    InstanceInfo:
+      type: object
+      required:
+      - id
+      properties:
+        id:
+          type: string
+        display_name:
+          type: string
+        timezone:
+          type: string
+        api_version:
+          type: string
+      description: 503 instance_unavailable when the crew is offline.
+    Event:
+      type: object
+      required:
+      - seq
+      - event_id
+      - type
+      - created_at
+      - data
+      description: In-instance event. Types and fields are only ever added; clients skip unknown types but still
+        advance their cursor.
+      properties:
+        seq:
+          type: integer
+          description: Strictly increasing within the stream; gaps are allowed (filtered events still take a number).
+        event_id:
+          type: string
+          pattern: ^evt_
+          description: Globally unique; deduplicate across streams, push and replay by it.
+        type:
+          type: string
+          enum:
+          - conversation.created
+          - conversation.updated
+          - turn.started
+          - message.created
+          - tool.called
+          - approval.requested
+          - approval.decided
+          - turn.completed
+          - grant.revoked
+          - notice
+          description: Open enum.
+        conversation:
+          type:
+          - string
+          - 'null'
+          pattern: ^conv_
+        response:
+          type:
+          - string
+          - 'null'
+          pattern: ^resp_
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        data:
+          type: object
+          additionalProperties: true
+      x-crew-event-data:
+        conversation.created:
+          stream: instance stream
+          data:
+            type: object
+            properties:
+              title:
+                type:
+                - string
+                - 'null'
+              model:
+                type: string
+        conversation.updated:
+          stream: instance stream
+          data:
+            type: object
+            properties:
+              latest_seq:
+                type: integer
+        turn.started:
+          stream: conversation stream
+          data:
+            type: object
+            properties: {}
+        message.created:
+          stream: conversation stream
+          data:
+            type: object
+            properties:
+              item_id:
+                type: string
+        tool.called:
+          stream: conversation stream
+          data:
+            type: object
+            properties:
+              tool:
+                type: string
+              summary:
+                type: string
+        approval.requested:
+          stream: conversation stream, plus a hint on the instance stream
+          data:
+            type: object
+            properties:
+              approval_id:
+                type: string
+                pattern: ^apr_
+              tool:
+                type: string
+              reason:
+                type: string
+              expires_at:
+                $ref: '#/components/schemas/Timestamp'
+              answerable_by_you:
+                type: boolean
+        approval.decided:
+          stream: conversation stream, plus a hint on the instance stream
+          data:
+            type: object
+            properties:
+              approval_id:
+                type: string
+                pattern: ^apr_
+              state:
+                enum:
+                - allowed
+                - denied
+                - expired
+              expired_reason:
+                enum:
+                - timeout
+                - turn_cancelled
+              decided_by:
+                type: object
+                description: 'Who answered: which kind of client, never the token.'
+                properties:
+                  kind:
+                    enum:
+                    - owner
+                    - first_party
+                    - embed
+                    - gateway
+        turn.completed:
+          stream: conversation stream
+          data:
+            type: object
+            properties:
+              result:
+                enum:
+                - completed
+                - failed
+                - cancelled
+                - incomplete
+        grant.revoked:
+          stream: instance stream, only to the revoked grant
+          data:
+            type: object
+            properties:
+              grant_id:
+                type: string
+        notice:
+          stream: instance stream
+          data:
+            type: object
+            properties:
+              level:
+                enum:
+                - info
+                - warning
+              text:
+                type: string
+    EventPage:
+      type: object
+      required:
+      - events
+      - latest_seq
+      - has_more
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        latest_seq:
+          type: integer
+        oldest_seq:
+          type: integer
+        has_more:
+          type: boolean
+    ApprovalState:
+      enum:
+      - pending
+      - allowed
+      - denied
+      - expired
+      description: Only these four values are used. When a turn is cancelled, the approval it was waiting on becomes
+        expired with reason turn_cancelled.
+    ExpiredReason:
+      enum:
+      - timeout
+      - turn_cancelled
+    Approval:
+      type: object
+      required:
+      - id
+      - object
+      - conversation
+      - state
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^apr_
+          description: apr_ plus 128 random bits; unique across the instance.
+        object:
+          const: approval
+        conversation:
+          type: string
+          pattern: ^conv_
+        response:
+          type:
+          - string
+          - 'null'
+          pattern: ^resp_
+        tool:
+          type: string
+        reason:
+          type: string
+          description: Redacted and truncated.
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        expires_at:
+          $ref: '#/components/schemas/Timestamp'
+        decided_at:
+          type:
+          - integer
+          - 'null'
+        expired_reason:
+          oneOf:
+          - $ref: '#/components/schemas/ExpiredReason'
+          - type: 'null'
+          description: Only when state=expired.
+        decided_by:
+          type:
+          - object
+          - 'null'
+          properties:
+            kind:
+              type: string
+        answerable_by_you:
+          type: boolean
+    ApprovalList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Approval'
+    ApprovalDecisionRequest:
+      type: object
+      required:
+      - decision
+      additionalProperties: false
+      properties:
+        decision:
+          enum:
+          - allow
+          - deny
+    Mate:
+      type: object
+      required:
+      - id
+      - object
+      - name
+      properties:
+        id:
+          type: string
+          description: Also the model value for /v1/responses.
+        object:
+          const: mate
+        name:
+          type: string
+        description:
+          type: string
+        avatar_url:
+          type:
+          - string
+          - 'null'
+    MateList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Mate'
+    KeyResult:
+      type: object
+      required:
+      - id
+      - text
+      - target
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        target:
+          type: string
+        current:
+          type:
+          - string
+          - 'null'
+        updated_at:
+          type:
+          - integer
+          - 'null'
+        goal_ids:
+          type: array
+          items:
+            type: string
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              at:
+                $ref: '#/components/schemas/Timestamp'
+              value:
+                type: string
+    MateGoals:
+      type: object
+      required:
+      - mate
+      - goals
+      - key_results
+      properties:
+        mate:
+          type: string
+        goals:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              number:
+                type: integer
+              text:
+                type: string
+        key_results:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyResult'
+    MateReport:
+      type: object
+      required:
+      - id
+      - kind
+      - title
+      - created_at
+      description: mates:read is enough to read report bodies; artifacts:read is not needed.
+      properties:
+        id:
+          type: string
+        kind:
+          enum:
+          - weekly
+          - monthly
+        title:
+          type: string
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        format:
+          enum:
+          - markdown
+          - html
+        content:
+          type: string
+          description: Returned with include=content.
+    MateReportList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/MateReport'
+    ArtifactKind:
+      enum:
+      - markdown
+      - html
+      - widget
+      - svg
+      - json
+      - text
+    Artifact:
+      type: object
+      required:
+      - id
+      - object
+      - name
+      - kind
+      - version
+      - created_at
+      properties:
+        id:
+          type: string
+          description: Today's slug.
+        object:
+          const: artifact
+        name:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ArtifactKind'
+        description:
+          type: string
+        tags:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+        version:
+          type: integer
+        content:
+          type: string
+          description: Returned only when reading a single artifact.
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+    ArtifactList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Artifact'
+    CreateArtifactRequest:
+      type: object
+      required:
+      - name
+      - content
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+        kind:
+          $ref: '#/components/schemas/ArtifactKind'
+        description:
+          type: string
+        tags:
+          type: array
+          maxItems: 16
+          items:
+            type: string
+      description: The `webapp` and `dashboard` kinds are not open to third parties.
+    UpdateArtifactRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      description: Changing content creates a new version.
+    ArtifactVersion:
+      type: object
+      required:
+      - version
+      - created_at
+      properties:
+        version:
+          type: integer
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        source:
+          type: string
+    ArtifactVersionList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/ArtifactVersion'
+    Comment:
+      type: object
+      required:
+      - id
+      - text
+      - created_at
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        parent_id:
+          type:
+          - string
+          - 'null'
+        author:
+          type: object
+          properties:
+            kind:
+              enum:
+              - user
+              - app
+              - agent
+            name:
+              type: string
+        status:
+          enum:
+          - open
+          - review
+          - resolved
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    CommentList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Comment'
+    CreateCommentRequest:
+      type: object
+      required:
+      - text
+      properties:
+        text:
+          type: string
+          maxLength: 10000
+        parent_id:
+          type: string
+          description: Reply to a comment.
+    CreateNotificationRequest:
+      type: object
+      required:
+      - title
+      description: Goes to the dashboard notification bell only, labeled with the app name. Other channels such
+        as chat apps need the owner.
+      properties:
+        title:
+          type: string
+          maxLength: 500
+        body:
+          type: string
+          maxLength: 20000
+        priority:
+          enum:
+          - default
+          - passive
+          description: Third parties cannot send critical.
+        group_key:
+          type: string
+        conversation:
+          type: string
+          pattern: ^conv_
+    Notification:
+      type: object
+      required:
+      - id
+      - object
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^ntf_
+        object:
+          const: notification
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    ScheduleSpec:
+      type: object
+      description: Exactly one of these.
+      properties:
+        every_secs:
+          type: integer
+          minimum: 60
+        cron:
+          type: string
+          description: Five-field cron expression.
+        at:
+          $ref: '#/components/schemas/Timestamp'
+        timezone:
+          type: string
+          description: IANA time zone. Defaults to the user's time zone.
+      oneOf:
+      - required:
+        - every_secs
+      - required:
+        - cron
+      - required:
+        - at
+    Schedule:
+      type: object
+      required:
+      - id
+      - object
+      - name
+      - schedule
+      - status
+      properties:
+        id:
+          type: string
+          pattern: ^sch_
+        object:
+          const: schedule
+        name:
+          type: string
+        model:
+          type: string
+        message:
+          type: string
+        schedule:
+          $ref: '#/components/schemas/ScheduleSpec'
+        status:
+          enum:
+          - active
+          - paused
+        next_run_at:
+          type:
+          - integer
+          - 'null'
+        last_run:
+          type:
+          - object
+          - 'null'
+          properties:
+            at:
+              $ref: '#/components/schemas/Timestamp'
+            status:
+              enum:
+              - ok
+              - error
+              - skipped_quota
+            response:
+              type: string
+              pattern: ^resp_
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    ScheduleList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Schedule'
+    CreateScheduleRequest:
+      type: object
+      required:
+      - name
+      - model
+      - message
+      - schedule
+      description: Runs only an agent message; scripts and shell commands are not available.
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+          description: The connector's agent id or an allowed mate.
+        message:
+          type: string
+        schedule:
+          $ref: '#/components/schemas/ScheduleSpec'
+        conversation:
+          type: string
+          pattern: ^conv_
+          description: Run in an existing conversation; omit to start a new one each time.
+    UpdateScheduleRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+        message:
+          type: string
+        schedule:
+          $ref: '#/components/schemas/ScheduleSpec'
+        status:
+          enum:
+          - active
+          - paused
+    ScheduleRun:
+      type: object
+      required:
+      - schedule
+      - response
+      properties:
+        schedule:
+          type: string
+        response:
+          type: string
+          pattern: ^resp_
+    WorkflowRun:
+      type: object
+      required:
+      - id
+      - object
+      - status
+      - created_at
+      properties:
+        id:
+          type: string
+          pattern: ^wfr_
+        object:
+          const: workflow.run
+        workflow:
+          type:
+          - string
+          - 'null'
+          description: Slug of a saved workflow.
+        status:
+          enum:
+          - queued
+          - running
+          - finished
+          - failed
+          - cancelled
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        finished_at:
+          type:
+          - integer
+          - 'null'
+        result:
+          description: The workflow's return value; its shape is defined by the workflow.
+        error:
+          type:
+          - string
+          - 'null'
+        usage:
+          $ref: '#/components/schemas/Usage'
+    WorkflowRunList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/WorkflowRun'
+    CreateWorkflowRunRequest:
+      type: object
+      required:
+      - workflow
+      description: Only saved workflows the user marked "allow third parties"; source and intent are not accepted.
+        Anything else gets 404.
+      properties:
+        workflow:
+          type: string
+        args:
+          type: object
+        input:
+          type: string
+        budget_total:
+          type: integer
+          description: Token ceiling; cannot exceed the grant quota.
+    RecallResult:
+      type: object
+      required:
+      - results
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              text:
+                type: string
+              source:
+                type: string
+              score:
+                type: number
+    KnowledgeResult:
+      type: object
+      required:
+      - results
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              snippet:
+                type: string
+              source_id:
+                type: string
+              score:
+                type: number
+    WebhookEventType:
+      enum:
+      - turn.completed
+      - approval.requested
+      - grant.revoked
+      description: Open enum; the first set is provisional.
+    Webhook:
+      type: object
+      required:
+      - id
+      - object
+      - url
+      - events
+      description: 'Subscription: selects event types only. The address comes only from the callbacks.webhook_url
+        the user consented to.'
+      properties:
+        id:
+          type: string
+          pattern: ^whk_
+        object:
+          const: webhook
+        url:
+          type: string
+          format: uri
+          readOnly: true
+          description: The manifest's callbacks.webhook_url; read only.
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+    WebhookDelivery:
+      type: object
+      required:
+      - id
+      - type
+      - created_at
+      - grant_id
+      description: Callback body. Ids only, no content; read content through the API.
+      properties:
+        id:
+          type: string
+          pattern: ^evt_
+        type:
+          $ref: '#/components/schemas/WebhookEventType'
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        grant_id:
+          type: string
+        conversation:
+          type:
+          - string
+          - 'null'
+        response:
+          type:
+          - string
+          - 'null'
+    WebhookList:
+      allOf:
+      - $ref: '#/components/schemas/ListEnvelope'
+      - type: object
+        properties:
+          data:
+            type: array
+            items:
+              $ref: '#/components/schemas/Webhook'
+    CreateWebhookRequest:
+      type: object
+      required:
+      - events
+      additionalProperties: false
+      description: url is not accepted.
+      properties:
+        events:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebhookEventType'
+    Deleted:
+      type: object
+      required:
+      - id
+      - deleted
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+        deleted:
+          const: true
+  headers:
+    X-Request-Id:
+      description: One id per request, supplied by the caller or an intermediary, or generated by the gateway. Also
+        written to the audit log and the error body.
+      schema:
+        type: string
+        pattern: ^req_
+    Crew-API-Version:
+      description: The server's minor version, for example 1.3.
+      schema:
+        type: string
+    X-Crew-Quota-Limit:
+      description: This grant's daily credit ceiling. Sent on every response to a delegated-credential request,
+        success or failure; not sent for the embed credential.
+      schema:
+        type: number
+    X-Crew-Quota-Remaining:
+      description: Credits left today (reservations already subtracted).
+      schema:
+        type: number
+    X-Crew-Quota-Reset:
+      description: When the quota resets, Unix seconds.
+      schema:
+        type: integer
+    Retry-After:
+      description: Seconds to wait before retrying. Not sent with grant_paused.
+      schema:
+        type: integer
+    X-Crew-Signature:
+      description: 'Callback signature: sha256=<hex>, where <hex> is the lowercase hex HMAC-SHA256 of timestamp
+        + "." + raw_body (timestamp is the X-Crew-Timestamp value, raw_body the exact request body) under the app''s
+        webhook secret. The secret is issued once when the app is registered and can be rotated; how it is issued
+        is out of scope for this API.'
+      schema:
+        type: string
+    X-Crew-Timestamp:
+      description: Callback time in Unix seconds. Receivers reject anything older than 5 minutes.
+      schema:
+        type: integer
+    Deprecation:
+      description: Sent on anything being deprecated (RFC 9745).
+      schema:
+        type: string
+  parameters:
+    CrewApiVersion:
+      name: Crew-API-Version
+      in: header
+      required: false
+      description: The minor version the client declares. Without it, the server's lowest supported minor version
+        is assumed.
+      schema:
+        type: string
+        example: '1.3'
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: A caller may supply its own; an id assigned by an intermediary in front of the gateway wins.
+      schema:
+        type: string
+    After:
+      name: after
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Start after this id.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Accepted on POSTs that spend credits. Within one grant, a retry with the same key within 24 hours
+        returns the first result and is not charged again; the same key with a different body gets 422 idempotency_key_reused.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    Order:
+      name: order
+      in: query
+      required: false
+      schema:
+        enum:
+        - asc
+        - desc
+        default: desc
+  responses:
+    BadRequest:
+      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type, unsupported_api_version.
+        Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_request:
+              summary: Malformed field.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: invalid_request
+                  message: Malformed field.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_parameter:
+              summary: A field this API refuses.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_parameter
+                  message: A field this API refuses.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_tool_type:
+              summary: An unsupported tool type.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_tool_type
+                  message: An unsupported tool type.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_api_version:
+              summary: The client's declared minor version is below the lowest the server supports.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_api_version
+                  message: The client's declared minor version is below the lowest the server supports.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  supported:
+                    min: '1.2'
+                    max: '1.4'
+    BadRequestNoQuota:
+      description: '400: invalid_request, unsupported_parameter, unsupported_tool_type, unsupported_api_version.
+        For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_request:
+              summary: Malformed field.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: invalid_request
+                  message: Malformed field.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_parameter:
+              summary: A field this API refuses.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_parameter
+                  message: A field this API refuses.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_tool_type:
+              summary: An unsupported tool type.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_tool_type
+                  message: An unsupported tool type.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            unsupported_api_version:
+              summary: The client's declared minor version is below the lowest the server supports.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: unsupported_api_version
+                  message: The client's declared minor version is below the lowest the server supports.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  supported:
+                    min: '1.2'
+                    max: '1.4'
+    Unauthorized:
+      description: '401: invalid_token, token_revoked, third_party_disabled. Carries X-Crew-Quota-* on delegated-credential
+        requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_token:
+              summary: No credential, or a bad signature or expiry.
+              value:
+                error:
+                  type: authentication_error
+                  code: invalid_token
+                  message: No credential, or a bad signature or expiry.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            token_revoked:
+              summary: The grant was revoked.
+              value:
+                error:
+                  type: authentication_error
+                  code: token_revoked
+                  message: The grant was revoked.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            third_party_disabled:
+              summary: The user turned off "allow third-party apps".
+              value:
+                error:
+                  type: authentication_error
+                  code: third_party_disabled
+                  message: The user turned off "allow third-party apps".
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    UnauthorizedNoQuota:
+      description: '401: invalid_token, token_revoked, third_party_disabled. For embed-credential endpoints: no
+        quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid_token:
+              summary: No credential, or a bad signature or expiry.
+              value:
+                error:
+                  type: authentication_error
+                  code: invalid_token
+                  message: No credential, or a bad signature or expiry.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            token_revoked:
+              summary: The grant was revoked.
+              value:
+                error:
+                  type: authentication_error
+                  code: token_revoked
+                  message: The grant was revoked.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            third_party_disabled:
+              summary: The user turned off "allow third-party apps".
+              value:
+                error:
+                  type: authentication_error
+                  code: third_party_disabled
+                  message: The user turned off "allow third-party apps".
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    Forbidden:
+      description: '403: insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed,
+        use_responses_api. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            insufficient_scope:
+              summary: Missing scope, or a delegated credential called a non-Public endpoint.
+              value:
+                error:
+                  type: permission_error
+                  code: insufficient_scope
+                  message: Missing scope, or a delegated credential called a non-Public endpoint.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            approval_requires_first_party:
+              summary: A delegated credential tried to answer an approval.
+              value:
+                error:
+                  type: permission_error
+                  code: approval_requires_first_party
+                  message: A delegated credential tried to answer an approval.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            tool_not_registered:
+              summary: A tool in the request is not in the consented manifest.
+              value:
+                error:
+                  type: permission_error
+                  code: tool_not_registered
+                  message: A tool in the request is not in the consented manifest.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            connector_definition_changed:
+              summary: The manifest's security-relevant part changed and the user has not re-consented.
+              value:
+                error:
+                  type: permission_error
+                  code: connector_definition_changed
+                  message: The manifest's security-relevant part changed and the user has not re-consented.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            use_responses_api:
+              summary: A delegated credential called /v1/chat/completions.
+              value:
+                error:
+                  type: permission_error
+                  code: use_responses_api
+                  message: A delegated credential called /v1/chat/completions.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    ForbiddenNoQuota:
+      description: '403: insufficient_scope, approval_requires_first_party, tool_not_registered, connector_definition_changed,
+        use_responses_api. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            insufficient_scope:
+              summary: Missing scope, or a delegated credential called a non-Public endpoint.
+              value:
+                error:
+                  type: permission_error
+                  code: insufficient_scope
+                  message: Missing scope, or a delegated credential called a non-Public endpoint.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            approval_requires_first_party:
+              summary: A delegated credential tried to answer an approval.
+              value:
+                error:
+                  type: permission_error
+                  code: approval_requires_first_party
+                  message: A delegated credential tried to answer an approval.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            tool_not_registered:
+              summary: A tool in the request is not in the consented manifest.
+              value:
+                error:
+                  type: permission_error
+                  code: tool_not_registered
+                  message: A tool in the request is not in the consented manifest.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            connector_definition_changed:
+              summary: The manifest's security-relevant part changed and the user has not re-consented.
+              value:
+                error:
+                  type: permission_error
+                  code: connector_definition_changed
+                  message: The manifest's security-relevant part changed and the user has not re-consented.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            use_responses_api:
+              summary: A delegated credential called /v1/chat/completions.
+              value:
+                error:
+                  type: permission_error
+                  code: use_responses_api
+                  message: A delegated credential called /v1/chat/completions.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    NotFound:
+      description: '404: not_found, model_not_found. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            not_found:
+              summary: Does not exist, or the caller may not know it exists.
+              value:
+                error:
+                  type: not_found_error
+                  code: not_found
+                  message: Does not exist, or the caller may not know it exists.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            model_not_found:
+              summary: The caller cannot use this agent.
+              value:
+                error:
+                  type: not_found_error
+                  code: model_not_found
+                  message: The caller cannot use this agent.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    NotFoundNoQuota:
+      description: '404: not_found, model_not_found. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            not_found:
+              summary: Does not exist, or the caller may not know it exists.
+              value:
+                error:
+                  type: not_found_error
+                  code: not_found
+                  message: Does not exist, or the caller may not know it exists.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            model_not_found:
+              summary: The caller cannot use this agent.
+              value:
+                error:
+                  type: not_found_error
+                  code: model_not_found
+                  message: The caller cannot use this agent.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    MethodNotAllowed:
+      description: '405: method_not_supported. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            method_not_supported:
+              summary: A method this API does not support.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: method_not_supported
+                  message: A method this API does not support.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    MethodNotAllowedNoQuota:
+      description: '405: method_not_supported. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            method_not_supported:
+              summary: A method this API does not support.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: method_not_supported
+                  message: A method this API does not support.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    Conflict:
+      description: '409: response_in_progress, approval_already_resolved. Carries X-Crew-Quota-* on delegated-credential
+        requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            response_in_progress:
+              summary: This conversation already has a turn running.
+              value:
+                error:
+                  type: conflict_error
+                  code: response_in_progress
+                  message: This conversation already has a turn running.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            approval_already_resolved:
+              summary: Someone else already answered this approval.
+              value:
+                error:
+                  type: conflict_error
+                  code: approval_already_resolved
+                  message: Someone else already answered this approval.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  final:
+                    state: allowed
+                    decided_at: 1761822030
+    ConflictNoQuota:
+      description: '409: response_in_progress, approval_already_resolved. For embed-credential endpoints: no quota
+        headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            response_in_progress:
+              summary: This conversation already has a turn running.
+              value:
+                error:
+                  type: conflict_error
+                  code: response_in_progress
+                  message: This conversation already has a turn running.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            approval_already_resolved:
+              summary: Someone else already answered this approval.
+              value:
+                error:
+                  type: conflict_error
+                  code: approval_already_resolved
+                  message: Someone else already answered this approval.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  final:
+                    state: allowed
+                    decided_at: 1761822030
+    ResyncRequired:
+      description: '410: resync_required. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            resync_required:
+              summary: The cursor is stale or untrustworthy; the body carries oldest_seq and latest_seq.
+              value:
+                error:
+                  type: resync_required_error
+                  code: resync_required
+                  message: The cursor is stale or untrustworthy; the body carries oldest_seq and latest_seq.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  oldest_seq: 120
+                  latest_seq: 412
+    ResyncRequiredNoQuota:
+      description: '410: resync_required. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            resync_required:
+              summary: The cursor is stale or untrustworthy; the body carries oldest_seq and latest_seq.
+              value:
+                error:
+                  type: resync_required_error
+                  code: resync_required
+                  message: The cursor is stale or untrustworthy; the body carries oldest_seq and latest_seq.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+                  oldest_seq: 120
+                  latest_seq: 412
+    PayloadTooLarge:
+      description: '413: payload_too_large. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            payload_too_large:
+              summary: Input too large.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: payload_too_large
+                  message: Input too large.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    PayloadTooLargeNoQuota:
+      description: '413: payload_too_large. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            payload_too_large:
+              summary: Input too large.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: payload_too_large
+                  message: Input too large.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    Unprocessable:
+      description: '422: capability_unavailable, idempotency_key_reused. Carries X-Crew-Quota-* on delegated-credential
+        requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            capability_unavailable:
+              summary: The engine or deployment form cannot do this.
+              value:
+                error:
+                  type: capability_error
+                  code: capability_unavailable
+                  message: The engine or deployment form cannot do this.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            idempotency_key_reused:
+              summary: The same Idempotency-Key was sent with a different body.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: idempotency_key_reused
+                  message: The same Idempotency-Key was sent with a different body.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    UnprocessableNoQuota:
+      description: '422: capability_unavailable, idempotency_key_reused. For embed-credential endpoints: no quota
+        headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            capability_unavailable:
+              summary: The engine or deployment form cannot do this.
+              value:
+                error:
+                  type: capability_error
+                  code: capability_unavailable
+                  message: The engine or deployment form cannot do this.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            idempotency_key_reused:
+              summary: The same Idempotency-Key was sent with a different body.
+              value:
+                error:
+                  type: invalid_request_error
+                  code: idempotency_key_reused
+                  message: The same Idempotency-Key was sent with a different body.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    TooManyRequests:
+      description: '429: rate_limited, concurrency_limit, quota_exhausted, grant_paused, notification_limited. Carries
+        X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            rate_limited:
+              summary: Too many requests from this app; slow down and retry after Retry-After.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: rate_limited
+                  message: Too many requests from this app; slow down and retry after Retry-After.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            concurrency_limit:
+              summary: The grant's or instance's third-party concurrency and queue are both full.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: concurrency_limit
+                  message: The grant's or instance's third-party concurrency and queue are both full.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            quota_exhausted:
+              summary: The grant's quota is used up.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: quota_exhausted
+                  message: The grant's quota is used up.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            grant_paused:
+              summary: The grant is paused and stays paused until the user resumes it.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: grant_paused
+                  message: The grant is paused and stays paused until the user resumes it.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            notification_limited:
+              summary: The grant's notification limit was reached (10 per hour by default); with Retry-After.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: notification_limited
+                  message: The grant's notification limit was reached (10 per hour by default); with Retry-After.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    TooManyRequestsNoQuota:
+      description: '429: rate_limited, concurrency_limit, quota_exhausted, grant_paused, notification_limited. For
+        embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            rate_limited:
+              summary: Too many requests from this app; slow down and retry after Retry-After.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: rate_limited
+                  message: Too many requests from this app; slow down and retry after Retry-After.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            concurrency_limit:
+              summary: The grant's or instance's third-party concurrency and queue are both full.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: concurrency_limit
+                  message: The grant's or instance's third-party concurrency and queue are both full.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            quota_exhausted:
+              summary: The grant's quota is used up.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: quota_exhausted
+                  message: The grant's quota is used up.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            grant_paused:
+              summary: The grant is paused and stays paused until the user resumes it.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: grant_paused
+                  message: The grant is paused and stays paused until the user resumes it.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+            notification_limited:
+              summary: The grant's notification limit was reached (10 per hour by default); with Retry-After.
+              value:
+                error:
+                  type: rate_limit_error
+                  code: notification_limited
+                  message: The grant's notification limit was reached (10 per hour by default); with Retry-After.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    InternalError:
+      description: '500: internal_error. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            internal_error:
+              summary: Gateway internal error.
+              value:
+                error:
+                  type: server_error
+                  code: internal_error
+                  message: Gateway internal error.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    InternalErrorNoQuota:
+      description: '500: internal_error. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            internal_error:
+              summary: Gateway internal error.
+              value:
+                error:
+                  type: server_error
+                  code: internal_error
+                  message: Gateway internal error.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    InstanceUnavailable:
+      description: '503: instance_unavailable. Carries X-Crew-Quota-* on delegated-credential requests.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+        X-Crew-Quota-Limit:
+          $ref: '#/components/headers/X-Crew-Quota-Limit'
+        X-Crew-Quota-Remaining:
+          $ref: '#/components/headers/X-Crew-Quota-Remaining'
+        X-Crew-Quota-Reset:
+          $ref: '#/components/headers/X-Crew-Quota-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            instance_unavailable:
+              summary: The crew is offline or unreachable.
+              value:
+                error:
+                  type: server_error
+                  code: instance_unavailable
+                  message: The crew is offline or unreachable.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
+    InstanceUnavailableNoQuota:
+      description: '503: instance_unavailable. For embed-credential endpoints: no quota headers.'
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+        Crew-API-Version:
+          $ref: '#/components/headers/Crew-API-Version'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            instance_unavailable:
+              summary: The crew is offline or unreachable.
+              value:
+                error:
+                  type: server_error
+                  code: instance_unavailable
+                  message: The crew is offline or unreachable.
+                  param: null
+                  request_id: req_01JBXQ4K7Y2M
