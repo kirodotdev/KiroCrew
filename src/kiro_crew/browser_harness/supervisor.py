@@ -188,9 +188,12 @@ _PORT_PROBE_SECS = 0.5
 #: The POSIX launcher for Kiro's Chromium: ``/bin/sh`` moves the two pipe ends the
 #: gateway passed (``$1`` read end, ``$2`` write end) onto fds 3 and 4, then ``exec``s
 #: Chromium in its place. Every token is a constant here or a number the gateway chose.
+#: The ends are reopened by path (``/dev/fd/N``) rather than duplicated with
+#: ``3<&N``: dash, ``/bin/sh`` on Debian and Ubuntu, reads only a single-digit fd in
+#: a redirection, and a gateway's pipe ends are usually 10 or above.
 _SH = "/bin/sh"
-_SH_REMAP = 'exec 3<&"$1" 4>&"$2"; shift 2; exec "$@"'
-#: The first fd a pipe end may occupy before the remap, so ``exec 3<&N 4>&M`` never
+_SH_REMAP = 'exec 3</dev/fd/"$1" 4>/dev/fd/"$2"; shift 2; exec "$@"'
+#: The first fd a pipe end may occupy before the remap, so ``exec 3<... 4>...`` never
 #: reads a descriptor it has just overwritten.
 _FIRST_SAFE_FD = 5
 

@@ -237,6 +237,15 @@ async def test_the_pipe_launcher_puts_the_relay_on_fds_3_and_4_and_opens_no_port
     assert json.loads(replies[0]) == {"id": 7, "result": {"product": "fake/1"}}
 
 
+def test_the_remap_takes_no_shell_fd_redirection_of_a_multi_digit_fd() -> None:
+    """dash (``/bin/sh`` on Debian and Ubuntu) rejects ``3<&15`` as a bad fd number,
+    and the gateway's pipe ends are usually 10 or above, so the remap reopens them by
+    path. Pinned on the string because a bash or zsh ``/bin/sh`` accepts both forms."""
+    assert "<&" not in supervisor._SH_REMAP and ">&" not in supervisor._SH_REMAP
+    assert '3</dev/fd/"$1"' in supervisor._SH_REMAP
+    assert '4>/dev/fd/"$2"' in supervisor._SH_REMAP
+
+
 def test_chromium_argv_has_no_flat_debugging_port_on_posix() -> None:
     assert "--remote-debugging-port=0" not in supervisor._CHROMIUM_ARGS
     assert supervisor._CHROMIUM_PIPE_ARG == "--remote-debugging-pipe"
