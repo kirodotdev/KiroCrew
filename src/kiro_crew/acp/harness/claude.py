@@ -22,7 +22,7 @@ import os
 import shutil
 from pathlib import Path
 
-from kiro_crew import model_registry
+from kiro_crew import acp_tool_gate, model_registry
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
@@ -219,6 +219,19 @@ class ClaudeLaunch(ProcessAdapter):
                 f"dependency), or set CLAUDE_AGENT_ACP_BIN to its entry script."
             )
         argv: list[str] = claude_argv
+        # Resolve the OS credential mask FIRST, before any disk seeding below: this
+        # harness is masked (``Routing.SEEDED_SETTINGS`` is in
+        # ``CREDENTIAL_MASK_ROUTINGS``) because the adapter reads its config root
+        # through an ``open()`` the gate never sees. ``_sandbox_preflight`` refuses
+        # the session on a host where the mask cannot be applied (e.g. sandbox off,
+        # or no OS backend), so refusing here means nothing has been seeded for a
+        # session that will not start. The expose set is empty for claude (it
+        # declares no re-exposed leaf), but resolved through the same path the other
+        # masked harnesses use so the two halves cannot drift.
+        hidden = await launch_mod._run_preflight_bounded(
+            launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
+        )
+        expose = acp_tool_gate.adapter_expose_files(self.backend, hidden)
         # The installed adapter's own version, read BEFORE the seed: the writer
         # applies the settingSources floor with it, so the exclusion is decided
         # before the MCP array below is first resolved and nothing has to be
@@ -264,6 +277,8 @@ class ClaudeLaunch(ProcessAdapter):
                 pkg_entry=_CLAUDE_ACP_PKG_ENTRY,
                 override_env="CLAUDE_AGENT_ACP_BIN",
             ),
+            extra_hidden_dirs=hidden,
+            extra_expose_files=expose,
         )
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:

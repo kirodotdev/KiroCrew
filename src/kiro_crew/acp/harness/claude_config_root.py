@@ -10,9 +10,9 @@ pre-approved tool, so for that call there is nothing for Crew to gate or record.
 
 Pointing ``CLAUDE_CONFIG_DIR`` at a Crew-owned root that carries NO
 ``permissions`` keys removes that channel at its source: the user tier a Claude
-session loads no longer carries any ``allow`` or ``acceptEdits`` rule, so every
-tool call falls through to ``canUseTool`` and runs Crew's approval path. It is
-the config-isolation half of WS-B; the OS credential mask (an ENFORCED routing
+session loads carries no ``allow`` or ``acceptEdits`` rule, so every tool call
+falls through to ``canUseTool`` and runs Crew's approval path. It is the
+config-isolation half of WS-B; the OS credential mask (an ENFORCED routing
 for this harness) is a separate change.
 
 The root is ``~/.claudecrew`` by default (``KIROCREW_CLAUDE_CONFIG_DIR``

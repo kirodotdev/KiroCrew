@@ -373,7 +373,10 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_KAS: Routing.AGENT_SPEC,
     # Declared, not enforced: nothing reads back whether the seeded settings took
     # effect, and ``SEEDED_SETTINGS`` is outside ``tool_gate.ENFORCED_ROUTINGS``, so
-    # a claude session is not refused for it.
+    # a claude session is not refused for it. It IS inside
+    # ``tool_gate.CREDENTIAL_MASK_ROUTINGS`` -- the adapter reads its config root
+    # through an ``open()`` the gate never sees, so the OS credential mask
+    # compensates even though this routing cannot itself refuse a pre-approved call.
     ACP_BACKEND_CLAUDE: Routing.SEEDED_SETTINGS,
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,

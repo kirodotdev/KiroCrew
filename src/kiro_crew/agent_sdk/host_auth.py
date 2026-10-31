@@ -494,12 +494,18 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         backend=ACP_BACKEND_CLAUDE,
         credential_leaves=(".claude/.credentials.json",),
         home_override_env_vars=("CLAUDE_CONFIG_DIR", "CLAUDE_HOME"),
-        # Nothing excluded from the mask, because no mask is applied: this harness
-        # is outside ``tool_gate.ENFORCED_ROUTINGS``, so
-        # ``adapter_hidden_credential_dirs`` returns empty for it and there is
-        # nothing to carve an exception out of. Declaring an exclusion anyway would
-        # be an assertion about a control that never runs.
-        adapter_own_leaves=(),
+        # The one leaf the mask must spare. This harness is masked --
+        # ``Routing.SEEDED_SETTINGS`` is in ``tool_gate.CREDENTIAL_MASK_ROUTINGS``
+        # though NOT in ``ENFORCED_ROUTINGS`` -- because the adapter reads its
+        # config root through an ``open()`` the gate never sees, and it
+        # authenticates ITSELF from this token (relocated under
+        # ``CLAUDE_CONFIG_DIR`` to the isolated root). Masking it would fail every
+        # session at start with an opaque authentication error. Safe asymmetry: the
+        # read gate still refuses the same leaf to the AGENT's file tools, so the
+        # two controls cover different readers. The override anchoring above
+        # re-spells this exclusion under the isolated root exactly as the floor
+        # re-spells the fence, so the two cannot drift.
+        adapter_own_leaves=(".claude/.credentials.json",),
         sign_in_remedy=(
             "Claude Code is a separate app you sign into yourself — run claude in "
             "your terminal and complete its sign-in. It is not checked here."

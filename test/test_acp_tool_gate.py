@@ -415,8 +415,8 @@ def test_every_exposed_leaf_sits_under_a_masked_dir() -> None:
         assert any(exposed.startswith(m + os.sep) for m in masked), exposed
 
 
-@pytest.mark.parametrize("backend", (*AGENT_SPEC_BACKENDS, ACP_BACKEND_CLAUDE))
-def test_unenforced_harness_gets_no_expose_files(backend) -> None:
+@pytest.mark.parametrize("backend", AGENT_SPEC_BACKENDS)
+def test_unmasked_harness_gets_no_expose_files(backend) -> None:
     """The first-class path keeps byte-identical sandbox arguments here too."""
     assert gate.adapter_expose_files(backend, ()) == ()
 
@@ -437,13 +437,42 @@ def test_the_harness_keeps_its_own_token_readable() -> None:
     )
 
 
-@pytest.mark.parametrize("backend", (*AGENT_SPEC_BACKENDS, ACP_BACKEND_CLAUDE))
-def test_unenforced_harness_gets_no_mask(backend) -> None:
+@pytest.mark.parametrize("backend", AGENT_SPEC_BACKENDS)
+def test_unmasked_harness_gets_no_mask(backend) -> None:
     """The first-class path keeps byte-identical sandbox arguments.
 
-    An adapter-driven change must not alter what the Kiro spawn is handed.
+    An adapter-driven change must not alter what the Kiro spawn is handed. AGENT_SPEC
+    (kiro-cli, KAS) is deliberately NOT in ``CREDENTIAL_MASK_ROUTINGS``: the standard
+    tier leaves the credential homes readable for the first-class path.
     """
     assert gate.adapter_hidden_credential_dirs(backend) == ()
+
+
+def test_claude_is_masked_but_not_enforced() -> None:
+    """claude gets the OS credential mask without its routing being able to refuse.
+
+    This is the WS-B split: ``SEEDED_SETTINGS`` reads the config root through an
+    ``open()`` the gate never sees (so the mask compensates), yet cannot force a
+    prompt for a pre-approved call (so the session is not refused on routing).
+    """
+    assert gate.credential_mask_eligible(ACP_BACKEND_CLAUDE) is True
+    assert gate.is_enforced(ACP_BACKEND_CLAUDE) is False
+
+
+def test_claude_gets_the_credential_mask() -> None:
+    """The floor is denied to claude's child, minus its own token store."""
+    masked = set(gate.adapter_hidden_credential_dirs(ACP_BACKEND_CLAUDE))
+    assert masked, "claude child was handed an empty credential mask"
+    home = os.path.expanduser("~")
+    # A representative floor leaf the child must not read.
+    assert os.path.join(home, ".netrc") in masked
+    # ...but claude's own token stays readable, or the adapter cannot authenticate.
+    own = os.path.join(home, ".claude", ".credentials.json")
+    assert own not in masked
+    assert ".claude/.credentials.json" in sensitive_home_dirs(), (
+        "the agent's own file tools must still be fenced from claude's token even "
+        "though the adapter child may read it"
+    )
 
 
 def test_mask_paths_are_absolute() -> None:
@@ -516,13 +545,15 @@ def test_every_session_config_harness_names_its_option() -> None:
         )
 
 
-def test_every_enforced_harness_declares_its_own_credential() -> None:
-    """An enforced harness must name a readable token store OR be fed from the vault.
+def test_every_masked_harness_declares_its_own_credential() -> None:
+    """A masked harness must name a readable token store OR be fed from the vault.
 
     ``adapter_hidden_credential_dirs`` denies the whole floor minus the harness's
     own leaf, so a harness that authenticates from a FILE and is absent from that
     table gets its token masked and cannot authenticate. Fails here rather than as
-    an opaque auth error on first use.
+    an opaque auth error on first use. Keyed on ``CREDENTIAL_MASK_ROUTINGS`` (the
+    set that actually gets the mask) rather than ``ENFORCED_ROUTINGS``, so claude --
+    masked without being enforced -- is covered.
 
     The other way to satisfy it is ``ENTITLEMENT_HOST_VAULT``: Crew hands such a
     harness its key as an environment variable at spawn, so it needs no readable
@@ -536,12 +567,12 @@ def test_every_enforced_harness_declares_its_own_credential() -> None:
     from kiro_crew.agent_sdk import host_auth
 
     for backend, routing in ACP_BACKEND_ROUTING.items():
-        if routing not in gate.ENFORCED_ROUTINGS:
+        if routing not in gate.CREDENTIAL_MASK_ROUTINGS:
             continue
         declaration = host_auth.declaration_for(backend)
         from_vault = declaration.entitlement_source == host_auth.ENTITLEMENT_HOST_VAULT
         assert backend in gate.ADAPTER_OWN_CREDENTIAL_LEAVES or from_vault, (
-            f"{backend!r} is enforced, so the mask denies it the whole floor; it "
+            f"{backend!r} is masked, so the mask denies it the whole floor; it "
             "must name its own credential leaf or declare ENTITLEMENT_HOST_VAULT, "
             "or it cannot authenticate"
         )
@@ -555,16 +586,16 @@ def test_every_enforced_harness_declares_its_own_credential() -> None:
             assert backend not in gate.ADAPTER_OWN_CREDENTIAL_LEAVES
 
 
-def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Path) -> None:
-    """An enforced harness whose spawn path skips the preflight starts unmasked.
+def test_every_masked_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Path) -> None:
+    """A masked harness whose spawn path skips the preflight starts unmasked.
 
     The preflight (refuse-then-mask) is invoked from inside each adapter's OWN spawn
     path rather than from a gate on a shared one, so the kiro construction path
     gains no conditional and no awaited step in service of an adapter
-    (harness-parity H13). The cost of that placement is that a new enforced harness
+    (harness-parity H13). The cost of that placement is that a new masked harness
     needs its own call: forgetting one would spawn it with no mask and no refusal.
 
-    An enforced harness reaches its spawn through ONE of two drivers -- a harness on
+    A masked harness reaches its spawn through ONE of two drivers -- a harness on
     the shared runtime, or a per-session host's adapter on ``AcpClient`` -- so each
     is launched through the driver that serves it, with the preflight recorded and
     the sandbox wrap the driver hands its child to observed. Exactly one preflight
@@ -584,12 +615,12 @@ def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Pa
     enforced = {
         backend
         for backend, routing in ACP_BACKEND_ROUTING.items()
-        if routing in gate.ENFORCED_ROUTINGS
+        if routing in gate.CREDENTIAL_MASK_ROUTINGS
     }
-    assert enforced, "the gate enforces no mechanism; this ratchet would be vacuous"
+    assert enforced, "the gate masks no harness; this ratchet would be vacuous"
     on_runtime = {b for b in enforced if b in ACP_BACKENDS_ACP_RUNTIME}
-    assert on_runtime, "no enforced harness runs on the shared runtime; check the sets"
-    assert enforced - on_runtime, "no enforced harness runs on AcpClient; check the sets"
+    assert on_runtime, "no masked harness runs on the shared runtime; check the sets"
+    assert enforced - on_runtime, "no masked harness runs on AcpClient; check the sets"
 
     # The real bounded runner and the real codex mask helper, which the capture
     # otherwise stubs: the preflight they reach is what is counted.
@@ -621,12 +652,12 @@ def test_every_enforced_harness_reaches_the_spawn_preflight(tmp_path: pathlib.Pa
         )
 
         assert preflights == [(backend, "auto")], (
-            f"enforced harness {backend!r} reached _sandbox_preflight {len(preflights)} "
+            f"masked harness {backend!r} reached _sandbox_preflight {len(preflights)} "
             "time(s) on its spawn; exactly one is the contract -- zero spawns with no "
-            "mask and no refusal, two enforces twice"
+            "mask and no refusal, two masks twice"
         )
         assert session_wraps == [mask], (
-            f"enforced harness {backend!r} resolved a mask its session's sandbox wrap "
+            f"masked harness {backend!r} resolved a mask its session's sandbox wrap "
             f"never applied: {session_wraps}"
         )
 

@@ -85,20 +85,17 @@ logger = logging.getLogger(__name__)
 #: adding a mechanism here without implementing it would assert a guarantee
 #: nothing performs.
 #:
-#: KNOWN SEAM GAP, recorded here because this is where a reader meets it.
-#: :func:`is_enforced` reads this set to answer TWO different questions: "does a
-#: non-ROUTED verdict refuse this session?" and, through
-#: :func:`adapter_hidden_credential_dirs`, "does this harness get the OS credential
-#: mask?". Those are not the same question. The mask compensates for a harness whose
-#: passive READS bypass the gate, which is a property of the harness, not of whether
-#: its routing verdict is capable of refusing. They agree for every harness carried
-#: today, so nothing is wrong now and nothing here is a workaround -- but a harness
-#: that needs the mask while declaring a mechanism that cannot refuse would get
-#: neither, and one that refuses without doing passive reads would carry a mask it
-#: does not need. Splitting them is a change to a security control and belongs in its
-#: own change; tracked at
-#: docs/system-specs/modules/harness-onboarding.md#worked-example-the-deepseek-harness,
-#: which records the run that surfaced it.
+#: This set answers ONE question: "does a non-ROUTED verdict REFUSE this session?"
+#: A separate question -- "does this harness get the OS credential mask?" -- is
+#: answered by :data:`CREDENTIAL_MASK_ROUTINGS`, a superset of this set. They are
+#: not the same question: the mask compensates for a harness whose passive READS
+#: bypass the gate, which is a property of the harness, not of whether its routing
+#: verdict can refuse. The two coincide for every harness except claude, whose
+#: ``SEEDED_SETTINGS`` routing reads its config root off the gate (so it is masked)
+#: yet cannot force a prompt for a pre-approved call (so it is not refused on
+#: routing). Keep the two sets distinct: a routing joins the mask set when its
+#: harness reads credentials off the gate, and joins this set only when it can also
+#: refuse.
 ENFORCED_ROUTINGS: frozenset = frozenset(
     {
         Routing.SESSION_CONFIG,
@@ -106,6 +103,25 @@ ENFORCED_ROUTINGS: frozenset = frozenset(
         Routing.VERIFIED_GATE_EXTENSION,
     }
 )
+
+#: Routings whose harness does PASSIVE credential reads outside the gate, so it
+#: gets the OS credential mask even when its routing cannot itself REFUSE a
+#: pre-approved call. This is the "does this harness get the mask?" question the
+#: comment above keeps distinct from "does a non-ROUTED verdict refuse?": every
+#: ENFORCED routing needs the mask, and ``SEEDED_SETTINGS`` (claude) needs it
+#: WITHOUT being able to refuse -- it reads the operator's ``~/.claude`` (now an
+#: isolated root) through an ``open()`` that never reaches the gate, yet ACP v1
+#: cannot force a prompt for a passive read. That is the split the comment on
+#: ENFORCED_ROUTINGS deferred to its own change.
+#:
+#: A SUPERSET of ENFORCED_ROUTINGS, never a replacement: a routing joins here when
+#: its harness reads credentials off the gate, and joins ENFORCED_ROUTINGS only
+#: when it can also refuse. The two answers coincide for every harness except
+#: claude. ``AGENT_SPEC`` (kiro-cli, KAS) is deliberately absent: the standard
+#: sandbox tier leaves the credential homes readable for the first-class path, and
+#: a mask there would make its spawn arguments diverge from the kiro baseline
+#: (harness-parity).
+CREDENTIAL_MASK_ROUTINGS: frozenset = ENFORCED_ROUTINGS | frozenset({Routing.SEEDED_SETTINGS})
 
 #: What is NOT consulted when a harness's tool calls bypass the gate. Named in
 #: full in the refusal, because "bypasses the security gate" does not tell an
@@ -327,8 +343,8 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     not close what this exists to close, and a harness landing new has no
     established workflow to break.
 
-    Empty for a harness this core does not enforce, so the first-class path and
-    every unenforced harness keep byte-identical sandbox arguments. Returns
+    Empty for a harness this core does not mask, so the first-class path and
+    every unmasked harness keep byte-identical sandbox arguments. Returns
     ABSOLUTE paths: ``sandbox.wrap_argv`` runs ``os.path.abspath`` over what it is
     handed, which would resolve a bare ``.aws`` against the CWD and silently deny
     nothing. File leaves are fine to pass -- the Linux launcher classifies each
@@ -336,7 +352,7 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     ``subpath`` and a ``literal`` deny for each one, so a plain file is covered
     without depending on how Seatbelt treats a subpath over a non-directory.
     """
-    if not is_enforced(backend):
+    if not credential_mask_eligible(backend):
         return ()
     # Imported here rather than at module scope: this is a LEAF that
     # ``acp/client.py`` imports at import time, and security.py is a large module
@@ -407,10 +423,10 @@ def adapter_expose_files(backend: str, hidden: tuple) -> tuple:
     just this spawn. A default parameter would leave that failure one forgotten
     argument away, so the type system asks for the resolved mask instead.
 
-    Empty for a harness this core does not enforce, so the first-class path and
-    every unenforced harness keep byte-identical sandbox arguments.
+    Empty for a harness this core does not mask, so the first-class path and
+    every unmasked harness keep byte-identical sandbox arguments.
     """
-    if not is_enforced(backend):
+    if not credential_mask_eligible(backend):
         return ()
     # CONTAINED, not trusted. A re-exposure is the one thing this table can ask for
     # that OPENS a path, and the mask is what makes it a narrowing: a leaf that sits
@@ -480,8 +496,8 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     ``sandbox.min_level`` floor raises ``"off"`` still gets the mask, and must not
     be refused over a config value the ceiling already overrode.
 
-    Returns for a harness this core does not enforce, so the first-class path and
-    every unenforced harness reach the spawn unchanged.
+    Returns for a harness this core does not mask, so the first-class path and
+    every unmasked harness reach the spawn unchanged.
 
     Native Windows has no Crew OS sandbox backend that can apply the mask, so the
     refusal there names that limitation and points at Kiro CLI rather than at
@@ -490,7 +506,7 @@ def enforce_sandbox_floor(backend: str, mode: str) -> None:
     hosts where a backend can exist. Neither message consults
     ``sandbox_allow_unsandboxed_exec``.
     """
-    if not is_enforced(backend):
+    if not credential_mask_eligible(backend):
         return
     # Local import for the same reason as the mask builder: this is a leaf that
     # ``acp/client.py`` imports at import time.
@@ -648,6 +664,19 @@ def routing_verdict(backend: str) -> tuple:
 def is_enforced(backend: str) -> bool:
     """Whether a non-ROUTED verdict for *backend* refuses the session."""
     return routing_for(backend) in ENFORCED_ROUTINGS
+
+
+def credential_mask_eligible(backend: str) -> bool:
+    """Whether *backend*'s child gets the OS credential mask.
+
+    Distinct from :func:`is_enforced` (whether a non-ROUTED verdict REFUSES the
+    session): a harness whose passive reads bypass the gate needs the mask even
+    when its routing cannot force a prompt. The two agree for every harness except
+    claude, whose ``SEEDED_SETTINGS`` routing reads its config root outside the
+    gate yet does not refuse a pre-approved call -- so it is masked without being
+    enforced. See :data:`CREDENTIAL_MASK_ROUTINGS`.
+    """
+    return routing_for(backend) in CREDENTIAL_MASK_ROUTINGS
 
 
 def remediation_for(backend: str) -> str:
@@ -1113,12 +1142,14 @@ def enforce_runtime_routing(
 __all__ = [
     "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
     "ADAPTER_OWN_CREDENTIAL_LEAVES",
+    "CREDENTIAL_MASK_ROUTINGS",
     "ENFORCED_ROUTINGS",
     "UNENFORCED_CONTROLS",
     "ToolGateUnroutable",
     "Verdict",
     "adapter_expose_files",
     "adapter_hidden_credential_dirs",
+    "credential_mask_eligible",
     "deepseek_read_only_owner_issue",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",

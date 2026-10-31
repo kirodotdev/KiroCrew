@@ -117,8 +117,13 @@ def test_the_socket_is_still_scrubbed_without_consent(_no_consent):
 # --- the reported case, with the real harness masks ---
 
 
-def test_codex_mask_gets_the_notice_and_claude_does_not(_no_consent):
-    """Under the default tier, Codex's own mask hides ~/.ssh; Claude's leaves it visible."""
+def test_codex_and_claude_masks_both_get_the_notice(_no_consent):
+    """Under the default tier, both masks hide ~/.ssh, so both need the consent.
+
+    claude is masked (``CREDENTIAL_MASK_ROUTINGS``) though not enforced, so its
+    child's mask denies ~/.ssh exactly as codex's does; both therefore forward the
+    socket only with consent.
+    """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
     from kiro_crew.agent_sdk.tool_gate import adapter_hidden_credential_dirs
 
@@ -126,8 +131,8 @@ def test_codex_mask_gets_the_notice_and_claude_does_not(_no_consent):
     claude_mask = tuple(adapter_hidden_credential_dirs(ACP_BACKEND_CLAUDE))
     assert sb._forward_ssh_auth_sock("auto", codex_mask) is False
     assert sb.ssh_auth_sock_consent_notice(ACP_BACKEND_CODEX, "auto", codex_mask)
-    assert sb._forward_ssh_auth_sock("auto", claude_mask) is True
-    assert sb.ssh_auth_sock_consent_notice(ACP_BACKEND_CLAUDE, "auto", claude_mask) == ""
+    assert sb._forward_ssh_auth_sock("auto", claude_mask) is False
+    assert sb.ssh_auth_sock_consent_notice(ACP_BACKEND_CLAUDE, "auto", claude_mask)
 
 
 # --- kirocrew doctor ---
@@ -143,8 +148,11 @@ def test_doctor_names_the_harnesses_and_the_remedy(_no_consent, monkeypatch, cap
     confinement._doctor_ssh_agent_forward()
     out = capsys.readouterr().out
     assert "ssh-agent:" in out
-    assert "codex" in out
-    assert "claude" not in out.split("ssh-agent:", 1)[1].splitlines()[0]
+    # Both codex and claude are masked under the default tier (claude via
+    # CREDENTIAL_MASK_ROUTINGS), so both hide ~/.ssh and both are named.
+    section = out.split("ssh-agent:", 1)[1]
+    assert "codex" in section
+    assert "claude" in section
     assert "enabled" in out and "ssh_auth_sock_consent.json" in out
 
 

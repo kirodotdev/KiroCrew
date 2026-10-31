@@ -751,9 +751,14 @@ alternative — inventing a private ACP method to ask over — would have broken
 profile's own declared invariant of adding no method, capability or `_meta` field.
 
 There is one further gap this run recorded rather than closed, in
-`tool_gate.ENFORCED_ROUTINGS`'s own comment: `is_enforced()` answers both "does a
+`tool_gate.ENFORCED_ROUTINGS`'s own comment: `is_enforced()` answered both "does a
 non-ROUTED verdict refuse this session" and "does this harness get the OS credential
-mask", and those only coincide for the harnesses carried today.
+mask", and those only coincide for the harnesses carried then. WS-B closed it: the
+claude harness reads its config root off the gate (so it needs the mask) yet cannot
+force a prompt for a pre-approved call (so it must not be refused on routing). The
+mask question now reads `tool_gate.CREDENTIAL_MASK_ROUTINGS` (a superset of
+`ENFORCED_ROUTINGS` that adds `SEEDED_SETTINGS`), through `credential_mask_eligible`,
+while `is_enforced` keeps only the refusal question.
 
 The other is what onboarding a harness with a *different shape* of credential home
 surfaced. Every earlier harness's override variable stood in for its token's parent

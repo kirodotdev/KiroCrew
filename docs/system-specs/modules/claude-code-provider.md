@@ -743,12 +743,26 @@ the login Keychain keyed by the config directory, so it cannot be copied and the
 operator signs in once with `claude` while `CLAUDE_CONFIG_DIR` points at the root
 (a boot log line says so). Covered by `test_claude_config_root.py`.
 
-What this does NOT yet do is apply the OS credential MASK to a foreign Claude
-child — this harness stays outside `tool_gate.ENFORCED_ROUTINGS`, so
-`adapter_hidden_credential_dirs` returns empty for it (host_auth declares no
-`adapter_own_leaves`), and the other crew credential leaves are reachable to a
-spawned shell through an `open()` that never routes through the tool gate. That is
-the second half of WS-B, tracked separately.
+### The OS credential mask
+
+A Claude child also gets the OS credential mask now, the compensating control for
+a harness whose passive `open()` reads never reach the gate. The split the
+`tool_gate.ENFORCED_ROUTINGS` comment once deferred is done: the mask question is
+answered by `tool_gate.CREDENTIAL_MASK_ROUTINGS` (a superset of `ENFORCED_ROUTINGS`
+that adds `SEEDED_SETTINGS`), through `credential_mask_eligible`, while `is_enforced`
+keeps only "does a non-ROUTED verdict refuse?". So claude is MASKED without being
+ENFORCED: `adapter_hidden_credential_dirs` denies its child the whole read-gate
+floor (`~/.aws`, `~/.ssh`, `.netrc`, the other adapters' token stores, the crew
+secret leaves) except its own token — host_auth now declares
+`adapter_own_leaves=(".claude/.credentials.json",)`, re-anchored under
+`CLAUDE_CONFIG_DIR` exactly as the fence is. `ClaudeLaunch.resolve_spawn` resolves
+the mask through the same `_sandbox_preflight` the other masked harnesses use,
+before any settings seeding, so a host where the mask cannot be applied (sandbox
+`off`, or no OS backend) refuses the session before seeding rather than spawning it
+unmasked. The cost is the same one codex carries: git-over-SSH inside a Claude
+session needs the `SSH_AUTH_SOCK` consent, because `~/.ssh` is now hidden from the
+child. Covered by `test_acp_tool_gate.py` (`test_claude_gets_the_credential_mask`,
+`test_claude_is_masked_but_not_enforced`, `test_every_masked_harness_*`).
 
 ### Known gap: a user-tier `settings.json` under the root is still read
 
