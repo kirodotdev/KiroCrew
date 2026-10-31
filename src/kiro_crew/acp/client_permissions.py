@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
 from kiro_crew import sel as sel_module
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     _loggable_request_id,
@@ -307,6 +308,11 @@ async def approve_tool(
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
         reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if reason is None:
+            # The opt-in batch write guard, after the floor. A refusal here has
+            # already steered its reason into the turn; the branch below audits
+            # and rejects it like a floor refusal.
+            reason = await batch_guard.screen_approval(self, gate_event)
     if reason is not None:
         # A refusal drops any mediated-secret grant an earlier approval minted for
         # this call id, now: ``reject_tool`` below pops the gate event again, finds

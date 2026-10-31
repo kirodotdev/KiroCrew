@@ -24,7 +24,7 @@ Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_
 ``_tool_tracker``, ``_turn_done``, ``_turn_steering_denied``, ``_working_logged_ts``,
 ``last_compaction_transient``, ``last_infra_error``, ``last_prompt_stats``.
 
-Instance fields read: ``_abandoned_steering``, ``_awaited_responses``,
+Instance fields read: ``_abandoned_steering``, ``_awaited_responses``, ``_batch_window``,
 ``_mode_model_unjudged``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_steering_cancel_tasks``.
 """
@@ -373,6 +373,10 @@ async def _run_turn(
     self._tool_dispatched = False
     self._report_evicted_attributions()
     self._tool_tracker.clear()
+    # A new turn starts a new batch window (``acp.batch_guard``).
+    batch_window = getattr(self, "_batch_window", None)
+    if batch_window is not None:
+        batch_window.reset()
     self._tool_output_seen.clear()
     self._status_rejected.clear()
     self._input_wait_emitted = False

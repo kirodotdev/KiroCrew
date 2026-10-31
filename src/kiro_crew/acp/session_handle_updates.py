@@ -16,7 +16,7 @@ Instance fields read: ``_parked_total``, ``_runtime``, ``_session_id``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``.
+``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``, ``_batch_window``.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
@@ -50,6 +51,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     STATUS_EXTENSION_KEY,
     TERMINAL_TOOL_STATUSES,
@@ -543,6 +545,12 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 liveness_key(ev.tool_call_id or ""), inflight_tool, interactive
             )
             self._retire_liveness_state()
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), ev)
+        elif ev.kind == EVENT_TOOL_CALL_UPDATE and ev.is_shell:
+            # A refinement may be the first frame to carry the shell command
+            # (an empty first ``rawInput``), so the batch window classifies the
+            # call again; its open or settled state is left as it was.
+            batch_guard.note_refined(getattr(self, "_batch_window", None), ev)
         elif ev.kind == EVENT_TOOL_RESULT:
             if not ev.tool_final and ev.tool_call_id:
                 # Streamed partial output: the command has acted, so any
@@ -566,6 +574,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 # wait reset.
                 judged_changed = self._tool_tracker.result(
                     liveness_key(ev.tool_call_id or ""), terminal=True
+                )
+                batch_guard.note_settled(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or ""
                 )
                 self._tool_dispatched = not self._no_tool_in_flight()
                 self._stale_eligible = self._no_tool_in_flight()
