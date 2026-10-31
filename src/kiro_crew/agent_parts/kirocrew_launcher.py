@@ -530,6 +530,54 @@ def ensure_kirocrew_on_path(
     return str(link)
 
 
+def refresh_own_kirocrew_link() -> str | None:
+    """Point ``<crew home>/kirocrew-bin/kirocrew`` at the install this gateway runs.
+
+    ``env.augmented_path`` puts that directory ahead of ``~/.local/bin`` on every PATH it builds,
+    so an agent's ``kirocrew`` reaches this install even when ``~/.local/bin``
+    holds another one. Unlike :func:`ensure_kirocrew_on_path`, this link is
+    private to the crew home, so it is always repointed: no other install reads
+    it. A link already naming the target is left alone. The link is replaced
+    atomically, so a concurrent lookup sees the old link or the new one.
+
+    The link names the running tree's launcher, not the managed venv's stable
+    link: an update promotes the stable link before this gateway restarts, and
+    an agent's ``kirocrew`` must run the version its gateway runs. The running
+    tree stays alive under its liveness lock while this process runs.
+
+    Returns the link path when it was written, else ``None``. Best-effort:
+    never raises.
+    """
+    if platform_compat.IS_WINDOWS:
+        return None
+    from kiro_crew.config.paths import data_home  # noqa: PLC0415  import cycle
+    from kiro_crew.env import OWN_KIROCREW_DIR  # noqa: PLC0415  import cycle
+
+    target = _resolve_kirocrew_bin()
+    if not (os.path.isabs(target) and os.path.isfile(target) and os.access(target, os.X_OK)):
+        return None
+    try:
+        directory = data_home() / OWN_KIROCREW_DIR
+        if directory.is_symlink():
+            logger.warning(
+                "Not linking kirocrew: %s is a symlink, not the sealed directory", directory
+            )
+            return None
+        mkdirs_owner_only(directory)
+        link = directory / "kirocrew"
+        if link.is_symlink() and os.readlink(link) == target:
+            return None
+        staged = directory / f".kirocrew.{os.getpid()}.tmp"
+        staged.unlink(missing_ok=True)
+        staged.symlink_to(target)
+        os.replace(staged, link)
+    except OSError as exc:
+        logger.warning("Could not link this install's kirocrew into the crew home: %s", exc)
+        return None
+    logger.info("Linked this install's kirocrew for agent shells: %s -> %s", link, target)
+    return str(link)
+
+
 # One-time migrations performed automatically on gateway first-run (so the
 # desktop app, which never runs `kirocrew setup`, still gets them). Lazy
 # accessors (same import-side-effect reason as _user_dir in spec_build).
@@ -575,6 +623,9 @@ def run_first_run_setup() -> None:
             logger.info("First-run: linked kirocrew shim at %s", shim)
     except Exception:
         logger.warning("First-run: shim install failed", exc_info=True)
+    # 1b. The crew-home link agent shells resolve `kirocrew` through, refreshed
+    #     on every start so it follows this install. Never raises.
+    refresh_own_kirocrew_link()
 
     # 2. Admission-policy seed — one-time, self-guarded by its OWN marker.  Run
     #    BEFORE the stale-MCP early return below so an EXISTING install (which

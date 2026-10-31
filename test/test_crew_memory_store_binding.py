@@ -365,6 +365,31 @@ class TestTheCliRefusesAMalformedBinding:
         assert memory_store_name_defect(bad) in err
         assert "reviewer" not in json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]
 
+    @pytest.mark.parametrize("store", ["member-ggseng", "work"])
+    def test_create_refuses_a_well_formed_undeclared_store(
+        self, tmp_path: Path, store: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A named store that nothing declared is refused, not bound.
+
+        A crew bound to ``member-ggseng``, a store nobody declared or
+        provisioned, answers every thread with ``store_unavailable``. Members get a fresh private store of
+        their own, so ``create`` takes no named store, well-formed or not, and
+        writes nothing when given one.
+        """
+        cfg_path = _cli_config(tmp_path)
+        before = cfg_path.read_bytes()
+        argv = ["kirocrew", "agent", "create", "--name", "ggseng", f"--memory-store={store}"]
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", argv),
+            pytest.raises(SystemExit) as exc,
+        ):
+            main()
+
+        assert exc.value.code != 0
+        assert "member memory store automatically" in capsys.readouterr().err
+        assert cfg_path.read_bytes() == before
+
     @pytest.mark.parametrize("bad", MALFORMED)
     def test_update_exits_nonzero_and_leaves_the_binding_alone(
         self, tmp_path: Path, bad: str

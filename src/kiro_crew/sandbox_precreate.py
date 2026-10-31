@@ -124,6 +124,12 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # its first download, which is the window a sandboxed shell would use to swap
     # the bytes the loaders verify.
     "models",
+    # The own-``kirocrew`` link directory, on the same argument: an empty directory
+    # is a PATH entry with nothing in it, exactly as an absent one, and the bind is
+    # live, so the link the gateway writes at start is seen. Without this entry the
+    # seal skips the directory until that first write, and a sandboxed shell could
+    # create it and plant the ``kirocrew`` every later PATH lookup finds first.
+    "kirocrew-bin",
     # The redaction allow-list, on the same argument: no file means no host
     # allowed, which is what an empty directory means too, and the bind is live.
     "redaction-allow",
@@ -171,6 +177,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "member-memory-bindings",
     "decisions",
     "models",
+    "kirocrew-bin",
     "redaction-allow",
     "pi-gate",
     "mcp-launch-approvals",
@@ -239,6 +246,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed model weights",
         "the agent could swap the weights a digest-pinned loader verifies before it "
         "reopens them by name",
+    ),
+    "kirocrew-bin": (
+        "sealed kirocrew link",
+        "the agent could choose the kirocrew every later PATH lookup runs",
     ),
     "redaction-allow": (
         "sealed redaction allow-list",

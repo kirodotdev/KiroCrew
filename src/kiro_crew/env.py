@@ -917,6 +917,44 @@ def _managed_browser_cli_dirs() -> list[str]:
     return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
 
 
+#: The crew-home directory holding ONE entry, a ``kirocrew`` link to the install
+#: this gateway runs. The gateway refreshes it on every start
+#: (``agent.refresh_own_kirocrew_link``) and the sandbox seals it read-only.
+OWN_KIROCREW_DIR = "kirocrew-bin"
+
+
+def _own_kirocrew_dirs() -> list[str]:
+    """The directory whose only entry is this install's ``kirocrew``, ahead of ``~/.local/bin``.
+
+    An agent that shells out to ``kirocrew`` must reach the CLI of the gateway
+    it runs under. Without this, the lookup walks ``~/.local/bin`` first, and a
+    launcher left there by an older install wins: an old CLI then loads and
+    saves ``config.json`` with a schema that predates member identity and
+    strips it, which bricks every crewmate. The interpreter's own
+    directory cannot be moved forward instead, because it also holds
+    ``python``/``pip`` (see :func:`augmented_path`), so a directory carrying
+    only the one name is put ahead of ``~/.local/bin``.
+
+    POSIX only: on Windows the launcher is a ``.exe``/``.cmd`` pair beside the
+    interpreter, and no link is written. Nothing is created here; the entry is
+    listed whether or not the gateway has written the link yet, and a missing or
+    dangling link is skipped by every PATH lookup.
+    """
+    if platform_compat.IS_WINDOWS:
+        return []
+    try:
+        root = peek_data_home() / OWN_KIROCREW_DIR
+    except Exception:
+        logger.debug("could not resolve the own-kirocrew directory", exc_info=True)
+        return []
+    value = _validated_bin_dir(str(root))
+    # A link at the NAME would put whatever directory it points at ahead of
+    # ``~/.local/bin``; only the real, sealed directory is listed.
+    if value is None or os.path.islink(value):
+        return []
+    return [value]
+
+
 def _windows_toolbox_bin_dir(resolved_home: str, pinned_home: str | None) -> str | None:
     """Builder Toolbox's Windows bin dir, ``%LOCALAPPDATA%\\Toolbox\\bin``.
 
@@ -983,7 +1021,9 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     rebind a user MCP spec's bare ``"command": "python"`` (and the spawned
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
-    else — exactly the console-script-wrapper case.
+    else — exactly the console-script-wrapper case. The one name that must
+    NOT fall through to an earlier directory is ``kirocrew`` itself, so a
+    directory holding only that link (:func:`_own_kirocrew_dirs`) goes ahead of ``~/.local/bin``.
 
     Deliberately NOT extended by ``mcp.extra_path_dirs`` /
     :func:`register_mcp_path_dirs`: callers here include the resolvers for the
@@ -999,7 +1039,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
     # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
     # work-dir-relative executable shadow the configured command.
-    extra = _managed_browser_cli_dirs() if home is None else []
+    extra = _managed_browser_cli_dirs() + _own_kirocrew_dirs() if home is None else []
     extra += [
         e
         for d in _EXTRA_PATH_DIRS

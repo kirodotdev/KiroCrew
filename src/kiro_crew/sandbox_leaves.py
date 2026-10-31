@@ -536,6 +536,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # ``_CREW_NOFOLLOW_READONLY_DIR_LEAVES``, Seatbelt through
     # ``_refuse_linked_models_leaf``.
     "models",
+    # The directory whose only entry links ``kirocrew`` to the install the gateway
+    # runs (``env.OWN_KIROCREW_DIR``). It precedes ``~/.local/bin`` on every PATH Kiro Crew builds,
+    # so a write would choose the ``kirocrew`` every agent shell and every PATH
+    # lookup in the gateway runs. The gateway repoints it at start, outside the
+    # sandbox.
+    "kirocrew-bin",
     # The hosts a reader allowed long-query links for, per workspace. Every entry
     # relaxes the exfiltration check for that host, so a writable list lets a
     # prompt-injected agent allow the host it wants to send conversation data to.
@@ -974,6 +980,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # read-only seal. Off the read-gate floor too (only edits are refused), so the
     # mask never covered it.
     "models",
+    # The link to this install's ``kirocrew``. Agent shells must resolve and run it;
+    # the risk is a write, answered by the read-only seal.
+    "kirocrew-bin",
     # Allowed hosts for the exfiltration check. Host names, not credentials; the
     # risk is a write, answered by the read-only seal.
     "redaction-allow",
