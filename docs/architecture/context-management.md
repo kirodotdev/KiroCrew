@@ -720,7 +720,9 @@ free-text `triggers` through the same
 `trigger_match.py` primitive the skill matcher uses (`rank_triggered`), so the two
 cannot disagree. A bind records a routing-*intent* pointer via
 `members.record_activity` (`via="select_crew"`), keyed under `decided_in` because
-the decision is made in the parent session while the crew runs elsewhere.
+the decision is made in the parent session while the crew runs elsewhere. The
+sandboxed tool cannot reach the crew log, so the gateway writes the pointer on
+`POST /api/member-routing/decision`.
 
 A member dispatches real work instead of running it inline. Its DM thread mounts
 the dashboard session-control server per session
