@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1111,3 +1112,36 @@ def test_fd_at_or_above_moves_a_low_fd_up_even_with_free_slots_below_the_floor()
     with pytest.raises(OSError):
         os.fstat(low)
     os.close(moved)
+
+
+@pytest.mark.asyncio
+async def test_no_start_launches_kiros_chromium_while_a_redownload_replaces_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    monkeypatch.setattr(
+        supervisor.install, "install_state", lambda home: _installed(home, python=Path("py"))
+    )
+    monkeypatch.setattr(sup, "runtime_dir", lambda: tmp_path / "run")
+    monkeypatch.setattr(sup, "_choose", lambda state: _choice("kiro_chromium"))
+
+    async def _must_not_launch(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("Kiro's Chromium launched during its own replacement")
+
+    monkeypatch.setattr(sup, "_launch_chromium", _must_not_launch)
+    await sup.stop_for_chromium_replace()
+    with pytest.raises(supervisor.BrowserUnavailable, match="being redownloaded"):
+        await sup._start()
+    assert sup.status()["detail"] == supervisor.CHROMIUM_REPLACING_DETAIL
+
+
+def test_runs_kiro_chromium_reads_the_live_handle_not_the_configured_choice(
+    tmp_path: Path,
+) -> None:
+    sup = HarnessSupervisor(tmp_path, config_reader=lambda: {})
+    assert sup.runs_kiro_chromium is False, "nothing up, nothing starting"
+    sup._handle = SimpleNamespace(choice=_choice("user_chrome"))  # type: ignore[assignment]
+    assert sup.runs_kiro_chromium is False
+    sup._handle = SimpleNamespace(choice=_choice("kiro_chromium"))  # type: ignore[assignment]
+    assert sup.runs_kiro_chromium is True
+    sup._handle = None

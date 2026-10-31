@@ -280,3 +280,40 @@ async def test_redownload_sends_refresh_so_an_installed_chromium_is_replaced(
     assert resp.status == 202
     await plain.app["state"]._browser_harness_install_task
     assert seen == [(("chromium",), True), (harness_install.COMPONENTS, False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("running", "body", "stopped", "held"),
+    [
+        (True, {"components": ["chromium"], "refresh": True}, True, True),
+        (False, {"components": ["chromium"], "refresh": True}, False, True),
+        (True, {"components": ["chromium"]}, False, False),
+    ],
+)
+async def test_redownload_keeps_kiros_own_chromium_down_while_it_runs(
+    sel, sup, monkeypatch, running: bool, body: dict[str, Any], stopped: bool, held: bool
+) -> None:
+    """A running copy runs from the files the swap moves: Redownload stops Kiro's
+    Chromium and refuses to start it again until the job ends. A plain install, and
+    a host where only the person's Chrome runs, are not stopped."""
+    stops: list[int] = []
+    during: list[bool] = []
+
+    async def fake_install(home, progress, *, components, refresh=False):
+        during.append(sup.replacing_chromium)
+        return harness_install.install_state(home)
+
+    async def fake_stop() -> None:
+        stops.append(1)
+
+    monkeypatch.setattr(harness_install, "install", fake_install)
+    monkeypatch.setattr(HarnessSupervisor, "runs_kiro_chromium", property(lambda self: running))
+    monkeypatch.setattr(sup, "stop", fake_stop)
+    req = _owner("/api/browser/install", sup, body=body)
+    resp = await routes.api_browser_harness_install(req)
+    assert resp.status == 202
+    await req.app["state"]._browser_harness_install_task
+    assert bool(stops) is stopped
+    assert during == [held]
+    assert sup.replacing_chromium is False, "the gate opens again when the job ends"

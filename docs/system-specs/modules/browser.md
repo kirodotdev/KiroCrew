@@ -1101,8 +1101,16 @@ One card and two controls; everything else is under a collapsed More group.
   own list), Engine
   (Harness and Chromium versions; Redownload posts `{components: ["chromium"],
   refresh: true}` so a Chromium already on disk is REPLACED, the repair for a
-  damaged copy; the ordinary install keeps a whole one), and **Run with no
-  window**.
+  damaged copy; the ordinary install keeps a whole one. The route starts the job,
+  then `HarnessSupervisor.stop_for_chromium_replace` stops Kiro's own Chromium if
+  it runs (never the person's Chrome) and refuses every start that would launch it
+  until the job ends, with the detail "Kiro's Chromium is being redownloaded".
+  `chromium._swap_in` moves the installed copy aside (a `.previous-*` directory
+  beside the version directories) before moving the new one in and puts it back
+  if that fails, so a copy is never half-deleted, and a copy a failed restore left
+  there is put back by the next install first; on Windows a copy still in use
+  refuses the move and the redownload fails with nothing changed), and **Run with
+  no window**.
 - A grey footer line states the privacy fence (no usage data, no cloud browser);
   it is a statement, not a control.
 

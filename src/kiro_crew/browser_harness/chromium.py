@@ -181,14 +181,17 @@ def download_chromium(
     key = platform if platform is not None else cft_platform()
     if key is None:
         raise ChromiumDownloadError("no Chrome for Testing build exists for this platform")
+    target = version_dir(prefix)
+    root = chromium_root(prefix)
+    _sweep_previous(root, target)
     current = chromium_state(prefix, key)
     if current.present and not refresh:
         return current
-    target = version_dir(prefix)
-    root = chromium_root(prefix)
     root.mkdir(parents=True, exist_ok=True)
     notify = progress or (lambda _stage, _detail: None)
-    with tempfile.TemporaryDirectory(prefix="chromium-", dir=root) as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix="chromium-", dir=root, ignore_cleanup_errors=True
+    ) as tmp:
         archive = Path(tmp) / "chrome.zip"
         errors: list[str] = []
         for template in urls:
@@ -210,14 +213,81 @@ def download_chromium(
         exe = executable_path(prefix, key)
         if exe is None or not (staging / exe.relative_to(target)).is_file():
             raise ChromiumDownloadError(f"archive did not contain {exe}")
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
-        staging.rename(target)
-    (target / INSTALLATION_MARKER).write_text(CHROMIUM_VERSION, encoding="utf-8")
+        aside = _swap_in(staging, target, root)
+        (target / INSTALLATION_MARKER).write_text(CHROMIUM_VERSION, encoding="utf-8")
+    if aside is not None:
+        # The new copy is whole and marked: the old one goes, best effort. A file
+        # something still holds open is left for the next install's sweep.
+        shutil.rmtree(aside.parent, ignore_errors=True)
     state = chromium_state(prefix, key)
     if not state.present:
         raise ChromiumDownloadError(f"archive did not contain {executable_path(prefix, key)}")
     return state
+
+
+#: Prefix of the directory an old copy is moved into during a swap, beside the
+#: version directories and outside the download's temp directory.
+_PREVIOUS_PREFIX = ".previous-"
+
+
+def _sweep_previous(root: Path, target: Path) -> None:
+    """Deal with old copies an earlier swap left behind. Best effort.
+
+    When *target* is missing (a swap whose restore failed), the old copy is put back
+    first, so the only working browser is never the one swept. Every other leftover
+    is deleted.
+    """
+    try:
+        leftovers = sorted(p for p in root.iterdir() if p.name.startswith(_PREVIOUS_PREFIX))
+    except OSError:
+        return
+    for path in leftovers:
+        kept = path / target.name
+        if not target.exists() and kept.is_dir():
+            try:
+                kept.rename(target)
+            except OSError:
+                continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _swap_in(staging: Path, target: Path, root: Path) -> Path | None:
+    """Put *staging* at *target*; the installed copy is moved aside, never half-deleted.
+
+    Returns where the old copy now is (``None`` when there was none), for the caller
+    to delete once the new copy is marked. The old copy is renamed out of the way
+    first, into a directory of its own under *root*. On Windows that rename is
+    refused while the browser runs from it (its executable and libraries are open),
+    and then nothing has been touched. A failed final rename puts the old copy back;
+    if even that fails, the old copy is left where it is and the error names it.
+    """
+    aside: Path | None = None
+    if target.exists():
+        holder = Path(tempfile.mkdtemp(prefix=_PREVIOUS_PREFIX, dir=root))
+        aside = holder / target.name
+        try:
+            target.rename(aside)
+        except OSError as exc:
+            shutil.rmtree(holder, ignore_errors=True)
+            if isinstance(exc, PermissionError):
+                raise ChromiumDownloadError(
+                    f"the installed browser is in use and cannot be replaced; close it and retry ({exc})"
+                ) from exc
+            raise ChromiumDownloadError(
+                f"could not move the installed browser aside: {exc}"
+            ) from exc
+    try:
+        staging.rename(target)
+    except OSError as exc:
+        if aside is not None and not target.exists():
+            try:
+                aside.rename(target)
+            except OSError as restore:
+                raise ChromiumDownloadError(
+                    f"could not install the new browser ({exc}); the previous copy is at {aside} ({restore})"
+                ) from exc
+        raise ChromiumDownloadError(f"could not install the new browser: {exc}") from exc
+    return aside
 
 
 def _fetch(

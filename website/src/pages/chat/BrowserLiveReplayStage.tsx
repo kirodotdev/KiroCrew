@@ -159,7 +159,7 @@ export function ReplayCanvas({ rec, index, label }: { rec: Recording; index: num
       </div>
       {failed && (
         <div className="absolute inset-0 z-10 grid place-items-center p-4">
-          <ErrorNotice variant="inline" message={i18nT('pages.chat.browserLiveStage.frame_failed')} testId="browser-replay-frame-error" />
+          <ErrorNotice variant="inline" message={i18nT('pages.chat.browserLiveStage.frame_failed')} askAgent testId="browser-replay-frame-error" />
         </div>
       )}
     </>

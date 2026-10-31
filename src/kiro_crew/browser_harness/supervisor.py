@@ -200,6 +200,10 @@ _SH_REMAP = 'exec 3</dev/fd/"$1" 4>/dev/fd/"$2"; shift 2; exec "$@"'
 _FIRST_SAFE_FD = 5
 
 
+#: The status detail while a Redownload replaces Kiro's Chromium.
+CHROMIUM_REPLACING_DETAIL = "Kiro's Chromium is being redownloaded; try again when it finishes"
+
+
 class HarnessNotInstalled(RuntimeError):
     """``ensure()`` was called before Settings -> Browser installed the engine."""
 
@@ -256,6 +260,10 @@ class HarnessSupervisor:
         self._ensure_task: asyncio.Task[HarnessHandle] | None = None
         #: The stop a ``capabilities.browse`` deny started (:meth:`stop_soon`).
         self._stop_task: asyncio.Task[None] | None = None
+        #: Set while a Redownload replaces Kiro's Chromium (:meth:`stop_for_chromium_replace`):
+        #: a start that would launch it is refused instead of running from files the
+        #: swap is about to move.
+        self.replacing_chromium = False
         self._request_ids = itertools.count(1)
         #: A helper round trip; tests shorten it.
         self.call_timeout = CALL_TIMEOUT_SECS
@@ -436,6 +444,31 @@ class HarnessSupervisor:
             await self._teardown()
         self._set(DISCONNECTED, "")
 
+    @property
+    def runs_kiro_chromium(self) -> bool:
+        """Kiro's own Chromium is up, or a start that chose it is under way."""
+        handle = self._handle
+        if handle is not None:
+            return handle.choice.kind == "kiro_chromium"
+        task = self._ensure_task
+        choice = self._choice
+        return (
+            task is not None
+            and not task.done()
+            and (choice is None or choice.kind == "kiro_chromium")
+        )
+
+    async def stop_for_chromium_replace(self) -> None:
+        """Before a Redownload: refuse new starts of Kiro's Chromium, stop a running one.
+
+        The caller sets :attr:`replacing_chromium` back to ``False`` when the install
+        ends. A chat whose op was cut short reads why in the status detail.
+        """
+        self.replacing_chromium = True
+        if self.runs_kiro_chromium:
+            await self.stop()
+            self._set(DISCONNECTED, CHROMIUM_REPLACING_DETAIL)
+
     def stop_soon(self) -> asyncio.Task[None]:
         """Start :meth:`stop` once, or return the one already running.
 
@@ -557,6 +590,9 @@ class HarnessSupervisor:
         choice = await asyncio.to_thread(self._choose, state)
         if choice is None:
             self._set(ERROR, "could not pick a browser")
+            raise BrowserUnavailable(self._detail)
+        if choice.kind == "kiro_chromium" and self.replacing_chromium:
+            self._set(DISCONNECTED, CHROMIUM_REPLACING_DETAIL)
             raise BrowserUnavailable(self._detail)
         self._choice = choice
         browser_proc: asyncio.subprocess.Process | None = None

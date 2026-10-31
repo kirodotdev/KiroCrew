@@ -7,6 +7,7 @@ import os
 import stat
 import sys
 import zipfile
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -177,4 +178,110 @@ def test_a_redownload_that_fails_keeps_the_working_copy(tmp_path: Path, failure:
     with pytest.raises(chromium.ChromiumDownloadError):
         chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=opener, refresh=True)
     assert exe.read_bytes() == before
+    assert chromium.chromium_state(tmp_path, _PLATFORM).present is True
+
+
+def test_a_redownload_of_a_copy_in_use_deletes_nothing(tmp_path: Path, monkeypatch) -> None:
+    """Windows refuses to move a directory whose browser is running: the swap stops
+    there, before anything is deleted, and says to close the browser."""
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    target = chromium.version_dir(tmp_path)
+    exe = chromium.executable_path(tmp_path, _PLATFORM)
+    assert exe is not None
+    before = sorted(p.relative_to(target) for p in target.rglob("*"))
+    real_rename = Path.rename
+
+    def _in_use(self: Path, dest: Any) -> Any:
+        if self == target:
+            raise PermissionError("the file is being used by another process")
+        return real_rename(self, dest)
+
+    monkeypatch.setattr(Path, "rename", _in_use)
+    with pytest.raises(chromium.ChromiumDownloadError, match="in use"):
+        chromium.download_chromium(
+            tmp_path,
+            platform=_PLATFORM,
+            opener=_opener_for(_archive(with_symlink=False)),
+            refresh=True,
+        )
+    assert sorted(p.relative_to(target) for p in target.rglob("*")) == before
+    assert chromium.chromium_state(tmp_path, _PLATFORM).present is True
+
+
+def test_a_failed_final_rename_puts_the_old_copy_back(tmp_path: Path, monkeypatch) -> None:
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    target = chromium.version_dir(tmp_path)
+    real_rename = Path.rename
+
+    def _staging_fails(self: Path, dest: Any) -> Any:
+        if self.name == "extract":
+            raise OSError("disk full")
+        return real_rename(self, dest)
+
+    monkeypatch.setattr(Path, "rename", _staging_fails)
+    with pytest.raises(chromium.ChromiumDownloadError, match="could not install"):
+        chromium.download_chromium(
+            tmp_path,
+            platform=_PLATFORM,
+            opener=_opener_for(_archive(with_symlink=False)),
+            refresh=True,
+        )
+    assert target.is_dir()
+    assert chromium.chromium_state(tmp_path, _PLATFORM).present is True
+
+
+def test_a_failed_restore_leaves_the_old_copy_and_the_next_install_puts_it_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Both renames fail: the error names where the old copy is, nothing deletes it,
+    and the next install restores it before deciding whether to download."""
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    target = chromium.version_dir(tmp_path)
+    exe = chromium.executable_path(tmp_path, _PLATFORM)
+    assert exe is not None
+    before = exe.read_bytes()
+    real_rename = Path.rename
+
+    def _new_and_restore_fail(self: Path, dest: Any) -> Any:
+        if self.name == "extract" or Path(dest) == target:
+            raise OSError("disk full")
+        return real_rename(self, dest)
+
+    monkeypatch.setattr(Path, "rename", _new_and_restore_fail)
+    with pytest.raises(chromium.ChromiumDownloadError, match="previous copy is at"):
+        chromium.download_chromium(
+            tmp_path,
+            platform=_PLATFORM,
+            opener=_opener_for(_archive(with_symlink=False)),
+            refresh=True,
+        )
+    monkeypatch.setattr(Path, "rename", real_rename)
+    assert not target.exists()
+    kept = list(chromium.chromium_root(tmp_path).glob(".previous-*/" + target.name))
+    assert len(kept) == 1
+    again = _opener_for(_archive(with_symlink=False))
+    state = chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=again)
+    assert again.calls == [], "the old copy was put back, so nothing is downloaded"
+    assert state.present is True and exe.read_bytes() == before
+    assert list(chromium.chromium_root(tmp_path).glob(".previous-*")) == []
+
+
+def test_a_successful_redownload_removes_the_old_copy(tmp_path: Path) -> None:
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    chromium.download_chromium(
+        tmp_path,
+        platform=_PLATFORM,
+        opener=_opener_for(_archive(with_symlink=False)),
+        refresh=True,
+    )
+    root = chromium.chromium_root(tmp_path)
+    assert list(root.glob(".previous-*")) == [] and list(root.glob("chromium-*")) == []
     assert chromium.chromium_state(tmp_path, _PLATFORM).present is True
