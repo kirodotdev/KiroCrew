@@ -388,6 +388,66 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
   })
 })
 
+describe('the status rows composed outside the dashboard', () => {
+  const row = (role: string, notice: string, args?: Record<string, unknown>) =>
+    msg(role, { content: `fallback prose for ${notice}`, meta: { notice, ...(args ? { notice_args: args } : {}) } } as Partial<ChatMessage>)
+
+  it('draws a dropped/discarded queue row as a warn NoticeCard with its detail inside the frame', () => {
+    expect(resolveGatewayNotice(row('notice', 'queued_message_dropped', { change: 'the mirror became unverified' }), [], 0)?.text).toBe(
+      GN.queued_message_dropped.replace('{{change}}', 'the mirror became unverified'),
+    )
+    expect(
+      resolveGatewayNotice(row('notice', 'send_dropped', { target: 's2', change: 'a constraint changed', excerpt: ' Text: "hi"' }), [], 0),
+    ).toEqual({
+      card: 'notice',
+      tone: 'warn',
+      text: GN.send_dropped.replace('{{target}}', 's2').replace('{{change}}', 'a constraint changed').replace('{{excerpt}}', ' Text: "hi"'),
+    })
+  })
+
+  it('keeps the error-family rows on the red ErrorCard, localized, with their args', () => {
+    expect(resolveGatewayNotice(row('error', 'turn_interrupted_restart'), [], 0)).toEqual({ card: 'error', text: GN.turn_interrupted_restart })
+    expect(resolveGatewayNotice(row('error', 'crew_turn_no_permit'), [], 0)).toEqual({ card: 'error', text: GN.crew_turn_no_permit })
+    expect(resolveGatewayNotice(row('error', 'eager_spawn_stopped', { failures: 3, detail: 'BootError' }), [], 0)?.text).toBe(
+      GN.eager_spawn_stopped.replace('{{failures}}', '3').replace('{{detail}}', 'BootError'),
+    )
+    expect(resolveGatewayNotice(row('error', 'turn_timeout', { limit: '10-minute', hint: ' Raise it in Settings.' }), [], 0)?.text).toBe(
+      GN.turn_timeout.replace('{{limit}}', '10-minute').replace('{{hint}}', ' Raise it in Settings.'),
+    )
+    expect(resolveGatewayNotice(row('error', 'local_command_failed_before_start', { command: '/status' }), [], 0)?.text).toBe(
+      GN.local_command_failed_before_start.replace('{{command}}', '/status'),
+    )
+  })
+
+  it('classifies pre-token history rows of these families by their wording', () => {
+    const legacy = (role: string, content: string) => msg(role, { content })
+    expect(
+      resolveGatewayNotice(legacy('error', 'This turn was interrupted when its chat was closed. Review the partial output above, then resume to continue.'), [], 0)?.text,
+    ).toBe(GN.turn_interrupted_close)
+    expect(
+      resolveGatewayNotice(legacy('error', '⚠️ `/status` failed. The gateway log has the details.'), [], 0)?.text,
+    ).toBe(GN.local_command_failed_before_start.replace('{{command}}', '/status'))
+    expect(
+      resolveGatewayNotice(
+        legacy('notice', '⚠️ Queued message dropped: the mirror became unverified after it was queued, so the authorization that admitted it no longer holds.'),
+        [],
+        0,
+      )?.text,
+    ).toBe(GN.queued_message_dropped.replace('{{change}}', 'the mirror became unverified'))
+  })
+
+  it('recovers the setting name from a pre-token capability row, so its copy is never left with a bare {{setting}}', () => {
+    const legacyCapability =
+      "capability_tool_limits_unsupported: This crew member's saved capabilities turn off single tools on an MCP server. The backend its chats run on (agent.member_acp_backend) cannot turn off single tools, so they would be on. On the member's Capabilities page, turn the whole server off or turn those tools back on, then start a new chat."
+    const resolved = resolveGatewayNotice(msg('error', { content: legacyCapability }), [], 0)
+    expect(resolved?.text).toBe(
+      GN.capability_tool_limits_unsupported.replace('{{setting}}', 'agent.member_acp_backend'),
+    )
+    expect(resolved?.text).not.toContain('{{setting}}')
+    expect(resolved?.text).toContain('agent.member_acp_backend')
+  })
+})
+
 describe('wire parity with the gateway constants', () => {
   // `TRANSIENT_NOTICE_<NAME>` in chat_utils.py and `GATEWAY_NOTICE_<NAME>` in
   // gateway_notice.py, at column 0 (the META_KEY / ARGS_KEY entries name meta
@@ -401,7 +461,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(61)
+    expect(backend).toHaveLength(74)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

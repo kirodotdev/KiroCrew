@@ -1128,6 +1128,8 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
                     )
                 slot.append(
                     "error",
+                    # Stays English: ``_refusal_card`` is the refusal formatter's
+                    # own output (the model's refusal), carried verbatim.
                     _refusal_card,
                     "msg msg-err",
                 )

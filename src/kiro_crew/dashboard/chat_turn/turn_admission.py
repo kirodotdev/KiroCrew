@@ -554,6 +554,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             # start and retire what it registered, so a later turn that passes
             # the check cold-starts on the app's spec instead of reusing it.
             await _retire_app_agent_session(state, slot, session_key)
+            # Stays English: ``refusal`` is a manager formatter's output with
+            # several wordings (wrong backend, launch failure, a reserved or
+            # ambiguous or uninstalled agent name), each interpolating the app
+            # and agent names and, for some, another formatter's own message.
+            # A token would localize only an outer frame and drop that detail.
             slot.append("error", refusal, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
             return _Flow.END
     if bindings is not None:
@@ -1068,6 +1073,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             )
         needs_session_reset = True
         turn.needs_session_reset = needs_session_reset
+        # Stays English: same manager-composed refusal wording as the admission
+        # arm above (app + agent names, several variants, some embedding another
+        # formatter's message), which a token cannot localize without losing it.
         slot.append("error", refusal, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})
         return _Flow.END
     # This turn holds the session now: the launch copy's skills and prompt are read
