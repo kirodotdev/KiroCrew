@@ -1655,6 +1655,44 @@ class ScriptHook:
         data.pop("spec_origin", None)
         return data
 
+    @staticmethod
+    def _enabled_from(data: dict) -> bool:
+        """Read a stored ``enabled`` without the ``bool("false")`` trap.
+
+        hooks.json is hand-editable. A real bool and the ``_coerce_bool``
+        spellings (``"false"``, ``"off"``, ``"1"``, ...) map to their value. A
+        JSON integer maps like its string spelling (``0`` off, any other int on),
+        because a hand edit writes ``0`` as naturally as ``"0"``. ``null`` and an
+        empty string load off, as they did before (both were falsy). An absent
+        key keeps the long-standing default of enabled.
+
+        Anything else (``"ture"``, ``"y"``, ``[1]``, ``1.0``) loads ENABLED,
+        with a warning naming the hook. Off is not a safe guess: a PreToolUse
+        hook is a deny gate, so reading a typo as off would silently drop it.
+        Refusing the entry is not safe either: the gateway's registered store
+        skips an entry it cannot load, so the gate would stop there too. On
+        keeps the gate running in every process, and it is not a privilege
+        gain: whoever can write hooks.json can write a real ``true``.
+        """
+        if "enabled" not in data:
+            return True
+        raw = data["enabled"]
+        if isinstance(raw, int) and not isinstance(raw, bool):
+            return raw != 0
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return False
+        # ``_coerce_bool`` holds the one list of spellings; a value it does not
+        # recognise is the one whose answer depends on the default it is given.
+        value = _coerce_bool(raw, default=True)
+        if not value or _coerce_bool(raw, default=False):
+            return value
+        logger.warning(
+            "Script hook %r has an unrecognised 'enabled' value (%s); loading it enabled",
+            str(data.get("id", ""))[:64],
+            type(raw).__name__,
+        )
+        return True
+
     @classmethod
     def from_dict(cls, data: dict) -> "ScriptHook":
         # Support legacy "pattern" field as fallback for "matcher"
@@ -1720,7 +1758,7 @@ class ScriptHook:
             command=data.get("command", ""),
             skills=[str(s) for s in skills if isinstance(s, str)],
             timeout=timeout,
-            enabled=data.get("enabled", True),
+            enabled=cls._enabled_from(data),
             last_run=data.get("last_run", 0.0),
             last_status=data.get("last_status", ""),
             last_error=last_error,
