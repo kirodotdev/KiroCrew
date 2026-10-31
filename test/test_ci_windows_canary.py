@@ -122,14 +122,15 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
     )
     assert result.returncode == 0, result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    # Linux lands on the `kirocrew-runners` group's runner label, but only when
-    # the run executes in this repository and can therefore reach that group. A
-    # fork running its own CI gets the hosted image. Windows has no such group
-    # and always stays hosted.
-    if platform == "windows":
-        fallback = "windows-latest"
-    else:
-        fallback = "kirocrew-linux-4-core" if in_repo else "ubuntu-latest"
+    # Each platform lands on its own group's runner label, but only when the
+    # run executes in this repository and can therefore reach that group. A
+    # fork running its own CI gets the hosted image, because a label no runner
+    # there carries would queue every consumer until GitHub cancelled it.
+    group_label, hosted = {
+        "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
+        "windows": ("kirocrew-windows-4-core", "windows-latest"),
+    }[platform]
+    fallback = group_label if in_repo else hosted
     expected = {
         f"{platform}_runner": (
             (label + (" instance-size:large" if platform == "windows" else ""))

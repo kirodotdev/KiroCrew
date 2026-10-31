@@ -432,11 +432,41 @@ jobs:
         id: windows-runner
         env:
           ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          # Separate from ELIGIBLE for the same reason as the Linux step above:
+          # the Windows larger-runner group belongs to the kirodotdev
+          # organization, so only a run EXECUTING in this repository can reach
+          # it. A fork pull request against this repository executes here and
+          # can; a fork's own CI on its own `main` executes there and cannot.
+          IN_REPO: ${{ github.repository == 'kirodotdev/KiroCrew' }}
           LABEL: codebuild-kirocrew-gha-windows-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           if [ "$ELIGIBLE" = "true" ]; then
             echo "windows_runner=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          elif [ "$IN_REPO" = "true" ]; then
+            # Running here but not admitted to the fleet: a fork head, an
+            # unlisted actor, or a pull_request action other than
+            # opened/synchronize. Those runs take `kirocrew-windows-4-core`
+            # rather than the standard Windows pool, whose concurrency is
+            # shared enterprise-wide. Same CPU and memory as a
+            # public-repository `windows-latest`, so durations do not move;
+            # only queue position does, and larger-runner minutes bill where
+            # standard ones are free.
+            #
+            # The runner's own LABEL, not `runs-on: {group: ...}`, and the
+            # label of the SEPARATE `kirocrew-runners-windows` group rather
+            # than a Windows definition inside `kirocrew-runners`: a bare
+            # `group:` dispatches to any member, so a Windows runner added to
+            # the Linux group would make every Linux consumer eligible to land
+            # on Windows. A label names one definition and cannot.
+            echo "windows_runner=kirocrew-windows-4-core" >> "$GITHUB_OUTPUT"
           else
+            # Another repository entirely -- a fork running its own CI. It
+            # cannot reach this organization's group, so the label would match
+            # no runner and every consumer would sit queued until GitHub's
+            # pending limit cancelled it. The consumers' own
+            # `|| 'windows-latest'` cannot rescue that: it fires only on an
+            # EMPTY output, and this one is non-empty and unusable, which is
+            # strictly worse than absent.
             echo "windows_runner=windows-latest" >> "$GITHUB_OUTPUT"
           fi
 
@@ -1292,9 +1322,11 @@ jobs:
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
-      # 4 protects GitHub's shared hosted pool; the CodeBuild label has its own account quota.
-      # startsWith(..., 'codebuild-') is true only on CodeBuild-routed runs; hosted
-      # fallback resolves to 'windows-latest', so this correctly lifts only on CodeBuild.
+      # 4 protects the pool this run is NOT on CodeBuild for; the CodeBuild label has
+      # its own account quota. startsWith(..., 'codebuild-') is true only on
+      # CodeBuild-routed runs, so this lifts only there: both non-fleet values,
+      # `kirocrew-windows-4-core` and `windows-latest`, keep the cap at 4, and the
+      # group's own `maximum_runners` is the ceiling the first of them shares.
       max-parallel: ${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
