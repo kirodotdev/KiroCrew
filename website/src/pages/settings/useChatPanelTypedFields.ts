@@ -1,6 +1,7 @@
 /**
  * Settings ▸ Chat's typed number and path fields: completion-event characters, the
- * turn time limit, the new-session folder and the compaction wait budget. Each holds a
+ * turn time limit, the new-session folder, the auto-compact threshold's exact value
+ * and the compaction wait budget. Each holds a
  * local draft that follows the server until edited and saves on blur or Enter; the
  * completion-keep select's save sits with them in the Subagents card. `ChatPanel`
  * calls it once per render, between its two Model-page hooks.
@@ -9,21 +10,29 @@ import { useState, useRef, useEffect, useId } from 'react'
 import { useMutation, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import type { DashboardConfig } from '../chat/ChatSettings'
 import { api } from '../../api/client'
-import { fmtUnit } from '../../i18n/format'
+import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useSettingsDeepLinkTarget } from '../../components/settings'
+import { settingAnchorSelector } from '../../hooks/useSettingHighlight'
 import { apiErrorCode } from '../../api/apiError'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
 import {
   TURN_LIMIT_DEFAULT, type CompletionKeepMode, COMPLETION_KEEP_CHARS_DEFAULT, type ClampNotice,
-  type KirocrewConfigShape,
+  type KirocrewConfigShape, COMPACT_CUSTOM, compactSelectValue, clampAutocompactPct,
+  AUTOCOMPACT_PCT_MIN, AUTOCOMPACT_PCT_MAX, AUTOCOMPACT_PCT_DEFAULT,
 } from './chatPanelOptions'
 
+const AUTOCOMPACT_PATH = 'session.autocompact_pct'
+
 export function useChatPanelTypedFields({
-  qc, setSaveError, dashQ, mcQ, mcCfg,
+  qc, setSaveError, setPathSaveError, clearOwnPathError, dashQ, mcQ, mcCfg,
 }: {
   qc: QueryClient
   setSaveError: (msg: string) => void
+  /** The panel's path-scoped banner writers: a save may clear only its own path's failure. */
+  setPathSaveError: (path: string, msg: string) => void
+  clearOwnPathError: (path: string) => void
   dashQ: UseQueryResult<DashboardConfig>
   mcQ: UseQueryResult<KirocrewConfigShape>
   mcCfg: KirocrewConfigShape | undefined
@@ -160,6 +169,88 @@ export function useChatPanelTypedFields({
     },
   })
 
+  // ── Auto-compact threshold (session.autocompact_pct) ──
+  // The select offers presets plus "Custom…"; a stored value off the presets, or
+  // a pick of "Custom…", shows a typed field. Same follow-the-server rule as the
+  // fields above. The server REFUSES a value outside 5-90 rather than clamping it,
+  // so the field clamps first and says what it saved.
+  const serverCompactPct = mcQ.data?.session?.autocompact_pct ?? AUTOCOMPACT_PCT_DEFAULT
+  const [compactCustomOpen, setCompactCustomOpen] = useState(false)
+  const [localCompactPct, setLocalCompactPct] = useState('')
+  const [compactClampNotice, setCompactClampNotice] = useState('')
+  const compactPctEditedRef = useRef(false)
+  useEffect(() => {
+    if (mcQ.isSuccess && !compactPctEditedRef.current) setLocalCompactPct(String(serverCompactPct))
+  }, [mcQ.isSuccess, serverCompactPct])
+  // A settings deep link (search, a setting chip) to the exact field opens
+  // Custom… without saving, so the probe finds the field instead of nothing.
+  // The selector is the label one useSettingHighlight announces for this row.
+  const deepLink = useSettingsDeepLinkTarget()
+  const exactFieldSelector = settingAnchorSelector('data-setting-label', i18nT('pages.settings.chatPanel.auto_compact_exact'))
+  useEffect(() => {
+    if (deepLink === exactFieldSelector) setCompactCustomOpen(true)
+  }, [deepLink, exactFieldSelector])
+  const compactSelect = compactCustomOpen ? COMPACT_CUSTOM : compactSelectValue(serverCompactPct)
+
+  const pct = (v: number) => fmtPercent(v / 100, { maximumFractionDigits: 2 })
+  const clampNoticeFor = (typed: number, n: number) => n === typed ? '' : i18nT(
+    'pages.settings.chatPanel.auto_compact_threshold_clamped',
+    { requested: pct(typed), stored: pct(n), min: pct(AUTOCOMPACT_PCT_MIN), max: pct(AUTOCOMPACT_PCT_MAX) },
+  )
+  // `typed` is what the user entered; `n` is the clamped value sent. The "Saved"
+  // notice waits for the server, and a retry clears only this row's own failure.
+  const compactPctMut = useMutation({
+    // One scope for preset picks and typed saves: they run in order, so a
+    // pending typed save can never land after a later preset pick.
+    scope: { id: AUTOCOMPACT_PATH },
+    mutationFn: ({ n }: { n: number; typed: number }) => api.patchConfig(AUTOCOMPACT_PATH, n),
+    onMutate: () => {
+      setCompactClampNotice('')
+      clearOwnPathError(AUTOCOMPACT_PATH)
+    },
+    onSuccess: (_data, { n, typed }) => {
+      clearOwnPathError(AUTOCOMPACT_PATH)
+      setCompactClampNotice(clampNoticeFor(typed, n))
+      return qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
+    onError: () => {
+      setPathSaveError(AUTOCOMPACT_PATH, i18nT('pages.settings.chatPanel.failed_to_save_auto_compact_threshold'))
+      setLocalCompactPct(String(serverCompactPct))
+    },
+  })
+  const pickCompact = (v: string) => {
+    if (v === COMPACT_CUSTOM) {
+      setCompactCustomOpen(true)
+      return
+    }
+    setCompactCustomOpen(false)
+    setCompactClampNotice('')
+    compactPctEditedRef.current = false
+    compactPctMut.mutate({ n: Number(v), typed: Number(v) })
+  }
+  const editCompactPct = (v: string) => {
+    // Typing pins the row on Custom…: a value that lands on a preset (95 clamped
+    // to 90, or a typed 80) must not unmount the field and its notice.
+    setCompactCustomOpen(true)
+    compactPctEditedRef.current = true
+    setLocalCompactPct(v)
+    setCompactClampNotice('')
+  }
+  const commitCompactPct = () => {
+    if (!compactPctEditedRef.current) return
+    compactPctEditedRef.current = false
+    const typed = Number(localCompactPct)
+    if (localCompactPct.trim() === '' || !Number.isFinite(typed)) {
+      setLocalCompactPct(String(serverCompactPct))
+      return
+    }
+    const n = clampAutocompactPct(typed)
+    setLocalCompactPct(String(n))
+    // Already stored: nothing to send, and the stored value is what "Saved" names.
+    if (n === serverCompactPct) setCompactClampNotice(clampNoticeFor(typed, n))
+    else compactPctMut.mutate({ n, typed })
+  }
+
   const keepModeMut = useMutation({
     mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
@@ -171,6 +262,7 @@ export function useChatPanelTypedFields({
     setFolderRootError, folderRootSaved, setFolderRootSaved, folderRootErrorId,
     folderRootEditedRef, folderRootIme, folderRootMut, commitFolderRoot, localWaitSecs,
     setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
-    keepModeMut,
+    keepModeMut, compactSelect, pickCompact, localCompactPct, editCompactPct, commitCompactPct,
+    compactClampNotice, compactPctMut,
   }
 }
