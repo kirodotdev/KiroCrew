@@ -26,7 +26,8 @@ from test_sandbox_launcher_program import CoveringLibc, RecordingLibc, launch, p
 
 import kiro_crew.sandbox as sandbox_mod
 from kiro_crew import sandbox_launcher_program as launcher_program
-from kiro_crew import sandbox_plan
+from kiro_crew import sandbox_plan, sandbox_workspace
+from kiro_crew.instances import run_marker
 from kiro_crew.sandbox import (
     _SENSITIVE_ENV_PREFIXES,
     _build_launcher_script,
@@ -394,6 +395,140 @@ class TestWritableCarveouts:
             carveable_parents=[str(home / "run")],
         )
         assert approved == []
+
+
+class TestDefaultRunDirSeal:
+    """The default run dir is sealed read-only under a relocated home too."""
+
+    @pytest.fixture
+    def relocated(self, monkeypatch, tmp_path):
+        home = tmp_path / "relocated"
+        home.mkdir()
+        default_run = tmp_path / "user" / ".kiro" / "crew" / "run"
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: home)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", default_run)
+        return default_run
+
+    @_POSIX_ONLY
+    def test_a_relocated_home_namespace_plan_seals_the_default_run_dir(self, relocated):
+        plan = sandbox_mod._spawn_plan("namespace", "standard")
+        assert str(relocated) in plan.readonly
+
+    @_POSIX_ONLY
+    def test_priming_creates_a_missing_default_run_dir_owner_only(self, relocated, monkeypatch):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        assert not relocated.parent.parent.exists()
+        assert str(relocated) in _voice_runtime_parent_paths()
+        assert relocated.is_dir()
+        assert stat.S_IMODE(relocated.stat().st_mode) == 0o700
+
+    def test_priming_refuses_a_default_run_dir_a_read_only_filesystem_blocks(
+        self, relocated, monkeypatch
+    ):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        refused = os.path.normpath(str(relocated.parent))
+        makedirs = os.makedirs
+
+        def refuse_default_home(name, *args, **kwargs):
+            if os.path.normpath(str(name)) == refused:
+                raise OSError(errno.EROFS, os.strerror(errno.EROFS), name)
+            return makedirs(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, "makedirs", refuse_default_home)
+        with pytest.raises(OSError) as excinfo:
+            _voice_runtime_parent_paths()
+        assert excinfo.value.errno == errno.EROFS
+        assert str(relocated) in str(excinfo.value)
+        assert "0700" in str(excinfo.value)
+        assert "owned by this user" in str(excinfo.value)
+
+    @_POSIX_ONLY
+    def test_priming_refuses_when_permission_is_denied_creating_the_default_run_dir(
+        self, relocated, monkeypatch
+    ):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        refused = os.path.normpath(str(relocated.parent))
+        makedirs = os.makedirs
+
+        def deny_default_home(name, *args, **kwargs):
+            if os.path.normpath(str(name)) == refused:
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES), name)
+            return makedirs(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, "makedirs", deny_default_home)
+        with pytest.raises(OSError):
+            _voice_runtime_parent_paths()
+
+    @_POSIX_ONLY
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory mode")
+    def test_priming_refuses_when_an_unsearchable_parent_hides_the_default_run_dir(
+        self, relocated, monkeypatch
+    ):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        relocated.mkdir(parents=True)
+        (relocated / "gateway-5477.home").write_text("")
+        relocated.parent.chmod(0)
+        try:
+            with pytest.raises(OSError):
+                _voice_runtime_parent_paths()
+        finally:
+            relocated.parent.chmod(0o700)
+
+    @_POSIX_ONLY
+    def test_priming_seals_the_default_run_dir_once_it_can_be_created(self, relocated, monkeypatch):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        refused = os.path.normpath(str(relocated.parent))
+        makedirs = os.makedirs
+
+        def deny_default_home(name, *args, **kwargs):
+            if os.path.normpath(str(name)) == refused:
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES), name)
+            return makedirs(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, "makedirs", deny_default_home)
+        with pytest.raises(OSError):
+            _voice_runtime_parent_paths()
+        monkeypatch.setattr(os, "makedirs", makedirs)
+        assert str(relocated) in _voice_runtime_parent_paths()
+
+    def test_priming_still_raises_an_unexpected_errno_on_a_missing_default_home(
+        self, relocated, monkeypatch
+    ):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        refused = os.path.normpath(str(relocated.parent))
+        makedirs = os.makedirs
+
+        def fail_default_home(name, *args, **kwargs):
+            if os.path.normpath(str(name)) == refused:
+                raise OSError(errno.EIO, os.strerror(errno.EIO), name)
+            return makedirs(name, *args, **kwargs)
+
+        monkeypatch.setattr(os, "makedirs", fail_default_home)
+        with pytest.raises(OSError):
+            _voice_runtime_parent_paths()
+
+    @_POSIX_ONLY
+    def test_priming_still_refuses_a_symlinked_default_run_dir(
+        self, relocated, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        relocated.parent.mkdir(parents=True)
+        relocated.symlink_to(elsewhere, target_is_directory=True)
+        with pytest.raises(OSError, match="voice runtime path is not a real directory") as excinfo:
+            _voice_runtime_parent_paths()
+        assert str(relocated) in str(excinfo.value)
+        assert "owned by this user" in str(excinfo.value)
+
+    def test_a_default_home_spawn_seals_the_same_parents_as_before(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        (home / "run").mkdir(parents=True)
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: home)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", home / "run")
+        monkeypatch.setattr(sandbox_workspace, "_voice_runtime_paths_cache", None)
+        expected = (str(home / "run"), os.path.join(os.path.realpath(home), "run"))
+        assert _voice_runtime_parent_paths() == tuple(dict.fromkeys(expected))
 
 
 class TestSealedRuntimeParentPredicate:

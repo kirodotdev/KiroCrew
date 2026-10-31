@@ -20,6 +20,7 @@ import pytest
 import sandbox_argv_helpers
 
 import kiro_crew.sandbox as sandbox_mod
+from kiro_crew.instances import run_marker
 from kiro_crew.sandbox import (
     _CC_FILES,
     _STRICT_DIRS,
@@ -233,6 +234,19 @@ class TestBuildSeatbeltProfile:
         assert f'(deny file-read* (subpath "{relocated}"))' in profile
         assert f'(deny file-write* (subpath "{relocated}"))' in profile
         assert f'(deny file-link (subpath "{relocated}"))' in profile
+
+    def test_a_relocated_home_profile_denies_writes_to_the_default_run_dir(
+        self, monkeypatch, tmp_path
+    ):
+        custom_home = tmp_path / "custom-home"
+        custom_home.mkdir()
+        default_run = tmp_path / "user" / ".kiro" / "crew" / "run"
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: custom_home)
+        monkeypatch.setattr(run_marker, "_DEFAULT_RUN_DIR", default_run)
+
+        profile = _build_seatbelt_profile("standard")
+
+        assert f'(deny file-write* (subpath "{default_run}"))' in profile
 
     def test_voice_runtime_denies_lexical_and_canonical_paths_and_parent_renames(
         self, monkeypatch, tmp_path

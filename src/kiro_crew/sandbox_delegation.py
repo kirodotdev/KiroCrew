@@ -223,7 +223,8 @@ def delegated_workspace_exposes_sealed_target(
     image a Fargate launch runs and therefore the image the task's execution role hands
     the model credential to. The gateway's packaged install tree
     (:func:`_resolved_install_root_targets`) is a target too: it is the code the
-    gateway runs on its next start.
+    gateway runs on its next start, and so is the default home's ``run/``, where the
+    run-dir pointer token mint follows lives.
 
     A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
     enabled, every first-party Windows spawn) never passes through that launcher,
@@ -256,12 +257,15 @@ def delegated_workspace_exposes_sealed_target(
     )
     if not delegated:
         return None
+    from kiro_crew.instances import run_marker
+
+    default_run = str(run_marker._DEFAULT_RUN_DIR)
     install_targets = _resolved_install_root_targets()
-    targets = _resolved_kiro_agents_targets() + [
-        os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
-    ]
-    if not targets and not install_targets:
-        return None
+    targets = (
+        _resolved_kiro_agents_targets()
+        + [os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS]
+        + [default_run]
+    )
 
     def _reason(target: str, how: str) -> str:
         # Named per target: the consequences differ, and an operator reading this needs to
@@ -285,6 +289,14 @@ def delegated_workspace_exposes_sealed_target(
                 "the agent could change the code the gateway runs on its next start",
             )
             remedy = f"Choose a workspace outside '{target}'."
+        if named is None and target == default_run:
+            named = (
+                "default run dir",
+                (
+                    "the agent could plant the run-dir pointer whose launcher token mint "
+                    "runs outside the sandbox"
+                ),
+            )
         if named is not None:
             what, consequence = named
         else:
