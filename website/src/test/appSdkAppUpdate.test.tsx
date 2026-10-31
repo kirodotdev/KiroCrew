@@ -7,10 +7,10 @@
  * app that cannot tell the first from the second would render "up to date" on
  * no evidence, so absence is asserted as absence rather than as a falsy read.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, act } from '@testing-library/react'
 import React from 'react'
-import { AppApiProvider, useAppInfo, type AppInfo, type AppUpdate } from '../app-sdk/index'
+import { AppApiProvider, useAppInfo, useAppUpdate, type AppInfo, type AppUpdate, type AppUpdateResult } from '../app-sdk/index'
 
 function getInfo(appUpdate?: AppUpdate): AppInfo {
   let captured: AppInfo | null = null
@@ -79,5 +79,43 @@ describe('useAppInfo().update', () => {
     const info = getInfo({ available: true, latestVersion: '1.1.0', checkedAt: null })
     expect(info.name).toBe('test-app')
     expect(info.version).toBe('1.0.0')
+  })
+})
+
+describe('useAppUpdate().requestUpdate', () => {
+  function getRequest(requestUpdateFn?: () => Promise<AppUpdateResult>) {
+    let captured: (() => Promise<AppUpdateResult>) | null = null
+    function Probe() {
+      captured = useAppUpdate().requestUpdate
+      return null
+    }
+    act(() => {
+      render(
+        React.createElement(
+          AppApiProvider,
+          {
+            appName: 'test-app',
+            appVersion: '1.0.0',
+            allowedApiPaths: [],
+            navigateFn: () => {},
+            requestUpdateFn,
+          },
+          React.createElement(Probe),
+        ),
+      )
+    })
+    if (!captured) throw new Error('provider did not publish requestUpdate')
+    return captured as () => Promise<AppUpdateResult>
+  }
+
+  it('calls the bridge the host bound, with no argument the app could steer', async () => {
+    const bridge = vi.fn(async (): Promise<AppUpdateResult> => ({ status: 'updated', version: '1.1.0' }))
+    const result = await getRequest(bridge)()
+    expect(result).toEqual({ status: 'updated', version: '1.1.0' })
+    expect(bridge).toHaveBeenCalledWith()
+  })
+
+  it('reports unsupported on a host that cannot update apps', async () => {
+    expect(await getRequest()()).toEqual({ status: 'failed', version: '1.0.0', error: 'unsupported' })
   })
 })

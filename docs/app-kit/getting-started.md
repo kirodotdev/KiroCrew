@@ -192,6 +192,7 @@ Available in `@kirocrew/app-sdk`:
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
 | `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`) |
+| `useAppUpdate()` | `requestUpdate()`: ask the host to update this app, behind its confirmation dialog |
 | `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
@@ -251,9 +252,57 @@ The field reads the same on every surface your app mounts on — a routed `ui.pa
 page and a `contributes.panelTabs` side-panel tab both get it — so you write the
 banner once.
 
-The field is advisory. It tells you what to display, not what to do: your app cannot
-update itself from it, and the gateway re-resolves the app's source when an update is
-actually applied.
+The field is advisory. It tells you what to display, not what to do. To act on it,
+put `useAppUpdate().requestUpdate()` behind a button; the gateway re-resolves the
+app's source when the update is applied.
+
+### Letting the user update from inside your app
+
+`requestUpdate()` asks the host to update your app. The host shows its own dialog
+naming the installed and the new version; your app cannot skip it, restyle it, or
+point it at another app, because the host binds the call to the app it mounted. On
+confirm the host calls the gateway's app update endpoint, the one the App Library's
+Update All uses: the backend restarts,
+`data/` is kept, and crons, skills and agents are registered again from the new
+manifest. The user is then offered a reload, because the open page still runs the
+bundle it loaded.
+
+```tsx
+const { version, update } = useAppInfo()
+const { requestUpdate } = useAppUpdate()
+
+if (!update?.available) return null
+
+return (
+  <Banner>
+    Version {update.latestVersion} is out (you have {version}).
+    <button onClick={async () => {
+      const result = await requestUpdate()
+      if (result.status === 'updated') saveDraft()  // the user may reload next
+    }}>Update</button>
+  </Banner>
+)
+```
+
+The promise resolves after the user answers and the update settles:
+
+| `status` | Means |
+|---|---|
+| `updated` | The new version is installed; `version` names it. With `notice: 'session_approval_reconsent'` the new version asks to control chats, so it was left off and the user was sent to its details page to allow that. With `notice: 'grants_staged'` the new version declares new `permissions.api` or `permissions.events` entries, which stay off until the user approves them on the details page the host opened. |
+| `cancelled` | The user dismissed the dialog. Nothing changed. |
+| `failed` | Nothing was updated. `error` says why, and `message` carries the gateway's reason when it refused. |
+
+The host refuses before showing any dialog, with `failed`, when no newer version is
+published (`no_update_available`), when the manifest sets `lifecycle` to `app` or
+`locked` (`lifecycle_not_gateway`), when your surface is hidden, such as a background
+side-panel tab (`inactive`), when a dialog is already open (`busy`), or when the call
+did not follow a user gesture (`no_user_gesture`). Call it from a click handler: like
+a popup, the dialog needs a recent click or key press, so a call on mount is refused.
+A host without this bridge resolves `failed` with `unsupported`.
+
+An app whose execution trust has lapsed is sent to its details page, which asks for
+trust and retries the update there; the call resolves `failed` with
+`app_execution_denied`.
 
 ### Running something once after you are upgraded
 

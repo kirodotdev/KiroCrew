@@ -4,6 +4,7 @@ import { guideConfirm } from '../uiLocations/targetRegistry'
 import Modal from './Modal'
 import { Btn } from './ui'
 import { i18nT } from '../i18n/t'
+import { isTrustedPress } from './trustedPress'
 
 /**
  * Shared async confirmation surface, replacing `window.confirm`.
@@ -35,6 +36,10 @@ export interface ConfirmOptions {
   /** `top` paints the prompt above a full-screen overlay (`z-[9999]`) the
    *  caller may be raising it from; see `Modal`'s `layer`. */
   layer?: 'dialog' | 'top'
+  /** Accept only a press the browser reports as real input. For a confirm that
+   *  code sharing this document could otherwise press for the user (an
+   *  installed app raising the host's update dialog). */
+  requireTrustedPress?: boolean
 }
 
 interface PendingConfirm {
@@ -67,6 +72,8 @@ export function useConfirm(): {
   // with open=false so AnimatePresence can play the dialog out, and it still
   // needs a title/footer to render while doing so.
   const lastOptsRef = useRef<ConfirmOptions | null>(null)
+  // The press check for `requireTrustedPress` compares the event's target with it.
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null)
 
   const confirm = useCallback((opts: ConfirmOptions) => {
     return new Promise<boolean>(resolve => {
@@ -107,7 +114,7 @@ export function useConfirm(): {
             {i18nT('components.confirmDialog.cancel')}
           </Btn>
           {/* What a guide's destructive step waits for: this press, never a cancel. */}
-          <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={() => settle(true)} {...guideConfirm()}>
+          <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={e => { if (!opts.requireTrustedPress || isTrustedPress(e, confirmButtonRef.current)) settle(true) }} {...guideConfirm(confirmButtonRef)}>
             {opts.confirmLabel}
           </Btn>
         </>

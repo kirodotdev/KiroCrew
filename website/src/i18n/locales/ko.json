@@ -5905,6 +5905,17 @@
       "this_app_is_disabled": "이 앱은 비활성화되어 있습니다",
       "this_app_provides_agents_and_skills_but_no_visua": "이 앱은 에이전트와 스킬을 제공하지만 시각적 인터페이스는 없습니다.\n 채팅에서 이 앱의 에이전트를 사용하세요."
     },
+    "appSelfUpdate": {
+      "ask_title": "{{name}}을(를) 업데이트할까요?",
+      "ask_body": "{{name}}이(가) {{installed}}에서 {{version}}(으)로 업데이트됩니다. 업데이트 중 백엔드가 다시 시작되며 데이터는 유지됩니다.",
+      "update_now": "업데이트",
+      "updating": "{{name}} 업데이트 중…",
+      "failure_title": "업데이트 실패",
+      "failure_summary": "{{name}}을(를) 업데이트할 수 없습니다",
+      "reload_title": "버전 {{version}}이(가) 설치되었습니다",
+      "reload_body": "이 페이지는 아직 {{name}}의 이전 버전으로 실행 중입니다. 새 버전을 사용하려면 새로 고치세요.",
+      "reload_now": "지금 새로 고침"
+    },
     "approvalCard": {
       "actions_group": "승인 작업",
       "approval_no_longer_pending": "이 승인은 만료되었거나 이미 결정되었습니다 — 에이전트가 더 이상 기다리지 않습니다.",
