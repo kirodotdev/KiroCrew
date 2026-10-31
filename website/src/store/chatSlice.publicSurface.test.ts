@@ -32,11 +32,11 @@ import type { RootState } from './index'
 const ACTION_CREATORS = [
   'ageFolderSuggestion', 'appendMessage', 'appendQueuedMessage', 'appendSlotMessage',
   'cancelQueuedMessage', 'clearFocusToolCallId', 'clearFolderSuggestion', 'clearFollowupCard',
-  'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache',
+  'clearMessages', 'clearPendingPermissions', 'clearQuestionCard', 'clearSlotCache', 'clearSlotHydrated',
   'clearSlotReveal', 'clearSlotState', 'clearSubagentsForSnapshot', 'clearSwitchSlotGone', 'closeActivityPanel',
   'clearTerminalSubagents', 'clearUndeletableHistory', 'clearUnresumableResume',
   'clearWorkflowRun', 'confirmOptimisticSend', 'dismissFollowupItem', 'dropActiveSlot', 'dropUnconfirmedRow', 'editQueuedMessage',
-  'endLocalTurn', 'finalizeAssistant', 'forkOpenSettled', 'forkOpenStarted', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving',
+  'endLocalTurn', 'finalizeAssistant', 'forkOpenSettled', 'forkOpenStarted', 'holdHydratedSlotPane', 'hydrateSlotMessages', 'markQuestionSettled', 'markSendUnconfirmed', 'markSubagentApprovalGone', 'markSubagentApproving',
   'openActivityPanel', 'openActivityToTab', 'openActivityToTool', 'reconcileSubagentApprovalGone', 'reconcileSubagentQueuedFromSlots', 'reconcileWorkflowRuns',
   'removeAutomation', 'removeByApprovalId', 'removeQueuedMessage', 'removeThinking',
   'reorderQueuedMessages', 'replaceMessages', 'requestFolderReveal', 'requestSlotFolderOpen', 'requestSlotReveal',

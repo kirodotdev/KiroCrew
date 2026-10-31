@@ -8,7 +8,7 @@ import type { ChatState, EndedTurn, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
 import { finalizeTrailingStreaming } from './transcript'
-import { parkActiveTranscript, setPagingCursor } from './slotCache'
+import { boundSlotWindow, parkActiveTranscript, setPagingCursor } from './slotCache'
 
 export function pushHistory(history: string[], key: string): string[] {
   const deduped = history.filter(k => k !== key)
@@ -151,6 +151,11 @@ export const settleEndedBackgroundTurn = (state: ChatState, slot: string): void 
   setRunState(settled, 'idle')
   syncOriginRun(state, slot, 'idle')
   finalizeTurnTranscript(messages)
+  // A completed background turn is where this slot's array grows one assistant
+  // row at a time -- a monitor loop in a background pane does it forever -- so
+  // trim it to the retention window here (#11139). `boundSlotWindow` leaves a
+  // hydrated pane whole and no-ops while within the bound.
+  boundSlotWindow(state, slot)
 }
 
 /** Idle the active slot when a live `slots` frame reports its turn ended.
