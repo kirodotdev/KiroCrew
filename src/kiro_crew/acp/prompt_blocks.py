@@ -49,10 +49,12 @@ from kiro_crew.hooks import (
 # kiro_crew.acp. The pattern names are re-exported because this module and
 # its tests are where they have always been read from.
 from kiro_crew.image_refs import (  # noqa: F401 -- re-exported, see comment
+    _MASKED,
     _PATH_RE,
     _POSIX_PATH_RE,
     _WINDOWS_PATH_RE,
     STRIPPED_IMAGE_MARKER,
+    mask_literal_spans,
     strip_image_refs,
 )
 
@@ -141,7 +143,12 @@ def build_prompt_blocks(
     ``[image: <name> (2)]``, and so on; the same bytes under two names are one
     block, marked both places with the first name. Past ``max_prompt_image_blocks``
     blocks or ``max_prompt_image_b64_bytes`` of base64 in one prompt, a further
-    picture stays a path in the text.
+    picture stays a path in the text. A path written as literal text -- in
+    fenced or inline code, on a 4-space-indented line, or inside escaped
+    ``\\![x](...)`` markup -- is not a reference: it stays as written and attaches
+    nothing (:func:`~kiro_crew.image_refs.mask_literal_spans`). Each user segment
+    is judged on its own, so a fence that injected text in front of it leaves
+    open cannot pair with the user's next fence line.
 
     Only the user's own segments are read (:mod:`kiro_crew.prompt_segments`).
     A :class:`~kiro_crew.prompt_segments.SegmentedPrompt` from ``build_message``
@@ -199,7 +206,26 @@ def build_prompt_blocks(
         marker_count: dict[str, int] = {}
         prompt_b64_bytes = 0
         past_block_cap = 0
-        for match in _PATH_RE.finditer(message):
+        # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
+        # path, not an attachment: scan the view with it masked, the same view
+        # strip_image_refs reads, so the text stays as written and no block is
+        # attached. Offsets index straight into *message*. A fence the user
+        # left open stays unmasked: a channel's own attachment lines follow
+        # the user's text, and a dangling opener must not swallow them. Each
+        # user segment is judged on its own (_mask_user_segments), so injected
+        # text ending inside an open fence cannot pair with the user's next
+        # fence line.
+        try:
+            scan = _mask_user_segments(message)
+        except Exception:  # pragma: no cover - defensive: a scan must never break a turn
+            logger.debug("acp prompt: literal-span mask failed", exc_info=True)
+            scan = message
+        for match in _PATH_RE.finditer(scan):
+            if _MASKED in match.group(1):
+                # Only reachable through a Windows UNC host segment, whose
+                # negated class admits the sentinel: a span touching literal
+                # text is not a reference.
+                continue
             group = match.group(1)
             raw = group.strip()
             start = match.start(1) + (len(group) - len(group.lstrip()))
@@ -387,6 +413,31 @@ def _user_spans(message: str) -> list[tuple[int, int]]:
             spans.append((pos, pos + len(segment)))
         pos += len(segment)
     return spans
+
+
+def _mask_user_segments(message: str) -> str:
+    """*message* with literal text masked in each user segment, judged alone.
+
+    Every :data:`~kiro_crew.prompt_segments.SOURCE_USER` segment goes through
+    :func:`~kiro_crew.image_refs.mask_literal_spans` on its own, so no fence
+    pairs across a segment boundary: injected text that ends inside a fence it
+    never closes (a cancelled turn's partial answer, a Slack thread root) cannot
+    turn the user's picture into code. Injected segments are kept as written;
+    nothing in them is upgraded anyway. A plain string is one user segment and
+    is judged whole. Length is preserved, so offsets index straight into
+    *message*.
+    """
+    pieces: list[str] = []
+    pos = 0
+    for source, segment in segments_of(message):
+        if source == SOURCE_USER:
+            # A segment that starts mid-line has lost that line's indent to the
+            # text in front of it, so its first line reads as prose.
+            starts_line = pos == 0 or message[pos - 1] == "\n"
+            segment = mask_literal_spans(segment, first_line_indent_is_code=starts_line)
+        pieces.append(segment)
+        pos += len(segment)
+    return "".join(pieces)
 
 
 def _inside(spans: list[tuple[int, int]], start: int, end: int) -> bool:

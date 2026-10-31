@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from kiro_crew import transcribe
 from kiro_crew.doc_parser import extract_text, is_parseable_document
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.messaging.split import close_open_fence
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -671,7 +672,9 @@ def append_attachment_context(text: str, result: IngestResult) -> str:
     paths = [*result.image_paths, *result.file_paths]
     if paths:
         paths_text = "\n".join(paths)
-        text = f"{text}\n{paths_text}" if text else paths_text
+        # A fence the user left open ends before the paths, so a delimiter in
+        # an attached file's body cannot close it after them and make them code.
+        text = f"{close_open_fence(text)}\n{paths_text}" if text else paths_text
 
     blocks = [*result.text_blocks, *result.rejections]
     if blocks:
