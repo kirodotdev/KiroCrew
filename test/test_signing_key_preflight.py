@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import sandbox as kc_sandbox
 from kiro_crew.dashboard import token_secret as ts
 from kiro_crew.doctor_checks import access as doctor_access
@@ -91,7 +92,7 @@ class TestSigningKeyHealth:
         key.mkdir()
         assert ts.signing_key_health(key) == ("other", key)
 
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink")
+    @requires_symlinks
     def test_a_symlink_is_judged_by_itself_not_its_target(self, tmp_path: Path) -> None:
         """``lstat``: a link to a full key is still not a regular key file."""
         real = tmp_path / "elsewhere"
