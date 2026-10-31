@@ -30,6 +30,7 @@ from apps_backend_coverage_helpers import (
 )
 
 import kiro_crew.apps.backend as bmod
+from conftest import requires_symlinks
 from kiro_crew.testing.wait import wait_until
 
 # ---------------------------------------------------------------------------
@@ -379,7 +380,7 @@ class TestInterpreterResolution:
         with mock.patch.object(imod, "_venv_is_usable", return_value=True):
             assert imod.resolve_app_python(tmp_path) != _sys.executable
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="dangling-symlink semantics are POSIX-only")
+    @requires_symlinks
     def test_a_dangling_requirements_symlink_surfaces_as_a_failure(self, spawn_root: Any) -> None:
         """is_file() answers False for a DANGLING requirements.txt link the
         same as for absence - but a present-yet-unreadable entry must NOT be

@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 from test_snapshot import _make_snapshot, _setup_fake_kirocrew, unpinnable_argv
 
+from conftest import requires_symlinks
 from kiro_crew import portability
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.notifications.settings import ChannelSettings
@@ -592,7 +593,7 @@ class TestCliMergeSaysWhatItKept:
         assert "--mode replace --components config" in out
         assert "✅ config" not in out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_dangling_link_at_a_missing_settings_file_is_never_followed(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -620,7 +621,7 @@ class TestCliMergeSaysWhatItKept:
         assert (dst / "ui-prefs.json").is_symlink()
         assert "ui-prefs.json: restored" not in capsys.readouterr().out
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink semantics")
+    @requires_symlinks
     def test_a_linked_settings_file_is_refused_before_its_target_is_read(
         self, tmp_path, monkeypatch, capsys
     ):
