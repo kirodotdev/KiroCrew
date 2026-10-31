@@ -61,6 +61,8 @@ sessions                sessions_restarting, session_health_changed
                         moved, never what it says)
 yolo                    yolo_expired
 artifacts               artifact_update ({slug, version, deleted}; metadata only)
+lessons                 lessons.changed ({action, source, count}; global store
+                        only, never the lesson text)
 workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
@@ -458,6 +460,13 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # what the user is building, so it takes an explicit declaration rather
     # than riding Tier 0. Same treatment as artifact_update above.
     "skills.pending_changed": "skills",
+    # Metadata only ({action, source, count}): no rule text, no repo scope, no row
+    # key, and only for the GLOBAL store an app token's read resolves to
+    # (``kiro_crew.lesson_events``). Still an explicit declaration rather than Tier
+    # 0, for the reason `skills.pending_changed` above gives: when the user is
+    # teaching the agent is not every app's business. Holding `lessons` is not a
+    # read grant either; the rows stay behind `permissions.api` and that route.
+    "lessons.changed": "lessons",
     # Declared by its own literal name: this is already the correct Tier 2
     # shape (per-event opt-in), and it is the one declaration that exists in
     # the tree today (the workflows app), so the name must not change.

@@ -1,7 +1,8 @@
 """Skill learning's dashboard wiring.
 
-The fallback history consolidator a dashboard-only launch builds, and the bell-feed
-notification raised and retired for a staged skill candidate.
+The fallback history consolidator a dashboard-only launch builds, the bell-feed
+notification raised and retired for a staged skill candidate, and the
+``lessons.changed`` broadcast for a lesson-store change.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
         SessionManager,
         SkillsLoader,
         logger,
+        set_lessons_changed_hook,
         set_pending_consumed_hook,
         set_pending_staged_hook,
     )
@@ -246,3 +248,34 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
         set_pending_consumed_hook(_on_pending_skill_consumed)
     except Exception:
         logger.debug("Could not register pending-skill staged hook", exc_info=True)
+
+
+def _register_lesson_change_hook(state: DashboardState) -> None:
+    """Broadcast ``lessons.changed`` whenever the global lesson store changes.
+
+    The signal is raised from the request loop (the ``/api/lessons`` routes) and
+    from a consolidation worker thread alike, so it is marshalled onto the gateway
+    loop for the reason the pending-skill hook above gives: ``broadcast_ws`` off the
+    loop evicts every connected client. The frame reaches an app token only when its
+    manifest declares the ``lessons`` event scope.
+    """
+
+    def _on_lessons_changed(payload: dict) -> None:
+        def _emit() -> None:
+            try:
+                # A literal, not ``lesson_events.LESSONS_CHANGED_EVENT``: the
+                # frame-classification guard reads event names off broadcast
+                # call sites and cannot resolve an imported constant.
+                state.broadcast_ws("lessons.changed", payload)
+            except Exception:
+                logger.debug("lessons-changed broadcast failed", exc_info=True)
+
+        loop = state.serving_loop
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(_emit)
+            except RuntimeError:  # pragma: no cover - loop closing
+                pass
+        # Without a serving loop there is no WebSocket client to tell.
+
+    set_lessons_changed_hook(_on_lessons_changed)

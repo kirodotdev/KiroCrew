@@ -30,6 +30,12 @@ from kiro_crew.dashboard.handlers.cron_lesson_supersede import _resolve_and_supe
 from kiro_crew.dashboard.handlers.cron_shared import _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.lesson_events import (
+    LESSON_REMOVED,
+    LESSON_SOURCE_USER,
+    emit_lessons_changed,
+    lesson_write_action,
+)
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
@@ -556,6 +562,13 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.
     state.push_refresh("lessons")
+    # The app-facing signal is narrower than the refresh above: it fires only when
+    # the store changed, and only for the global store an app token's read
+    # resolves to, so a write into a crew's or crewmate's silo stays silent.
+    if not _lesson_silo:
+        change = lesson_write_action(str(outcome), bool(superseded))
+        if change is not None:
+            emit_lessons_changed(change, LESSON_SOURCE_USER)
     # Newest wins, and everyone is told: a write that replaced stored lessons is
     # audited with who changed what, and in a shared Crew the session gets a
     # notice and every collaborator a frame. Never fails the write.
@@ -806,6 +819,9 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         )
     if ok:
         state.push_refresh("lessons")
+        # Global store only, for the reason the create route gives.
+        if not _lesson_silo:
+            emit_lessons_changed(LESSON_REMOVED, LESSON_SOURCE_USER)
     return web.json_response({"ok": ok})
 
 

@@ -2024,6 +2024,18 @@ content. Tier 2 is global and needs an explicit declaration; notifications split
 by source, so `notification` covers the app's own pushes while gateway-internal
 ones (cron output, `send_message`, watchlist results) require
 `notification:system` — bundling them would make one declaration a broad grant.
+`lessons.changed` rides the `lessons` declaration: `{action, source, count}` for a
+change to the default lesson store, never its text, and no read grant with it
+([learn-cron-dashboard](learn-cron-dashboard.md)).
+
+**An app backend subscribes the way its page does.** The gateway hands a backend
+it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
+app's `.app_secret`; `POST /api/apps/<name>/token` with that value as
+`X-App-Secret` returns the same app-scoped token the page uses, and `/api/ws`
+with it is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
+does the exchange (`authenticate()`) and `create_ws()` opens that socket. There is no
+second delivery channel, and an origin the gateway could not prove is omitted, so
+such a backend has none.
 
 **`SlotOrigin` is declared by the layer that knows it, never derived.**
 `get_or_create_slot` cannot distinguish a person typing from a background

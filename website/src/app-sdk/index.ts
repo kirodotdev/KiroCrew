@@ -132,6 +132,9 @@ const WS_GLOBAL_EVENT_TO_SCOPE: Record<string, string> = {
   yolo_expired: 'yolo',
   artifact_update: 'artifacts',
   'skills.pending_changed': 'skills',
+  // The global lesson store changed: {action, source, count}, never the text.
+  // Re-read GET /api/lessons (a separate `permissions.api` grant) for the rows.
+  'lessons.changed': 'lessons',
   // Declared by its own literal name (already the correct per-event shape).
   workflow_run_event: 'workflow_run_event',
   // Same scope name the gateway declares in ws_event_scope.py, so an app author
