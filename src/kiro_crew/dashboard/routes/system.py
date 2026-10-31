@@ -180,6 +180,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # SSH_AUTH_SOCK forward consent: the same one-act grant / revoke shape as the
+    # AWS consent above, owner-gated in the handler.
+    app.router.add_get("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_get)
+    app.router.add_post("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_post)
+    app.router.add_delete("/api/ssh-agent/consent", handlers.api_ssh_agent_consent_delete)
     # Project AWS profile binding (the composer's project chip). Owner-gated in
     # the handler and browser-called like the consent pair: which account an
     # agent's AWS commands reach by default is the operator's choice.

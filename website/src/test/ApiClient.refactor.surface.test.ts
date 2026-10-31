@@ -160,7 +160,8 @@ const API_KEY_ORDER = [
   'updateDashboardConfig', 'createTheme', 'installTheme', 'updateTheme',
   'deleteTheme', 'themeDetail', 'themeBoot', 'updateThemeConfig',
   'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
-  'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',
+  'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'sshAgentConsent',
+  'grantSshAgentConsent', 'revokeSshAgentConsent', 'credentialRedaction',
   'setCredentialRedaction', 'voiceSynthesize', 'voiceCancel', 'channelsList',
   'channelPresets', 'channelGet', 'channelCreate', 'channelClose',
   'channelPost', 'channelAddAgent', 'channelUpdateAgent', 'channelDismissAgent',
@@ -250,7 +251,7 @@ const NO_SESSION_KEY = [
   'changelog', 'releases', 'armStatus', 'fileDiff',
   'fileSearch', 'pathComplete', 'uploadFiles', 'themes',
   'dashboardConfig', 'themeDetail', 'themeBoot', 'voiceConfig',
-  'voiceVoices', 'voiceSystemVoices', 'awsConsent', 'credentialRedaction', 'channelsList', 'channelPresets',
+  'voiceVoices', 'voiceSystemVoices', 'awsConsent', 'sshAgentConsent', 'credentialRedaction', 'channelsList', 'channelPresets',
   'channelGet', 'listApps', 'getApp', 'getAppManifest',
   'uninstallPreview', 'listRegistry', 'listRegistries',
 ]
