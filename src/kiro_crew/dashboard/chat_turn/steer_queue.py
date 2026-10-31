@@ -16,6 +16,7 @@ from kiro_crew.dashboard.chat_delivery import (
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    BACKGROUND_COMMAND_KIND,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
     STEER_INTENT_META,
@@ -510,6 +511,8 @@ _QUEUE_KIND_ACTORS: dict[str, str] = {
     # A re-routed automation refusal is the monitor subsystem talking, so the
     # turn it rides is attributed to the autonudge actor, never the person.
     AUTOMATION_NOTICE_KIND: "autonudge",
+    # A background command's wake is the gateway reporting the command ended.
+    BACKGROUND_COMMAND_KIND: "gateway",
 }
 
 

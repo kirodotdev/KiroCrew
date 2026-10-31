@@ -9,7 +9,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from kiro_crew.constants import MAX_SHORT_STRING
+from kiro_crew.constants import (
+    BACKGROUND_RUN_MAX_COMMAND_CHARS,
+    BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+    BACKGROUND_RUN_MIN_TIMEOUT_SECS,
+    MAX_SHORT_STRING,
+)
 
 # Per-job auto-pause cap: ``cron_service.model`` owns it. Import-safe: the model
 # module pulls in only ``cron_service.schedule`` and ``platform_compat``, neither
@@ -22,6 +27,7 @@ from kiro_crew.validation_parts.input_bounds import (
     CHANNEL_ID_RE,
     CHANNEL_MAX_LEN,
     MAX_CRON_MESSAGE,
+    MAX_MEDIUM_STRING,
     REGISTERED_AGENT_NAME_RE,
 )
 
@@ -218,6 +224,20 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
             FieldSpec("secrets", dict),
             FieldSpec("withdraw", bool),
+        ],
+    ),
+    "background_run": ToolSchema(
+        tool_name="background_run",
+        fields=[
+            FieldSpec("command", str, required=True, max_len=BACKGROUND_RUN_MAX_COMMAND_CHARS),
+            FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
+            FieldSpec("label", str, max_len=MAX_SHORT_STRING),
+            FieldSpec(
+                "timeout_secs",
+                int,
+                min_val=BACKGROUND_RUN_MIN_TIMEOUT_SECS,
+                max_val=BACKGROUND_RUN_MAX_TIMEOUT_SECS,
+            ),
         ],
     ),
 }

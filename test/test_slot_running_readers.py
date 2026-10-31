@@ -189,6 +189,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # An injector starts an idle slot's queued head only on a slot no
                 # dispatch has reserved.
                 ("chat_turn/queue_drain.py", "idle_slot_admits_drain"),
+                # A background command's queued wake is dispatched only once the chat
+                # is idle, through idle_slot_admits_drain, and an idle chat is where
+                # the delivery reads whether the wake's turn ended unconsumed.
+                ("workflow_inject.py", "deliver_command_outcome"),
+                ("workflow_inject.py", "_until_wake_consumed"),
                 # The hand-off for a dispatch that never ran a turn's tail: that
                 # task has ended, so this reads a send's reservation.
                 ("chat_turn/queue_cycle.py", "_hand_off_unstarted_turn"),
