@@ -513,7 +513,13 @@ survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference
 is withheld, because KAS's own environment holds credentials such as
-`KIRO_API_KEY`. And `KIROCREW_HOME` survives for Crew's own managed servers,
+`KIRO_API_KEY`. A withheld value still reaches a stdio server, as it does on
+kiro-cli: Crew keeps it in an owner-only launch snapshot under the data home's
+`kas-mcp-launch/` and hands KAS its own launcher in the server's place, which reads
+the snapshot and starts the real command with those values. Only the launcher, the
+session, agent and server names and a version cross the wire, so `session.json`
+never holds the value. A remote entry's `headers` stay withheld. And
+`KIROCREW_HOME` survives for Crew's own managed servers,
 because it pins the data home — but only as a literal containing no `${`, since
 KAS would expand a reference under that name too. That recorded pin is also
 **write provenance**: the shared-home write guard reads it back from every managed

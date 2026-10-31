@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.mcp_session_report import (
@@ -276,6 +277,7 @@ async def load_session(
     # the generation the wire payload was built from, and the activation bracket below
     # compares against it rather than re-reading the file.
     kas_agents = None
+    launch_snapshots: list[str] = []
     payload_snapshot = None
     request_identity = ""
     if self._acp_backend == ACP_BACKEND_KAS:
@@ -311,6 +313,9 @@ async def load_session(
         # settings file from cwd whatever level its agent spec resolves at.
         # Read off the loop thread like the other settings reads here.
         reserved = await asyncio.to_thread(settings_server_names, session_work_dir)
+        # Read BEFORE the hoist: it moves launcher entries out of the batch, and
+        # the recorded batch then lacks the snapshots this projection wrote.
+        launch_snapshots = kas_env_launch.batch_snapshot_names(kas_agents)
         kas_agents, mcp_servers = hoist_servers_for_session(
             kas_agents,
             active_agent,
@@ -413,6 +418,7 @@ async def load_session(
     # Mirrors create_session: the re-registered batch is what this session now
     # runs.
     self._harness.record_session_projection(handle, kas_agents, active_agent)
+    handle.kas_launch_snapshots.extend(launch_snapshots)
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
     handle.request_vault_identity = request_identity

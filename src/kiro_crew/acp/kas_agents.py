@@ -70,6 +70,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.acp import kas_env_launch
 from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 from kiro_crew.acp.kas_permissions import (
     AUTO_APPROVABLE_CAPABILITIES,
@@ -821,6 +822,14 @@ def _project_mcp_servers(
                 projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
             if session_key:
                 projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
+        elif session_key:
+            # The withheld env values stay on this machine: the engine is handed
+            # Crew's launcher and a reference, never the values (kas_env_launch).
+            projected, _launched, complete = kas_env_launch.relay_withheld_env(
+                projected, entry.get("env"), session_key=session_key, agent_id=agent_id, server=name
+            )
+            if complete:
+                withheld = [w for w in withheld if not w.startswith("env")]
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "

@@ -894,6 +894,14 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # keep serving kiro-cli's existing pipe, which is the whole fix, and a
         # scrubbed env would drop the credentials the sidecar exists to restore.
         "mcp_gateway/stub_fallback.py::_fallback_spawn_child",
+        # The KAS MCP launcher's Windows branch, the same shape as the entry above:
+        # the KAS engine (already inside Crew's sandbox) starts the launcher, which
+        # runs the command and env the gateway recorded in an owner-only snapshot
+        # from the operator's own agent spec. The agent cannot write the snapshot
+        # (sealed leaf, file-tool floor), and the launcher refuses one that does not
+        # match its reference. A spawn only because Windows has no in-place exec;
+        # the POSIX path is ``os.execvpe``. It must keep this process's stdio pipe.
+        "kas_env_shim.py::_spawn_child",
         # The update seam's one read-only git chokepoint: `git config` (the
         # `updates.source` pin's remote, the repo-driver probe, and which remote a
         # branch tracks) and `git ls-remote --get-url`. Fixed list-argv (no

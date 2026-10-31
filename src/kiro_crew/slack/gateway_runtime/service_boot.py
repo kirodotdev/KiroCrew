@@ -818,6 +818,25 @@ async def run(self: GatewayOrchestrator) -> None:
     # path, and the force-exit handler, doing exactly their pre-existing work.
     await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)
 
+    # KAS MCP launch snapshots no session of this run references: the previous run's
+    # agent processes, and the launchers they started, ended just above, and no
+    # session of this run exists yet. The cutoff is taken HERE, so a snapshot this
+    # run writes is never older than it; the scan itself runs on a tracked task, the
+    # way the telemetry backfill below does, so its cost never delays readiness.
+    _snapshot_sweep_boot_time = time.time()
+
+    async def _sweep_kas_launch_snapshots() -> None:
+        try:
+            from kiro_crew.agent_sdk.agent_specs import sweep_kas_launch_snapshots
+
+            await asyncio.to_thread(sweep_kas_launch_snapshots, _snapshot_sweep_boot_time)
+        except Exception:  # housekeeping must never break boot; skipped, not run
+            logger.warning("KAS launch snapshot sweep skipped", exc_info=True)
+
+    _snapshot_sweep_task = asyncio.create_task(_sweep_kas_launch_snapshots())
+    self._background_tasks.add(_snapshot_sweep_task)
+    _snapshot_sweep_task.add_done_callback(self._background_tasks.discard)
+
     # Same "previous run left residue" concern as the orphan sweep above, for
     # telemetry rather than processes: any open-session crumb on disk belongs
     # to a session that never reached a teardown path, so it is emitted as

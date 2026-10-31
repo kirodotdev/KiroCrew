@@ -121,6 +121,15 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ("testing/workflow_memory_scenario.py", "respond"): (
         "not a kiro-cli spawn: a test scenario reading its own argv"
     ),
+    ("acp/kas_env_launch.py", "_shim_entry"): (
+        "not a kiro-cli spawn: the KAS MCP launcher's own --agent names the snapshot to read"
+    ),
+    ("acp/kas_env_launch.py", "batch_snapshot_names"): (
+        "not a kiro-cli spawn: reads the KAS MCP launcher's --agent back from a projected entry"
+    ),
+    ("kas_env_shim.py", "resolve_launch"): (
+        "not a kiro-cli spawn: the KAS MCP launcher declaring its own --agent option"
+    ),
 }
 
 # Functions that reference the managed-shadow refusal. Every governed ``--agent``

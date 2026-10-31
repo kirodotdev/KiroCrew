@@ -664,6 +664,10 @@ class AcpSessionHandle:
         # The agent batch this session registered, so a mode switch can answer
         # what the agent it moves to auto-approves.
         self.kas_registered_agents: list[dict[str, Any]] = []
+        # The KAS MCP launch snapshot names every projection of this session wrote
+        # (``acp.kas_env_launch``), read before ``session/load`` hoists servers out
+        # of the batch and carried across a handle swap, so shutdown removes them.
+        self.kas_launch_snapshots: list[str] = []
         # The upgrade notice when that batch's prompt is dropped by the KAS this
         # process runs (``harness.kas.kas_agent_prompt_issue``); "" otherwise.
         self.kas_agent_prompt_notice: str = ""
