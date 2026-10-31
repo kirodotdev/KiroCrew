@@ -47,6 +47,7 @@ from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     model_registry_namespace,
@@ -321,6 +322,7 @@ from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
 )
+from kiro_crew.dashboard.kas_local_commands import KAS_LOCAL_INSPECT_COMMANDS
 from kiro_crew.dashboard.kiro_readiness import (
     KIRO_PREREQUISITE_REQUIRED_CODE,
     reject_if_kiro_unverified,
@@ -1608,7 +1610,14 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # sends the engine's compaction verb or explains that the harness compacts
     # by itself, and never gives that notice.
     if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
+        # /model, /tools and /mcp are answered from KAS's own registration, so only a
+        # KAS session lists them; another member gets the notice for them.
+        served = (
+            _DASHBOARD_SERVED_SLASH_COMMANDS
+            if cfg.agent.acp_backend == ACP_BACKEND_KAS
+            else _DASHBOARD_SERVED_SLASH_COMMANDS - KAS_LOCAL_INSPECT_COMMANDS
+        )
+        offered = offered & (served | {"/compact"})
     return web.json_response(
         [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )

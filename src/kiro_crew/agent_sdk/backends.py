@@ -255,6 +255,10 @@ with no row here.
    * - ``ACP_BACKENDS_FORK_AT_MESSAGE``
      - driver-internal (whether ``session/fork`` honours a fork point, so a
        rewind keeps the retained native history)
+   * - ``ACP_BACKENDS_RELOAD_DISPOSED_SESSION``
+     - driver-internal (whether a session whose backend the harness disposed in a
+       live process is answered as cancelled or failed once, then reloaded in a
+       fresh process before the next prompt)
    * - ``ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY``
      - driver-internal (whether the session's project checkout scopes the broker
        overlay lookup, read only through :func:`overlay_project_scope` while
@@ -1137,6 +1141,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_RELOAD_DISPOSED_SESSION,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
