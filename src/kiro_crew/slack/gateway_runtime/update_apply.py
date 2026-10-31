@@ -253,9 +253,9 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # reset below. It comes straight from the fetch, so it cannot be moved by
         # a concurrent fetch between decision and reset, and the old
         # `refs/remotes/origin/<branch>` tag-vs-ref ambiguity does not arise: no
-        # ref name is resolved to get it. The helper also pins that tracking ref
-        # to this OID (by a direct file write, firing no hook) for parity with a
-        # normal fetch.
+        # ref name is resolved to get it. The helper writes no ref in the
+        # checkout, so its remote-tracking ref stays as the last plain fetch left
+        # it.
         fetched = await fetch_and_pin_upstream(
             proj, "origin", branch, git=_git, env=_git_env, timeout=60
         )

@@ -51,7 +51,7 @@ from dashboard_updates_coverage_helpers import (  # noqa: F401 -- the autouse fi
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError
 from kiro_crew.dashboard.handlers import updates
-from kiro_crew.platform import update_governance
+from kiro_crew.platform import update_fetch, update_governance
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -219,19 +219,19 @@ class TestGitFetchTimeoutReapsTheHelper:
         )
         git.chmod(0o755)
         monkeypatch.setattr(
-            update_governance, "resolve_remote_url", lambda *_a, **_k: "file:///upstream"
+            update_fetch, "resolve_remote_url", lambda *_a, **_k: "file:///upstream"
         )
         if short_waits:
             started = pidfile if with_helper else Path(f"{pidfile}.git")
             # The helper's own module `asyncio`, so its fetch wait times out on
             # the stand-in's start signal; the test's own bound stays real.
-            monkeypatch.setattr(update_governance, "asyncio", _TimedOutGitWaits(started))
+            monkeypatch.setattr(update_fetch, "asyncio", _TimedOutGitWaits(started))
         return pidfile, str(git)
 
     @staticmethod
     async def _fetch(proj: str, git: str):
         """Run the isolated fetch helper the way the check and apply do."""
-        return await update_governance.fetch_and_pin_upstream(
+        return await update_fetch.fetch_and_pin_upstream(
             proj, "origin", "main", git=git, env=update_governance.git_command_env(), timeout=30
         )
 
@@ -401,7 +401,7 @@ class TestGitFetchTimeoutReapsTheHelper:
                 return
             real_kill(pid, sig)
 
-        real_helper = update_governance.fetch_and_pin_upstream
+        real_helper = update_fetch.fetch_and_pin_upstream
 
         async def helper_then_mark(*args: object, **kwargs: object):
             nonlocal timed_out
@@ -411,7 +411,7 @@ class TestGitFetchTimeoutReapsTheHelper:
                 timed_out = True
 
         monkeypatch.setattr(os, "kill", recorder)
-        monkeypatch.setattr(update_governance, "fetch_and_pin_upstream", helper_then_mark)
+        monkeypatch.setattr(update_fetch, "fetch_and_pin_upstream", helper_then_mark)
         await self.test_a_fetch_timeout_returns_while_a_helper_holds_stderr(monkeypatch, tmp_path)
         assert not late, (
             f"the cleanup sent signal {late[0][1]} to pid {late[0][0]}, the helper's, after "

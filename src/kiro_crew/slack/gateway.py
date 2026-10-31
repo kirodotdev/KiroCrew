@@ -391,9 +391,9 @@ from kiro_crew.platform.update_capability import (
     AutoUpdateEffect,
     auto_update_effect,
 )
+from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
 from kiro_crew.platform.update_governance import (
     commits_ahead,
-    fetch_and_pin_upstream,
     git_command_env,
     hidden_worktree_edits,
     is_primary_branch,
