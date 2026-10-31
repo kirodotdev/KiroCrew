@@ -1105,7 +1105,21 @@ fire time:
   interpreter still prepends the launcher's own directory, and a
   `json.py` an agent parked in the shared temp dir would otherwise be
   imported before the secrets payload is read. A pin mismatch fails the run
-  closed with a re-approve message;
+  closed with a re-approve message, and the runner flags that refusal (and a
+  grant with no pin) as `grant_stale`. The script arm then calls
+  `cron_service.grant_resurface.resurface_stale_grant`, which files a
+  PENDING request for the same mapping pinned to the job's current code, so
+  the Schedule page shows an approve control again instead of an error with
+  nothing to act on. It grants nothing: the request goes through the same
+  verified promotion path as an agent's. The write is a compare-and-swap on
+  the active pin the run refused and on the pending record it read, so an
+  approval, a revocation or a newer request that landed in between wins. A
+  pending request with a different mapping is the agent's own ask and is
+  never displaced; one with the same mapping is replaced only when its pin no
+  longer covers the current code. `secret_env_resurfaced_pin` records the
+  pending pin last filed, so a denied request is not raised again until the
+  code changes again, and every approval clears it, so a revision asked about
+  before is asked about again once a later grant has been approved;
   the grantable body is capped at the dashboard's script-preview ceiling
   (`_MAX_GRANTED_SCRIPT_BYTES` = `_SCRIPT_SOURCE_MAX_BYTES`), because the
   approval signs the WHOLE body while the owner reviews the preview — a

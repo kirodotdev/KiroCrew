@@ -74,6 +74,7 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     # this length gate). Per the no-schema convention they use the general ID cap.
     ("secret_env_pin", MAX_SHORT_STRING),
     ("secret_env_pending_pin", MAX_SHORT_STRING),
+    ("secret_env_resurfaced_pin", MAX_SHORT_STRING),
 )
 
 
@@ -586,6 +587,8 @@ def apply_job_update(
             # Withdraw/deny clears the whole request record.
             job.secret_env_pending_pin = ""
             job.secret_env_pending_ts = 0.0
+    if "secret_env_resurfaced_pin" in kwargs and kwargs["secret_env_resurfaced_pin"] is not None:
+        job.secret_env_resurfaced_pin = str(kwargs["secret_env_resurfaced_pin"])
     # Per-wake budget (the asyncio.wait_for deadline in
     # _execute_with_timeout). Distinct from ``timeout``, which
     # bounds only script/command subprocesses. This is the only
