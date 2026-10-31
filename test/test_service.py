@@ -70,12 +70,28 @@ class TestPlatformDetection:
             mock_sys.platform = "darwin"
             assert current_platform() == Platform.LAUNCHD
 
+    def test_windows_with_a_trusted_schtasks_returns_schtasks(self):
+        with patch("kiro_crew.service.common.sys") as mock_sys, patch(
+            "kiro_crew.platform_compat.trusted_system_bin",
+            return_value=r"C:\WINDOWS\system32\schtasks.exe",
+        ):
+            mock_sys.platform = "win32"
+            assert current_platform() == Platform.SCHTASKS
+
+    def test_windows_without_a_trusted_schtasks_returns_unsupported(self):
+        """PATH must not be able to decide that this host supports services."""
+        with patch("kiro_crew.service.common.sys") as mock_sys, patch(
+            "kiro_crew.platform_compat.trusted_system_bin", return_value=None
+        ), patch("kiro_crew.service.common.shutil.which", return_value="/tmp/evil/schtasks.exe"):
+            mock_sys.platform = "win32"
+            assert current_platform() == Platform.UNSUPPORTED
+
     def test_unknown_platform_returns_unsupported(self):
         with patch("kiro_crew.service.common.sys") as mock_sys, patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/usr/bin/anything",
         ):
-            mock_sys.platform = "win32"
+            mock_sys.platform = "sunos5"
             assert current_platform() == Platform.UNSUPPORTED
 
 
