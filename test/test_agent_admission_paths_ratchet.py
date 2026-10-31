@@ -100,6 +100,10 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
 # (module, function) -> the admission sites that govern the spawn it builds, or a
 # string stating why no admission gate applies.
 AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
+    ("acp/harness/strands.py", "StrandsLaunch.resolve_spawn"): (
+        "UNGATED: the Strands CLI's own --agent names Kiro Crew's sealed gate module, a "
+        "Python project file, not a Kiro agent spec, so no spec admission applies"
+    ),
     ("acp/client_start.py", "_spawn"): (("acp/client_start.py", "_spawn"),),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): (
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),

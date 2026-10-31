@@ -180,6 +180,13 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
 }
 
 
+def _roster_of(client: AcpClient, wire_servers: Any) -> Any:
+    """The MCP set a session actually starts with: the launch composition when the
+    harness took its servers at launch (``_launch_mcp_servers``), else the wire array."""
+    launched = client._launch_mcp_servers
+    return wire_servers if launched is None else launched
+
+
 def _jsonl_size(path: Path) -> int:
     """Byte size of a kiro-cli session transcript, 0 when it is missing or unreadable.
 
@@ -647,10 +654,12 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     # The roster this session put ON THE WIRE. Distinct from the agent spec
     # on disk: the backend starts the spec's own servers too, so the frames
     # that come back are a superset of this list.
-    self._begin_session_report(new_params.get("mcpServers"))
+    # A harness whose servers ride a launch file (Strands) sends an empty wire
+    # array by design; its roster is the launch composition.
+    self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
     # AFTER begin_session_report, which clears the report: the guard writes a
     # row on it, and writing before the clear would erase the finding.
-    self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
+    self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
 
     self._last_substitution_model = None
     if self._is_pi:
@@ -723,8 +732,8 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         # the setting sources the array was authorized under and the inline
         # settings naming the substitute model.
         new_params["_meta"] = self._claude_session_meta()
-        self._begin_session_report(new_params.get("mcpServers"))
-        self._guard_unresolved_mcp_refs(new_params.get("mcpServers"))
+        self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
+        self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
         self._last_substitution_model = None
         retry_id = await self._send_request(METHOD_SESSION_NEW, new_params)
         session_resp = await self._wait_for_response(
@@ -803,8 +812,9 @@ async def _initialize_session(self: AcpClient) -> None:
         # Copilot CLI reads its launch MCP config when it boots (measured on 1.0.100:
         # the file deleted right after the initialize answer, the stdio server it
         # names still mounted and answered tools/call). It carries a session
-        # credential, so it goes now, on a failed handshake too.
-        if self._is_copilot:
+        # credential, so it goes now, on a failed handshake too. The Strands CLI reads
+        # its --mcp-config file at start as well, before it serves initialize.
+        if self._is_copilot or self._is_strands:
             await self._discard_copilot_mcp_config()
     logger.info("ACP initialized (protocol=%s)", init_resp.get("protocolVersion"))
 
@@ -960,10 +970,10 @@ async def _initialize_session(self: AcpClient) -> None:
                     # so it gets neither key rather than a kiro session_file
                     # it would not know what to do with.
                     load_params["_meta"] = {"_kiro.dev/session_file": session_file}
-                self._begin_session_report(load_params.get("mcpServers"))
+                self._begin_session_report(_roster_of(self, load_params.get("mcpServers")))
                 # A resumed session re-declares everything Crew mounts on it, so it
                 # can be short of a referenced server exactly as a fresh one can.
-                self._guard_unresolved_mcp_refs(load_params.get("mcpServers"))
+                self._guard_unresolved_mcp_refs(_roster_of(self, load_params.get("mcpServers")))
                 if self._is_pi:
                     await self._republish_pi_mcp_handoff()
                 load_id = await self._send_request(restore_method, load_params)
@@ -1081,8 +1091,8 @@ async def _initialize_session(self: AcpClient) -> None:
     if self._is_pi:
         await self._discard_pi_mcp_handoff()
     # Copilot CLI read its launch MCP config when its process started; the file
-    # carries a session credential and nothing reads it again.
-    if self._is_copilot:
+    # carries a session credential and nothing reads it again. Same for the Strands CLI.
+    if self._is_copilot or self._is_strands:
         await self._discard_copilot_mcp_config()
 
     # Seek to end of JSONL so we only read new tool results.

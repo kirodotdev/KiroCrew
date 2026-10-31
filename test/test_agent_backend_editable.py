@@ -25,6 +25,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -200,6 +201,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_GOOSE,
             ACP_BACKEND_DEEPSEEK,
             ACP_BACKEND_COPILOT,
+            ACP_BACKEND_STRANDS,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)
