@@ -1387,8 +1387,11 @@ jobs:
       # is a tag from the project's first weeks: v0.9.0 and v0.10.0 each listed
       # thousands of old pull requests. The script picks the base by lineage
       # instead (previous stable for stable, previous prerelease of the same
-      # line for a prerelease); see its docstring. The checkout is shallow and
-      # carries no tags, so the names come from the API.
+      # line for a prerelease); see its docstring. Candidates are the release
+      # PAGES, not the tag refs: a prerelease whose run failed before its page
+      # was created leaves its tag behind, and as a base it would hide the pull
+      # requests merged before it. The list includes stable drafts, because a
+      # stable page stays a draft until record-stable-promotion publishes it.
       - name: Choose the previous tag for the generated notes
         id: notes_base
         if: steps.page.outputs.action == 'create'
@@ -1401,11 +1404,11 @@ jobs:
           # Only the notes' base depends on this, so a failed listing or a failed
           # choice falls back to GitHub's choice rather than holding back the
           # release page.
-          if ! tags=$(gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref'); then
-            echo "::warning::could not list tags; GitHub chooses the base for the generated notes of $TAG."
-            tags=""
+          if ! releases=$(gh api --paginate "repos/$REPO/releases?per_page=100" --jq '.[] | "\(.tag_name) \(if .draft then "draft" else "published" end)"'); then
+            echo "::warning::could not list releases; GitHub chooses the base for the generated notes of $TAG."
+            releases=""
           fi
-          if ! previous=$(printf '%s\n' "$tags" | python3 scripts/release_previous_tag.py "$TAG"); then
+          if ! previous=$(printf '%s\n' "$releases" | python3 scripts/release_previous_tag.py "$TAG"); then
             echo "::warning::could not choose a previous tag; GitHub chooses the base for the generated notes of $TAG."
             previous=""
           fi
