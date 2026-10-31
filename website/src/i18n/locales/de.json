@@ -11644,7 +11644,6 @@
         "steps": "Schritte",
         "steps_count_one": "{{count}} Schritt",
         "steps_count_other": "{{count}} Schritte",
-        "switch_to": "Zu {{browser}} wechseln",
         "tab_closed": "Tab geschlossen",
         "tab_kept_open": "Tab bleibt offen",
         "take_over": "Übernehmen",

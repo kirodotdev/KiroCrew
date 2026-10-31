@@ -11818,7 +11818,6 @@
         "steps_count_many": "{{count}} pasos",
         "steps_count_one": "{{count}} paso",
         "steps_count_other": "{{count}} pasos",
-        "switch_to": "Cambiar a {{browser}}",
         "tab_closed": "pestaña cerrada",
         "tab_kept_open": "pestaña abierta",
         "take_over": "Tomar el control",

@@ -220,7 +220,6 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
         {!staged && view === 'allow' && (
           <BrowserLiveAllowView
             turn={turn}
-            onSwitchToBrowser={openInBrowser}
             onUseKiroBrowser={() => goTo('/settings/browser')}
           />
         )}

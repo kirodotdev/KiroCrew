@@ -67,13 +67,13 @@ function title(turn: BrowserLiveTurn): string {
 
 // ---- Waiting for Allow -------------------------------------------------------
 
-export function BrowserLiveAllowView({ turn, onSwitchToBrowser, onUseKiroBrowser }: {
+// No "Switch to Chrome" here: until the person presses Allow there is no debugging
+// connection and no tab to bring forward, so the card can only say where to look.
+export function BrowserLiveAllowView({ turn, onUseKiroBrowser }: {
   turn: BrowserLiveTurn
-  onSwitchToBrowser: () => void
   onUseKiroBrowser: () => void
 }) {
   const browser = browserLabel(turn.browser, turn.headless)
-  const target = openTarget(turn)
   return (
     <div className="p-3" data-testid="browser-live-allow">
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg px-3 py-1.5 text-[13px]">
@@ -91,12 +91,6 @@ export function BrowserLiveAllowView({ turn, onSwitchToBrowser, onUseKiroBrowser
             {i18nT('pages.chat.browserLiveCard.allow_explainer')} {i18nT('pages.chat.browserLiveCard.allow_asked_once')}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {target && (
-              <Btn primary onClick={onSwitchToBrowser}>
-                <ExternalLink size={14} aria-hidden="true" />
-                {i18nT('pages.chat.browserLiveCard.switch_to', { browser: target })}
-              </Btn>
-            )}
             <Btn onClick={onUseKiroBrowser}>{i18nT('pages.chat.browserLiveCard.use_kiro_browser')}</Btn>
           </div>
         </div>

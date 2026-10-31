@@ -11470,7 +11470,6 @@
         "showing_in_side_panel": "正在侧栏显示",
         "steps": "步骤",
         "steps_count_other": "{{count}} 步",
-        "switch_to": "切到 {{browser}}",
         "tab_closed": "标签已关闭",
         "tab_kept_open": "标签已留着",
         "take_over": "接管",

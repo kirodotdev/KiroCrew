@@ -11818,7 +11818,6 @@
         "steps_count_many": "{{count}} étapes",
         "steps_count_one": "{{count}} étape",
         "steps_count_other": "{{count}} étapes",
-        "switch_to": "Passer à {{browser}}",
         "tab_closed": "onglet fermé",
         "tab_kept_open": "onglet conservé",
         "take_over": "Prendre la main",

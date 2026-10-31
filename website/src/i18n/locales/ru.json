@@ -11992,7 +11992,6 @@
         "steps_count_many": "{{count}} шагов",
         "steps_count_one": "{{count}} шаг",
         "steps_count_other": "{{count}} шага",
-        "switch_to": "Перейти в {{browser}}",
         "tab_closed": "вкладка закрыта",
         "tab_kept_open": "вкладка оставлена",
         "take_over": "Взять управление",

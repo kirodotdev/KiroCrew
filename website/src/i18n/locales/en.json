@@ -6715,7 +6715,6 @@
         "steps": "Steps",
         "steps_count_one": "{{count}} step",
         "steps_count_other": "{{count}} steps",
-        "switch_to": "Switch to {{browser}}",
         "tab_closed": "tab closed",
         "tab_kept_open": "tab kept open",
         "take_over": "Take over",

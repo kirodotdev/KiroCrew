@@ -11644,7 +11644,6 @@
         "steps": "ধাপ",
         "steps_count_one": "{{count}}টি ধাপ",
         "steps_count_other": "{{count}}টি ধাপ",
-        "switch_to": "{{browser}}-এ যাও",
         "tab_closed": "ট্যাব বন্ধ",
         "tab_kept_open": "ট্যাব খোলা রাখা হয়েছে",
         "take_over": "নিয়ন্ত্রণ নাও",

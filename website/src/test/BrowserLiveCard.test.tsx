@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import i18next from 'i18next'
 import '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from '../pages/chat/BrowserLiveCard'
 import TurnBlock from '../pages/chat/TurnBlock'
@@ -81,14 +82,16 @@ describe('BrowserLiveCard faces', () => {
     expect(container.querySelector('[data-testid="browser-live-card"]')).toBeNull()
   })
 
-  it('waiting_allow: names the browser, the one step, and offers the switch', () => {
+  it('waiting_allow: names the browser and the one step, with no switch before Allow', () => {
     act(() => browserLiveStore.applyEvent(ev({ state: 'waiting_allow' })))
     render(card())
     expect(screen.getByTestId('browser-live-card')).toHaveAttribute('data-state', 'waiting_allow')
     expect(screen.getByText(i18next.t('pages.chat.browserLiveCard.waiting_for_allow'))).toBeInTheDocument()
     expect(screen.getByText(i18next.t('pages.chat.browserLiveCard.wants_browser', { browser: i18next.t('pages.chat.browserLiveCard.browser_user_chrome') }))).toBeInTheDocument()
-    fireEvent.click(screen.getByText(i18next.t('pages.chat.browserLiveCard.switch_to', { browser: 'Chrome' })))
-    expect(writes.open).toHaveBeenCalledWith(S)
+    // No tab exists before Allow, so there is nothing to switch to yet.
+    expect(screen.queryByText(/Switch to/)).toBeNull()
+    expect(screen.getByText(i18nT('pages.chat.browserLiveCard.use_kiro_browser'))).toBeInTheDocument()
+    expect(writes.open).not.toHaveBeenCalled()
   })
 
   it('live: address, browser chip, step strip, current action, Take over', () => {
