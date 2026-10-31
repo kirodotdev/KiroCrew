@@ -67,6 +67,7 @@ __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.sta
 
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
     from kiro_crew.dashboard.handlers.artifacts_parts.artifact_comments import (  # noqa: F401
+        _comment_identity,
         api_artifact_comments,
         api_artifact_delete_comment,
         api_artifact_edit_comment,
