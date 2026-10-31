@@ -318,14 +318,9 @@ def dashboard_line(slug: str, rec: dict[str, Any], *, has_mate_tools: bool = Tru
     from kiro_crew import dashboard_agentic
 
     try:
-        from kiro_crew.dashboard_templates import instance as template_instance
         from kiro_crew.members import crew_panel_enabled
 
         if not crew_panel_enabled():
-            return ""
-        if template_instance.is_locked(slug):
-            # The person locked the layout: an apply would be refused, so no wake
-            # asks for a page.
             return ""
         if dashboard_agentic.bound_package(slug):
             return ""

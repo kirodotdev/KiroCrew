@@ -164,21 +164,17 @@ def page_line(slug: str) -> str:
     crewmate writes gets ``worker_report.dashboard_fields`` naming them; a tab still
     on the suggestions page gets ``dashboard_agentic.SUGGESTIONS_LINE``, the turn
     block's build-your-page line. No line with ``agent.crew_panel`` off (no page
-    tools), under the person's lock while the tab shows suggestions (an apply would
-    be refused), or for a page whose every field is folded. TOTAL: a page that
+    tools), or for a page whose every field is folded. TOTAL: a page that
     cannot be read costs the line. Blocking IO.
     """
     if not slug:
         return ""
     try:
         from kiro_crew import dashboard_agentic
-        from kiro_crew.dashboard_templates import instance as template_instance
 
         if not members_mod.crew_panel_enabled():
             return ""
         if dashboard_agentic.tab_shows_suggestions(slug):
-            if template_instance.is_locked(slug):
-                return ""
             return dashboard_agentic.SUGGESTIONS_LINE
         page = dashboard_agentic.page_in_force(slug)
         if page is None:

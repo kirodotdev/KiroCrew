@@ -83,7 +83,6 @@ The Weekly report and Monthly review never carry it.
 | Case | Line |
 |---|---|
 | No goal, or no confirmed milestones (`knows_its_page`) | none |
-| Layout locked (`template_instance.is_locked`) | none |
 | A package of the crewmate's own is bound (`dashboard_agentic.bound_package`) | none |
 | Tab shows a template page (not `tab_shows_suggestions`) | the offer line (§4.3), once |
 | Tab shows the suggestions page | the build line (§4.2) |
@@ -126,15 +125,14 @@ the template it would replace. Raising it writes nothing to the page.
 - **Yes.** Its one apply step, `POST /api/members/{slug}/dashboard/page-offer`,
   owner-only and refused unless the card set it, writes nothing and wakes the
   crewmate once to write, save and apply its page, then post the same one message.
-  A locked layout refuses the apply. One `dashboard_rollback` brings the template
-  back.
+  One `dashboard_rollback` brings the template back.
 - **No, or expiry.** Nothing changes, and no later wake offers again.
 
-### 4.4 The lock
+### 4.4 The lock (removed, amendment 2026-10-31)
 
-`Lock dashboard layout` on Profile already makes apply and rollback answer
-`dashboard_locked`. Under it no wake carries either line (§4.1), so a crewmate is
-never told to do something the lock refuses.
+The dashboard structure lock this section relied on was removed: a crewmate no
+longer changes its page on its own, and `dashboard_rollback` undoes a change. No
+wake checks a lock any more, and a lock file left on disk is not read.
 
 ## 5. Migration plan
 

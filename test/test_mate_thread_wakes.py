@@ -330,17 +330,13 @@ def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
     assert "next message" in wakes._missing_capability_line("jira")
 
 
-def _page(
-    monkeypatch, *, panel=True, suggestions=False, locked=False, fields=("for_you", "verdict")
-):
+def _page(monkeypatch, *, panel=True, suggestions=False, fields=("for_you", "verdict")):
     """Stub the page lookups ``page_line`` reads, so each test names the tab's state."""
     from kiro_crew import dashboard_agentic
-    from kiro_crew.dashboard_templates import instance as template_instance
 
     manifest = object()
     monkeypatch.setattr(members_mod, "crew_panel_enabled", lambda: panel)
     monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda slug: suggestions)
-    monkeypatch.setattr(template_instance, "is_locked", lambda slug: locked)
     monkeypatch.setattr(
         dashboard_agentic, "page_in_force", lambda slug: (object(), manifest) if fields else None
     )
@@ -367,8 +363,6 @@ def test_a_report_on_the_suggestions_page_carries_the_build_line(monkeypatch):
 
     _page(monkeypatch, suggestions=True)
     assert wakes.page_line("atlas") == dashboard_agentic.SUGGESTIONS_LINE
-    _page(monkeypatch, suggestions=True, locked=True)
-    assert wakes.page_line("atlas") == ""
 
 
 def test_no_page_line_without_page_tools_or_fields(monkeypatch):
