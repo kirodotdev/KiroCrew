@@ -843,12 +843,43 @@ class TestModelMatchesPoolDefault:
 
     @pytest.mark.asyncio
     async def test_pool_claude_backend_folds_an_unadvertised_bare_alias(self, monkeypatch):
-        """With no advertised bare alias, 'opus' and the pool's versioned flagship id
+        """With no advertised bare alias, 'opus' and the pool's claude-opus-5.5 id
         fold to the same registry provider id, so no redundant switch is sent."""
         from kiro_crew import model_registry
         from kiro_crew.providers.acp import AcpProvider
 
         monkeypatch.setattr(model_registry, "advertised_models", lambda provider: [])
+        mgr, factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.backend = "claude"
+        pooled.client.set_model = AsyncMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        with patch.object(type(mgr), "_resolve_agent_model", return_value="claude-opus-5.5"):
+            await mgr.get_or_create("test-key", agent="kirocrew", model="opus")
+
+        pooled.client.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pool_claude_backend_keeps_a_pool_on_the_newest_advertised_opus(
+        self, monkeypatch
+    ):
+        """A pool already on the newest advertised Opus is not switched for 'opus'."""
+        from kiro_crew import model_registry
+        from kiro_crew.providers.acp import AcpProvider
+
+        monkeypatch.setattr(
+            model_registry,
+            "advertised_models",
+            lambda provider: (
+                ["global.anthropic.claude-opus-4-8[1m]"] if provider == "claude_code" else []
+            ),
+        )
         mgr, factory = _make_manager(pool_agent="kirocrew")
         pooled = _make_provider()
         pooled.__class__ = AcpProvider

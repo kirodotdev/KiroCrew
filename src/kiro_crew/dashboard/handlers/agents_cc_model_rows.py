@@ -33,8 +33,8 @@ def merge_advertised_rows(
     # id -- i.e. the backend sent a real name, not the id-fallback
     # ``_advertised_cc_models`` fills in). Claude Code is authoritative for its
     # OWN picker text, so on a collision its label wins over the registry's,
-    # which pins a stale version (bare ``opus`` -> "Opus 4.8 (1M context)" when
-    # the backend calls it "Opus 5.5"). The wire id is always the advertised one.
+    # which pins one version (bare ``opus`` -> "Opus 5.5 (1M context)") that can
+    # differ from the backend's. The wire id is always the advertised one.
     advertised_label: dict[str, dict] = {}
     labelled_keys: set[str] = set()
     for e in advertised:
