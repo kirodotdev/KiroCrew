@@ -381,14 +381,20 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "Invalid JSON body"}, status=400)
+        return web.json_response({"error": "Invalid JSON body", "code": "invalid_json"}, status=400)
     # Shape validation: valid JSON like `[]` has no .get(), and a non-string
     # field ({"provider": 1}) has no .strip() — either would 500. 400 instead.
     if not isinstance(body, dict):
-        return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "Request body must be a JSON object", "code": "body_not_object"},
+            status=400,
+        )
     for _field in ("provider", "skill_id", "name"):
         if not isinstance(body.get(_field, ""), str) and body.get(_field) is not None:
-            return web.json_response({"error": f"'{_field}' must be a string"}, status=400)
+            return web.json_response(
+                {"error": f"'{_field}' must be a string", "code": "invalid_field_type"},
+                status=400,
+            )
 
     provider_name = (body.get("provider") or "").strip()
     skill_id = (body.get("skill_id") or "").strip()
@@ -398,19 +404,30 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     # explicitly false-like value into consent to delete local edits.
     overwrite_raw = body.get("overwrite", False)
     if not isinstance(overwrite_raw, bool):
-        return web.json_response({"error": "'overwrite' must be a boolean"}, status=400)
+        return web.json_response(
+            {"error": "'overwrite' must be a boolean", "code": "invalid_field_type"},
+            status=400,
+        )
     overwrite = overwrite_raw
 
     if not provider_name or not skill_id:
         return web.json_response(
-            {"error": "Both 'provider' and 'skill_id' are required"}, status=400
+            {
+                "error": "Both 'provider' and 'skill_id' are required",
+                "code": "provider_and_skill_id_required",
+            },
+            status=400,
         )
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider_available(provider):
         return web.json_response(
-            {"error": f"Provider '{provider_name}' is not available"}, status=404
+            {
+                "error": f"Provider '{provider_name}' is not available",
+                "code": "provider_unavailable",
+            },
+            status=404,
         )
 
     # Determine the local slug for the installed skill. An explicit user-supplied
@@ -418,7 +435,8 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     slug = _slugify(custom_name) if custom_name else _install_slug(provider, skill_id, skill_id)
     if not slug or not _SAFE_SLUG_RE.match(slug):
         return web.json_response(
-            {"error": f"Cannot derive safe slug from '{skill_id}'"}, status=400
+            {"error": f"Cannot derive safe slug from '{skill_id}'", "code": "invalid_slug"},
+            status=400,
         )
 
     # Conflict check BEFORE the (slow) provider fetch: if the target skill
@@ -477,7 +495,7 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error="timeout",
         )
-        return web.json_response({"error": "Fetch timed out"}, status=504)
+        return web.json_response({"error": "Fetch timed out", "code": "fetch_timeout"}, status=504)
     except SkillProviderError as exc:
         # The provider could not fetch and said why. Show that reason instead of
         # the generic "not found or empty" so the user can act on it.
@@ -507,11 +525,17 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
             downstream_service=provider_name,
             error=scrubbed,
         )
-        return web.json_response({"error": "Failed to fetch skill from provider"}, status=502)
+        return web.json_response(
+            {"error": "Failed to fetch skill from provider", "code": "fetch_failed"}, status=502
+        )
 
     if not bundle and not content:
         return web.json_response(
-            {"error": f"Skill '{skill_id}' not found or empty on {provider_name}"}, status=404
+            {
+                "error": f"Skill '{skill_id}' not found or empty on {provider_name}",
+                "code": "skill_not_found",
+            },
+            status=404,
         )
 
     # Size guard: total bundle must not exceed 5 MiB.
@@ -520,10 +544,13 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         total_size = sum(len(c.encode("utf-8")) for _, c in bundle)
         if total_size > max_bundle_size:
             return web.json_response(
-                {"error": "Skill bundle exceeds size limit (5 MiB)"}, status=413
+                {"error": "Skill bundle exceeds size limit (5 MiB)", "code": "skill_too_large"},
+                status=413,
             )
     elif content and len(content.encode("utf-8")) > max_bundle_size:
-        return web.json_response({"error": "Skill content exceeds size limit"}, status=413)
+        return web.json_response(
+            {"error": "Skill content exceeds size limit", "code": "skill_too_large"}, status=413
+        )
 
     # Write to local skills directory.
     file_count = 0
@@ -672,7 +699,10 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
     else:
         created = await asyncio.to_thread(skills.create_skill, key, content)
         if not created:
-            return web.json_response({"error": f"Failed to create skill at '{key}'"}, status=500)
+            return web.json_response(
+                {"error": f"Failed to create skill at '{key}'", "code": "skill_create_failed"},
+                status=500,
+            )
         kind = "created"
         file_count = 1
 
@@ -783,13 +813,20 @@ async def api_skills_discover_preview(request: web.Request) -> web.Response:
     skill_id = request.query.get("id", "").strip()
 
     if not provider_name or not skill_id:
-        return web.json_response({"error": "Both 'provider' and 'id' are required"}, status=400)
+        return web.json_response(
+            {"error": "Both 'provider' and 'id' are required", "code": "provider_and_id_required"},
+            status=400,
+        )
 
     registry = await asyncio.to_thread(_get_registry)
     provider = registry.get(provider_name)
     if provider is None or not provider_available(provider):
         return web.json_response(
-            {"error": f"Provider '{provider_name}' is not available"}, status=404
+            {
+                "error": f"Provider '{provider_name}' is not available",
+                "code": "provider_unavailable",
+            },
+            status=404,
         )
 
     _empty = {"description": "", "name": "", "content": "", "files": [], "file_count": 0}
