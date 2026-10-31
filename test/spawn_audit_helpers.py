@@ -666,7 +666,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (_divergence_verdict removed — its counting now delegates to the
         # git_divergence module, allowlisted below, and spawns nothing itself.)
         "cli_server_update.py::_update_wheel",
-        "cli_setup.py::_setup_electron",
+        # Desktop app build for `setup --electron-only`: fixed npm / npx argv,
+        # run by the operator from the CLI, each call capped by a timeout.
+        "cli_setup.py::_run_desktop_build_step",
         # Cursor Motion overlay renderer: `<this interpreter> -m
         # kiro_crew.computer_use.overlay_proc`, a fixed argv built from
         # sys.executable plus a module constant — no shell, no PATH lookup, and
