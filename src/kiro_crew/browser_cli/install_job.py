@@ -86,6 +86,12 @@ class BrowserInstallJob:
     finished_at: float | None = None
     error_code: str | None = None
     error_detail: str | None = None
+    #: An advisory the install produced while SUCCEEDING -- a downloaded browser
+    #: whose shared libraries may not resolve (see :func:`notice_of`). Separate from
+    #: the error so a working install is not rendered as a failure, and split from
+    #: its command so the panel can put that in a `<pre>` with a copy button.
+    notice: str | None = None
+    notice_command: str | None = None
 
     @classmethod
     def start(cls, kind: str, engine: str | None = None) -> BrowserInstallJob:
@@ -189,3 +195,36 @@ def outcome_of(result: dict[str, Any], default_step: str) -> tuple[str, str | No
     if returncode == browser_cli_install.TIMEOUT_RC:
         return STATUS_FAILED, ERROR_TIMEOUT, detail
     return STATUS_FAILED, ERROR_STEP_FAILED, detail
+
+
+def notice_of(result: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The advisory an install produced as ``(prose, command)``.
+
+    An advisory step reports something the operator should act on while the
+    install itself SUCCEEDED -- currently a downloaded browser whose shared
+    libraries may not resolve (``browser_cli.install._verify_browser_libraries``).
+    It carries ``ok: True``, so :func:`outcome_of` cannot surface it: that reads a
+    step only when the install failed, and only the decisive last one. Without
+    this, the probe's whole value -- naming the libraries to install before the
+    operator meets a cryptic launch failure -- is computed and dropped.
+
+    Returned as two values because each is rendered differently: the prose is
+    muted, and the command goes in a `<pre>` with a copy button because it must be
+    transcribed EXACTLY. Keyed on the ``advisory`` flag rather than the step's
+    name, so a second advisory does not need this function edited to be seen.
+
+    The step's own name is deliberately NOT prefixed: unlike ``error_detail``,
+    this text is a sentence about the operator's machine. Redacted and capped like
+    the error, because it is rendered verbatim in Settings.
+    """
+    if not result.get("ok"):
+        return (None, None)
+    for step in result.get("steps") or []:
+        if not step.get("advisory"):
+            continue
+        prose = str(step.get("advisory_prose") or "").strip()
+        if not prose:
+            continue
+        command = str(step.get("advisory_command") or "").strip()
+        return (bounded_detail(prose), bounded_detail(command) or None)
+    return (None, None)
