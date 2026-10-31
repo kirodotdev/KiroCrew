@@ -119,7 +119,14 @@ mirror: the consumed spec is the parse its member mounts and zero-tool answer
 come from (`AcpClient._mirrorless_member_mounts`), and since its projection is
 `BROKER_ONLY` a declared server that is not pooled never reaches pi and leaves
 the session unverified rather than applied. On a member session pi's pooled stubs
-pass the spec's `tools` allowlist, as a mirror's do. `ACP_BACKENDS_MEMBER_TOOL_LIMITS`
+pass the spec's `tools` allowlist, as a mirror's do. strands confirms through its
+mirror like the other mirrored hosts; its array reaches the CLI as the
+`--mcp-config` launch file, built before that launch, so the spec confirmed is the
+one the process started with (`strands/saved-spec-projection-live.jsonl`).
+strands is outside `ACP_BACKENDS_MEMBER_DISPATCH` and `ACP_BACKENDS_MEMBER_PANEL`:
+those mounts are stdio Crew children inside the session's sandbox, and the
+enforced credential mask hides the gateway credential from them.
+`ACP_BACKENDS_MEMBER_TOOL_LIMITS`
 (Kiro only) says which honour a saved spec's per-tool `disabledTools`; on any
 other backend such a spec is refused before spawn with
 `capability_tool_limits_unsupported`. A member DM whose
@@ -128,7 +135,7 @@ no member-DM backend setting honours per-tool limits and that refusal's remedy
 is to change the saved spec. A crewmate's WORKER runs a spec built per session
 from the worker base plus that crewmate's file (`mate_worker.worker_session_spec`,
 the one harness-neutral seam), carried the way a member chat's saved spec is.
-`ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude) names the hosts that
+`ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, strands) names the hosts that
 carry it: KAS's projection reads the seam; the mirrored hosts read it through the
 session MCP projection, keyed by the session (`acp.session_mcp._crewmate_worker_spec`).
 kiro-cli is a member backend but not in the set: it reads `--agent` off disk from
@@ -148,12 +155,14 @@ own because the worker's limits travel differently from a member chat's: the
 worker spec rewrites every switched-off tool into `excludedTools`, which KAS
 projects, so KAS (the default backend) honours them and is in the set; claude
 mounts the worker's servers whole and reports `excludedTools` as a gap, so it
-is not. codex and deepseek build their array through the same projection but
+is not, and neither is strands, whose mirror withholds a narrowed server whole.
+strands carries the worker's array in its `--mcp-config` launch file, captured
+in `strands/worker-kit-live.jsonl`. codex and deepseek build their array through the same projection but
 are outside `ACP_BACKENDS_MATE_WORKER_KIT` until a live capture of a worker
 session lands for each, so a worker there is refused. Both providers answer `mate_worker_kit_supported` and
 `mate_worker_tool_limits_supported` from the two sets. The worker's prompt (its
 principles, then its crewmate's) rides the `[AGENT SYSTEM PROMPT]` block only on
-`ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT` (claude), the kit
+`ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT` (claude, strands), the kit
 hosts whose mirror rules `Concern.PROMPT` `WITHHELD`; KAS's wire spec carries it.
 Which channel a worker session uses is its live provider's answer
 (`mate_worker_prompt_in_context`), recorded at allocation, so a later change to
