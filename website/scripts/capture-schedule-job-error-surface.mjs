@@ -19,6 +19,16 @@
  * leaving it on a failed row makes a red Error badge read as a success on
  * hover. The script exits non-zero if that regresses.
  *
+ * The last block photographs a LONG traceback on a laptop-height viewport,
+ * where the dialog's own `max-h-[86vh]` body scrolls. The four-line fixtures
+ * above render identically whatever the error box's cap is -- they are shorter
+ * than every cap in play -- so they cannot show the surface being crushed, and
+ * the `-11-` shot is the only one that can. It asserts the notice's rendered
+ * height exceeds the old fixed 200px box, which is what "not clipped" means
+ * once the box has an inner scrollbar of its own: `overflow-y-auto` gives the
+ * notice an automatic minimum size of 0, so the body's flex column squeezes it
+ * to a sliver unless it is also `shrink-0`.
+ *
  * Usage: node scripts/capture-schedule-job-error-surface.mjs [outDir] [prefix]
  */
 import { chromium } from 'playwright'
@@ -69,6 +79,91 @@ const SUCCEEDED = {
   next_run_ts: now + 20700,
 }
 
+/**
+ * A realistic traceback, deliberately longer than the old fixed cap.
+ *
+ * `max-h-[200px]` is invisible while the error is shorter than 200px -- the
+ * four-line FAILED fixture above renders identically with and without the cap --
+ * so the surface has to be photographed with content long enough to reach it, on
+ * a laptop-height viewport where the dialog's own `max-h-[86vh]` body scrolls.
+ * That combination is the reported bug: the box collapses to a sliver and the
+ * line naming the failure is the line that falls out of it.
+ */
+const LONG_ERROR = {
+  id: 'c7d0e4f1-90b3',
+  name: 'Nightly incremental sync',
+  schedule: '0 3 * * *',
+  command: 'python -m kirocrew.sync --mode=incremental',
+  message: '',
+  enabled: true,
+  last_status: 'error',
+  last_error: [
+    'Traceback (most recent call last):',
+    '  File "/opt/kirocrew/sync/__main__.py", line 61, in <module>',
+    '    raise SystemExit(main())',
+    '  File "/opt/kirocrew/sync/__main__.py", line 54, in main',
+    '    report = run_incremental(cfg)',
+    '  File "/opt/kirocrew/sync/pipeline.py", line 218, in run_incremental',
+    '    batch = fetch_batch(cursor, cfg.batch_size)',
+    '  File "/opt/kirocrew/sync/source.py", line 143, in fetch_batch',
+    '    response = self._request(cursor)',
+    '  File "/opt/kirocrew/sync/source.py", line 97, in _request',
+    '    raise SourceUnavailable(endpoint, status)',
+    'kirocrew.sync.source.SourceUnavailable: upstream returned 503 for',
+    '  https://sync.internal/records?cursor=8841&limit=500',
+    'Retry-After: 30',
+    'Attempt 4 of 4 failed after 30.1s',
+    'The cursor was NOT advanced, so the next run re-reads the same window:',
+    '  cursor=8841 window=[2026-10-14T03:00:00Z, 2026-10-15T03:00:00Z]',
+    'Last successful sync: 2026-10-13T03:00:11Z (48h behind)',
+    'Downstream tables left stale: records, records_index, sync_cursor',
+    'Operator action: check the sync.internal load balancer health, then',
+    '  re-run with `kirocrew sync --resume --from-cursor 8841`.',
+    'exit status 1',
+  ].join('\n'),
+  last_result: 'incremental sync: 0 records written',
+  last_run_ts: now - 600,
+  next_run_ts: now + 86400,
+}
+
+/**
+ * The same shape on the success side: a long `last_result`, so the paired
+ * `<pre>` can be measured rather than assumed. Its wrapper is not a scroll
+ * container, so this block is what decides whether the sibling surface needs
+ * the same flex treatment or only the same cap.
+ */
+const LONG_RESULT = {
+  id: 'e2b71c93-4a08',
+  name: 'Nightly incremental sync (previous run)',
+  schedule: '0 3 * * *',
+  command: 'python -m kirocrew.sync --mode=incremental',
+  message: '',
+  enabled: true,
+  last_status: 'ok',
+  last_result: [
+    'starting incremental sync from cursor 8841',
+    'source: https://sync.internal/records',
+    'batch 1/12: 500 records (cursor 8841 -> 9341)',
+    'batch 2/12: 500 records (cursor 9341 -> 9841)',
+    'batch 3/12: 500 records (cursor 9841 -> 10341)',
+    'batch 4/12: 500 records (cursor 10341 -> 10841)',
+    'batch 5/12: 500 records (cursor 10841 -> 11341)',
+    'batch 6/12: 500 records (cursor 11341 -> 11841)',
+    'batch 7/12: 500 records (cursor 11841 -> 12341)',
+    'batch 8/12: 500 records (cursor 12341 -> 12841)',
+    'batch 9/12: 500 records (cursor 12841 -> 13341)',
+    'batch 10/12: 500 records (cursor 13341 -> 13841)',
+    'batch 11/12: 500 records (cursor 13841 -> 14341)',
+    'batch 12/12: 120 records (cursor 14341 -> 14461)',
+    'index rebuild: records_index (4.2s)',
+    'index rebuild: sync_cursor (0.1s)',
+    'downstream tables refreshed: records, records_index, sync_cursor',
+    'sync complete: 4120 records written',
+  ].join('\n'),
+  last_run_ts: now - 86400,
+  next_run_ts: now + 3600,
+}
+
 const failures = []
 function check(ok, message) {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${message}`)
@@ -76,9 +171,11 @@ function check(ok, message) {
 }
 
 const VIEWPORT = { width: 1500, height: 1400 }
+/** A laptop-height viewport, where the dialog's own `max-h-[86vh]` body scrolls. */
+const LAPTOP_VIEWPORT = { width: 1500, height: 800 }
 
-async function schedulePageWith(browser, jobs, theme) {
-  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
+async function schedulePageWith(browser, jobs, theme, viewport = VIEWPORT) {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 })
   const page = await context.newPage()
   logPageProblems(page)
   await stubDashboardApi(page, {
@@ -191,6 +288,76 @@ async function main() {
       titles.some(t => t && t.includes('reclaimed 118 MB')),
       'row tooltip: a row that did not fail still carries its output',
     )
+    await context.close()
+  }
+
+  // --- a long traceback on a laptop-height viewport --------------------------
+  // The one shape the four-line fixtures cannot photograph: content past the
+  // cap, in a dialog tall enough to scroll. The assertion is geometric -- the
+  // notice's rendered height -- because "is it clipped" has no DOM property and
+  // a screenshot alone cannot fail a build.
+  {
+    const { context, page } = await schedulePageWith(browser, [LONG_ERROR], 'dark', LAPTOP_VIEWPORT)
+    await openDetail(page, base, LONG_ERROR.name)
+
+    const notice = page.getByTestId('schedule-job-last-error')
+    check(await notice.isVisible(), 'long traceback: Last Error notice is in the dialog')
+    check(
+      (await notice.textContent())?.includes('most recent call last'),
+      'long traceback: the notice carries the traceback text',
+    )
+    const box = await notice.boundingBox()
+    const shape = await notice.evaluate(node => ({
+      tag: node.tagName,
+      cls: String(node.className),
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }))
+    console.log(`SHAPE ${JSON.stringify(shape)}`)
+    console.log(`OUTER ${(await notice.evaluate(node => node.outerHTML)).slice(0, 300)}`)
+    check(
+      box !== null && box.height > 200,
+      `long traceback: the surface is not crushed into the old fixed 200px box (rendered ${box && box.height}px, ${shape.tag} client=${shape.clientHeight} scroll=${shape.scrollHeight})`,
+    )
+    await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]')
+      const scroller = dialog && Array.from(dialog.querySelectorAll('*')).find(
+        el => el.scrollHeight > el.clientHeight + 8 && getComputedStyle(el).overflowY !== 'visible')
+      if (scroller) scroller.scrollTop = scroller.scrollHeight
+    })
+    await page.waitForTimeout(250)
+    await page.getByRole('dialog').screenshot({ path: `${OUT}/${PREFIX}-11-long-traceback.png` })
+    await context.close()
+  }
+
+  // --- a long `last_result` on the same laptop-height viewport ---------------
+  // The sibling surface, measured the same way: if it is also a shrinking flex
+  // item, the same one-line cap fix would leave it just as unreadable.
+  {
+    const { context, page } = await schedulePageWith(browser, [LONG_RESULT], 'dark', LAPTOP_VIEWPORT)
+    await openDetail(page, base, LONG_RESULT.name)
+
+    const output = page.locator('pre').filter({ hasText: '4120 records written' }).first()
+    check(await output.isVisible(), 'long output: the Last Output block is in the dialog')
+    const shape = await output.evaluate(node => ({
+      cls: String(node.className),
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }))
+    console.log(`SHAPE ${JSON.stringify(shape)}`)
+    const box = await output.boundingBox()
+    check(
+      box !== null && box.height > 200,
+      `long output: the surface is not crushed into the old fixed 200px box (rendered ${box && box.height}px, client=${shape.clientHeight} scroll=${shape.scrollHeight})`,
+    )
+    await page.evaluate(() => {
+      const dialog = document.querySelector('[role="dialog"]')
+      const scroller = dialog && Array.from(dialog.querySelectorAll('*')).find(
+        el => el.scrollHeight > el.clientHeight + 8 && getComputedStyle(el).overflowY !== 'visible')
+      if (scroller) scroller.scrollTop = scroller.scrollHeight
+    })
+    await page.waitForTimeout(250)
+    await page.getByRole('dialog').screenshot({ path: `${OUT}/${PREFIX}-12-long-output.png` })
     await context.close()
   }
 
