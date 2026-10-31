@@ -27,6 +27,12 @@ from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.testing.clock import ManualClock
 
+# Every test here compares two built contexts byte for byte, and ``build_message``
+# prepends a ``[RESOURCES]`` line carrying the host's LIVE free-memory figure once
+# that figure is tight. A busy runner drifts between the two builds (1.7 GB, then
+# 1.6 GB on a macOS split), so the reading is pinned, not left as a hidden input.
+pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
 MESSAGE = "Summarize the deploy checklist."
 _REAL_READS = store_admission.read_session_memory
 
