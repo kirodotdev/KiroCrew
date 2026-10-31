@@ -1404,6 +1404,43 @@ async def test_the_resume_after_a_wait_returns_the_stores_word_and_not_the_handl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("woken_to", [m.RETRY_WAIT, m.QUEUED, m.RECOVERING])
+async def test_a_resume_reclaims_a_row_the_wake_left_in_any_claimable_state(
+    store: TaskStore, clock: Clock, woken_to: str
+) -> None:
+    """Every ``CLAIMABLE`` state is taken back under a NEW claim, not only
+    ``retry_wait``: the coordinator moves a parked row on to ``queued``, and a
+    wait can end in ``recovering``. A resume that adopted such a row's generation
+    instead would answer False and stop the step with the row left claimable."""
+    adm, _ = _admission(store, clock, cap=1)
+    rec = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task1")
+    h = await adm.admit(rec.id)
+    h.running()
+    assert store.enter_wait(
+        rec.id,
+        WaitRecord.input("q-1", since=clock(), reason="passphrase?").to_dict(),
+        generation=h.generation,
+    )
+    if woken_to == m.RECOVERING:
+        assert store.transition(rec.id, m.RECOVERING, generation=store.get(rec.id).generation)
+    else:
+        assert WaitLedger(store, clock=clock).wake(rec.id, reason="input answered") is not None
+        if woken_to == m.QUEUED:
+            assert store.transition(
+                rec.id, m.QUEUED, generation=store.get(rec.id).generation, next_run_at=clock()
+            )
+    assert store.state_of(rec.id) == woken_to
+    left_by_wake = store.get(rec.id).generation
+
+    assert await adm._resume_after_wait(h) is True
+
+    row = store.get(rec.id)
+    assert row.state == m.RUNNING
+    assert h.generation == row.generation > left_by_wake, "the resume did not take a new claim"
+    assert adm.lane.running == 1
+
+
+@pytest.mark.asyncio
 async def test_the_two_wait_paths_publish_a_waiting_state_before_they_await(
     store: TaskStore, clock: Clock
 ) -> None:

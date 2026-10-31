@@ -821,7 +821,7 @@ class TaskStore:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 for rec in batch:
-                    if rec.state != QUEUED and rec.state not in CLAIMABLE:
+                    if rec.state not in CLAIMABLE:
                         raise ValueError(f"accept() only takes claimable rows, got {rec.state!r}")
                     if not rec.created_at:
                         rec.created_at = ts
