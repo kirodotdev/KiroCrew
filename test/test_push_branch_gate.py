@@ -1340,3 +1340,218 @@ class TestUnrecognisedOptionsReadProtectively:
         # scan's single-arg misread) and not fed to the unrecognised-option
         # fallback (which would over-deny a shape git accepts).
         assert not security._git_publish_floor_tags("git push -- origin -x")
+
+
+class TestQuotedGhTextValueIsNotAPush:
+    """A push line inside a literal ``gh`` body / title / notes value is data.
+
+    The push splitter ends a segment at every newline, so the middle line of
+    ``gh pr create --body "notes⏎git push⏎more"`` was judged as a bare push. Only
+    one provable shape is read as data: a single ``gh pr|issue|release`` command
+    of plain words and literal quoted words, the multi-line one being the value
+    of a text flag. Every other shape keeps its per-line reading.
+    """
+
+    ALLOWED = (
+        f'gh pr create --body "notes\n{PUSH}\nmore"',
+        f"gh pr create --body 'notes\n{PUSH}\nmore'",
+        f'gh pr create -R o/r --head u:fix/x --title "t" --body "a\n{PUSH} origin main\nb"',
+        f'gh issue comment 12 -b "x\n{PUSH}\n"',
+        f'gh release create v1 --notes "n\n{PUSH} -f\n"',
+    )
+
+    DENIED = (
+        # A real push outside the quotes, on its own line or after a separator.
+        f'gh pr create --body "notes"\n{PUSH}',
+        f'gh pr create --body "x\n"\n{PUSH} origin main',
+        f'gh pr create --body "x\n" ; {PUSH} origin main',
+        f'gh pr create --body "x\n" && {PUSH} origin ma$b',
+        f'gh pr create --body "x\n" && {PUSH} origin {{main,x}}',
+        f"gh pr create --body \"x\n\" && {PUSH} origin $'main'",
+        f'{PUSH} origin main\ngh pr create --body "a\n"',
+        # Quote tricks whose quote reading is not bash's.
+        f"gh pr create --body x # don't\n{PUSH}\n'",
+        f"gh pr create --body \"x\n\" # it's\n{PUSH}\n'",
+        f'gh pr create --body "$(echo)\n{PUSH}\n"',
+        f'gh pr create --body "a\\"\n{PUSH}\n"',
+        f'gh pr create --body "unterminated\n{PUSH}',
+        f"gh pr create --body x \\\n{PUSH}",
+        f'gh pr create --body-file - <<EOF\n"\nEOF\n{PUSH}\n"',
+        f"gh pr create --body \"a\"'b\n{PUSH}\n'",
+        f'gh pr create --body "a\n{PUSH}\n" --title "$({PUSH} origin main)"',
+        # PowerShell: ``--%`` passes the rest of the LINE verbatim, and a curly
+        # quote ends a quoted word there, so the next line runs as a command.
+        f'gh pr create --% --body "x\n{PUSH} origin main\n"',
+        f"gh pr create --body 'x\u2019\n{PUSH} origin main\n'",
+        f'gh pr create --body "x\u201d\n{PUSH} origin main\n"',
+        # Not a text-flag value of a gh core command.
+        f'gh pr create "a\n{PUSH}\n"',
+        f'gh pr merge -m "a\n{PUSH}\n"',
+        f'gh myalias --body "a\n{PUSH}\n"',
+        f'gh api x --body "a\n{PUSH}\n"',
+        # Another owner, a wrapper, or more than one simple command.
+        f'bash -c "x\n{PUSH}"',
+        f'sh -c "x\n{PUSH}\n"',
+        f"eval 'x\n{PUSH}\n'",
+        f'git commit -m "x\n{PUSH}\n"',
+        f'x=1 gh pr create --body "a\n{PUSH}\n"',
+        f'cd /r && gh pr create --body "a\n{PUSH}\n"',
+        f'gh pr create --body "a\n{PUSH}\n" | cat',
+        f'gh pr create --body "a\n{PUSH}\n">/dev/null',
+        f'(gh pr create --body "a\n{PUSH}\n")',
+    )
+
+    @pytest.fixture(autouse=True)
+    def _shell_reads_quoted_newlines_as_data(self, _floor_monkeypatch) -> None:
+        # The allowed shape holds where the shell is bash or PowerShell; the
+        # Windows reading is pinned on its own below, so the rows run alike on
+        # every CI platform.
+        from kiro_crew.security import shell_normalizer_walk
+
+        _floor_monkeypatch.setattr(shell_normalizer_walk, "_QUOTED_NEWLINE_MAY_END_COMMAND", False)
+
+    #: kiro-cli titles a shell call ``Running: <command>`` and the deny tiers judge
+    #: that title as a subject of its own, so every row is also run as its title.
+    TITLES = ("", "Running: ")
+
+    #: Not the one exact title prefix: each keeps the per-line reading.
+    PREFIX_LOOKALIKES = (
+        f'xRunning: gh pr create --body "notes\n{PUSH}\nmore"',
+        f'Running:gh pr create --body "notes\n{PUSH}\nmore"',
+        f'Running:\tgh pr create --body "notes\n{PUSH}\nmore"',
+        f'Running: Running: gh pr create --body "notes\n{PUSH}\nmore"',
+        f'Running: gh pr create --body "x\n"\nRunning: {PUSH} origin main',
+    )
+
+    @pytest.mark.parametrize("title", TITLES)
+    @pytest.mark.parametrize("command", ALLOWED)
+    def test_a_push_line_in_a_literal_gh_text_value_is_allowed(
+        self, command: str, title: str, captured_sel_events
+    ) -> None:
+        assert is_denied(title + command) is None
+        # Not a publish at all, so no push_allowed audit is recorded for it.
+        assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+    @pytest.mark.parametrize("title", TITLES)
+    @pytest.mark.parametrize("command", DENIED)
+    def test_every_other_shape_keeps_its_per_line_reading(self, command: str, title: str) -> None:
+        from kiro_crew.security import shell_normalizer
+
+        subject = (title + command).lower()
+        assert shell_normalizer._gh_data_newlines_as_spaces(subject) == subject
+        assert is_denied(title + command), f"{title + command!r} was allowed"
+        assert _is_push_to_protected_branch(command)
+
+    @pytest.mark.parametrize("command", PREFIX_LOOKALIKES)
+    def test_only_one_exact_title_prefix_is_read_through(self, command: str) -> None:
+        from kiro_crew.security import shell_normalizer
+
+        assert shell_normalizer._gh_data_newlines_as_spaces(command.lower()) == command.lower()
+        assert is_denied(command), f"{command!r} was allowed"
+
+    @pytest.mark.parametrize("title", TITLES)
+    @pytest.mark.parametrize("command", ALLOWED)
+    def test_on_windows_a_quoted_newline_keeps_the_per_line_reading(
+        self, command: str, title: str, monkeypatch
+    ) -> None:
+        # cmd.exe ends a command at a newline even inside double quotes, so on
+        # Windows the push line in the body may run, and it is judged as a push.
+        from kiro_crew.security import shell_normalizer_walk
+
+        subject = (title + command).lower()
+        monkeypatch.setattr(shell_normalizer_walk, "_QUOTED_NEWLINE_MAY_END_COMMAND", True)
+        assert shell_normalizer_walk._gh_data_newlines_as_spaces(subject) == subject
+        assert is_denied(title + command), f"{title + command!r} was allowed"
+
+
+class TestPrintfOutputIsNotItsSourceText:
+    """A ``printf`` / ``echo -e`` producer prints text its source does not spell.
+
+    ``is_denied`` lowercases before the walk, so ``\\X27`` (printed as text, read
+    by the shell as ``X27``) became ``\\x27`` and decoded to a quote; and a printf
+    FORMAT's ``%s`` is filled by its arguments, so ``%s`` -> ``"`` closes the body
+    before the push line. The decoder also reads ``\\0047`` and echo's ``\\47`` as
+    quotes bash never prints. So only a command with no backslash and no
+    conversion gets the literal gh-body reading.
+    """
+
+    PROTECTED = (
+        f"printf 'gh pr create --body \\X27\\x0a{PUSH} origin main\\x0a\\X27' | bash",
+        f"printf 'gh pr create --body \\X22\\x0a{PUSH} origin main\\x0a\\X22' | bash",
+        f"echo -e 'gh pr create --body \\X27\\x0a{PUSH} origin main\\x0a\\X27' | bash",
+        f"printf 'gh pr create --body \"n%s\\x0a{PUSH} origin main\\x0a%s\"' '\"' ': \"' | bash",
+        f"printf 'gh pr create --body \"n%b\\x0a{PUSH} origin main\\x0a%b\"' '\"' ': \"' | bash",
+        f'printf "gh pr create --body \'n%s\\x0a{PUSH} origin main\\x0a%s\'" "\'" ": \'" | bash',
+        # A printf FORMAT reads ``\\0047`` as ``\\004`` + ``7``, and bash's echo
+        # prints ``\\47`` as text: neither makes a quote, so the push line runs.
+        f"printf 'gh pr create --body \\0047\\x0a{PUSH} origin main\\x0a\\0047' | bash",
+        f"printf 'gh pr create --body \\0042\\x0a{PUSH} origin main\\x0a\\0042' | bash",
+        f"echo -e 'gh pr create --body \\47\\x0a{PUSH} origin main\\x0a\\47' | bash",
+        f"echo -e 'gh pr create --body \\42\\x0a{PUSH} origin main\\x0a\\42' | bash",
+        # Any backslash keeps the per-line reading, even where the printed text
+        # would be a real gh body: refused, as on main.
+        f"printf 'gh pr create --body \"100%%\\x0a{PUSH} origin main\\x0a\"' | bash",
+    )
+
+    FEATURE = (
+        f"printf 'gh pr create --body \\X27\\x0a{PUSH} origin feat/x\\x0a\\X27' | bash",
+        f"printf 'gh pr create --body \"n%s\\x0a{PUSH} origin feat/x\\x0a%s\"' '\"' ': \"' | bash",
+        f"printf 'gh pr create --body \\0047\\x0a{PUSH} origin feat/x\\x0a\\0047' | bash",
+        f"echo -e 'gh pr create --body \\47\\x0a{PUSH} origin feat/x\\x0a\\47' | bash",
+    )
+
+    #: No backslash and no conversion: nothing decodes it, so the body is data.
+    LITERAL_BODY = f"gh pr create --body '100%%\n{PUSH} origin main\n'"
+
+    @pytest.fixture(autouse=True)
+    def _shell_reads_quoted_newlines_as_data(self, _floor_monkeypatch) -> None:
+        from kiro_crew.security import shell_normalizer_walk
+
+        _floor_monkeypatch.setattr(shell_normalizer_walk, "_QUOTED_NEWLINE_MAY_END_COMMAND", False)
+
+    @pytest.mark.parametrize("command", PROTECTED)
+    def test_a_printed_quote_does_not_hide_a_protected_push(self, command: str) -> None:
+        assert is_denied(command), f"{command!r} was allowed"
+
+    @pytest.mark.parametrize("command", FEATURE)
+    def test_the_feature_twin_is_an_audited_push(self, command: str, captured_sel_events) -> None:
+        assert is_denied(command) is None
+        assert any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+    def test_a_literal_percent_keeps_the_body_reading(self, captured_sel_events) -> None:
+        assert is_denied(self.LITERAL_BODY) is None
+        assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+
+class TestFilteredPayloadKeepsItsLineReading:
+    """A filter between a payload and its evaluator may rewrite the payload.
+
+    ``echo '<gh body>' | tr -d '"' | bash`` hands the evaluator the echo text with
+    its quotes removed, so a push line the source text holds inside a gh body runs
+    as its own command. Only the command the shell itself runs gets the gh-body
+    reading; every nested source keeps its per-line reading, as on main.
+    """
+
+    _BODY = "gh pr create --body \"x\ngit pu''sh origin {}\n\""
+
+    PROTECTED = (
+        f"echo '{_BODY.format('main')}' | tr -d '\"' | bash",
+        f"echo '{_BODY.format('main')}' | sed 's/\"//g' | sh",
+        f"echo '{_BODY.format('main')}' | tr -d '\"' | bash -s",
+    )
+
+    FEATURE = f"echo '{_BODY.format('feat/x')}' | tr -d '\"' | bash"
+
+    @pytest.fixture(autouse=True)
+    def _shell_reads_quoted_newlines_as_data(self, _floor_monkeypatch) -> None:
+        from kiro_crew.security import shell_normalizer_walk
+
+        _floor_monkeypatch.setattr(shell_normalizer_walk, "_QUOTED_NEWLINE_MAY_END_COMMAND", False)
+
+    @pytest.mark.parametrize("command", PROTECTED)
+    def test_a_filtered_payload_does_not_hide_a_protected_push(self, command: str) -> None:
+        assert is_denied(command), f"{command!r} was allowed"
+
+    def test_the_feature_twin_is_an_audited_push(self, captured_sel_events) -> None:
+        assert is_denied(self.FEATURE) is None
+        assert any(e.event_type == "push_allowed" for e in captured_sel_events)
