@@ -47,8 +47,8 @@ from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
-from dashboard_owner_helpers import NoConfiguredOwner
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 from issue_radar_routes_coverage_helpers import (
     BASE,
     OTHER_SHA,
@@ -605,6 +605,29 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
             res = await self._call({"url": "   "})
         self.assertEqual(res.status, 400)
         parse.assert_not_called()
+
+    async def test_a_non_string_url_is_a_coded_400_before_any_parse(self):
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/connect", routes._handle_connect)
+        async with TestClient(TestServer(app)) as client:
+            for url in (1, ["https://github.com/o/r"], {"u": "x"}, True):
+                with self.subTest(url=url), \
+                        mock.patch.object(routes.provider, "parse_repo_url") as parse:
+                    res = await client.post("/connect", json={"url": url})
+                    self.assertEqual(res.status, 400)
+                    self.assertEqual(
+                        await res.json(),
+                        {"error": "url must be a string", "code": "invalid_field_type"},
+                    )
+                    parse.assert_not_called()
+
+    async def test_a_null_or_absent_url_is_still_missing(self):
+        for body in ({}, {"url": None}):
+            with self.subTest(body=body):
+                res = await self._call(body)
+                self.assertEqual(res.status, 400)
+                self.assertEqual(_body(res)["error"], "missing 'url'")
 
     async def test_an_unsupported_url_is_400(self):
         with mock.patch.object(
