@@ -122,6 +122,9 @@ class Runner:
             "GITHUB_OUTPUT": str(self.outputs_file),
             "START": START,
             "END": END,
+            # The content tests read the plain rendering; the link tests below
+            # pass mrkdwn explicitly.
+            "LINK_STYLE": "plain",
         }
 
     def _run(self, name: str, script: str | None = None, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -154,7 +157,7 @@ class Runner:
         self.part = self._outputs()
         return self.part
 
-    def render(self, verdict: dict | None = None) -> str:
+    def render(self, verdict: dict | None = None, link_style: str = "plain") -> str:
         """Run the two-section render, substituting ${{ }} the way Actions does."""
         target = self.work / "issue-verdict.json"
         target.unlink(missing_ok=True)
@@ -166,7 +169,7 @@ class Runner:
             script = script.replace("${{ steps.partition.outputs.%s }}" % key, value)
         assert not re.search(r"\$\{\{", script), "unsubstituted expression left in the script"
 
-        step = self._run(RENDER_STEP, script=script)
+        step = self._run(RENDER_STEP, script=script, LINK_STYLE=link_style)
         assert step.returncode == 0, step.stderr
         self.render_stdout = step.stdout
         return (self.work / "body.txt").read_text()
@@ -547,3 +550,52 @@ def test_the_two_narratives_are_independent_model_calls() -> None:
     assert steps["bedrock"]["continue-on-error"] is True
     assert steps["issue_narrative"]["continue-on-error"] is True
     assert steps["issue_narrative"]["id"] != steps["bedrock"]["id"]
+
+
+# ── Issue links ──────────────────────────────────────────────────────────────
+
+
+def test_mrkdwn_links_each_issue_filed_in_the_window(runner: Runner) -> None:
+    """A link is rebuilt from the URL GitHub returned; the model never writes one."""
+    runner.fetch()
+    verdict = {**VERDICT, "bugs": "Dashboard defects (#4001), plus an older one (#3999)."}
+    body = runner.render(verdict, link_style="mrkdwn")
+    assert "<https://github.com/o/r/issues/4004|#4004> — rc.8 regression" in body
+    assert "<https://github.com/o/r/issues/4001|#4001>" in body
+    assert "<https://github.com/o/r/issues/4002|#4002>" in body
+    # Filed before the window opened, so it is not this window's issue.
+    assert "#3999" in body and "|#3999>" not in body
+
+
+def test_the_fallback_list_links_its_issues_in_mrkdwn(runner: Runner) -> None:
+    runner.fetch()
+    body = runner.render(None, link_style="mrkdwn")
+    assert "<https://github.com/o/r/issues/4003|#4003> Sandbox fence misses relative paths" in body
+
+
+def test_plain_mode_links_no_issue(runner: Runner) -> None:
+    runner.fetch()
+    assert "<" not in runner.render(VERDICT, link_style="plain")
+
+
+def test_the_delivery_sanitizer_keeps_issue_and_pr_links_only(runner: Runner) -> None:
+    """mrkdwn delivery escapes every '<' except a github.com PR or issue link."""
+    body = (
+        "<https://github.com/o/r/issues/7|#7> <https://github.com/o/r/pull/8|#8> "
+        "<https://evil.example/x|#9> <!channel>\n"
+    )
+    (runner.work / "body.txt").write_text(body)
+    step = runner._run(
+        "Deliver report",
+        LINK_STYLE="mrkdwn",
+        DRY_RUN="true",
+        COUNT="1",
+        ICOUNT="1",
+        GITHUB_STEP_SUMMARY=str(runner.work / "summary.md"),
+    )
+    assert step.returncode == 0, step.stderr
+    safe = (runner.work / "body_safe.txt").read_text()
+    assert "<https://github.com/o/r/issues/7|#7>" in safe
+    assert "<https://github.com/o/r/pull/8|#8>" in safe
+    assert "&lt;https://evil.example/x|#9>" in safe
+    assert "&lt;!channel>" in safe
