@@ -105,6 +105,33 @@ GATEWAY_NOTICE_CREW_NAME_UNDISPATCHABLE = "crew_name_undispatchable"
 GATEWAY_NOTICE_REMOTE_CREW_READ_ONLY = "remote_crew_read_only"
 GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED = "archive_failed_turn_cancelled"
 
+# Rows whose text is COMPOSED outside the dashboard: the token localizes only
+# the fixed frame, and the variable part the gateway interpolated (a reason, a
+# containment-change phrase, a message excerpt, a start error, a command name)
+# rides verbatim in ``notice_args``, so the card still shows its exact detail.
+GATEWAY_NOTICE_QUEUED_MESSAGE_DROPPED = "queued_message_dropped"
+GATEWAY_NOTICE_SEND_DROPPED = "send_dropped"
+GATEWAY_NOTICE_SEND_DISCARDED = "send_discarded"
+GATEWAY_NOTICE_EAGER_SPAWN_STOPPED = "eager_spawn_stopped"
+GATEWAY_NOTICE_TURN_FAILED_BEFORE_START = "turn_failed_before_start"
+GATEWAY_NOTICE_LOCAL_COMMAND_FAILED_BEFORE_START = "local_command_failed_before_start"
+
+# Terminal turn-limit and never-started cards (``turn_dispatch``). Their numbers
+# (the limit, the wait) ride in ``notice_args``.
+GATEWAY_NOTICE_TURN_TIMEOUT = "turn_timeout"
+GATEWAY_NOTICE_TURN_TIMEOUT_NATIVE_PENDING = "turn_timeout_native_pending"
+GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED = "background_turn_abandoned"
+GATEWAY_NOTICE_CREW_TURN_NO_PERMIT = "crew_turn_no_permit"
+
+# Interruption rows a restart or a chat-close reconcile lands
+# (``slot_persistence/turn_marker``). Fixed text; no args.
+GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART = "turn_interrupted_restart"
+GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE = "turn_interrupted_close"
+
+# A capability a member's saved config needs but its backend cannot honour
+# (``turn_failures``). Fixed text; no args.
+GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED = "capability_tool_limits_unsupported"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"

@@ -386,6 +386,43 @@ _RAISE_SESSION_LIMIT_HINT = (
 )
 
 
+def turn_timeout_notice(
+    timeout_secs: float,
+    native_cancel_outcome: "CancelOutcome | None" = None,
+    limit_scope: str = TURN_LIMIT_GLOBAL,
+) -> tuple[str, str, dict[str, str]]:
+    """The timeout card's English text, its notice token and the args its copy needs.
+
+    The dashboard localizes the fixed frame keyed on the token and renders the
+    *limit* and the *hint* (which names the setting that supplied the limit, so
+    it is the variable part) verbatim inside it, so the card keeps its exact
+    remedy text in every locale.
+    """
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    if timeout_secs >= 3600:
+        limit = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + "-hour"
+    else:
+        limit = f"{max(1, round(timeout_secs / 60))}-minute"
+    hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
+    if native_cancel_outcome in ("timeout", "no_turn", "error"):
+        text = (
+            f"⏱️ This turn hit the {limit} limit. The native agent did not "
+            "acknowledge the stop request, so its previous tool may still be "
+            "finishing. Do not resume this session until it becomes idle. Work "
+            f"already written to disk is still there — nothing was rolled back.{hint}"
+        )
+        token = gn.GATEWAY_NOTICE_TURN_TIMEOUT_NATIVE_PENDING
+    else:
+        text = (
+            f"⏱️ This turn hit the {limit} limit and was stopped. Work already "
+            "written to disk is still there — nothing was rolled back. Send a "
+            f"message to continue from where it stopped.{hint}"
+        )
+        token = gn.GATEWAY_NOTICE_TURN_TIMEOUT
+    return text, token, {"limit": limit, "hint": hint}
+
+
 def format_turn_timeout_card(
     timeout_secs: float,
     native_cancel_outcome: "CancelOutcome | None" = None,
@@ -397,23 +434,23 @@ def format_turn_timeout_card(
     that sets it: the session's own menu for a session limit, Settings for the
     global one.
     """
-    if timeout_secs >= 3600:
-        limit = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + "-hour"
-    else:
-        limit = f"{max(1, round(timeout_secs / 60))}-minute"
-    hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
-    if native_cancel_outcome in ("timeout", "no_turn", "error"):
-        return (
-            f"⏱️ This turn hit the {limit} limit. The native agent did not "
-            "acknowledge the stop request, so its previous tool may still be "
-            "finishing. Do not resume this session until it becomes idle. Work "
-            "already written to disk is still there — nothing was rolled back." + hint
-        )
-    return (
-        f"⏱️ This turn hit the {limit} limit and was stopped. Work already "
-        "written to disk is still there — nothing was rolled back. Send a "
-        "message to continue from where it stopped." + hint
+    text, _token, _args = turn_timeout_notice(timeout_secs, native_cancel_outcome, limit_scope)
+    return text
+
+
+def background_turn_abandoned_notice(wait_secs: float) -> tuple[str, str, dict[str, str]]:
+    """The never-started card's text, its notice token and its copy args."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    minutes = max(1, round(wait_secs / 60))
+    waited = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+    text = (
+        f"⏱️ This turn never started: it waited {waited} for a free background-turn "
+        "slot and gave up. Nothing ran and nothing was rolled back; the next message "
+        "or loop cycle starts a new turn. If turns keep queueing at the cap, raise "
+        "`dashboard.max_background_turns`."
     )
+    return text, gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED, {"waited": waited}
 
 
 def format_background_turn_abandoned_card(wait_secs: float) -> str:
@@ -423,14 +460,8 @@ def format_background_turn_abandoned_card(wait_secs: float) -> str:
     ran until its limit stopped it, and its remedy (a longer turn limit) does nothing
     for a turn that waited behind the cap and never started.
     """
-    minutes = max(1, round(wait_secs / 60))
-    waited = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
-    return (
-        f"⏱️ This turn never started: it waited {waited} for a free background-turn "
-        "slot and gave up. Nothing ran and nothing was rolled back; the next message "
-        "or loop cycle starts a new turn. If turns keep queueing at the cap, raise "
-        "`dashboard.max_background_turns`."
-    )
+    text, _token, _args = background_turn_abandoned_notice(wait_secs)
+    return text
 
 
 def _report_turn_timeout(
@@ -460,11 +491,18 @@ def _report_turn_timeout(
     try:
         # slot.append persists the card AND broadcasts it once; do not also
         # broadcast_ws here or the UI renders a duplicate.
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _card, _token, _args = turn_timeout_notice(timeout_secs, native_cancel_outcome, limit_scope)
         slot.append(
             "error",
-            format_turn_timeout_card(timeout_secs, native_cancel_outcome, limit_scope),
+            _card,
             "msg msg-err",
-            meta={"kind": TURN_TIMEOUT_KIND, "limit_scope": limit_scope},
+            meta={
+                "kind": TURN_TIMEOUT_KIND,
+                "limit_scope": limit_scope,
+                **gn.gateway_notice_meta(_token, **_args),
+            },
         )
         state.push_slots_update()
     except Exception:
@@ -500,9 +538,10 @@ def finish_turn_task(
         # Checked before the ceiling below, whose card it would otherwise get.
         # run_background_turn already logged the wait at warning level.
         try:
-            slot.append(
-                "error", format_background_turn_abandoned_card(exc.wait_secs), "msg msg-err"
-            )
+            from kiro_crew.dashboard import gateway_notice as gn
+
+            _card, _token, _args = background_turn_abandoned_notice(exc.wait_secs)
+            slot.append("error", _card, "msg msg-err", meta=gn.gateway_notice_meta(_token, **_args))
             state.push_slots_update()
         except Exception:
             logger.debug("Failed to render the background-turn abandonment card", exc_info=True)

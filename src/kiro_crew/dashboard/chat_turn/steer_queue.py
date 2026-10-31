@@ -598,6 +598,7 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     if not slot._queue:
         return
     # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard import gateway_notice as gn
     from kiro_crew.dashboard import session_control as _sc
 
     now = _sc.containment_snapshot(state, slot, on_probe_failure=True)
@@ -631,12 +632,13 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         # removal is the separate, best-effort half.
         _remove_queued_by_id(slot.messages, q["id"])
         state.broadcast_ws("queue_pop", {"slot": slot.key, "content": "", "queue_id": q["id"]})
+        _change = _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
         slot.append(
             "notice",
-            "⚠️ Queued message dropped: "
-            + _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
-            + " after it was queued, so the authorization that admitted it no longer holds.",
+            f"⚠️ Queued message dropped: {_change} after it was queued, so the "
+            "authorization that admitted it no longer holds.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_QUEUED_MESSAGE_DROPPED, change=_change),
         )
         # A cross-session delivery has a SENDER waiting on it, and the notice
         # above is on the target's transcript, which that sender does not read.

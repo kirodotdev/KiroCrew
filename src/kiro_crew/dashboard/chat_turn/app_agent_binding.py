@@ -212,6 +212,8 @@ async def _on_app_agent_not_loaded(turn: _ChatTurn, exc) -> None:
     # failed to run, the agent simply is not loaded yet, and the user's next
     # send (once the warm lands) should start clean.
     logger.warning("App agent not loaded for slot %s: %s", slot.key, exc)
+    # Stays English: the row's whole text is the exception's own message, so a
+    # token would carry it verbatim and localize nothing of ours.
     slot.append("error", str(exc), "msg msg-err")
     _crew_log_error = type(exc).__name__
     turn._crew_log_error = _crew_log_error

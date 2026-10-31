@@ -122,6 +122,34 @@ def test_cancelling_a_queued_delivery_tells_its_sender(tmp_path):
     assert "authorization" not in sent[0]
 
 
+def _notice_rows(slot):
+    return [m for m in slot.messages if m.get("role") == "notice"]
+
+
+def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
+    """The excerpt rides in meta.notice_args, which the row's content-only
+    redaction does not reach. It must still pass the egress redaction chain, or a
+    credential in the dropped message would surface in the sender's dashboard."""
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = _busy(state.get_or_create_slot("chat-2"))
+    message = "summarize this AKIAIOSFODNN7EXAMPLE run"
+    _send(state, caller, "chat-2", message)
+    queue_id = target._queue[0]["id"]
+
+    _cancel(state, target, queue_id)
+
+    (row,) = _notice_rows(caller)
+    meta = row.get("meta") or {}
+    excerpt = meta.get("notice_args", {}).get("excerpt", "")
+    # The credential-shaped token is scrubbed from the excerpt before it rides
+    # in notice_args, and the redaction marker proves the chain ran.
+    assert "AKIAIOSFODNN7EXAMPLE" not in excerpt
+    assert "[REDACTED" in excerpt
+    # The content the dashboard renders carries the same scrubbed excerpt.
+    assert "AKIAIOSFODNN7EXAMPLE" not in (row.get("content") or "")
+
+
 def test_cancelling_one_entry_tells_only_its_own_sender(tmp_path):
     """The cancel removes one card. The sender of a neighbouring entry still has a
     message that will run, and must not be told otherwise."""

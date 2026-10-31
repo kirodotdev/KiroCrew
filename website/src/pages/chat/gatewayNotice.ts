@@ -102,6 +102,19 @@ const NOTICE_FAMILIES = {
   crew_name_undispatchable: { role: 'error', card: 'error' },
   remote_crew_read_only: { role: 'error', card: 'error' },
   archive_failed_turn_cancelled: { role: 'error', card: 'error' },
+  queued_message_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
+  send_dropped: { role: 'notice', card: 'notice', tone: 'warn' },
+  send_discarded: { role: 'notice', card: 'notice', tone: 'warn' },
+  eager_spawn_stopped: { role: 'error', card: 'error' },
+  turn_failed_before_start: { role: 'error', card: 'error' },
+  local_command_failed_before_start: { role: 'error', card: 'error' },
+  turn_timeout: { role: 'error', card: 'error' },
+  turn_timeout_native_pending: { role: 'error', card: 'error' },
+  background_turn_abandoned: { role: 'error', card: 'error' },
+  crew_turn_no_permit: { role: 'error', card: 'error' },
+  turn_interrupted_restart: { role: 'error', card: 'error' },
+  turn_interrupted_close: { role: 'error', card: 'error' },
+  capability_tool_limits_unsupported: { role: 'error', card: 'error' },
 } as const satisfies Record<string, Family>
 
 export type GatewayNoticeToken = keyof typeof NOTICE_FAMILIES
@@ -169,6 +182,19 @@ const COPY_KEY = {
   crew_name_undispatchable: 'pages.chat.gatewayNotice.crew_name_undispatchable',
   remote_crew_read_only: 'pages.chat.gatewayNotice.remote_crew_read_only',
   archive_failed_turn_cancelled: 'pages.chat.gatewayNotice.archive_failed_turn_cancelled',
+  queued_message_dropped: 'pages.chat.gatewayNotice.queued_message_dropped',
+  send_dropped: 'pages.chat.gatewayNotice.send_dropped',
+  send_discarded: 'pages.chat.gatewayNotice.send_discarded',
+  eager_spawn_stopped: 'pages.chat.gatewayNotice.eager_spawn_stopped',
+  turn_failed_before_start: 'pages.chat.gatewayNotice.turn_failed_before_start',
+  local_command_failed_before_start: 'pages.chat.gatewayNotice.local_command_failed_before_start',
+  turn_timeout: 'pages.chat.gatewayNotice.turn_timeout',
+  turn_timeout_native_pending: 'pages.chat.gatewayNotice.turn_timeout_native_pending',
+  background_turn_abandoned: 'pages.chat.gatewayNotice.background_turn_abandoned',
+  crew_turn_no_permit: 'pages.chat.gatewayNotice.crew_turn_no_permit',
+  turn_interrupted_restart: 'pages.chat.gatewayNotice.turn_interrupted_restart',
+  turn_interrupted_close: 'pages.chat.gatewayNotice.turn_interrupted_close',
+  capability_tool_limits_unsupported: 'pages.chat.gatewayNotice.capability_tool_limits_unsupported',
 } as const satisfies Record<GatewayNoticeToken, string>
 
 /** Copy for a row whose args carry a recovery ordinal (`n` of `max`). */
@@ -371,6 +397,58 @@ const LEGACY: readonly Legacy[] = [
   {
     re: /^⚠\uFE0F? Archiving this tab failed after its running turn was cancelled\. The tab was kept, but that turn did not finish -- re-send to continue\.$/u,
     token: 'archive_failed_turn_cancelled',
+  },
+  {
+    re: /^⚠\uFE0F? Queued message dropped: (?<change>.+?) after it was queued, so the authorization that admitted it no longer holds\.$/u,
+    token: 'queued_message_dropped',
+  },
+  {
+    re: /^⚠\uFE0F? Message you sent to (?<target>.+?) was dropped before it ran: (?<change>.+?) after it was queued, so the authorization that admitted it no longer holds\. It was not delivered and will not run\.(?<excerpt>.*)$/u,
+    token: 'send_dropped',
+  },
+  {
+    re: /^⚠\uFE0F? Message you sent to (?<target>.+?) was discarded before it ran: (?<reason>.+?)\. It was not delivered and will not run\.(?<excerpt>.*)$/u,
+    token: 'send_discarded',
+  },
+  {
+    re: /^This chat's agent failed to start (?<failures>\d+) times in a row, so it will not be started again in the background\. Send a message to try again\. Last error: (?<detail>.+)$/u,
+    token: 'eager_spawn_stopped',
+  },
+  {
+    re: /^⚠\uFE0F? This message failed before it started\. The gateway log has the details\.$/u,
+    token: 'turn_failed_before_start',
+  },
+  {
+    re: /^⚠\uFE0F? `(?<command>.+?)` failed\. The gateway log has the details\.$/u,
+    token: 'local_command_failed_before_start',
+  },
+  {
+    re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit and was stopped\. Work already written to disk is still there — nothing was rolled back\. Send a message to continue from where it stopped\.(?<hint>.*)$/u,
+    token: 'turn_timeout',
+  },
+  {
+    re: /^⏱\uFE0F? This turn hit the (?<limit>.+?) limit\. The native agent did not acknowledge the stop request, so its previous tool may still be finishing\. Do not resume this session until it becomes idle\. Work already written to disk is still there — nothing was rolled back\.(?<hint>.*)$/u,
+    token: 'turn_timeout_native_pending',
+  },
+  {
+    re: /^⏱\uFE0F? This turn never started: it waited (?<waited>.+?) for a free background-turn slot and gave up\. Nothing ran and nothing was rolled back; the next message or loop cycle starts a new turn\. If turns keep queueing at the cap, raise `dashboard\.max_background_turns`\.$/u,
+    token: 'background_turn_abandoned',
+  },
+  {
+    re: /^This crew's turn never started: it waited for a free background-turn slot and gave up\. Nothing ran and nothing was rolled back\. The crew gets another turn on its next signal or idle cycle; raise `dashboard\.max_background_turns` if the fleet is queueing at the cap\.$/u,
+    token: 'crew_turn_no_permit',
+  },
+  {
+    re: /^This turn was interrupted when the app restarted\. Review the partial output above, then resume to continue\.$/u,
+    token: 'turn_interrupted_restart',
+  },
+  {
+    re: /^This turn was interrupted when its chat was closed\. Review the partial output above, then resume to continue\.$/u,
+    token: 'turn_interrupted_close',
+  },
+  {
+    re: /^capability_tool_limits_unsupported: This crew member's saved capabilities turn off single tools on an MCP server\. The backend its chats run on \((?<setting>[^)]*)\) cannot turn off single tools, so they would be on\. On the member's Capabilities page, turn the whole server off or turn those tools back on, then start a new chat\.$/u,
+    token: 'capability_tool_limits_unsupported',
   },
 ]
 
