@@ -70,7 +70,7 @@ from kiro_crew.agent_sdk.backends import (
 )
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
-from kiro_crew.config.sections_agent_env import STRANDS_PROVIDER_CHOICES
+from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX, resolve_secret_uris
 from kiro_crew.sandbox import (
     agent_env_scrub_prefixes,
@@ -112,30 +112,6 @@ STRANDS_DISCOVERY_OFF: dict[str, str] = {
     "STRANDS_CLI_MCP_DISCOVERY": "off",
     "STRANDS_CLI_SKILL_DISCOVERY": "off",
 }
-
-#: The provider settings ``agent.strands_env`` may map: the CLI's
-#: ``PROVIDER_ENVIRONMENT_KEYS`` (``tui/provider/environment.js``), minus the two that
-#: name FILES (``AWS_CONFIG_FILE``, ``AWS_SHARED_CREDENTIALS_FILE``), which would point
-#: the agent at a credential store, and minus ``AWS_ACCESS_KEY_ID`` /
-#: ``AWS_SECRET_ACCESS_KEY`` / ``AWS_SESSION_TOKEN``, which Kiro Crew's agent
-#: environment scrub removes from every agent child (Bedrock travels as
-#: ``AWS_BEARER_TOKEN_BEDROCK``), and minus ``AWS_PROFILE``, which names a profile in
-#: ``~/.aws`` that the sandbox masks from the child.
-STRANDS_ENV_NAMES = frozenset(
-    {
-        "AWS_REGION",
-        "AWS_DEFAULT_REGION",
-        "AWS_BEARER_TOKEN_BEDROCK",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GEMINI_API_KEY",
-        "OLLAMA_HOST",
-        "OLLAMA_MODEL",
-        "LITELLM_BASE_URL",
-        "LITELLM_API_KEY",
-        "LITELLM_MODEL",
-    }
-)
 
 #: The CLI's ``PROVIDER_CREDENTIAL_KEYS``. Withheld from the agent's shells and code
 #: runs whether or not ``agent.strands_env`` maps them, because the CLI copies keys

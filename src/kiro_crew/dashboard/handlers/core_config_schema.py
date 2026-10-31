@@ -51,7 +51,9 @@ from kiro_crew.config.sections import (
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
     SESSION_SORT_MODES,
+    STRANDS_PROVIDER_CHOICES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
+    validate_strands_env_patch,
 )
 from kiro_crew.config.service_sections import ON_BATTERY_MODES
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
@@ -116,6 +118,21 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # against the one code owner, so this cannot drift from what ``AcpProvider``
     # will actually serve.
     "agent.acp_backend": {"type": "enum", "values_fn": _acp_backend_patch_values},
+    # The Strands harness's provider settings, written whole by Settings > Agent
+    # Harness. Names are the CLI's own and values `secret://` references only; the
+    # card stores each value in the vault and maps the reference here.
+    "agent.strands_env": {"type": "normalized", "normalize": validate_strands_env_patch},
+    # The CLI's provider ids, the one list the setting and the harness both read.
+    "agent.strands_provider": {"type": "enum", "values": list(STRANDS_PROVIDER_CHOICES)},
+    # A model id for that provider (its own '<provider>/' prefix is accepted once). Wider than
+    # `_MODEL_PIN_PATTERN` because Bedrock and Ollama ids carry a ':' (a version
+    # suffix, a tag); "auto" or empty passes no --model. Empty, or one token with
+    # no space or control character.
+    "agent.strands_model": {
+        "type": "str",
+        "max_len": 200,
+        "pattern": r"(?:[A-Za-z0-9][A-Za-z0-9._:/@\-\[\]]*)?\Z",
+    },
     # The KAS bundle route switch (Settings → Agent Harness → KAS). Boot-only on the
     # schema; the card says so after a save. No install is implied by turning it on:
     # a true value with nothing installed refuses the next KAS spawn by name.

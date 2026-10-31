@@ -2,7 +2,9 @@
   "_comment": "Do-not-translate list. These proper nouns must appear verbatim in every language. Matching is word-boundary, not substring. Enforced twice: glossary.test.ts fails when a translation drops a term the English has, and scripts/check-dnt-catalogs.mjs (the i18n gate's dnt row) fails on a near-miss respelling. A phrase belongs here only if no identifier form of it (dev_fleet, DEVFLEET) and no legitimate compound spelling (German 'Kiro Crew-Dashboard') appears in the catalogs: the near-miss check would read those as respellings of the product name.",
   "dnt": [
     "Agent Worlds",
+    "Amazon Bedrock",
     "Amazon Polly",
+    "Bedrock Mantle",
     "Amethyst OLED",
     "Atlassian",
     "AWS",
@@ -30,6 +32,7 @@
     "GitHub",
     "GitHub Copilot CLI",
     "GitLab",
+    "Google Gemini",
     "HTTP / SSE",
     "IAM Identity Center",
     "iMessage",

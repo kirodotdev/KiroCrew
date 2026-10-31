@@ -73,6 +73,88 @@ def coerce_deepseek_env(raw: object) -> dict[str, str]:
     }
 
 
+#: The environment-variable names the Strands CLI reads for its model providers
+#: (``@strands-agents/cli`` ``PROVIDER_ENVIRONMENT_KEYS``), and so the only names
+#: a dashboard write may map under ``agent.strands_env``. The file-path variables
+#: the CLI also reads (``AWS_CONFIG_FILE``, ``AWS_SHARED_CREDENTIALS_FILE``) are
+#: left out because they would point the harness at a file of the writer's
+#: choosing; the raw key pair (``AWS_ACCESS_KEY_ID`` and friends) because Kiro
+#: Crew's agent environment scrub removes it from every agent child (Bedrock
+#: travels as ``AWS_BEARER_TOKEN_BEDROCK``); and ``AWS_PROFILE`` because it names
+#: a profile in ``~/.aws``, which the sandbox masks from the child. The one list:
+#: the dashboard write check and the harness's spawn check both read it.
+STRANDS_ENV_NAMES = frozenset(
+    {
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "OLLAMA_HOST",
+        "OLLAMA_MODEL",
+        "LITELLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_MODEL",
+    }
+)
+
+
+def validate_strands_env_patch(value: object) -> dict[str, str | None]:
+    """Validate an ``agent.strands_env`` CHANGE written through the dashboard.
+
+    The value is a change, not the whole map: each key it names is set to its
+    reference, or removed when the value is ``None``, and every key it does not
+    name is kept (:func:`merge_strands_env_patch`, applied under the config lock).
+    So two saves of different variables cannot each write back a map without the
+    other's entry, whatever order they land in.
+
+    Stricter than :func:`coerce_deepseek_env` on purpose: a dashboard write is
+    refused, not repaired, so nothing a person did not see lands on disk. Every
+    key must be one of :data:`STRANDS_ENV_NAMES` and every value ``None`` or a
+    ``secret://<vault name>`` reference whose name can round-trip through the
+    vault (non-empty, no surrounding whitespace). The publish floor refuses a
+    plaintext value again at write time; this is the first line.
+
+    Raises ``ValueError`` naming the offending KEY only, never a value or a vault
+    name, because the message is returned to the client and logged.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("agent.strands_env must be an object")
+    out: dict[str, str | None] = {}
+    for key, ref in value.items():
+        if not isinstance(key, str) or key not in STRANDS_ENV_NAMES:
+            raise ValueError("agent.strands_env names a variable the Strands harness does not read")
+        if ref is None:
+            out[key] = None
+            continue
+        if not isinstance(ref, str) or not ref.startswith(SECRET_URI_PREFIX):
+            raise ValueError(
+                f"agent.strands_env entry {key!r} must be a 'secret://<vault name>' reference"
+            )
+        name = ref[len(SECRET_URI_PREFIX) :]
+        if not name or name != name.strip():
+            raise ValueError(f"agent.strands_env entry {key!r} names no usable vault entry")
+        out[key] = ref
+    return out
+
+
+def merge_strands_env_patch(stored: object, change: dict[str, str | None]) -> dict[str, str]:
+    """``agent.strands_env`` as *stored*, with a validated *change* applied.
+
+    A key the change maps to ``None`` is removed, any other key it names is set,
+    and every key it does not name is kept as stored. A stored value that is not
+    a mapping reads as empty.
+    """
+    merged = {k: v for k, v in stored.items()} if isinstance(stored, dict) else {}
+    for key, ref in change.items():
+        if ref is None:
+            merged.pop(key, None)
+        else:
+            merged[key] = ref
+    return merged
+
+
 #: The only names ``agent.child_env_defaults`` accepts. An allowlist rather than a
 #: denylist: each name is a measured kiro-cli tuning knob (its tokio and rayon
 #: pools), and any other variable would reach every process the agent runs --

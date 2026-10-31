@@ -22,6 +22,7 @@ from aiohttp import web
 from kiro_crew import beacon
 from kiro_crew.config import session_environments as _session_environments
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.sections import merge_strands_env_patch
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -559,6 +560,26 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # switch and the trust settings give an overlay-owned key. A whole-section
     # (object) value is left alone: the overlay merges INTO it key by key, so the
     # keys it does not name still take effect.
+    # The Strands provider map is a keyed change (see
+    # ``validate_strands_env_patch``), so the overlay question is asked per key it
+    # names: a reference config.local.json supplies would win over the base file
+    # and keep pointing at whatever the change removed or replaced.
+    if path_key == "agent.strands_env" and isinstance(value, dict):
+        for env_name in value:
+            if await asyncio.to_thread(overlay_pins, "agent", "strands_env", env_name):
+                _log_sel("denied", f"{path_key}.{env_name}=overlay_owned")
+                return web.json_response(
+                    {
+                        "error": (
+                            f"agent.strands_env entry {env_name!r} is set in "
+                            "config.local.json, which overrides this setting. Change "
+                            "or remove it there."
+                        ),
+                        "code": "config_overlay_owned",
+                        "overlay_override": True,
+                    },
+                    status=409,
+                )
     if not isinstance(value, dict) and await asyncio.to_thread(overlay_pins, *path_key.split(".")):
         _log_sel("denied", f"{path_key}=overlay_owned")
         return web.json_response(
@@ -618,6 +639,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 _check_default_profile_is_saved(
                     {**section, parts[-1]: value}, section.get("default_profile")
                 )
+            if path_key == "agent.strands_env":
+                # A keyed change, merged under the lock with the map saved now.
+                stored = merge_strands_env_patch(section.get(parts[-1]), value)
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
