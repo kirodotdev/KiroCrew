@@ -13577,6 +13577,7 @@
       "connection_unreachable": "Impossible de joindre {{provider}} pour vérifier cette connexion.",
       "connection_views": "Vues des connexions",
       "connections": "Connexions",
+      "mcp_management_heading": "Gestion MCP",
       "could_not_load_status": "Impossible de charger l’état des connexions. Les cartes peuvent être obsolètes.",
       "disconnect": "Déconnecter",
       "disconnect_census_incomplete": "L'autorisation stockée a été conservée car une source de configuration n'a pas pu être lue pour exclure qu'un autre serveur l'utilise. Vérifiez votre configuration de serveur, puis déconnectez à nouveau.",
@@ -14319,9 +14320,6 @@
         },
         "logs": {
           "label": "Journaux"
-        },
-        "mcpPool": {
-          "label": "Gestion MCP"
         },
         "memory": {
           "label": "Mémoire"

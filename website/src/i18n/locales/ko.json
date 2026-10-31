@@ -13127,6 +13127,7 @@
       "connection_unreachable": "{{provider}}에 연결 상태를 확인하기 위해 접근할 수 없었습니다.",
       "connection_views": "연결 보기",
       "connections": "연결",
+      "mcp_management_heading": "MCP 관리",
       "could_not_load_status": "연결 상태를 불러올 수 없습니다. 카드가 최신 정보가 아닐 수 있습니다.",
       "disconnect": "연결 해제",
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
@@ -13851,9 +13852,6 @@
         },
         "logs": {
           "label": "로그"
-        },
-        "mcpPool": {
-          "label": "MCP 관리"
         },
         "memory": {
           "label": "메모리"

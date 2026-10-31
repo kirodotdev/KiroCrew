@@ -197,7 +197,7 @@ async def _init_mcp_gateway(
     if approvals.refused:
         logger.warning(
             "mcp launch approvals: %d server launch(es) refused; review them in "
-            "Settings > MCP Management",
+            "Customize > Connections > MCP Servers > MCP Management",
             len(approvals.refused),
         )
     if approvals.captured or approvals.refused:

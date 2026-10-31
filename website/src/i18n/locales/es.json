@@ -13577,6 +13577,7 @@
       "connection_unreachable": "No se pudo contactar con {{provider}} para comprobar esta conexión.",
       "connection_views": "Vistas de conexiones",
       "connections": "Conexiones",
+      "mcp_management_heading": "Gestión de MCP",
       "could_not_load_status": "No se pudo cargar el estado de las conexiones. Las tarjetas pueden estar desactualizadas.",
       "disconnect": "Desconectar",
       "disconnect_census_incomplete": "Se conservó la autorización almacenada porque no se pudo leer una fuente de configuración para descartar que otro servidor la use. Revisa la configuración de tu servidor y vuelve a desconectar.",
@@ -14319,9 +14320,6 @@
         },
         "logs": {
           "label": "Registros"
-        },
-        "mcpPool": {
-          "label": "Gestión de MCP"
         },
         "memory": {
           "label": "Memoria"

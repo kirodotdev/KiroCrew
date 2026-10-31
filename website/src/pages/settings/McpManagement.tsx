@@ -57,6 +57,9 @@ import {
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
 import { ApprovalCard, ConfirmReload, type ReviewItem, ReviewApprovalsDialog, SharingHero } from './McpManagementHero'
+import { useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
+import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
+import { retryPolicy } from '../../api/queryClient'
 
 /**
  * MCP Management, top to bottom: the hero (title, Learn more, the page-wide
@@ -95,6 +98,11 @@ export function McpManagement({
   initialAdvancedOpen?: boolean
 } = {}) {
   const qc = useQueryClient()
+  // While the sibling MCP Servers list holds unapplied edits, an ErrorNotice
+  // "Ask the agent" hand-off here would navigate to /chat and drop them, so
+  // the affordance is withheld until they are applied or discarded. `false`
+  // outside the Customize → Connections panel's provider.
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // A change that waits for a restart is information, not a failure.
@@ -280,11 +288,17 @@ export function McpManagement({
   const [advancedOpen, setAdvancedOpen] = useState(initialAdvancedOpen)
 
   // The hero's numbers and the stale-chat banner: one reading of this host.
+  // The reading is owner-only, and this panel also renders for non-owner
+  // sessions on the MCP Servers sub-tab. Their 403 is a permanent answer, not
+  // a fault: no retry, no polling (each refusal writes an audit row), and no
+  // error notice the viewer could not act on.
   const footprintQ = useQuery<McpGatewayFootprint>({
     queryKey: ['mcpGatewayFootprint'],
     queryFn: () => api.mcpGatewayFootprint(),
-    refetchInterval: 30_000,
+    retry: (count, err) => !isPermanentRefusal(err) && retryPolicy(count, err),
+    refetchInterval: query => (isPermanentRefusal(query.state.error) ? false : 30_000),
   })
+  const footprintRefused = isPermanentRefusal(footprintQ.error)
   const staleChats = useMemo(() => footprintQ.data?.stale_chats ?? [], [footprintQ.data])
 
   // Turning sharing ON: read the launch of every server it would also enable,
@@ -565,15 +579,15 @@ export function McpManagement({
     <div className="min-w-0 space-y-4">
       <ErrorNotice
         message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
-        askAgent
+        askAgent={!handoffWouldLoseEdits}
       />
       {/* Page-wide, not inside Advanced: a failed server list disables the
           hero switch, so its reason must show while Advanced is closed. */}
       <ErrorNotice
         message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
-        askAgent
+        askAgent={!handoffWouldLoseEdits}
       />
-      <ErrorNotice message={error} askAgent onDismiss={() => setError(null)} />
+      <ErrorNotice message={error} askAgent={!handoffWouldLoseEdits} onDismiss={() => setError(null)} />
       {restartNotice && (
         <div
           role="status"
@@ -602,6 +616,7 @@ export function McpManagement({
         }}
         footprint={footprintQ.data}
         footprintFailed={footprintQ.isError}
+        footprintRefused={footprintRefused}
         staleCount={staleChats.length}
         reloadBusy={reload.isPending}
         reloadNote={reloadNote}
@@ -907,7 +922,7 @@ export function McpManagement({
                 {resolveNotice}
               </p>
             )}
-            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent />
+            <ErrorNotice variant="inline" className="mt-2" message={resolveError} askAgent={!handoffWouldLoseEdits} />
           </div>
           <button
             type="button"
@@ -999,6 +1014,7 @@ function ConfirmSharing({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const handoffWouldLoseEdits = useMcpHandoffWouldLoseEdits()
   // Built on the repo's Radix Dialog rather than a bare `<div role="dialog">`:
   // that primitive owns the focus trap, initial focus, Escape-to-dismiss and
   // focus return. Hand-rolling the markup looked identical but let a keyboard
@@ -1034,7 +1050,7 @@ function ConfirmSharing({
                 ? i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: failed.join(', ') })
                 : null
             }
-            askAgent
+            askAgent={!handoffWouldLoseEdits}
           />
           {skipped.length > 0 && (
             <p className="mt-1 break-words text-[12.5px] text-muted [overflow-wrap:anywhere]">

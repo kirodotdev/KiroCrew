@@ -2473,6 +2473,33 @@
       "component": "website/src/pages/connections/ConnectionsPage.tsx"
     },
     {
+      "id": "connections-mcp-management",
+      "feature": "connections",
+      "title": "Customize › Connections › MCP Servers › MCP Management",
+      "user_story": "As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages.",
+      "start_url": "/capabilities",
+      "entry_path": "Customize → Connections → MCP Servers sub-tab → MCP Management section below the servers list (/capabilities?tab=mcp&view=mcp-servers#mcp-management) → Servers table with share switches, and the Sharing assessment tab",
+      "preconditions": {
+        "seed": "connections-two",
+        "members": [],
+        "feature_flags": [],
+        "notes": "MCP Management renders in the MCP Servers sub-tab of Customize → Connections (ConnectionsPage.tsx), with no Developer Mode needed. The old /settings/developer/mcp-pool and /developer?tab=mcp-pool links redirect there. Two views: Servers and Sharing assessment."
+      },
+      "runnable": "nightly",
+      "estimated_steps": 3,
+      "rationale": "The section reads the mcp-gateway status and servers endpoints; the assertions are the Servers table with its share switches and the Sharing assessment view.",
+      "source": [
+        "docs/feature-map/README.md",
+        "website/src/pages/connections/ConnectionsPage.tsx",
+        "website/src/pages/settings/McpManagement.tsx"
+      ],
+      "priority": "P2",
+      "merged_from": [
+        "developer-mcp-pool"
+      ],
+      "component": "website/src/pages/settings/McpManagement.tsx"
+    },
+    {
       "id": "connections-services-gallery-oauth",
       "feature": "connections",
       "title": "Connect a third-party service from the Services gallery",
@@ -7558,33 +7585,6 @@
       "component": ""
     },
     {
-      "id": "developer-mcp-pool",
-      "feature": "developer",
-      "title": "Developer › MCP Management (tab key mcp-pool)",
-      "user_story": "As a developer, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages.",
-      "start_url": "/settings/developer",
-      "entry_path": "Settings → Developer → MCP Management (/settings/developer/mcp-pool) → Servers table with stub switches, and the Sharing assessment tab",
-      "preconditions": {
-        "seed": "connections-two",
-        "members": [],
-        "feature_flags": [],
-        "notes": "The tab key is mcp-pool and its label is MCP Management (DeveloperPanel.tsx). Two views: Servers (columns Server, Used by, State, Stub; one stub switch per server) and Sharing assessment."
-      },
-      "runnable": "nightly",
-      "estimated_steps": 3,
-      "rationale": "The tab reads the mcp-gateway status and servers endpoints; the assertions are the Servers table with its stub switches and the Sharing assessment view.",
-      "source": [
-        "docs/feature-map/README.md",
-        "website/src/pages/DeveloperPage.tsx",
-        "website/src/pages/settings/McpManagement.tsx"
-      ],
-      "priority": "P2",
-      "merged_from": [
-        "developer-mcp-pool"
-      ],
-      "component": "website/src/pages/settings/McpManagement.tsx"
-    },
-    {
       "id": "developer-memory-graph",
       "feature": "developer",
       "title": "Memory graph",
@@ -7619,9 +7619,9 @@
       "id": "developer-page-tabs",
       "feature": "developer",
       "title": "Navigate the Settings > Developer internals pages",
-      "user_story": "As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway.",
+      "user_story": "As a developer, I want logs, system, telemetry, storage, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway.",
       "start_url": "/settings/developer",
-      "entry_path": "Settings → Developer → pages (logs, system, telemetry, storage, mcp-pool, memory, config, debug-tools, archive)",
+      "entry_path": "Settings → Developer → pages (logs, system, telemetry, storage, memory, config, debug-tools, archive)",
       "preconditions": {
         "seed": "rich",
         "members": [],

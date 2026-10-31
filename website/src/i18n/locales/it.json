@@ -13577,6 +13577,7 @@
       "connection_unreachable": "Impossibile raggiungere {{provider}} per verificare questa connessione.",
       "connection_views": "Viste delle connessioni",
       "connections": "Connessioni",
+      "mcp_management_heading": "Gestione MCP",
       "could_not_load_status": "Impossibile caricare lo stato delle connessioni. Le schede potrebbero non essere aggiornate.",
       "disconnect": "Disconnetti",
       "disconnect_census_incomplete": "L'autorizzazione memorizzata è stata conservata perché non è stato possibile leggere una fonte di configurazione per escludere che un altro server la utilizzi. Controlla la configurazione del server e disconnetti di nuovo.",
@@ -14319,9 +14320,6 @@
         },
         "logs": {
           "label": "Log"
-        },
-        "mcpPool": {
-          "label": "Gestione MCP"
         },
         "memory": {
           "label": "Memoria"

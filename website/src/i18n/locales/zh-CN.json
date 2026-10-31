@@ -13127,6 +13127,7 @@
       "connection_unreachable": "无法访问 {{provider}} 以检查此连接。",
       "connection_views": "连接视图",
       "connections": "连接",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "无法加载连接状态。卡片信息可能已过期。",
       "disconnect": "断开连接",
       "disconnect_census_incomplete": "由于无法读取某个配置源以排除其他服务器正在使用该授权，已保留存储的授权。请检查服务器配置后再次断开连接。",
@@ -13851,9 +13852,6 @@
         },
         "logs": {
           "label": "日志"
-        },
-        "mcpPool": {
-          "label": "MCP 管理"
         },
         "memory": {
           "label": "记忆"

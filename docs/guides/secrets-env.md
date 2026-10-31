@@ -43,7 +43,7 @@ with a missing credential.
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server
-through the gateway**: in **Developer → MCP Management**, turn routing on for
+through the gateway**: in **Customize → Connections → MCP Servers** (MCP Management), turn routing on for
 the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
 default agent mounts (from either `mcp.json` above), an unrouted server with a
 `secret://` value is not started at all, and a warning names the env key —

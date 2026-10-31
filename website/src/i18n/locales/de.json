@@ -13352,6 +13352,7 @@
       "connection_unreachable": "{{provider}} konnte zur Prüfung dieser Verbindung nicht erreicht werden.",
       "connection_views": "Verbindungsansichten",
       "connections": "Verbindungen",
+      "mcp_management_heading": "MCP-Verwaltung",
       "could_not_load_status": "Der Verbindungsstatus konnte nicht geladen werden. Die Karten sind möglicherweise veraltet.",
       "disconnect": "Trennen",
       "disconnect_census_incomplete": "Die gespeicherte Berechtigung wurde beibehalten, weil eine Konfigurationsquelle nicht gelesen werden konnte, um auszuschließen, dass ein anderer Server sie verwendet. Überprüfen Sie Ihre Serverkonfiguration und trennen Sie erneut.",
@@ -14085,9 +14086,6 @@
         },
         "logs": {
           "label": "Protokolle"
-        },
-        "mcpPool": {
-          "label": "MCP-Verwaltung"
         },
         "memory": {
           "label": "Erinnerung"

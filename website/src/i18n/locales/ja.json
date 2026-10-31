@@ -13127,6 +13127,7 @@
       "connection_unreachable": "{{provider}}に接続を確認するためのアクセスができませんでした。",
       "connection_views": "コネクションビュー",
       "connections": "コネクション",
+      "mcp_management_heading": "MCP 管理",
       "could_not_load_status": "コネクションステータスを読み込めませんでした。カードが古い可能性があります。",
       "disconnect": "切断",
       "disconnect_census_incomplete": "設定ソースを読み取れず、他のサーバーが使用していないことを確認できなかったため、保存された認可は保持されました。サーバー設定を確認してから、再度切断してください。",
@@ -13851,9 +13852,6 @@
         },
         "logs": {
           "label": "ログ"
-        },
-        "mcpPool": {
-          "label": "MCP 管理"
         },
         "memory": {
           "label": "メモリ"
