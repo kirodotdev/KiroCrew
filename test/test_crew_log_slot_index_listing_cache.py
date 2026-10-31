@@ -65,7 +65,18 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 
 def _confirm(clock: _Clock) -> "dict[str, tuple[str, ...]]":
-    """List the root, then list it again a window later, which confirms the listing."""
+    """List the root, then list it again a window later, which confirms the listing.
+
+    The clock moves a window by hand but the filesystem's does not, so the root's
+    stamps are first set back past a window, as a real one would leave them. Without
+    that, a create right after confirming can land in the tick the listed state holds,
+    and on NTFS, where a directory's link count and ctime never move and its size only
+    when its index grows, every stat field then stays equal.
+    """
+    root = _root()
+    stat = root.stat()
+    aged = stat.st_mtime_ns - store_units._RACY_WINDOW_NS - 1_000_000_000
+    os.utime(root, ns=(stat.st_atime_ns, aged))
     store.session_units_by_slot()
     clock.advance()
     return store.session_units_by_slot()
