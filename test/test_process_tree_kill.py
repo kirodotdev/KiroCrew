@@ -95,11 +95,12 @@ class TestResetProcessTreeKill:
             # os.kill(pid, 0) succeeds → process survived shutdown
             mock_kill.return_value = None
             mock_killpg.return_value = None
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         provider.shutdown.assert_awaited_once()
         mock_killpg.assert_called_once_with(12345, signal.SIGKILL)
         mock_sweep.assert_called_once()
+        assert "t1" not in mgr._sessions
 
     @pytest.mark.asyncio
     async def test_reset_fallback_kill_when_killpg_fails(self, cfg):
@@ -162,10 +163,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with patch("kiro_crew.session.os.kill") as mock_kill:
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         mock_kill.assert_not_called()
         provider.shutdown.assert_awaited_once()
+        assert "t1" not in mgr._sessions
 
     @pytest.mark.asyncio
     async def test_reset_skips_kill_for_zero_pid(self, cfg):
@@ -175,10 +177,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with patch("kiro_crew.session.os.kill") as mock_kill:
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         mock_kill.assert_not_called()
         provider.shutdown.assert_awaited_once()
+        assert "t1" not in mgr._sessions
 
 
 # ── subagent._sigkill_session() tests ──

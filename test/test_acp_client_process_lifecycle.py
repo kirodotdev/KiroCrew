@@ -747,6 +747,7 @@ class TestKillProcess:
 
         assert mock_async.await_count == 1
         assert mock_async.await_args.args == (42, platform_compat.SIGTERM)
+        assert client._kill_sent == (int(platform_compat.SIGTERM), "stop requested")
 
         # Reset process state for the SIGKILL path (force=True)
         proc.returncode = None
@@ -771,6 +772,7 @@ class TestKillProcess:
 
         assert mock_async_kill.await_count == 1
         assert mock_async_kill.await_args.args == (42, platform_compat.SIGKILL)
+        assert client._kill_sent == (int(platform_compat.SIGKILL), "forced stop")
 
 
 class TestResetStateExtended:

@@ -2,12 +2,14 @@
 
 import asyncio
 import inspect
+import subprocess
 import sys
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp import runtime as rt
 from kiro_crew.acp.client import (
     AcpClient,
@@ -15,7 +17,9 @@ from kiro_crew.acp.client import (
     _get_child_pids,
     _is_our_child,
     _kill_escaped_children,
+    _read_basename,
 )
+from kiro_crew.testing.wait import wait_until
 
 if sys.platform != "win32":
     import signal
@@ -89,6 +93,18 @@ class TestKillEscapedChildren:
             patch("kiro_crew.acp.client._is_our_child", return_value=True),
         ):
             _kill_escaped_children({42: 100})
+
+        # The same sweep, unpatched, on a child this test spawned and recorded.
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            wait_until(lambda: _read_basename(child.pid) == b"sleep")
+            record = (platform_compat.get_process_start_id(child.pid), b"sleep")
+            _kill_escaped_children({child.pid: record})
+            assert child.wait(timeout=10) == -signal.SIGKILL
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
 
     def test_skips_recycled_pid(self):
         kills = []
@@ -780,6 +796,7 @@ class TestSessionCleanupOnCancellation:
         """All sessions with the run prefix get cancelled and reset."""
         run = MagicMock()
         run.task_id = "abc123"
+        run.error = None
         keys = ["taskrunner:abc123:task0", "taskrunner:abc123:task1", "taskrunner:abc123:task2"]
         tr = self._make_mock_taskrunner(keys)
 
@@ -798,6 +815,7 @@ class TestSessionCleanupOnCancellation:
             # keeps a later edit from turning this back into a process recycle, which
             # would leave a cancelled run's children going.
             tr._sessions.reset.assert_any_await(key, ends_conversation=True)
+        assert run.error is None, "a cleanup whose every reset succeeded reported a failure"
 
     @pytest.mark.asyncio
     async def test_cleanup_ignores_other_runs(self):
@@ -820,6 +838,7 @@ class TestSessionCleanupOnCancellation:
         """If cancel_current raises, reset is still called."""
         run = MagicMock()
         run.task_id = "abc123"
+        run.error = None
         keys = ["taskrunner:abc123:task0"]
         tr = self._make_mock_taskrunner(keys)
         tr._sessions.cancel_current = AsyncMock(side_effect=Exception("boom"))
@@ -830,6 +849,7 @@ class TestSessionCleanupOnCancellation:
 
         # reset still called despite cancel failure
         tr._sessions.reset.assert_awaited_once()
+        assert run.error is None, "a failed cancel was reported as a failed reset"
 
 
 # ── 7. _track_pid / _untrack_pid file operations ──

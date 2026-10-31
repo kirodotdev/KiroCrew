@@ -223,10 +223,18 @@ class TestRefreshOnlyWalksAVerifiedLiveLeader:
         client = _fake_client(returncode=None)
         with (
             patch("kiro_crew.platform_compat.get_process_start_id", return_value="999"),
-            patch("kiro_crew.acp.runtime_process_tree._get_child_pids") as walk,
+            patch(
+                "kiro_crew.acp.runtime_process_tree._get_child_pids", return_value=[5151]
+            ) as walk,
+            patch(
+                "kiro_crew.acp.runtime_process_tree._capture_child_records",
+                return_value={5151: ("999", b"sleep")},
+            ),
+            patch("kiro_crew.acp.client._replace_child_pids", return_value=True),
         ):
             await client.refresh_process_tree()
         walk.assert_not_called()
+        assert client._child_pids == {}, "a child walked from a recycled pid was recorded"
 
     @pytest.mark.asyncio
     async def test_a_leader_recycled_during_the_walk_records_nothing(self) -> None:
