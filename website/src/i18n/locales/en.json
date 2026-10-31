@@ -7854,6 +7854,12 @@
       },
       "embeddingStatus": {
         "embedding_engine_ready_knowledge_items_need_embe": "Embedding engine ready — knowledge items need embedding.",
+        "generate_disabled": "Knowledge embedding is turned off, so nothing can be generated.",
+        "generate_embedded_none": "No items were embedded. The embedding model returned nothing for them.",
+        "generate_failed": "Couldn't generate embeddings.",
+        "generate_unavailable": "The knowledge embedding model can't be reached right now. Try again in a moment.",
+        "knowledge_embedder_off": "Smart Search unavailable — knowledge embedding is turned off.",
+        "knowledge_embedder_unreachable": "Smart Search unavailable — the knowledge embedding model can't be reached.",
         "smart_search_active": "Smart Search active",
         "smart_search_unavailable_embedding_model_is_down": "Smart Search unavailable — embedding model is downloading in the background."
       },

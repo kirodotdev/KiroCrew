@@ -14347,8 +14347,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} এমবেড করা ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "এমবেডিং ইঞ্জিন প্রস্তুত — নলেজ আইটেমগুলোর এমবেডিং প্রয়োজন।",
+        "generate_disabled": "নলেজ এমবেডিং বন্ধ আছে, তাই কিছু তৈরি করা যাবে না।",
+        "generate_embedded_none": "কোনো আইটেম এমবেড হয়নি। এমবেডিং মডেল এগুলোর জন্য কিছুই ফেরত দেয়নি।",
+        "generate_failed": "এমবেডিং তৈরি করা যায়নি।",
         "generate_now": "এখনই তৈরি করো",
+        "generate_unavailable": "নলেজ এমবেডিং মডেলের সাথে এখন যোগাযোগ করা যাচ্ছে না। একটু পরে আবার চেষ্টা করো।",
         "generating": "তৈরি হচ্ছে…",
+        "knowledge_embedder_off": "স্মার্ট সার্চ পাওয়া যাচ্ছে না — নলেজ এমবেডিং বন্ধ আছে।",
+        "knowledge_embedder_unreachable": "স্মার্ট সার্চ পাওয়া যাচ্ছে না — নলেজ এমবেডিং মডেলের সাথে যোগাযোগ করা যাচ্ছে না।",
         "smart_search_active": "স্মার্ট সার্চ সক্রিয়",
         "smart_search_unavailable_embedding_model_is_down": "স্মার্ট সার্চ অনুপলব্ধ — এমবেডিং মডেল ব্যাকগ্রাউন্ডে ডাউনলোড হচ্ছে।"
       },

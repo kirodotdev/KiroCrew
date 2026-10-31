@@ -14582,8 +14582,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} vectorisés ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Moteur d'embedding prêt — les éléments de connaissance doivent être vectorisés.",
+        "generate_disabled": "La vectorisation des connaissances est désactivée, rien ne peut donc être généré.",
+        "generate_embedded_none": "Aucun élément n'a été vectorisé. Le modèle d'embedding n'a rien renvoyé pour eux.",
+        "generate_failed": "Impossible de générer les embeddings.",
         "generate_now": "Générer maintenant",
+        "generate_unavailable": "Le modèle d'embedding des connaissances est injoignable pour le moment. Réessaie dans un instant.",
         "generating": "Génération…",
+        "knowledge_embedder_off": "Recherche intelligente indisponible — la vectorisation des connaissances est désactivée.",
+        "knowledge_embedder_unreachable": "Recherche intelligente indisponible — le modèle d'embedding des connaissances est injoignable.",
         "smart_search_active": "Recherche intelligente active",
         "smart_search_unavailable_embedding_model_is_down": "Recherche intelligente indisponible — le modèle d'embedding est en cours de téléchargement en arrière-plan."
       },

@@ -14112,8 +14112,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}}埋め込み済み（{{pct}}%）",
         "embedding_engine_ready_knowledge_items_need_embe": "埋め込みエンジンは準備完了 — ナレッジアイテムを埋め込む必要があります。",
+        "generate_disabled": "ナレッジの埋め込みがオフのため、生成できません。",
+        "generate_embedded_none": "埋め込まれた項目はありません。埋め込みモデルから結果が返されませんでした。",
+        "generate_failed": "埋め込みを生成できませんでした。",
         "generate_now": "今すぐ生成",
+        "generate_unavailable": "ナレッジの埋め込みモデルに現在接続できません。しばらくしてからもう一度お試しください。",
         "generating": "生成中…",
+        "knowledge_embedder_off": "スマート検索は利用できません — ナレッジの埋め込みがオフです。",
+        "knowledge_embedder_unreachable": "スマート検索は利用できません — ナレッジの埋め込みモデルに接続できません。",
         "smart_search_active": "スマート検索アクティブ",
         "smart_search_unavailable_embedding_model_is_down": "スマート検索は利用できません — 埋め込みモデルはバックグラウンドでダウンロード中です。"
       },

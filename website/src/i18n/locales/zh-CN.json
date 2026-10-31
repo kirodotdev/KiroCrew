@@ -14112,8 +14112,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 已嵌入 ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "嵌入引擎已就绪 — 知识条目需要嵌入。",
+        "generate_disabled": "知识嵌入已关闭，因此无法生成。",
+        "generate_embedded_none": "没有条目被嵌入。嵌入模型没有为它们返回任何结果。",
+        "generate_failed": "无法生成嵌入。",
         "generate_now": "立即生成",
+        "generate_unavailable": "目前无法连接知识嵌入模型。请稍后再试。",
         "generating": "正在生成…",
+        "knowledge_embedder_off": "智能搜索不可用 — 知识嵌入已关闭。",
+        "knowledge_embedder_unreachable": "智能搜索不可用 — 无法连接知识嵌入模型。",
         "smart_search_active": "智能搜索已启用",
         "smart_search_unavailable_embedding_model_is_down": "智能搜索不可用 — 嵌入模型正在后台下载。"
       },

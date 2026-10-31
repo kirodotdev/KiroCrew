@@ -14112,8 +14112,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} 임베딩됨({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "임베딩 엔진 준비 완료 — 지식 항목에 임베딩이 필요합니다.",
+        "generate_disabled": "지식 임베딩이 꺼져 있어 생성할 수 없습니다.",
+        "generate_embedded_none": "임베딩된 항목이 없습니다. 임베딩 모델이 아무것도 반환하지 않았습니다.",
+        "generate_failed": "임베딩을 생성하지 못했습니다.",
         "generate_now": "지금 생성",
+        "generate_unavailable": "지금은 지식 임베딩 모델에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
         "generating": "생성 중…",
+        "knowledge_embedder_off": "스마트 검색을 사용할 수 없습니다 — 지식 임베딩이 꺼져 있습니다.",
+        "knowledge_embedder_unreachable": "스마트 검색을 사용할 수 없습니다 — 지식 임베딩 모델에 연결할 수 없습니다.",
         "smart_search_active": "스마트 검색 활성",
         "smart_search_unavailable_embedding_model_is_down": "스마트 검색을 사용할 수 없습니다 — 임베딩 모델을 백그라운드에서 내려받는 중입니다."
       },

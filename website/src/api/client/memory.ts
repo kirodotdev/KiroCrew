@@ -212,6 +212,9 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
   const knowledge = {
     // Knowledge
     knowledgeSearch: (q: string) => get(`/api/knowledge/search-for-context?q=${encodeURIComponent(q)}`).then(j),
+    /** Fill the missing knowledge vectors (the route's default, non-rebuild path). */
+    knowledgeEmbeddingGenerate: () =>
+      post('/api/knowledge/embedding/generate', {}).then(j) as Promise<{ embedded: number; total: number; remaining: number }>,
   }
 
   return { memoryAndVectors, lessons, knowledge }

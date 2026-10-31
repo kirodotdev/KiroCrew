@@ -14582,8 +14582,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} com embeddings ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Motor de embeddings pronto — os itens de conhecimento precisam de embeddings.",
+        "generate_disabled": "Os embeddings de conhecimento estão desativados, então nada pode ser gerado.",
+        "generate_embedded_none": "Nenhum item recebeu embeddings. O modelo de embedding não retornou nada para eles.",
+        "generate_failed": "Não foi possível gerar os embeddings.",
         "generate_now": "Gerar agora",
+        "generate_unavailable": "Não é possível acessar o modelo de embedding do conhecimento agora. Tente de novo em instantes.",
         "generating": "Gerando…",
+        "knowledge_embedder_off": "Pesquisa inteligente indisponível — os embeddings de conhecimento estão desativados.",
+        "knowledge_embedder_unreachable": "Pesquisa inteligente indisponível — não é possível acessar o modelo de embedding do conhecimento.",
         "smart_search_active": "Busca inteligente ativa",
         "smart_search_unavailable_embedding_model_is_down": "Busca inteligente indisponível — o modelo de embeddings está sendo baixado em segundo plano."
       },

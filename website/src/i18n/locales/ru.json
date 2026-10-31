@@ -14817,8 +14817,14 @@
       "embeddingStatus": {
         "embedded_pct": "{{embedded}}/{{total}} векторизовано ({{pct}}%)",
         "embedding_engine_ready_knowledge_items_need_embe": "Движок эмбеддингов готов — элементы знаний нужно векторизовать.",
+        "generate_disabled": "Векторизация знаний выключена, поэтому создать ничего нельзя.",
+        "generate_embedded_none": "Ни один элемент не векторизован. Модель эмбеддингов ничего для них не вернула.",
+        "generate_failed": "Не удалось создать эмбеддинги.",
         "generate_now": "Создать сейчас",
+        "generate_unavailable": "Модель эмбеддингов знаний сейчас недоступна. Попробуй ещё раз чуть позже.",
         "generating": "Создание...",
+        "knowledge_embedder_off": "Умный поиск недоступен — векторизация знаний выключена.",
+        "knowledge_embedder_unreachable": "Умный поиск недоступен — модель эмбеддингов знаний недоступна.",
         "smart_search_active": "Умный поиск активен",
         "smart_search_unavailable_embedding_model_is_down": "Умный поиск недоступен — модель эмбеддингов загружается в фоне."
       },
