@@ -372,12 +372,17 @@ The
 only** — the kiro-cli path never inlines a prompt because kiro-cli reads the file
 itself:
 
-- a relative path is anchored to the agents directory, and may not escape it
-  via `..`;
+- a relative path is anchored to the agents directory and may use `..`
+  (`file://../prompts/x.md`), as on kiro-cli;
 - an absolute path (and `~`) is accepted and resolved;
-- the resolved path must not be a credential or governance location, `/proc`,
-  `/sys` or `/dev` — the content is shipped over the wire, so a spec pointing at
-  `/proc/<pid>/environ` would exfiltrate the gateway's environment;
+- relative or absolute, the resolved path (symlinks followed) must not be a
+  credential or governance location, `~/.config/gh`, the data home's
+  `app_receipt_secret` or `session_token_*.sig`, `/proc`, `/sys` or `/dev` —
+  the content is shipped
+  over the wire, so a spec pointing at `/proc/<pid>/environ` would exfiltrate
+  the gateway's environment (`acp/kas_prompt_paths.py`);
+- a spec from a project checkout's `.kiro/agents` is untrusted: its prompt must
+  be a relative path that stays inside that directory;
 - an empty or unreadable file is an error, not a fallback;
 - a missing or blank prompt falls back to `_KAS_FALLBACK_PROMPT`, because KAS
   requires a non-empty prompt where kiro-cli tolerates an empty one. Crew's own

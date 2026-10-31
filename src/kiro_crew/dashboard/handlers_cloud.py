@@ -8,7 +8,8 @@ Like the instances control plane, every route is **owner-only, never reachable
 via Slack**, and emits a SEL audit event. Provisioning is a deliberate
 **human/installer action** (the owner clicking Launch is the consent), which is
 exactly the caller ``cloud.aws.assert_human_action`` permits — the gateway
-process carries no ``KIROCREW_SESSION_KEY``, so the destructive verbs
+process carries none of the agent markers ``cloud.aws._in_agent_session``
+reads, so the destructive verbs
 (stop/start/destroy) are allowed here but blocked from any agent subprocess.
 
 POSIX-only: the deploy engine shells to ``bash``/``aws``; Windows returns 400.

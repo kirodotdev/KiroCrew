@@ -240,6 +240,20 @@ def resolve_projected_spec(
                 f"agent {agent!r} is declared by a project checkout, so its prompt must be "
                 f"a path inside that checkout's .kiro/agents, not {ref!r}"
             )
+        # A relative ref is resolved (symlinks followed) and must stay inside the
+        # checkout's agents directory. ``resolve_prompt`` lets a TRUSTED spec use
+        # ``..``; a cloned repository must not choose which of the user's files
+        # is shipped over the wire.
+        base = paths_mod.project_agents_dir(work_dir or ".").resolve()
+        target = (base / ref).resolve()
+        if target != base and base not in target.parents:
+            raise KasAgentTranslationError(
+                f"agent {agent!r} is declared by a project checkout, so its relative prompt "
+                f"{ref!r} escapes the agent directory"
+            )
+        # Hand on the target that was checked, not the ref: resolving the ref again
+        # at read time would follow a link the checkout repointed in between.
+        project = {**project, "prompt": kas_agents_mod._PROMPT_FILE_SCHEME + target.as_posix()}
     dropped = sorted(k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS)
     if dropped:
         logger.info(

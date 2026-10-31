@@ -86,6 +86,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_hook_gated_auto_approval,
     without_allowed_commands,
 )
+from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.agent_discovery import (
     AgentsDirMemo,
     AmbiguousAgentSpecError,
@@ -113,7 +114,6 @@ from kiro_crew.platform.tool_names import (
     expand_kiro_cli_tool_exclusions,
     expand_kiro_cli_tool_names,
 )
-from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.user_json import copy_json_document
 
@@ -189,8 +189,6 @@ _WRAPPER_MARKERS = ("_kirocrew_mcp_gateway_wrapped", "_mc_mcp_gateway_wrapped")
 #: no-op rather than something to unpick.
 _KAS_DISCARDED_ENTRY_KEYS = ("autoApprove", "cwd", "disabled", "disabledTools")
 
-#: Pseudo-filesystems whose contents are process/kernel state, not documents.
-_PSEUDO_FS_ROOTS = ("/proc", "/sys", "/dev")
 
 #: Spec keys with no slot in KAS's ``ClientCustomAgent`` wire schema.
 #:
@@ -326,21 +324,6 @@ task is fully described in each request.
 """
 
 
-def _is_unsafe_prompt_path(path: Path) -> bool:
-    """True if *path* must not be read and inlined into a KAS agent prompt.
-
-    The prompt content is shipped to KAS over the wire, so a spec pointing at a
-    credential store or a pseudo-filesystem would exfiltrate it. Blocks the
-    credential/governance locations ``is_sensitive_path`` knows, plus ``/proc``,
-    ``/sys`` and ``/dev`` (which it does not cover) — ``/proc/<pid>/environ`` is
-    the sharp edge, exposing the gateway's own environment.
-    """
-    if is_sensitive_path(str(path)):
-        return True
-    posix = path.as_posix()
-    return any(posix == root or posix.startswith(root + "/") for root in _PSEUDO_FS_ROOTS)
-
-
 def resolve_prompt(
     spec: dict[str, Any],
     *,
@@ -350,14 +333,21 @@ def resolve_prompt(
     """Return the spec's prompt as literal text, reading a ``file://`` URI.
 
     Separated from :func:`to_client_custom_agent` so the projection itself stays
-    pure. Because the resolved content is shipped to KAS over the wire, two
-    safety rules apply to a ``file://`` URI:
+    pure. Because the resolved content is shipped to KAS over the wire, the path
+    of a ``file://`` URI is checked before it is read:
 
     * A RELATIVE path is anchored to *agents_dir* (where the agent config lives,
-      the documented base for ``file://./prompts/x.md``), never the gateway cwd,
-      and may not escape it via ``..``.
-    * The resolved path must not be a credential/governance location or a
-      pseudo-filesystem (see :func:`_is_unsafe_prompt_path`).
+      the documented base for ``file://./prompts/x.md``), never the gateway cwd.
+      It may use ``..`` (``file://../prompts/x.md``), as on kiro-cli: an absolute
+      path reaches the same files, so a containment rule on the relative form
+      fenced nothing.
+    * Relative or absolute, the RESOLVED path (symlinks followed) must not be a
+      credential/governance location or a pseudo-filesystem
+      (:func:`kiro_crew.acp.kas_prompt_paths.is_unsafe_prompt_path`).
+
+    A spec from a project checkout is untrusted and stays inside that checkout's
+    agents directory; that rule is enforced where the checkout's spec is chosen
+    (``acp.harness.kas.resolve_projected_spec``), not here.
 
     KAS requires a non-empty prompt where kiro-cli tolerates an empty one, so a
     spec with no prompt (Crew's own utility agents such as ``kirocrew-lite``
@@ -387,15 +377,7 @@ def resolve_prompt(
         return raw
     ref = raw[len(_PROMPT_FILE_SCHEME) :]
     candidate = Path(ref).expanduser()
-    if candidate.is_absolute():
-        path = candidate.resolve()
-    else:
-        base = agents_dir.resolve()
-        path = (base / ref).resolve()
-        if path != base and base not in path.parents:
-            raise KasAgentTranslationError(
-                f"agent {agent_id!r} relative prompt {ref!r} escapes the agent directory"
-            )
+    path = (candidate if candidate.is_absolute() else agents_dir / candidate).resolve()
     if _is_unsafe_prompt_path(path):
         raise KasAgentTranslationError(
             f"agent {agent_id!r} prompt path {path} is not an allowed location; refusing to inline it"
