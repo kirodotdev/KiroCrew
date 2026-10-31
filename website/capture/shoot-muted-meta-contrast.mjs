@@ -19,16 +19,16 @@ const server = await createServer({ configFile: './vite.config.ts', server: { ho
 await server.listen()
 const base = server.resolvedUrls?.local?.[0]?.replace(/\/$/, '') || `http://127.0.0.1:${server.config.server.port}`
 const browser = await chromium.launch({ executablePath: chromiumExecutable(), env: { ...process.env, LD_LIBRARY_PATH: '' } })
-const page = await browser.newPage({ viewport: { width: 900, height: 400 }, deviceScaleFactor: 2 })
+const page = await browser.newPage({ viewport: { width: 900, height: 600 }, deviceScaleFactor: 2 })
 page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
 
 for (const theme of themes) {
   await page.goto(`${base}/capture/muted-meta-contrast.html?theme=${theme}`)
   await page.locator('[data-testid="turn-stats"]').first().waitFor({ timeout: 30000 })
   await page.waitForTimeout(500)
-  const colors = await page.evaluate(() => [...document.querySelectorAll('[data-testid="on-bg"],[data-testid="on-card"]')].map(box => ({
+  const colors = await page.evaluate(() => [...document.querySelectorAll('[data-testid^="on-"]')].map(box => ({
     box: box.getAttribute('data-testid'),
-    surface: getComputedStyle(box.getAttribute('data-testid') === 'on-card' ? box : box.parentElement).backgroundColor,
+    surface: getComputedStyle(box.getAttribute('data-testid') === 'on-bg' ? box.parentElement : box).backgroundColor,
     credits: getComputedStyle(box.querySelector('[data-testid="turn-stats"]')).color,
   })))
   console.log(theme, JSON.stringify(colors))

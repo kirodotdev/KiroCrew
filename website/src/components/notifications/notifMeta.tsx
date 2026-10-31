@@ -89,7 +89,7 @@ export const KIND_META: Record<string, { icon: ReactNode; color: string; label: 
   // has.
   update:     { icon: <ArrowUpCircle className="lucide-inline" />, color: 'bg-info/15 text-info-text',      get label() { return i18nT('components.notifications.notifMeta.kind_update') },       borderColor: 'border-l-info' },
 }
-export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-muted/15 text-muted', get label() { return i18nT('components.notifications.notifMeta.kind_notification') }, borderColor: 'border-l-muted' }
+export const DEFAULT_META = { icon: <Bell className="lucide-inline" />, color: 'bg-bg-hover text-muted', get label() { return i18nT('components.notifications.notifMeta.kind_notification') }, borderColor: 'border-l-muted' }
 
 /** RFC Phase 3 priority tiers -- visual treatment per level (mockup 3):
  *  critical pops with a danger edge + marker, passive dims, default is
