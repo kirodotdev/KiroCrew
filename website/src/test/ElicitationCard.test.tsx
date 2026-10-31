@@ -198,6 +198,20 @@ describe('ElicitationCard', () => {
     expect(post.mock.calls[0][1]).toEqual({ request_id: 'rid-1', request_mid: 'mid-1', action: 'decline' })
   })
 
+  it('dismisses with cancel from the corner X, not decline, and stamps the row as not answered', async () => {
+    // MCP's third answer: the person put the question away without choosing.
+    // The server reads it apart from Decline's explicit no, so the X must
+    // never be a decline in disguise.
+    const store = configureStore({ reducer: { chat: chatReducer }, middleware: d => d({ serializableCheck: false, immutableCheck: false }) })
+    store.dispatch(setActiveSlot('dashboard:main'))
+    store.dispatch(replaceMessages([row({})]))
+    render(<Provider store={store}><ElicitationCard message={row({})} slot="dashboard:main" /></Provider>)
+    fireEvent.click(screen.getByRole('button', { name: /^close without answering$/i }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][1]).toEqual({ request_id: 'rid-1', request_mid: 'mid-1', action: 'cancel' })
+    await waitFor(() => expect(store.getState().chat.messages[0].meta?.resolved).toBe('cancel'))
+  })
+
   it('shows the gateway reason through ErrorNotice when the answer is refused and keeps the form open', async () => {
     const body = JSON.stringify({ error: "'count' is above its maximum", code: 'invalid_content' })
     post.mockResolvedValueOnce(new Response(body, { status: 400, headers: { 'content-type': 'application/json' } }))
@@ -217,6 +231,7 @@ describe('ElicitationCard', () => {
     expect(screen.getByRole('button', { name: /finished/i })).toBeInTheDocument()
     const resolved = row({ resolved: 'decline' })
     const { container } = render(<ElicitationCard message={resolved} slot="dashboard:main" />)
+    // No Submit, no Decline, and no corner X either: nothing is answerable.
     expect(container.querySelectorAll('button')).toHaveLength(0)
     expect(container.textContent).toMatch(/Declined/)
   })

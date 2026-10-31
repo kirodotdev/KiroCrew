@@ -12500,6 +12500,7 @@
         "choose": "请选择…",
         "date_time_format": "格式：2026-01-31T09:30:00Z",
         "decline": "拒绝",
+        "dismiss": "关闭，不作答",
         "done": "我已完成",
         "integer_not_whole": "{{field}} 必须是整数。",
         "integer_too_large": "{{field}} 太大，无法精确发送；最多 15 位数字。",

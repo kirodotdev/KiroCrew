@@ -12886,6 +12886,7 @@
         "choose": "Elegir…",
         "date_time_format": "Formato: 2026-01-31T09:30:00Z",
         "decline": "Rechazar",
+        "dismiss": "Cerrar sin responder",
         "done": "He terminado",
         "integer_not_whole": "{{field}} debe ser un número entero.",
         "integer_too_large": "{{field}} es demasiado grande para enviarse con exactitud; usa como máximo 15 dígitos.",

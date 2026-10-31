@@ -12500,6 +12500,7 @@
         "choose": "選択…",
         "date_time_format": "形式: 2026-01-31T09:30:00Z",
         "decline": "拒否",
+        "dismiss": "回答せずに閉じる",
         "done": "完了しました",
         "integer_not_whole": "{{field}} は整数にしてください。",
         "integer_too_large": "{{field}} は大きすぎて正確に送信できません。15 桁以内にしてください。",
