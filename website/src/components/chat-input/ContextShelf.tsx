@@ -316,6 +316,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                       variant="inline"
                       testId="auto-compact-write-error"
                       message={autoCompactError}
+                      announce={false}
                       onDismiss={() => setAutoCompactError('')}
                     />
                   </div>
