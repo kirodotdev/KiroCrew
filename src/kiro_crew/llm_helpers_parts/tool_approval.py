@@ -504,7 +504,19 @@ async def _resolve_permission(
         _scoped_truncated = _scoped_strings.truncated
         _input_strings = list(_scoped_strings)
     else:
-        _input_strings = _extract_tool_input_strings(_tool_input) if _tool_input else []
+        # A rendered edit diff over the scan ceiling is judged by the strings
+        # its arguments held, but only for a call the client itself classified
+        # as not a shell command (the shell cache the tool_call frame filled):
+        # for any other call the text may be what runs, and stays one string.
+        _input_strings = (
+            _extract_tool_input_strings(
+                _tool_input,
+                split_oversize_diff=bool(getattr(event, "shell_classified", False))
+                and not event.is_shell,
+            )
+            if _tool_input
+            else []
+        )
 
     def _scan_off_loop() -> tuple[str, str, str, str] | None:
         # One worker hop for the title and the whole tool_input loop. Both are

@@ -812,6 +812,11 @@ async def _run_chat(
     _responsive_human: bool = False,
     _responsive_protected: bool = False,
     _directive_user_origin: bool = False,
+    # *message* is what the person typed, so it may name an unsigned KAS MCP
+    # server to sign in to. False for a prompt composed from other text, such
+    # as the OpenAI-compatible endpoint's flattened conversation, whose system
+    # and assistant turns could name a server the person never asked for.
+    _message_is_typed: bool = True,
     # This turn was drained from a queue entry a PREVIOUS process accepted
     # (`slot_queue_repository.RESTORED_QUEUE_KEY`). Its provenance therefore
     # rests on an ordinary writable file rather than on anything this process
@@ -953,6 +958,23 @@ async def _run_chat(
         _todo_recovery_carried = turn._todo_recovery_carried
         _todo_sync_rendered = turn._todo_sync_rendered
         full_message = turn.full_message
+        if (
+            not is_slash
+            and _message_is_typed
+            and turn._directive_user_origin
+            and not turn._turn_provenance_restored
+            and not turn._turn_actor
+            and not turn._is_synthetic
+            and not turn._directive_self_wake
+            and turn._prompt_depth == 0
+        ):
+            # Require human-send provenance: generated app dispatches can have
+            # no actor or synthetic flag, but are not the person's words.
+            # Hand over only what they typed, before `@prompt`/`$skill` expansion
+            # and any runner-authored prepend that could name an unsigned server.
+            note = getattr(client, "note_user_message", None)
+            if note is not None:
+                note(turn.user_typed_message)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
         event_stream = (

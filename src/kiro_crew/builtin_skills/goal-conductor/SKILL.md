@@ -492,9 +492,11 @@ Each cycle:
    its session happen together.** When a work item reaches a terminal verdict
    (accepted, rejected, abandoned/void) and its loop is stopped,
    `session_close` that child session in the same cycle — a finished worker
-   has nothing left to re-arm. `session_close` archives (reopenable); it never
-   deletes. Never close a child that still has a pending human question or an
-   unmerged PR it is actively driving. **Closing an item cuts its worker's
+   has nothing left to re-arm. A stuck child (stale, no progress, item
+   abandoned) is `session_stop`ped first, then closed. `session_close` archives
+   (reopenable); it never deletes. Never close a child that waits on a person
+   (a pending approval or an open question to them) or an unmerged PR it is
+   actively driving, and never a session you did not dispatch. **Closing an item cuts its worker's
    report channel**: from then on its `work_report` is refused `item_closed`,
    and it cannot `session_send` to you. The close reply warns when that
    worker's session is still open. If the worker still has work for you,

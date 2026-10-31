@@ -273,6 +273,110 @@ describe('KiroPrerequisiteGate enterprise login gate', () => {
     expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
   })
 
+  // The gate reads Crew's vault sign-in: the gateway serves its command, and no
+  // enterprise surface may name kiro-cli's login then.
+  const VAULT_COMMAND = 'kirocrew kas login --provider idc --start-url'
+  const FILLED_COMMAND = `${VAULT_COMMAND} https://acme.awsapps.com/start`
+  const vaultLocked = {
+    ...locked,
+    enterprise_sign_in_command: VAULT_COMMAND,
+    enterprise_sign_in_needs_start_url: true,
+  }
+  const START_URL_HINT = /Enter it first: the command below fills it in/
+
+  it('names the vault sign-in on the sign-in screen, never kiro-cli login', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...vaultLocked, initial_setup_complete: true, installed: false, authenticated: true }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    expect(within(screenEl).getByText(VAULT_COMMAND).tagName).toBe('CODE')
+    expect(screen.queryByText('kiro-cli login')).not.toBeInTheDocument()
+    // No kiro-cli install step: the vault gate does not need kiro-cli.
+    expect(screen.queryByText('Set up Kiro')).not.toBeInTheDocument()
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+    // The side panel names the organization sign-in, not a Kiro CLI install.
+    expect(screen.queryByText(/Install Kiro CLI/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Sign this gateway in to your organization's account/)).toBeInTheDocument()
+    // The start URL is unknown here, so a line OUTSIDE the copied text says where it is.
+    expect(within(screenEl).getByTestId('enterprise-start-url-hint')).toHaveTextContent(START_URL_HINT)
+    expect(within(screenEl).getByText(VAULT_COMMAND).textContent).not.toMatch(START_URL_HINT)
+  })
+
+  it('asks for the start URL first and keeps copy off until it is a valid https URL', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...vaultLocked, initial_setup_complete: true }))
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    const field = within(screenEl).getByLabelText("Your organization's start URL")
+    const commandBox = within(screenEl).getByTestId('enterprise-sign-in-command')
+    const copy = within(commandBox).getByRole('button')
+    // The field comes before the line that says to run the command.
+    expect(field.compareDocumentPosition(within(screenEl).getByText(/Run this in a terminal/)))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(copy).toBeDisabled()
+
+    fireEvent.change(field, { target: { value: 'http://acme.awsapps.com/start' } })
+    expect(copy).toBeDisabled()
+    expect(within(commandBox).getByText(VAULT_COMMAND)).toBeInTheDocument()
+    fireEvent.change(field, { target: { value: 'https://acme.awsapps.com/start; echo hi' } })
+    expect(copy).toBeDisabled()
+
+    fireEvent.change(field, { target: { value: ' https://acme.awsapps.com/start/# ' } })
+    expect(copy).toBeEnabled()
+    const shown = within(commandBox).getByText(FILLED_COMMAND).textContent ?? ''
+    expect(shown).toBe(FILLED_COMMAND)
+    expect(shown).not.toMatch(/[<>]/)
+    // Client-side only: typing the URL sends nothing to the gateway.
+    expect(api.patchConfig).not.toHaveBeenCalled()
+    expect(api.acpBackendRecheck).not.toHaveBeenCalled()
+  })
+
+  it('copies a command the shell runs as-is: no < or >, and the known start URL filled in', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({
+        ...vaultLocked,
+        enterprise_sign_in_command: FILLED_COMMAND,
+        enterprise_sign_in_needs_start_url: false,
+        initial_setup_complete: true,
+      }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    const copied = within(screenEl).getByText(FILLED_COMMAND).textContent ?? ''
+    expect(copied).not.toMatch(/[<>]/)
+    // Known start URL: no field, and the copy button is on.
+    expect(within(screenEl).queryByTestId('enterprise-start-url-input')).not.toBeInTheDocument()
+    expect(within(screenEl).queryByTestId('enterprise-start-url-hint')).not.toBeInTheDocument()
+    expect(within(within(screenEl).getByTestId('enterprise-sign-in-command')).getByRole('button')).toBeEnabled()
+  })
+
+  it('tells a non-owner on the vault sign-in screen to ask the owner', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(
+      status({ ...vaultLocked, initial_setup_complete: true, setup_allowed: false }),
+    )
+    renderGate()
+    const screenEl = await screen.findByTestId('enterprise-sign-in-required')
+    expect(within(screenEl).getByText(/Ask the .* owner to sign this gateway in again/)).toBeInTheDocument()
+    expect(screen.queryByText(VAULT_COMMAND)).not.toBeInTheDocument()
+  })
+
+  it('sends the owner to a new window from the relock notice, where the command can be copied', async () => {
+    // The notice cannot be selected, so a long filled command is never shown there.
+    await relock(
+      <Draft />,
+      status({ ...vaultLocked, enterprise_sign_in_command: FILLED_COMMAND, initial_setup_complete: true }),
+    )
+    const notice = screen.getByTestId('enterprise-relock-notice')
+    expect(within(notice).getByTestId('enterprise-relock-new-window')).toHaveTextContent(
+      /open the dashboard in a new window or tab/,
+    )
+    expect(within(notice).queryByText(FILLED_COMMAND)).not.toBeInTheDocument()
+    expect(notice.querySelector('code')).toBeNull()
+    expect(within(notice).queryByText('kiro-cli login')).not.toBeInTheDocument()
+    expect(notice.querySelectorAll('button, a, input, select, textarea, [tabindex]')).toHaveLength(0)
+    expect(screen.getByLabelText('draft')).toHaveValue('unsaved json')
+  })
+
   it('opens the dashboard once the gate reports open', async () => {
     vi.mocked(api.kiroPrerequisite)
       .mockResolvedValueOnce(status({ ...locked, initial_setup_complete: true }))

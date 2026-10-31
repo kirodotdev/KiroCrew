@@ -550,6 +550,11 @@ peer, and it cancels the turn that asked for it, so make it your last call and
 write whatever the person should read before it. `session_close` is the only
 verb (besides `session_release`) that accepts its own caller as the target.
 
+A crewmate's own thread is the exception: it may not close itself
+(`member_thread_self_close`, HTTP 403), because only the person dismisses it. A
+crewmate closes the workers it created without an approval prompt, under the same
+ownership fence as `session_stop`.
+
 ### `session_end_wait`
 
 | Argument | Required | Meaning |

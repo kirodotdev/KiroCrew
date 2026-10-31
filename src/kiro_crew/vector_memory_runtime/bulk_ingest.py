@@ -130,8 +130,11 @@ def _decode_payload_vector(raw: object, dim: int) -> list[float] | None:
 IMPORT_CONFIDENCE_DEFAULT = 0.85
 
 
-def _import_confidence(raw: object, replacement: float) -> float:
+def _import_confidence(raw: object, replacement: float, *, writer: str = "memory import") -> float:
     """The ``0..1`` confidence an imported semantic row with *raw* is written at.
+
+    *writer* names the write path in the warning line; member consolidation shares
+    this bound for the confidence its model writes.
 
     An import file is the user's own data, so a bad confidence never skips its row:
     a number is clamped to ``0..1`` (an int is compared before it is converted, so one
@@ -151,11 +154,11 @@ def _import_confidence(raw: object, replacement: float) -> float:
         except ValueError:
             value = None
     if not isinstance(value, (int, float)) or (isinstance(value, float) and math.isnan(value)):
-        logger.warning("memory import: confidence is not a number; using %s", replacement)
+        logger.warning("%s: confidence is not a number; using %s", writer, replacement)
         return replacement
     clamped = max(0, min(1, value))
     if clamped != value:
-        logger.warning("memory import: confidence outside 0..1; using %s", float(clamped))
+        logger.warning("%s: confidence outside 0..1; using %s", writer, float(clamped))
     return float(clamped)
 
 

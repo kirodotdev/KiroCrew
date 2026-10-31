@@ -49,6 +49,7 @@ from kiro_crew.vector_memory_constants import _MAX_CONSOLIDATION_SEMANTIC_VALUE_
 from kiro_crew.vector_memory_constants import _MAX_SEMANTIC_PER_CONSOLIDATION as _WINDOW
 
 _LOGGER = "kiro_crew.history"
+_VM_LOGGER = "kiro_crew.vector_memory"
 _CODE = SemanticRejectCode.CONSOLIDATION_VALUE_SIZE.value
 
 # The reporter's two items, exactly: 2,000 and 3,000 ASCII characters.
@@ -1445,17 +1446,18 @@ async def test_a_confidence_is_read_the_way_its_writer_reads_it(
 _ABSENT = object()
 
 # Every confidence the screen tests use, with what each writer reads it as: the value it
-# validates at, None for an item it skips, or OverflowError, which neither writer catches.
-# Both writers read the last four: 0.9, "0.95" and True are written, and a missing key
-# reads as the 0.5 default, which validate_semantic refuses as too low.
+# validates at, None for an item it skips, or OverflowError, which the V1 writer does not
+# catch. The member writer clamps a number outside 0..1 into range, so it keeps the fact
+# and never raises. Both writers read the last four: 0.9, "0.95" and True are written,
+# and a missing key reads as the 0.5 default, which validate_semantic refuses as too low.
 _CONFIDENCES = [
     pytest.param(None, None, None, id="none"),
     pytest.param("high", None, None, id="text"),
     pytest.param(float("nan"), None, None, id="nan"),
     pytest.param(float("inf"), None, None, id="inf"),
-    pytest.param(10**400, OverflowError, OverflowError, id="int-too-large-for-a-float"),
-    pytest.param(-0.5, None, -0.5, id="negative"),
-    pytest.param(1.5, None, 1.5, id="over-one"),
+    pytest.param(10**400, OverflowError, 1.0, id="int-too-large-for-a-float"),
+    pytest.param(-0.5, None, 0.0, id="negative"),
+    pytest.param(1.5, None, 1.0, id="over-one"),
     pytest.param(0.9, 0.9, 0.9, id="accepted"),
     pytest.param(_ABSENT, 0.5, 0.5, id="absent-reads-the-default"),
     pytest.param("0.95", 0.95, 0.95, id="numeric-text"),
@@ -1463,8 +1465,8 @@ _CONFIDENCES = [
 ]
 
 # The confidences each writer writes a value under; the store refuses the rest it reads
-# (-0.5 and the 0.5 default are under its threshold).
-_WRITTEN = {"v1": {0.9, 0.95, 1.0}, "member": {0.9, 0.95, 1.0, 1.5}}
+# (-0.5 clamped to 0.0 and the 0.5 default are under its threshold).
+_WRITTEN = {"v1": {0.9, 0.95, 1.0}, "member": {0.9, 0.95, 1.0}}
 
 
 def _with_confidence(item: dict, confidence: object) -> dict:
@@ -1571,8 +1573,14 @@ def test_each_writer_logs_and_counts_a_confidence_by_its_own_rule(
             _write(path, store, c, item)
 
     logged = [(r.name, r.levelname, r.getMessage()) for r in caplog.records]
-    if path == "member" or reads is OverflowError:
-        # The member writer logs none of these, and a raise ends the V1 pass unsummarised.
+    if path == "member":
+        # The member writer logs only the bound's clamp, and never the value it read.
+        number = isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+        clamped = number and reads is not None and reads != confidence
+        line = f"member consolidation: confidence outside 0..1; using {reads}"
+        assert logged == ([(_VM_LOGGER, "WARNING", line)] if clamped else [])
+    elif reads is OverflowError:
+        # A raise ends the V1 pass unsummarised.
         assert logged == []
     elif reads is None:
         # A confidence the V1 writer skips has no line of its own; the summary counts it.
@@ -1597,6 +1605,23 @@ def test_each_writer_logs_and_counts_a_confidence_by_its_own_rule(
             ),
             (_LOGGER, "INFO", _v1_summary(refused=1)),
         ]
+
+
+@pytest.mark.parametrize(
+    "confidence",
+    [1.5, 99, "1.5", 10**400],
+    ids=["float", "int", "numeric-text", "int-too-large-for-a-float"],
+)
+def test_the_member_writer_stores_a_confidence_over_one_at_one(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, opened, confidence: object
+) -> None:
+    store, c = _store_for("member", tmp_path, monkeypatch, opened)
+
+    _write("member", store, c, _with_confidence(_item("project.fact", "a short fact"), confidence))
+
+    row = store.get_semantic("project.fact")
+    assert row is not None
+    assert row["confidence"] == 1.0
 
 
 @pytest.mark.parametrize("path", ["v1", "member"])
@@ -1843,8 +1868,9 @@ def test_an_item_its_writer_skips_is_not_refused_for_size(
 
     _, screened, refused = _screen(v1_store, item, member=member)
 
-    # Only the member store reads a confidence over 1, and its check accepts it.
-    if member and confidence == 1.5:
+    # Only the member store reads a confidence over 1, clamped to 1.0, and its check
+    # accepts it.
+    if member and confidence in (1.5, 10**400):
         assert screened["semantic"] == [None]
         assert refused == (_OversizedItem("project.long", _LARGE, len(_LARGE), 0),)
     else:

@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.context_blocks import (
     PHASE_PER_TURN,
     PHASE_SESSION_START,
@@ -26,6 +27,8 @@ from kiro_crew.dashboard.recovery_replays import (
 )
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.hooks import HOOK_EVENT_AGENT_SPAWN, HOOK_EVENT_USER_PROMPT_SUBMIT
+from kiro_crew.members import DM_SLOT_MODE
+from kiro_crew.milestones import record_user_turn
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -804,6 +807,31 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         turn._crew_log_actor,
         depth=_prompt_depth,
     )
+    # Milestones count admitted, persistent human turns from dashboard or channel
+    # openers. Depth re-entries, synthetic recovery and replay turns must not count
+    # the same message again. ``_directive_user_origin`` alone is not enough: a
+    # script cron's ``ctx.send_to_session`` reaches /api/chat with it True, so the
+    # turn's structural actor must also be ``user`` (as the attended-turn checks
+    # above require). The write runs off-loop and never raises, adding no
+    # suspension point here.
+    from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
+
+    if (
+        _prompt_depth == 0
+        and not _is_refusal_retry_turn
+        and not turn._synthetic_recovery_turn
+        and not turn._replay
+        and turn._directive_user_origin is True
+        and turn._crew_log_actor == "user"
+        and not is_restricted_session_key(turn.state, session_key)
+    ):
+        record_user_turn(
+            mate_thread=(
+                getattr(slot, "mode", "") == DM_SLOT_MODE
+                and getattr(slot, "agent", "") == ASSISTANT_MEMBER_NAME
+            ),
+            crew_mode=bool(getattr(slot, "crew_mode_agent", "")),
+        )
     # From here the turn owes a closer, and _turn_close_crew_log
     # (chat_turn/crew_log_attribution.py), from _run_chat's finally, is what pays it: a
     # `turn/started` left open in the file is read as a turn whose writer died,

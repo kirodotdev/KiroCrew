@@ -136,6 +136,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_model_selection",
     ),
+    "_match_mcp_sign_in_ask": ("function", False, "b60c5fea256e", "session_handle_mcp"),
     "_no_tool_in_flight": ("function", False, "a6632a57e602", "session_handle_updates"),
     "_normalize_models": ("staticmethod", False, "0587318c8e24", "session_handle_model_selection"),
     "_note_mcp_sign_in_status": ("function", False, "d0d2b0689553", "session_handle_mcp"),
@@ -182,7 +183,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_report_evicted_attributions": ("function", False, "b60c5fea256e", "session_handle_updates"),
     "_restore_withdrawn": ("function", False, "491a23344d9c", "session_handle_permissions"),
     "_retire_liveness_state": ("function", False, "b60c5fea256e", "session_handle_watchdog"),
-    "_run_turn": ("function", "agen", "b55fe99c131a", "session_handle_turn"),
+    "_run_turn": ("function", "agen", "7fdec7e9ef27", "session_handle_turn"),
     "_runtime_idle_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
     "_runtime_reattempts_mcp": ("function", False, "a6632a57e602", "session_handle_mcp"),
     "_send_awaited": ("function", True, "99990f4299d3", "session_handle_lifecycle"),
@@ -274,7 +275,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "parked_for_secs": ("function", False, "59162e39f6f1", "session_handle_watchdog"),
     "parked_since": ("property", False, "c2eec8a41739", "session_handle_class"),
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "session_handle_mcp"),
-    "prompt": ("function", "agen", "ed7ccfb7b96f", "session_handle_turn"),
+    "prompt": ("function", "agen", "c2b3e88c0a7c", "session_handle_turn"),
     "prompt_or_tool_seen": ("property", False, "a6632a57e602", "session_handle_class"),
     "prompt_outstanding_on_stall": ("property", False, "a6632a57e602", "session_handle_class"),
     "queued_frame_count": ("function", False, "fa6cfecd5574", "session_handle_mcp"),
@@ -307,6 +308,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_for_declared_mcp": ("function", True, "921c3727b83c", "session_handle_mcp"),
     "wait_mcp_ready": ("function", True, "dc863b4461ff", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
+    "want_mcp_sign_in_named": ("function", False, "ce7410240196", "session_handle_mcp"),
 }
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,

@@ -12,7 +12,7 @@ new floor for one of the product's own subcommands goes here.
 
 The frame walk (``_self_token_frames``, ``_shell_payload_sources``) and the static
 reader of a flat command substitution (``_static_substitution_output``) are reused by
-the ssh self-target floor above this module and by ``perm_verb_mention``.
+the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
 the inline-payload checks and the shared name vocabulary below it, and imports no other

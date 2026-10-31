@@ -938,6 +938,15 @@ class LLMProvider(ABC):
         """
         return None
 
+    def note_user_message(self, text: str) -> None:
+        """Hand the user's own message, as typed, to the MCP sign-in trigger.
+
+        A KAS session offers a server's sign-in only when the user names it
+        (see ``AcpSessionHandle.want_mcp_sign_in_named``). A provider with no
+        such trigger ignores it. Never raises.
+        """
+        return None
+
     async def wait_for_declared_mcp(self, timeout: float) -> tuple[str, ...]:
         """Wait, at most *timeout* seconds, for the agent spec's MCP servers to report.
 

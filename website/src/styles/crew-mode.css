@@ -52,6 +52,38 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
   }
 }
 
+/* The Sessions row's ULTRA MODE tag: the same two stops, laid out
+   purple -> blue -> purple on a tile twice the tag's width. While the crew
+   works, `CrewEyebrow` slides the tile one width per loop (Framer Motion,
+   background-position only), so every frame shows only colours between the
+   two measured stops and the loop has no seam. At rest the position is 0,
+   which is the static purple-to-blue look. */
+.crew-eyebrow-text {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--aim) 85%, var(--text-strong, var(--text))),
+    color-mix(in srgb, var(--info) 60%, var(--text-strong, var(--text))),
+    color-mix(in srgb, var(--aim) 85%, var(--text-strong, var(--text)))
+  );
+  background-size: 200% 100%;
+}
+
+/* Repeated after the tag's gradient above, which would otherwise win back the
+   image the forced-colours block drops. */
+@media (forced-colors: active) {
+  .crew-eyebrow-text {
+    background-image: none;
+  }
+}
+
+/* No text clipping: the solid accent, not transparent text. */
+@supports not ((background-clip: text) or (-webkit-background-clip: text)) {
+  .crew-eyebrow-text {
+    background-image: none;
+    color: var(--ultra-accent);
+  }
+}
+
 .ultra-accent {
   color: var(--ultra-accent);
 }

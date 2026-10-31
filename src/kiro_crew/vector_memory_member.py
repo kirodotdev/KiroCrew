@@ -43,6 +43,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
 )
+from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -422,16 +423,22 @@ def consolidation_receipt(self: VectorMemoryStore, source_id: str) -> dict | Non
 def _member_consolidation_confidence(item: dict) -> float | None:
     """The confidence :func:`apply_consolidation` validates *item* at, or ``None`` if it skips.
 
-    It skips a confidence ``float()`` cannot read or that is not finite; one outside
-    ``0..1`` is left to ``validate_semantic``. An integer too large for a float raises
-    ``OverflowError``, which the writer does not catch. The consolidation size screen
+    It skips a confidence ``float()`` cannot read or that is not finite. A number
+    outside ``0..1``, an integer too large for a float included, is clamped into range
+    with a warning by the memory import bound (``bulk_ingest._import_confidence``), so
+    the fact is kept and the pass never raises. The consolidation size screen
     (``history_consolidation_memory._refuse_oversized_semantic``) reads the same answer.
     """
+    raw = item.get("confidence", 0.5)
     try:
-        confidence = float(item.get("confidence", 0.5))
+        if not math.isfinite(float(raw)):
+            return None
+    except OverflowError:
+        pass  # an integer too large for a float: the bound clamps it to 1.0
     except (TypeError, ValueError):
         return None
-    return confidence if math.isfinite(confidence) else None
+    # Every value left is a number or numeric text, so the replacement is never used.
+    return _bulk_ingest._import_confidence(raw, 0.5, writer="member consolidation")
 
 
 def _member_consolidation_metadata(item: dict) -> tuple[dict, list[str]]:

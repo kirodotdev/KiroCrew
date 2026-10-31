@@ -359,6 +359,8 @@ class TestKasMemberProjection:
         # one approval prompt per worker on an unattended cycle.
         assert "session_broadcast" in rendered
         assert "session_stop" in rendered
+        # Cleanup of a finished or stuck worker, under the same fence.
+        assert "session_close" in rendered
 
     def test_spec_is_not_mutated(self):
         spec = {"tools": ["@kirocrew-core"], "allowedTools": ["@kirocrew-core"]}

@@ -34,6 +34,14 @@ export interface KiroPrerequisiteStatus {
    */
   enterprise_login_required?: boolean
   /**
+   * Set with `enterprise_login_required`: the exact command that signs this
+   * enterprise gateway in again (Crew's own vault sign-in). The sign-in screen and
+   * the relock notice show it instead of any kiro-cli login command.
+   */
+  enterprise_sign_in_command?: string
+  /** True when the command ends at `--start-url`: the gateway has no start URL to fill in. */
+  enterprise_sign_in_needs_start_url?: boolean
+  /**
    * True when the CLI binary is present and executable but could not be
    * VERIFIED because this host cannot build a sandbox (verification runs the
    * binary inside it). A categorically different condition from a missing

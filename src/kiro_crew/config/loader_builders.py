@@ -1197,6 +1197,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         feature_videos_cache_max_mb=section.read(
             "feature_videos_cache_max_mb", _safe_float, lo=0.0
         ),
+        milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),

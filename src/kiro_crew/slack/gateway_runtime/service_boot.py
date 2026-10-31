@@ -860,9 +860,10 @@ async def run(self: GatewayOrchestrator) -> None:
     except RuntimeError:
         logger.warning("sandbox warm_backend skipped (thread exhaustion); cache stays cold")
 
-    # Enterprise build only: no kiro login, no Crew. Checked before any service
-    # starts and long before the HTTP server binds; a failure exits non-zero.
-    # After the sandbox warm-up because the probe runs kiro-cli in the sandbox.
+    # Enterprise build only: no kiro sign-in, no Crew. Checked before any service
+    # starts and long before the HTTP server binds; a failure exits non-zero. The
+    # check reads the one enterprise sign-in (Crew's vault sign-in) and
+    # always hands back None, so start_dashboard builds its own setup service.
     from kiro_crew.enterprise_boot import require_kiro_login
 
     self._boot_kiro_service = await require_kiro_login(assume_ready=self._test_mode)

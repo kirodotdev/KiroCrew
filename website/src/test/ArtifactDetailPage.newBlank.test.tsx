@@ -14,7 +14,7 @@
  * lifecycle logic, not the editor.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import { Routes, Route, Link } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
@@ -124,6 +124,31 @@ describe('ArtifactDetailPage — a freshly created blank document', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { description: 'Rename this artifact' })).toHaveFocus(),
     )
+  })
+
+  it('returns keyboard focus to the title after abandoning a rename on Escape', async () => {
+    renderPage({ blank: false })
+    fireEvent.click(await screen.findByRole('button', { description: 'Rename this artifact' }))
+    const input = await screen.findByLabelText('Artifact name')
+    fireEvent.change(input, { target: { value: 'Discard me' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { description: 'Rename this artifact' })).toHaveFocus(),
+    )
+    expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
+  })
+
+  it('a pointer blur commits the rename but leaves focus where the user put it', async () => {
+    renderPage({ blank: false })
+    fireEvent.click(await screen.findByRole('button', { description: 'Rename this artifact' }))
+    const input = await screen.findByLabelText('Artifact name')
+    fireEvent.change(input, { target: { value: 'Clicked away' } })
+    const back = screen.getByRole('button', { name: /Back/ })
+    act(() => { back.focus() })
+    await waitFor(() => expect(screen.queryByLabelText('Artifact name')).not.toBeInTheDocument())
+    await act(async () => { await new Promise(requestAnimationFrame) })
+    expect(back).toHaveFocus()
+    expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith('untitled', { name: 'Clicked away' })
   })
 
   it('abandons a rename on Escape', async () => {

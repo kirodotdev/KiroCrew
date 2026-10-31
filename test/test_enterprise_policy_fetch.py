@@ -334,7 +334,7 @@ class TestAuthFailure:
     def test_no_sign_in_exits_without_calling_the_service(self, enterprise, vault, cps, capsys):
         err = _boot_exit_message(capsys)
         assert "no Kiro sign-in was found" in err
-        assert "kirocrew kas login" in err
+        assert "kas login --provider idc" in err
         assert cps.requests == []
 
     def test_an_api_key_does_not_stand_in_for_the_sign_in(
@@ -559,7 +559,12 @@ class TestPinnedProfile:
         vault()
         epf.pinned_scope()
         install_ceiling(governance.parse_policy(json.loads(epf.fetch(_request()).body)))
-        monkeypatch.setattr("kiro_crew.auth.bridge.default_token_store", lambda: None)
+        # A real sign-out: the vault holds no identity any more.
+        from kiro_crew.auth.bridge import default_token_store
+
+        store = default_token_store()
+        store.delete(store.resolve().identity)
+        assert store.holds_no_identity()
         outcome = pd.refresh_now(force=True)
         assert outcome.status == pd.REFRESH_REJECTED
         assert "account changed" in outcome.detail

@@ -23,7 +23,14 @@ import { i18nT } from '../../i18n/t'
  * lexically a child of `code`/`pre` — passing it as `command="..."` would make it
  * a JSX attribute string and trip the zero-tolerance [added-lines] check.
  */
-export function CopyCommand({ children }: { children: ReactNode }) {
+export function CopyCommand({
+  children,
+  disabled = false,
+}: {
+  children: ReactNode
+  /** Shown but not copyable yet: the command is not complete. */
+  disabled?: boolean
+}) {
   const hostRef = useRef<HTMLSpanElement>(null)
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
@@ -57,9 +64,10 @@ export function CopyCommand({ children }: { children: ReactNode }) {
       <button
         type="button"
         onClick={handleCopy}
+        disabled={disabled}
         aria-label={label}
         title={label}
-        className="group/cmd mt-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border-none bg-bg-elevated px-2 py-1.5 text-left hover:bg-bg-hover focus-ring"
+        className="group/cmd mt-1 flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border-none bg-bg-elevated px-2 py-1.5 text-left hover:bg-bg-hover focus-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-bg-elevated"
       >
         <span
           ref={hostRef}

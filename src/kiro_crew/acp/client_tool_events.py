@@ -34,6 +34,7 @@ from kiro_crew.acp._dispatch import (
     derive_edit_diff,
     extract_tool_purpose,
     harness_tool_name,
+    is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
     redact_text,
@@ -496,6 +497,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                         input_str = diff_str
                         found_diff = True
                     break
+        _derived_redacted = False
         # Fallback when no diff content block was found: derive from the
         # edit args (strReplace pair, create/insert content). Gated on
         # the EDIT kind — "content"-shaped args exist on non-edit tools.
@@ -505,6 +507,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         ):
             diff_str = derive_edit_diff(raw_input)
             if diff_str:
+                # derive_edit_diff redacts each side before diffing, so the comparison
+                # below cannot see a cut it made; the params it came from can.
+                _derived_redacted = redact_text(input_str) != input_str
                 input_str = diff_str
         # Redact sensitive content before caching/displaying
         input_redacted = False
@@ -512,7 +517,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             from kiro_crew.security import redact
 
             safe_input = redact(input_str)
-            input_redacted = safe_input != input_str
+            input_redacted = safe_input != input_str or _derived_redacted
             input_str = safe_input
         if tool_call_id and input_str:
             self._tool_call_inputs[tool_call_id] = input_str
@@ -882,6 +887,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     # Edit-style diff content blocks: prefer the rendered unified diff over
     # the raw input dict (mirrors `_extract_tool_event`).
     _diff_path = ""
+    found_diff = False
     content_blocks = update.get("content", [])
     if isinstance(content_blocks, list):
         for cb in content_blocks:
@@ -895,13 +901,29 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
                 diff_str = _make_unified_diff(old, new, path)
                 if diff_str:
                     input_str = diff_str
+                    found_diff = True
                 break
+    _derived_redacted = False
+    # The edit-args fallback of `_extract_tool_event`; a kind-less update of a
+    # call that already shows a diff is an edit (mirrors
+    # _dispatch._build_tool_refinement_event).
+    if not found_diff and (
+        kind == "edit"
+        or is_rendered_edit_diff(self._tool_call_inputs.get(tool_use_id))
+        or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
+    ):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            # derive_edit_diff redacts each side before diffing, so the comparison
+            # below cannot see a cut it made; the params it came from can.
+            _derived_redacted = redact_text(input_str) != input_str
+            input_str = diff_str
     input_redacted = False
     if input_str:
         from kiro_crew.security import redact
 
         safe_input = redact(input_str)
-        input_redacted = safe_input != input_str
+        input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
         self._tool_call_inputs[tool_use_id] = input_str
         self._tool_call_input_redacted[tool_use_id] = input_redacted

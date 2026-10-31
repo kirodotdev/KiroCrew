@@ -180,7 +180,9 @@ async def ensure_fresh(
                     # sign-in that replaces that token (save clears it in the
                     # same lock). Recorded, then re-raised unchanged: callers see
                     # the same failure they always did.
-                    await asyncio.to_thread(store.mark_refresh_rejected, token.identity)
+                    await asyncio.to_thread(
+                        store.mark_refresh_rejected, token.identity, current.refresh_token
+                    )
                     raise
                 # store.save does blocking file IO (owner-only lockdown included) — off-loop.
                 # This coroutine already holds the identity's refresh lock on `fd`;

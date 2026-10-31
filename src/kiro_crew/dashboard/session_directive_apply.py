@@ -391,7 +391,15 @@ async def apply_session_directive_outcome(
     # result the same way call_tool_with_logging does (an "Error:" prefix ==
     # failed), keeping the audit truthful for the failure paths too.
     outcome = _outcome(result)
-    _audit(session_key, kind, "error" if outcome.text.startswith("Error:") else "success")
+    failed = outcome.text.startswith("Error:")
+    _audit(session_key, kind, "error" if failed else "success")
+    if not failed and kind in ("monitor_start", "monitor_watch"):
+        # The "PR watch" milestone, once the loop is really armed: the MCP tool
+        # already answered "requested" before this consumer could refuse it.
+        # Local import, like ``_audit``'s, for the import-cycle reason given there.
+        from kiro_crew.milestones import record as record_milestone
+
+        record_milestone("pr-watch")
     return outcome
 
 

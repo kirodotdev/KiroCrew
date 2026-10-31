@@ -10,6 +10,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_abandoned_prompt_id``, ``_awaiting_permission``, ``_between_turn_credits``,
 ``_cancel_ts``, ``_cancelled``, ``_compaction_terminal_seen``, ``_input_wait_emitted``,
 ``_kas_compact_turn``, ``_kas_subagent_roster``, ``_last_stop_reason``,
+``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``,
 ``_native_child_overflow``, ``_native_child_sids``, ``_native_child_tool_call_ids``,
 ``_parked_since``, ``_parked_total``, ``_pending_reject_notices``,
 ``_permission_gate_events``, ``_permission_options``, ``_prompt_starts``,
@@ -141,7 +142,12 @@ async def wait_turn_done(self: AcpSessionHandle, timeout: float = 30.0) -> bool:
 
 
 async def prompt(
-    self: AcpSessionHandle, message: str, timeout: float | None = None, *, allow_image: bool = True
+    self: AcpSessionHandle,
+    message: str,
+    timeout: float | None = None,
+    *,
+    allow_image: bool = True,
+    sign_in_ask: str = "",
 ) -> AsyncIterator[AcpEvent]:
     """Send session/prompt and yield AcpEvent objects until the turn completes.
 
@@ -225,7 +231,7 @@ async def prompt(
         )
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
         return
-    turn = self._run_turn(_build, timeout)
+    turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask)
     try:
         async for event in turn:
             yield event
@@ -302,6 +308,7 @@ async def _run_turn(
     timeout: float | None,
     *,
     extract_command_result: bool = False,
+    sign_in_ask: str = "",
 ) -> AsyncGenerator[AcpEvent, None]:
     """Shared turn lifecycle for :meth:`prompt` and :meth:`stream_command`.
 
@@ -315,6 +322,8 @@ async def _run_turn(
     ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
     turn ceiling instead of cutting the turn at the 2h default underneath it.
     """
+    # Discard stale handle text; this attempt's ask arrives only as an argument.
+    self._mcp_sign_in_ask = ""
     timeout = await _effective_prompt_timeout_async(timeout)
     # Guard against concurrent prompts on the same handle: a second call
     # would clear _turn_done and race on the shared _queue, corrupting
@@ -696,8 +705,13 @@ async def _run_turn(
     # propagates.
     try:
         # Offer synchronously after the drain, before request building can yield
-        # and queue a connected status that makes a reset unsafe. The consent link
-        # is consumed by this turn's dispatch loop.
+        # and queue a connected status that makes a reset unsafe. Only a server
+        # a user message named is a candidate. The consent link is consumed by
+        # this turn's dispatch loop. The ask is matched again first: a server
+        # it names may be tracked only since the drain read its status.
+        if sign_in_ask:
+            self.want_mcp_sign_in_named(sign_in_ask)
+        self._match_mcp_sign_in_ask()
         self._offer_mcp_sign_in()
         # A server that failed for want of a credential is connected again
         # here, after the sign-in offer: the offer takes the runtime's one
@@ -720,6 +734,8 @@ async def _run_turn(
         req_id = await self._runtime.send_request(_method, _params)
         self._prompt_written = True
     except BaseException:
+        self._mcp_sign_in_ask = ""
+        self._mcp_sign_in_asked.clear()
         self._turn_done.set()
         _mark = getattr(self._runtime, "mark_turn_active", None)
         if _mark is not None:
@@ -885,6 +901,10 @@ async def _run_turn(
             self._abandoned_prompt_id = req_id
         raise
     finally:
+        # The ask ends with its turn: a later cron or sub-agent turn never
+        # matches an old message.
+        self._mcp_sign_in_ask = ""
+        self._mcp_sign_in_asked.clear()
         if _mark is not None:
             _mark(self._session_id, False)
         if not self._turn_done.is_set():

@@ -493,10 +493,16 @@ in an oss build). One fetch is the Kiro control plane's
 - **Address.** `control_plane_url(profile_region(arn))` from
   `auth/login/control_plane.py`, the region table the IdC login already uses. The URL's
   host part is not an address, and nothing in the environment or config names one.
-- **Identity.** The Kiro sign-in in Crew's vault (`kirocrew kas login`), refreshed by
-  `KasAuthProvider` with the `KIRO_API_KEY` bypass off. `Authorization: Bearer`, plus
-  `TokenType: EXTERNAL_IDP` for an External IdP sign-in. The body names the profile
-  ARN and the client surface `CREW`.
+- **Identity.** The one enterprise sign-in (RFC D4, `kiro_crew/enterprise_sign_in.py`).
+  `select()` returns one frozen `Selection` (source, account, problem, token), and the
+  start check, the gate, this fetch and the account lock all read it. The only source
+  today is Crew's own vault (`kirocrew kas login`). No vault entry is not signed in; a
+  lapsed one is not signed in (`sign_in_unusable`, naming `kirocrew kas login --provider
+  idc`). `resolve(with_token=True)` refreshes the vault token through `KasAuthProvider`
+  with the `KIRO_API_KEY` bypass off. `Authorization:
+  Bearer`, plus `TokenType: EXTERNAL_IDP` for an External IdP sign-in. The body names
+  the profile ARN and the client surface `CREW`. Each raise records a cause
+  (`last_failure_cause()`), and `refuse_policy_boot` picks its fix sentence from it.
 - **Trust.** TLS with default verification, redirects refused (`_open`), the pinned
   host, and the reply's `manifest.hash` (SHA-256 of the body) when it carries one.
   There is no signature layer.
@@ -512,8 +518,8 @@ in an oss build). One fetch is the Kiro control plane's
 - **One profile's cache.** Every profile shares the one source, so the document records
   a digest of the profile it was read for in `identity.issuer`, and the cache's source
   identity is the source plus that digest (`_source_identity`). A copy is recorded
-  against the profile it was READ for, and every read compares it with the profile in
-  the vault NOW, so the existing repoint rule refuses another profile's copy on every
+  against the profile it was READ for, and every read compares it with the profile the
+  one sign-in names NOW, so the existing repoint rule refuses another profile's copy on every
   path: the fresh-cache shortcut, the outage fallback, the concurrent-writer handoff, a
   refresh and the posture. Every other source's identity is the source itself.
 - **Profile pinned at startup.** An enterprise process pins the profile signed in when
@@ -521,7 +527,13 @@ in an oss build). One fetch is the Kiro control plane's
   cache as that profile for life. It hands the pin to its cache-only children in
   `KIROCREW_POLICY_PROFILE_PIN` (internal, not a setting); a child adopts only a cache
   with that digest, and a child with no pin adopts nothing. Every install and refresh
-  compares the live vault profile, and the document's, with the pin; each fetch checks
+  compares the live profile (`signed_in_scope()`: the account `select()` names, so a
+  lapsed sign-in still names its account and reaches the fetch as `sign_in_unusable`,
+  a refresh failure, never as an account change; an unreadable store or no profile is
+  refused with its own cause and does not stop the gateway), and the document's, with
+  the pin; a
+  process that never pinned is refused with the resolver's own cause, never as an
+  account change; each fetch checks
   it before reading the credential, so a sign-out counts as a change. The pin lives in
   the process, so a re-exec'd gateway pins its own sign-in. A mismatch is
   refused with "the signed-in Kiro account changed since Kiro Crew started; restart

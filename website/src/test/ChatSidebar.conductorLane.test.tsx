@@ -268,6 +268,29 @@ describe('chat sidebar — conductor lane', () => {
     expect(getByTestId('crew-root-state')).not.toHaveClass('truncate')
     // Only the root wears the eyebrow.
     expect(getAllByTestId('crew-eyebrow')).toHaveLength(1)
+    // An idle crew's tag stays still: motion on the list means work is running.
+    expect(eyebrow).toHaveAttribute('data-flowing', 'false')
+  })
+
+  it('flows the Ultra Mode tag only while the crew root has live work', () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
+  })
+
+  it('flows the Ultra Mode tag while a crew member runs, even with the root idle', () => {
+    const slots = [
+      { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
+      { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
+      { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
+    ]
+    const { container } = renderSidebar(slots, [], null, {}, [], slots)
+    const card = container.querySelector('[data-crew-root="true"]') as HTMLElement
+    expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
   })
 
   it('keeps an Ultra Mode row compact: its own state is one word, the sentence in the tooltip', async () => {

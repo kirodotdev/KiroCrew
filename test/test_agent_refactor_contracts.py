@@ -66,7 +66,7 @@ BASE_SURFACE: dict[str, str] = {
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
     "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 0b859d2b54e84503",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str c32e4feed703010f",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str a101cb25aabafc48",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -110,7 +110,7 @@ BASE_SURFACE: dict[str, str] = {
     "_MAX_TOTAL_USER_HOOKS": "value int f5ca38f748a1d6ea",
     "_MAX_USER_HOOKS_PER_EVENT": "value int 4a44dc15364204a8",
     "_MCP_REGISTRY_TYPE": "value str 06c63899e16a32c5",
-    "_MEMBER_DASHBOARD_GRANTS": "value tuple 217848c3e96f9a58",
+    "_MEMBER_DASHBOARD_GRANTS": "value tuple b4b6baeaae36470a",
     # Moved for ``@kirocrew-panel/dashboard_types``, the dynamic dashboard's data-type
     # catalog. The readable pin for this tuple is
     # ``test_the_member_grants_extend_the_conductor_grants``, which spells the whole set
@@ -129,7 +129,7 @@ BASE_SURFACE: dict[str, str] = {
     "_SAFE_PATH_RE": "value platform",
     "_SECURITY_CONDUCTOR_AGENT_FILENAME": "value str ea0f45466289114a",
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 4f02f1db82a878ee",
-    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 667c3be2c962f11a",
+    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 01f15cd404607d51",
     "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
     "_TEAM_LEAD_SYSTEM_PROMPT": "value str e915f722ca817de6",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
@@ -920,6 +920,7 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
         "@kirocrew-dashboard/session_broadcast",
         "@kirocrew-dashboard/session_stop",
         "@kirocrew-dashboard/session_retry",
+        "@kirocrew-dashboard/session_close",
     )
     assert agent._MEMBER_PANEL_GRANTS == (
         "@kirocrew-panel/panel_templates",

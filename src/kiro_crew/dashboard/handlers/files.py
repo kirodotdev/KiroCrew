@@ -62,6 +62,7 @@ from kiro_crew.atomic_write import (  # noqa: F401
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.cli_commands_workspace import _ws_dir_in_use  # noqa: F401
 from kiro_crew.config import loader as config_loader  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,

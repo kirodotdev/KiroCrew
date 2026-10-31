@@ -23,8 +23,55 @@ from kiro_crew.security import (
     sensitive_write_path_refusal,
 )
 
+#: ``acp._dispatch.DIFF_TRUNCATION_MARK``, spelled here because this module does not
+#: import the ACP layer; ``test_edit_diff_kiro_v3`` pins the two equal.
+_DIFF_TRUNCATION_MARK = "\\ diff truncated"
 
-def _extract_tool_input_strings(tool_input: str) -> list[str]:
+
+def _diff_candidates(text: str) -> list[str] | None:
+    """A unified diff's scan candidates, or ``None`` when *text* is not one.
+
+    The candidates are what the JSON arguments the diff was rendered from held
+    as separate strings: each ``---`` / ``+++`` header path, then per hunk its
+    header and its old and new side, so each side starts where its argument
+    did. Context lines, and lines of any other shape, go to both sides of
+    their hunk, so no text of the input escapes the scan.
+    """
+    lines = text.split("\n")
+    if len(lines) < 2 or not (lines[0].startswith("--- ") and lines[1].startswith("+++ ")):
+        return None
+    if lines[-1] == _DIFF_TRUNCATION_MARK:
+        # A cut diff lacks part of the arguments' text: it stays one
+        # candidate, which the scan ceiling refuses (the cut is far past it).
+        return None
+    out: list[str] = list(dict.fromkeys((lines[0][4:], lines[1][4:])))
+    old: list[str] = []
+    new: list[str] = []
+
+    def _flush() -> None:
+        out.extend(("\n".join(old), "\n".join(new)))
+        old.clear()
+        new.clear()
+
+    for line in lines[2:]:
+        if line.startswith("@@ "):
+            # Sides never span hunks: joining across the lines a hunk gap
+            # leaves out would make text neither argument holds.
+            _flush()
+            out.append(line)
+        elif line.startswith("-"):
+            old.append(line[1:])
+        elif line.startswith("+"):
+            new.append(line[1:])
+        else:
+            body = line[1:] if line.startswith(" ") else line
+            old.append(body)
+            new.append(body)
+    _flush()
+    return [s for s in out if s]
+
+
+def _extract_tool_input_strings(tool_input: str, *, split_oversize_diff: bool = False) -> list[str]:
     """Extract all string values from a JSON tool_input for security scanning.
 
     Recursively walks nested dicts and lists to find all string values,
@@ -32,15 +79,31 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
     ``{"args": {"path": "~/.aws/credentials"}}`` are not missed.
 
     Handles dict, list, plain-string, and malformed JSON gracefully. On
-    parse failure, returns the raw string itself as the single candidate.
+    parse failure, returns the raw string itself as the first candidate.
+
+    An edit's input may be the unified diff ``acp._dispatch`` rendered from its
+    arguments (``--- <path>`` / ``+++ <path>`` first). The whole diff as one
+    string never matches the path tier, so the path, old and new strings the
+    arguments held (:func:`_diff_candidates`) are added after the raw string.
+    The diff is about the size of both arguments together, so the scan ceiling
+    refuses an edit whose arguments each fit; *split_oversize_diff* -- which
+    the caller passes only for a call the client classified as not a shell
+    command -- drops the over-ceiling raw string and keeps the split ones.
+    Without it the raw string stays, and the ceiling still refuses it: a text
+    that only looks like a diff may be what runs.
     """
     if not tool_input:
         return []
     try:
         parsed = json.loads(tool_input)
     except ValueError:
-        # Not JSON — treat the raw string as a path/command candidate
-        return [tool_input]
+        diff = _diff_candidates(tool_input)
+        if diff is None:
+            # Not JSON — treat the raw string as a path/command candidate
+            return [tool_input]
+        if len(tool_input) > _MAX_SCANNABLE_TOOL_INPUT_CHARS and split_oversize_diff:
+            return diff
+        return [tool_input, *diff]
     if isinstance(parsed, str):
         return [parsed]
 

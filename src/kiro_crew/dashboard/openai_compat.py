@@ -666,6 +666,9 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                     slot,
                     prompt,
                     _directive_user_origin=is_dashboard_caller,
+                    # The prompt is the flattened conversation, not one typed
+                    # message: it never starts a KAS MCP sign-in.
+                    _message_is_typed=False,
                     # Named for the same reason ``api_chat`` names it: the actor
                     # resolver's fallback is ``user``, so a dispatch that OBSERVED
                     # an app and stayed silent records a person who never typed

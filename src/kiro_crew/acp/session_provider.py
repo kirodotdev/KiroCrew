@@ -649,7 +649,12 @@ class AcpSessionProvider(LLMProvider):
         return resolve_prompt_timeout_for_deadline(deadline)
 
     async def stream(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        sign_in_ask: str = "",
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes."""
         # Re-establish this session's gateway claim before the turn can call a
@@ -681,7 +686,10 @@ class AcpSessionProvider(LLMProvider):
             # Outside the turn's own try below, so its claim is released here.
             await self._end_shared_turn(claim)
             raise
+        # Bind only to this attempt's handle, after any re-injection replaced it.
         send = self._handle.prompt
+        if sign_in_ask:
+            send = functools.partial(send, sign_in_ask=sign_in_ask)
         if not allow_image:
             send = functools.partial(send, allow_image=False)
         if timeout is not None:

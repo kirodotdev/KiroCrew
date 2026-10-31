@@ -35,7 +35,8 @@ def derive_edit_diff(raw_input: object) -> str:
     """Derive a unified diff from a bare-JSON edit payload.
 
     Covers the edit-tool arg shapes that arrive WITHOUT a diff content block:
-    a ``strReplace`` pair renders as a replace hunk; a ``create``'s content
+    a ``strReplace`` pair (with or without the ``command`` key) renders as
+    a replace hunk; a ``create``'s content
     renders as a whole-file addition; an ``insert`` with a line number
     renders as an addition hunk AT that line — in all three the rendered
     lines ARE the change, exactly. An insert/append without a line number
@@ -53,13 +54,31 @@ def derive_edit_diff(raw_input: object) -> str:
         # difflib — a TypeError here would abort the whole dispatch mid-turn.
         return ""
     command = raw_input.get("command")
-    if command == "strReplace":
+    # kiro-cli's v3 engine names no command: its replace tool sends
+    # ``{path, oldStr, newStr, replace_all}``. Both strings present is the
+    # replace pair the older ``strReplace`` shape carries. A set
+    # ``replace_all`` derives nothing: one hunk would show a single
+    # occurrence while the approval covers every one, and the arguments,
+    # which name the flag, stay the row's text. The ``{path, text}``
+    # write/append shape stays underived too: the arguments cannot tell a
+    # whole-file write from an append, so either hunk would be a guess.
+    commandless_replace = (
+        command is None
+        and isinstance(raw_input.get("oldStr"), str)
+        and isinstance(raw_input.get("newStr"), str)
+        and not raw_input.get("replace_all")
+    )
+    if command == "strReplace" or commandless_replace:
         old = raw_input.get("oldStr")
         new = raw_input.get("newStr")
         old = old if isinstance(old, str) else ""
         new = new if isinstance(new, str) else ""
         if old or new:
-            return make_unified_diff(old, new, path)
+            # Each side is redacted whole BEFORE the diff: the diff keeps only
+            # a few lines of context, and a secret whose markers fall outside
+            # it (an interior line of a PEM block) escapes the redactor once
+            # cut out of its block.
+            return make_unified_diff(_redact(old), _redact(new), path)
         return ""
     if command == "create":
         for key in _EDIT_CONTENT_KEYS:
@@ -83,6 +102,18 @@ def derive_edit_diff(raw_input: object) -> str:
                 return f"--- {path}\n+++ {path}\n{header}\n{body}"
         return ""
     return ""
+
+
+def is_rendered_edit_diff(text: object) -> bool:
+    """Whether a cached tool input is a unified diff this module rendered.
+
+    Both renderers above start with the ``--- <path>`` / ``+++ <path>`` pair.
+    A ``tool_call_update`` may omit ``kind``; the input its call already shows
+    is then the evidence that the call is an edit (an edit-kind derive or a
+    diff content block put it there), so a refinement re-sending the edit's
+    arguments renders them the same way rather than as the JSON params.
+    """
+    return isinstance(text, str) and text.startswith("--- ") and "\n+++ " in text
 
 
 def make_unified_diff(old: str, new: str, path: str, max_len: int = 65536) -> str:

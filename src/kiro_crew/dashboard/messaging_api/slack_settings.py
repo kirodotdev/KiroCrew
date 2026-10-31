@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.milestones import record_when as record_milestone_when
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _SLACK_SECRET_FIELDS,
@@ -355,6 +357,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
+    # The "Slack connected" milestone, after a save that succeeded and only when
+    # Slack is now set up. The check runs off the loop and reads no token value.
+    record_milestone_when("slack", "channel_connected:slack")
     if code_applied or env_updates:
         # A switch flip or a new bot token changes what the drift probe compares.
         from kiro_crew.dashboard.slack_code_settings import reset_status_cache

@@ -533,6 +533,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_responsive_human",
         "_responsive_protected",
         "_directive_user_origin",
+        "_message_is_typed",
         "_turn_provenance_restored",
         "_directive_self_wake",
         "_directive_loop_id",

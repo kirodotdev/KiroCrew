@@ -357,8 +357,13 @@ describe('chat sidebar — status marker leads the secondary line', () => {
       { goalLoops: { k1: { active: true, cycle_count: 7, max_cycles: 24 } } },
     )
     const line = lineOf(container)!
-    expect(line.textContent).toContain('Loop 7/24')
+    // Icon only: the count moved to the glyph's tooltip and accessible name.
+    expect(line.textContent).not.toContain('Loop 7/24')
     expect(line.querySelector('.lucide-goal')).toBeTruthy()
+    const icon = line.querySelector('[data-testid="goal-loop-icon"]')
+    expect(icon!.getAttribute('role')).toBe('img')
+    expect(icon!.getAttribute('aria-label')).toBe('Goal loop · cycle 7 of 24')
+    expect(icon!.getAttribute('title')).toBe('Goal loop · cycle 7 of 24')
     expect(line.querySelector('.rounded-full')).toBeNull()
   })
 

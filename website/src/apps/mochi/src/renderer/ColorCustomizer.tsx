@@ -4,7 +4,7 @@
  * Preset picker grid (each preset shows an SVG preview) + manual color editor
  * with per-body-part highlighting. i18n via useT().
  */
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import { extractSvgColors, applySvgColorMap, type ColorMap } from '../shared/colorCustomizer'
 import { PresetRegistry, extractSwatches, type CatPreset } from '../shared/catPresets'
@@ -133,6 +133,22 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
   const [registry, setRegistry] = useState<PresetRegistry>(() => new PresetRegistry(BUILT_IN_CAT_PRESETS))
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
   const [showSaveForm, setShowSaveForm] = useState(false)
+  // The "Save preset" button that opens the name field. Closing the field
+  // unmounts whatever had focus in it (the input, or its confirm or cancel
+  // button), and a browser then drops focus to document.body, so every close
+  // hands focus back here once the button has remounted (the pattern in
+  // MeetingTitle). The field has no blur handler, so there is no pointer-blur
+  // path to exclude.
+  const saveTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const closeSaveForm = useCallback(() => {
+    setShowSaveForm(false)
+    // Only take back focus the unmount dropped: a save can resolve after the
+    // user has already moved on to another control, and that control keeps it.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) saveTriggerRef.current?.focus({ preventScroll: true })
+    })
+  }, [])
   const [saveNameInput, setSaveNameInput] = useState('')
   const sourceColors = useMemo(() => extractSvgColors(idleSvgContent), [idleSvgContent])
 
@@ -178,8 +194,8 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
     setRegistry(new PresetRegistry(BUILT_IN_CAT_PRESETS, customs))
     await api?.presetsSaveCustom?.(customs)
     setSaveNameInput('')
-    setShowSaveForm(false)
-  }, [colorMap, registry, saveNameInput])
+    closeSaveForm()
+  }, [closeSaveForm, colorMap, registry, saveNameInput])
 
   const handleDeletePreset = useCallback(async (id: string) => {
     registry.removeCustomPreset(id)
@@ -219,14 +235,14 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
       <div style={CS.btnRow}>
         <button style={CS.btn} onClick={handleReset}>{i18nT('apps.mochi.color.reset')}</button>
         {!showSaveForm ? (
-          <button style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.mochi.color.save_preset')}</button>
+          <button ref={saveTriggerRef} style={CS.btn} onClick={() => setShowSaveForm(true)}>{i18nT('apps.mochi.color.save_preset')}</button>
         ) : (
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input
               type="text"
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
-              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: () => setShowSaveForm(false) })}
+              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: closeSaveForm })}
               placeholder={i18nT('apps.mochi.color.prompt_name')}
               autoFocus
               style={{
@@ -236,7 +252,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               }}
             />
             <button aria-label={i18nT('apps.mochi.color.save_preset')} style={{ ...CS.btn, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} onClick={handleSaveAsPreset} disabled={!saveNameInput.trim()}><Check size={14} /></button>
-            <button aria-label={i18nT('apps.mochi.editor.cancel')} style={{ ...CS.btn, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => { setShowSaveForm(false); setSaveNameInput('') }}><X size={14} /></button>
+            <button aria-label={i18nT('apps.mochi.editor.cancel')} style={{ ...CS.btn, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => { setSaveNameInput(''); closeSaveForm() }}><X size={14} /></button>
           </div>
         )}
       </div>

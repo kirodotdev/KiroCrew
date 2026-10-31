@@ -655,10 +655,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     - `exfil_url_rules.py` — the URL and query patterns, the decode bound, the hard credential markers and the presigned-URL validator.
     - `exfil_oauth.py` — the OAuth authorization-endpoint set (builtin, operator file, discovered), its SEL audit events and the safe shape diagnostics.
     - `exfil_bash.py` — the data-egress and reverse-shell command gate, which reads the deny tier's single-command eligibility test from `denied_rules.py` and, for the date/search carve-out, the first raw word (quotes kept, split at live space and tab only) from `shell_commands.py`.
-- `perm_verb_mention.py` — the inert-mention narrowing for the path-scoped
-  `chmod`/`chown` deny rows: whether every occurrence of a permission verb is an
-  ARGUMENT of a command that treats arguments as data. It sits above `argv_floor.py`,
-  whose frame walk it reuses (see *Inert mentions of a permission verb* below).
+- `argv_rules.py` — the `chmod`/`chown` deny rows, matched on a
+  command's real argv instead of as text regexes. It reuses the shared payload walk and
+  the shell reader (see *Argv-matched rows* below).
 - `credential_sources.py` — where a redacted credential came from, recorded without
   keeping the credential: keyed per-process HMAC fingerprints of redacted values and
   bounded per-turn evidence naming the tool call that produced one (see the
@@ -690,7 +689,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     gateway-restart and destructive-cloud subcommands, the dev-mode out-of-root
     confirmation, and credential-mint predicates that follow inline programs,
     here-documents, stdin redirections, and nested shells; also the frame walk the
-    ssh floor and `perm_verb_mention.py` reuse.
+    ssh floor reuses.
   - `argv_floor_hosts.py` — which names and addresses are this host: the loopback
     names, this machine's own names and interface addresses, the hosts-file aliases
     and the DNS verdict cache behind `_host_is_self`, backed by `hosts_file.py` and
@@ -750,7 +749,7 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 
   These four hold the code the facade composes; each reads `_submodule()` from the
   package (`deny_gate.py` and `memory_audit.py` also its `logger`) and is imported at its foot.
-- `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in the tool gate's `read-only` tier (`hook_runtime/gate_tiers.py`), together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. `command_invokes_git` is asked next to it at the read-only auto-approve sites that had no git exclusion (trust-reads, the gate's `read-only` tier and the gateway's `--approval reads` mode, which approves a shell command only when `is_read_only_bash` accepts its own text and it runs no git, whatever its title says; the heartbeat approver keeps its own `name_grant.program_names` check, which cannot move into the gate because the gate must never reach `name_grant` on the loop): git reads `.git/config` on every invocation and `core.fsmonitor` / `core.hooksPath` name a program there that no text classifier sees, so a command that runs git at any command position (each side of `&&` / `||` / `;` / `|`, each line, inside a subshell or group, after a `VAR=` prefix, a redirection or a program runner such as `env` or `xargs`; any case, any path, `.exe`; unresolvable quoting, an expansion in the program position and a command or process substitution count) is never auto-approved and goes to the surface's own approver; on a hook-based surface with no approver (a Meetings dispatch), where an undecided call would otherwise default to approval, `llm_helpers._resolve_permission` refuses such a git read (`git_read_headless_reject`). `is_read_only_bash` itself still reads a git read as read-only. Pure text work, so the synchronous gate calls it on the loop; pinned by `test_read_only_shell_git_exclusion.py`. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (imported for the approval flow in `dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, where the reason text becomes the refusal card) and the gate's `read-only` tier (the auto-approve branch, reading it through `hooks.py`). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in the deny tiers' dependency order (which has `perm_verb_mention.py` above the argv floor). Pinned by `test_trust_reads.py`.
+- `readonly_bash.py` — the read-only bash classifier: `is_read_only_bash` / `unsafe_bash_reason`, the last gate before a shell command auto-approves with no human prompt under `--approval reads` / trust-reads and in the tool gate's `read-only` tier (`hook_runtime/gate_tiers.py`), together with every table that verdict rests on -- the prefix allowlist, the per-verb write, exec and indirection flag denylists, the git ref and remote subcommand rules, the positive option accept-lists for the four tools whose surface is small enough to enumerate (`sort`, `date`, `file`, `hostname`), and the shell-expansion readers that decide whether a token's real spelling is knowable before it runs. Deny-by-default: a command has to be RECOGNISED as read-only, so a spelling nobody thought of prompts rather than passes, and every table entry carries the measurement that put it there. `command_invokes_git` is asked next to it at the read-only auto-approve sites that had no git exclusion (trust-reads, the gate's `read-only` tier and the gateway's `--approval reads` mode, which approves a shell command only when `is_read_only_bash` accepts its own text and it runs no git, whatever its title says; the heartbeat approver keeps its own `name_grant.program_names` check, which cannot move into the gate because the gate must never reach `name_grant` on the loop): git reads `.git/config` on every invocation and `core.fsmonitor` / `core.hooksPath` name a program there that no text classifier sees, so a command that runs git at any command position (each side of `&&` / `||` / `;` / `|`, each line, inside a subshell or group, after a `VAR=` prefix, a redirection or a program runner such as `env` or `xargs`; any case, any path, `.exe`; unresolvable quoting, an expansion in the program position and a command or process substitution count) is never auto-approved and goes to the surface's own approver; on a hook-based surface with no approver (a Meetings dispatch), where an undecided call would otherwise default to approval, `llm_helpers._resolve_permission` refuses such a git read (`git_read_headless_reject`). `is_read_only_bash` itself still reads a git read as read-only. Pure text work, so the synchronous gate calls it on the loop; pinned by `test_read_only_shell_git_exclusion.py`. It imports nothing from the package and nothing from the dashboard, which is what lets `hooks.py` import it at module top; its two consumers are `dashboard/chat_runner.py` (imported for the approval flow in `dashboard/chat_turn/tool_approval.py` and `permission_prompt.py`, where the reason text becomes the refusal card) and the gate's `read-only` tier (the auto-approve branch, reading it through `hooks.py`). It is NOT a facade submodule and is reached by its own path, for two reasons. It is not a piece of the split: the classifier came here from `dashboard/state.py`, where no caller or patch site ever reached it as `kiro_crew.security.<name>`, so the facade has nothing to preserve for it and adding its private tables to the frozen manifest would widen the facade's API for no caller. And it answers a different question from the tiers the facade fronts: those decide whether a command is DENIED, and `hooks.on_tool_call` runs every one of them before it asks this module whether the survivor is read-only enough to skip the prompt -- a verdict layer above the deny tiers, not one of them, so it does not belong in the deny tiers' dependency order (which has `argv_rules.py` beside the argv floor). Pinned by `test_trust_reads.py`.
 
 ## Threat Model
 
@@ -2575,76 +2574,34 @@ behaviourally that only `read` and `fetch` auto-approve a call on their own whil
 `other`, an arbitrary string and every mutator reach a prompt — exactly the kinds a
 denylist would let through.
 
-### Inert mentions of a permission verb (`security/perm_verb_mention.py`)
+### Argv-matched rows (`security/argv_rules.py`)
 
-The catalog's `chmod`/`chown` rows are `re.search` patterns over the whole command
-text. A regex over text cannot tell a verb that RUNS from the same word handed to a
-search tool as a pattern, so an ordinary audit of those very rules would be refused —
-`grep -nE 'chmod|chown|/etc/' src/` denied, while preventing nothing, since the same
-search completes by spelling the verb another way.
+The `chmod`/`chown` rows (the mode `777` row and the six system-directory rows per
+verb) are matched on a command's real argv, not as `re.search` patterns over its
+text. As text they ran across the whole compound command and refused ordinary work:
+`chmod +x a && ls /usr/lib` read as a chmod on `/usr`, a search for the verb read as running it, and
+the ssh option `BatchMode` holds the verb's letters once case is folded.
 
-`perm_verb_mention._perm_verb_mention_only` supplies the question the regex cannot ask: **is
-every occurrence of the verb an ARGUMENT of a command that treats arguments as data?**
-It is argv-structural, not textual — it reuses the frame walk, `_argv_programs` and the
-data-consumer primitives the self-protection floor already relies on. `is_denied`
-consults it only for the patterns the catalog opts in
-(`denied_rules._PERM_VERB_MENTION_PATTERNS`, derived from the catalog by a verb-anchored
-selector so a renamed or added row stays covered).
+`is_denied` strips these patterns from the regex tier (capture-then-strip, as for the
+git-publish rows, so a disabled row stays disabled) and asks `argv_rule_hit` instead.
+It reads every command in the input and in each nested payload the shared walk finds
+(`bash -c`, `eval`, heredocs, `| bash`, substitutions), through the shell reader that
+cuts at every live separator, glued ones included. It steps over `VAR=x`, empty words and
+the command-running wrappers (`sudo`, `doas`, `pkexec`, `runuser`, `env`, `command`,
+`builtin`, `exec`, `nohup`, `setsid`, `time`, `nice`, `ionice`, `stdbuf`, `timeout`,
+`chroot`, `xargs`, `systemd-run`), reads a `find -exec` command and a `su -c` value as
+commands, and then decides on the program and its own arguments: `chmod`/`chown` with
+a file operand at or under a system directory; `chmod` with mode `777`. A `--reference`
+word counts as the option only before `--`, and the command is also read with heredoc
+bodies cut out, so a command after a heredoc is read too. A command whose text cannot spell any enabled row's
+program is not read at all.
 
-**A re-spelled verb is judged by position, not by its spelling.** The per-token gates
-key on the verb as a WORD, and a shell does not need the word: `ch""mod`, `ch'mod'`,
-`"ch"mod`, `ch\mod` and `ch$()mod` all execute it, and the normalized deny view the
-pattern is matched against de-quotes them back to it. So the walk's TRIGGER is widened
-rather than gated beside — a token that only de-quotes to the verb
-(`perm_verb_mention._deglues_to_perm_verb`, pre-filtered on the characters that permit a
-de-glue at all) enters the same per-token loop as one that spells it. That is what
-covers the pass-through wrappers: `command`, `env`, `exec`, `nohup`, `time`, `nice`,
-`sudo`, `xargs` and `find -exec` each leave the verb at an ARGUMENT position, where the
-frame's program is the wrapper and no wrapper is an accepted data consumer, so they are
-refused by the gate that already exists instead of by a hand-kept wrapper list; each of
-those spellings really changes a file's mode, so admitting it would be a bypass.
-
-**Fail-closed is the whole posture.** Every gate in the walk is a REFUSAL, so a
-construct the walk cannot read keeps the deny. Concretely it refuses: any frame that
-RUNS a permission verb in program position, including nested payloads, asked through
-`_shell_tokens` — the tokenizer the normalized deny views are themselves built on, so
-where that reading and the walk's own argv disagree the deny follows the text the
-pattern matched; any frame whose PROGRAM cannot be resolved, because a glob (`ch?od`)
-or a surviving expansion (`${x}chmod`) names a command the filesystem or the
-environment decides and no de-glue can see; a frame that fails to tokenize; a redirect
-other than `/dev/null` or a file-descriptor duplication; a newline; a control operator
-GLUED inside a word, because `_argv_programs` opens a new frame only between whole
-tokens and a program after a glued operator is therefore invisible to every other gate;
-a command whose input is over `_PERM_VERB_MENTION_MAX_CHARS`; and any downstream
-pipeline stage that is not itself an accepted data consumer.
-
-**The accepted set is subtractive.** `_PERM_VERB_MENTION_PROGRAMS` is
-`_DATA_CONSUMER_PROGRAMS` minus `_PERM_VERB_MENTION_EXCLUDED_PROGRAMS`, so a consumer
-added to the shared vocabulary is inherited here and a mistake in the exclusion list
-costs a false positive rather than a bypass. Four reasons put a program on the
-exclusion list: it MUTATES the filesystem (`cp`, `mv`, `tee`, and the permission verbs
-themselves, which must never exonerate their own mention), it EMITS its argument as
-output (`echo`, `printf`, so a redirect turns the mention into a script on disk), it
-SPAWNS a helper named by an option or script operand (`rg --pre`, `less +'!cmd'`,
-`awk` `system()`, `sed` `e`, `sort --compress-program`), or it names its SINK with an
-option rather than an operand (below). Membership is pinned by a test
-whose failure message names the exclusion list as the place to decide.
-
-Two accepted programs — `uniq` and `xxd` — write their SECOND operand. They are judged
-on operand count per command (`_writes_a_second_operand`) rather than excluded, because
-the exemption's commonest shape pipes into them with no operand at all
-(`… | uniq | head`) and writes nothing, while `xxd <verb> /usr/local/bin/git` truncates
-a protected path with no verb in program position at all.
-
-Operand counting reaches an operand sink only. A program that names its sink with an
-OPTION is excluded outright instead — macOS `base64 -o out_file` and `yq -i` both write
-a path named by a flag, and `file -C -m NAME` compiles the magic file and writes
-`NAME.mgc`; an option allow-list would fail OPEN on the flag nobody enumerated. `jq`
-stays exempt: it has no in-place flag.
-
-The narrowing records its own SEL `mechanism` value, `_PERM_VERB_MENTION`, distinct
-from the glob carve-out map's `_DENY_EXCEPTIONS`; the two share one emitter and nothing
-else, and the audit trail exists to answer which one allowed a command.
+**Narrower on purpose.** An over-block stops ordinary work, so a rare miss is the
+accepted cost: a program that runs a string it was handed (`awk` `system()`, `sed e`,
+`less +!`, `sort --compress-program`), the verb written to a file, and another program
+writing a system path (`cp`, `xxd`) are not refused by these rows. The sandbox still
+confines what any command can touch. The refusal names the row's pattern and a second
+line saying the match was on argv.
 
 ### Sanctioned read channels over fenced data
 

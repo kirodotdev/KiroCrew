@@ -157,10 +157,14 @@ async def _sign_in_through_the_stub(kas_sign_in_stub, tmp_path) -> None:
     try:
         await runtime.spawn()
         handle = await runtime.create_session(cwd=tmp_path / "ws")
-        # Session start reads the failed status without offering; the offer
-        # is a turn's. Make it here, then drain the frames it produces.
+        # Session start reads the failed status without offering, and an
+        # offer point no message asked for starts nothing. A message naming
+        # the server does at the next offer point; then drain its frames.
         assert handle._mcp_sign_in_needed == {"remote"}
         assert runtime._mcp_sign_in is None
+        handle._offer_mcp_sign_in()
+        assert runtime._mcp_sign_in is None
+        handle.want_mcp_sign_in_named("sign in to remote")
         handle._offer_mcp_sign_in()
         requests: list[dict[str, str]] = []
         for _ in range(20):
@@ -289,8 +293,10 @@ def _handle(begun: list, accept: bool = True) -> AcpSessionHandle:
     handle._session_id = "s1"
     handle._runtime = SimpleNamespace(begin_mcp_sign_in=begin)
     handle._mcp_sign_in_needed = set()
+    handle._mcp_sign_in_wanted = set()
+    handle._mcp_sign_in_ask = ""
+    handle._mcp_sign_in_asked = set()
     handle._mcp_sign_in_completed = set()
-    handle._mcp_sign_in_last_offered = ""
     handle._mcp_sign_in_dropped = 0
     handle._mcp_reattempt_waiting = set()
     handle._mcp_reattempt_counts = {}
@@ -305,18 +311,201 @@ def _status(*servers, session_id="s1") -> JsonRpcMessage:
     )
 
 
-def test_an_authorization_failure_starts_a_sign_in_and_clears_the_old_link():
+def test_an_authorization_failure_alone_starts_no_sign_in():
     begun: list = []
     handle = _handle(begun)
     handle._note_mcp_sign_in_status(
         _status({"name": "remote", "status": "failed", "failedAuthorization": True}),
         offer=True,
     )
+    handle._offer_mcp_sign_in()
+    assert begun == []
+    assert handle._mcp_sign_in_needed == {"remote"}
+    assert handle._oauth_emitted_servers == {"remote"}
+
+
+def test_a_message_naming_the_server_starts_its_sign_in_and_clears_the_old_link():
+    begun: list = []
+    handle = _handle(begun)
+    handle._note_mcp_sign_in_status(
+        _status({"name": "remote", "status": "failed", "failedAuthorization": True}),
+        offer=True,
+    )
+    handle.want_mcp_sign_in_named("can you sign me in to Remote?")
+    # Nothing starts until an offer point, where a turn reads the link.
+    assert begun == []
+    handle._offer_mcp_sign_in()
     assert begun == [("s1", "remote")]
     assert handle._oauth_emitted_servers == set()
+    assert handle._mcp_sign_in_wanted == set()
 
 
-def test_a_timed_out_sign_in_is_offered_again_until_the_server_connects():
+@pytest.mark.parametrize(
+    "text",
+    [
+        "summarize this file",
+        "the remotely hosted build failed",
+        "notional numbers only",
+        "",
+    ],
+)
+def test_a_message_that_names_no_unsigned_server_starts_nothing(text):
+    begun: list = []
+    handle = _handle(begun)
+    handle._mcp_sign_in_needed = {"remote", "notion"}
+    handle.want_mcp_sign_in_named(text)
+    handle._offer_mcp_sign_in()
+    assert begun == []
+    assert handle._mcp_sign_in_wanted == set()
+
+
+def test_a_message_naming_a_connected_server_starts_nothing():
+    begun: list = []
+    handle = _handle(begun)
+    handle._mcp_sign_in_needed = {"remote"}
+    handle.want_mcp_sign_in_named("search notion for the roadmap")
+    handle._offer_mcp_sign_in()
+    assert begun == []
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("notion", "Use NOTION to find it"),
+        ("power-figma-figma", "pull the frame from Figma"),
+        ("power-figma-figma", "sign in to power figma figma"),
+        ("lennysdata", "check lennysdata for that"),
+        ("beehive:beehive-mcp", "open beehive"),
+        ("docs_server", "ask the docs server"),
+        # The configured name counts at any length and even when generic.
+        ("gh", "sign in to gh"),
+        ("GH", "Sign in to gh"),
+        ("mcp", "sign in to mcp"),
+        ("server", "use the server"),
+    ],
+)
+def test_a_server_is_named_by_its_name_or_an_obvious_alias(name, text):
+    from kiro_crew.acp.session_handle_mcp import text_names_mcp_server
+
+    assert text_names_mcp_server(text, name)
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("power-figma-figma", "a power user"),
+        # A multi-word name's last word alone is everyday prose, not a name.
+        ("power-aws-docs-search", "please search the web"),
+        ("acme:api", "call the api"),
+        ("acme:api-server", "hit the api"),
+        ("acme:api-mcp", "hit the api"),
+        ("beehive:beehive-mcp", "start an mcp server"),
+        ("docs_server", "the server is down"),
+        ("notion", "notions of done"),
+        ("gh", "open github"),
+        ("mcp", "the mcpserver config"),
+    ],
+)
+def test_a_generic_word_or_a_longer_word_does_not_name_a_server(name, text):
+    from kiro_crew.acp.session_handle_mcp import text_names_mcp_server
+
+    assert not text_names_mcp_server(text, name)
+
+
+@pytest.mark.parametrize(
+    ("name", "aliases"),
+    [
+        ("gh", ("gh",)),
+        ("mcp", ("mcp",)),
+        # Derived aliases stay filtered: ``gh`` (suffix-stripped) and
+        # ``ab`` (power reduction) are under the minimum, ``mcp`` is generic.
+        ("gh-mcp", ("gh mcp",)),
+        ("power-ab-mcp", ("power ab mcp", "power ab", "ab mcp")),
+        ("power-aws-docs-search", ("power aws docs search", "aws docs search")),
+        ("acme:api", ("acme api",)),
+        ("figma:figma", ("figma figma", "figma")),
+    ],
+)
+def test_the_configured_name_is_kept_and_short_derived_aliases_are_dropped(name, aliases):
+    from kiro_crew.acp.session_handle_mcp import mcp_server_aliases
+
+    assert mcp_server_aliases(name) == aliases
+
+
+def test_a_dismissed_server_is_offered_again_only_when_named_again():
+    begun: list = []
+    handle = _handle(begun)
+    handle._mcp_sign_in_needed = {"remote"}
+    handle.want_mcp_sign_in_named("sign in to remote")
+    handle._offer_mcp_sign_in()
+    # The attempt lapsed: the user dismissed or ignored the card. Unrelated
+    # messages and the status that keeps reporting it unsigned offer nothing.
+    handle._note_mcp_sign_in_status(
+        _status({"name": "remote", "status": "failed", "failedAuthorization": False}),
+        offer=True,
+    )
+    for text in ("thanks", "what else is on my list?"):
+        handle.want_mcp_sign_in_named(text)
+        handle._offer_mcp_sign_in()
+    assert begun == [("s1", "remote")]
+    handle.want_mcp_sign_in_named("ok, remote again please")
+    handle._offer_mcp_sign_in()
+    assert begun == [("s1", "remote"), ("s1", "remote")]
+
+
+def test_naming_a_server_whose_card_is_live_starts_no_second_one():
+    begun: list = []
+    handle = _handle(begun)
+    handle._runtime.mcp_sign_in_holds = lambda sid, name: (sid, name) == ("s1", "remote")
+    handle._mcp_sign_in_needed = {"remote"}
+    handle.want_mcp_sign_in_named("remote, remote, remote")
+    handle._offer_mcp_sign_in()
+    assert begun == []
+    assert handle._mcp_sign_in_wanted == set()
+
+
+def test_several_named_servers_take_the_slot_one_at_a_time():
+    begun: list = []
+    accept = {"value": False}
+    handle = _handle(begun)
+
+    def begin(session_id, name):
+        begun.append((session_id, name))
+        return accept["value"]
+
+    handle._runtime = SimpleNamespace(begin_mcp_sign_in=begin)
+    handle._mcp_sign_in_needed = {"ax1", "bx1", "cx1"}
+    handle.want_mcp_sign_in_named("sign in to bx1 and ax1")
+    assert handle._mcp_sign_in_wanted == {"ax1", "bx1"}
+    # The slot is busy: both stay wanted. "cx1" was never named.
+    handle._offer_mcp_sign_in()
+    accept["value"] = True
+    begun.clear()
+    for _ in range(4):
+        handle._offer_mcp_sign_in()
+    assert begun == [("s1", "ax1"), ("s1", "bx1")]
+    assert handle._mcp_sign_in_wanted == set()
+
+
+def test_a_wanted_server_that_connects_is_no_longer_wanted():
+    handle = _handle([], accept=False)
+    handle._mcp_sign_in_needed = {"remote"}
+    handle.want_mcp_sign_in_named("remote")
+    handle._note_mcp_sign_in_status(_status({"name": "remote", "status": "connected"}), offer=True)
+    assert handle._mcp_sign_in_wanted == set()
+
+
+def test_the_wanted_set_is_bounded_and_a_refusal_is_logged(caplog):
+    handle = _handle([], accept=False)
+    names = [f"srv{i:03d}" for i in range(BUCKET_CAP + 1)]
+    handle._mcp_sign_in_needed = set(names)
+    with caplog.at_level("INFO", logger="kiro_crew.acp.session_handle"):
+        handle.want_mcp_sign_in_named(" ".join(names))
+    assert len(handle._mcp_sign_in_wanted) == BUCKET_CAP
+    assert any("not asked for" in r.getMessage() for r in caplog.records)
+
+
+def test_a_timed_out_sign_in_keeps_the_server_tracked_until_it_connects():
     begun: list = []
     handle = _handle(begun, accept=False)
     handle._note_mcp_sign_in_status(
@@ -340,6 +529,7 @@ def test_a_status_read_without_offer_tracks_the_server_and_starts_nothing():
         offer=False,
     )
     assert begun == [] and handle._mcp_sign_in_needed == {"remote"}
+    handle._mcp_sign_in_wanted = {"remote"}
     handle._offer_mcp_sign_in()
     assert begun == [("s1", "remote")]
 
@@ -435,14 +625,259 @@ async def _first_event(handle: AcpSessionHandle) -> AcpEvent | None:
 
 
 @pytest.mark.asyncio
-async def test_the_turn_start_offers_a_sign_in_the_session_still_needs():
+async def test_the_turn_start_offers_a_sign_in_a_tool_call_asked_for():
     begun: list = []
     handle, _queue = _turn_handle(begun)
     handle._mcp_sign_in_needed = {"remote"}
+    handle._mcp_sign_in_wanted = {"remote"}
     handle._oauth_emitted_servers = {"remote"}
     await _first_event(handle)
     assert begun == [("s1", "remote")]
     assert handle._oauth_emitted_servers == set()
+
+
+async def _user_turn(handle: AcpSessionHandle, text: str) -> list[AcpEvent]:
+    """One turn as the dashboard drives it: the user's words, then the prompt."""
+    return await _events(handle, sign_in_ask=text)
+
+
+@pytest.mark.asyncio
+async def test_a_chat_that_never_names_the_server_is_never_offered_it():
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    handle._mcp_sign_in_needed = {"remote", "other"}
+    failed = {"status": "failed", "failedAuthorization": True}
+    _arrives_mid_turn(
+        handle,
+        queue,
+        _status({"name": "remote", **failed}, {"name": "other", **failed}),
+    )
+    for text in ("hello", "summarize the doc", "what is a remotely hosted build?"):
+        await _user_turn(handle, text)
+    assert begun == []
+
+
+@pytest.mark.asyncio
+async def test_a_message_naming_the_server_starts_one_sign_in_at_turn_start():
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    handle._mcp_sign_in_needed = {"remote", "other"}
+    _arrives_mid_turn(
+        handle,
+        queue,
+        _status({"name": "remote", "status": "failed", "failedAuthorization": False}),
+    )
+    await _user_turn(handle, "please sign in to remote")
+    assert begun == [("s1", "remote")]
+    # Dismissed, then unrelated messages: nothing more is offered.
+    await _user_turn(handle, "never mind")
+    await _user_turn(handle, "what's next?")
+    assert begun == [("s1", "remote")]
+
+
+_UNSIGNED = {"name": "remote", "status": "failed", "failedAuthorization": True}
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_whose_status_still_waits_in_the_queue_starts_at_turn_start():
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    # Not tracked yet when the message is handed over: the pre-turn drain
+    # reads this status, and the held ask is matched after it.
+    queue.put_nowait(_status(_UNSIGNED))
+    assert handle._mcp_sign_in_needed == set()
+    await _user_turn(handle, "please sign in to remote")
+    assert begun == [("s1", "remote")]
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_whose_status_arrives_mid_turn_starts_its_sign_in():
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    _arrives_mid_turn(handle, queue, _status(_UNSIGNED), _status(_UNSIGNED))
+    await _user_turn(handle, "please sign in to remote")
+    # Started once: the second snapshot finds the ask already answered.
+    assert begun == [("s1", "remote")]
+
+
+@pytest.mark.asyncio
+async def test_a_carried_over_sign_in_is_not_restarted_by_a_mid_turn_status(monkeypatch):
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    runtime = handle._runtime
+
+    def begin(session_id, name):
+        begun.append((session_id, name))
+        return AcpRuntime.begin_mcp_sign_in(runtime, session_id, name)
+
+    async def timeout(method, params, **kwargs):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(runtime, "begin_mcp_sign_in", begin)
+    monkeypatch.setattr(runtime, "_send_and_await", timeout)
+    handle._mcp_sign_in_needed = {"remote"}
+    runtime._mcp_sign_in = ("s2", "other")
+    await _user_turn(handle, "please sign in to remote")
+    assert begun == [("s1", "remote")]
+    assert handle._mcp_sign_in_wanted == {"remote"}
+    assert handle._mcp_sign_in_ask == "" and handle._mcp_sign_in_asked == set()
+
+    begun.clear()
+    runtime._mcp_sign_in = None
+    _arrives_mid_turn(handle, queue, _status(_UNSIGNED))
+    deliver_status = runtime.send_request
+
+    async def send_request(method, params):
+        # The carried-over request started at turn start, then timed out
+        # before the queued status still reports it unauthorized.
+        assert begun == [("s1", "remote")]
+        await asyncio.gather(*runtime._answer_tasks)
+        assert runtime._mcp_sign_in is None
+        return await deliver_status(method, params)
+
+    monkeypatch.setattr(runtime, "send_request", send_request)
+    await _user_turn(handle, "please sign in to remote again")
+    await asyncio.gather(*runtime._answer_tasks)
+    assert begun == [("s1", "remote")]
+    assert handle._mcp_sign_in_wanted == set()
+
+
+@pytest.mark.asyncio
+async def test_a_later_turn_does_not_match_an_earlier_turns_message():
+    begun: list = []
+    handle, queue = _turn_handle(begun)
+    await _user_turn(handle, "please sign in to remote")
+    assert begun == [] and handle._mcp_sign_in_ask == ""
+    # A cron or sub-agent turn hands no message: the old one is gone.
+    queue.put_nowait(_status(_UNSIGNED))
+    _arrives_mid_turn(handle, queue, _status(_UNSIGNED))
+    await _events(handle)
+    assert begun == []
+    assert handle._mcp_sign_in_needed == {"remote"}
+    assert handle._mcp_sign_in_ask == "" and handle._mcp_sign_in_asked == set()
+
+
+def _sign_in_provider(seen: list):
+    """Real provider hand-off, recording both old field and new argument paths."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    async def prompt(_message, *, sign_in_ask=""):
+        seen.append(sign_in_ask)
+        if False:
+            yield None
+
+    async def deliver(message, send, _incarnation):
+        async for event in send(message):
+            yield event
+
+    inner = AcpSessionProvider.__new__(AcpSessionProvider)
+    inner._handle = SimpleNamespace(prompt=prompt, want_mcp_sign_in_named=seen.append)
+    inner._runtime = SimpleNamespace(acp_backend=ACP_BACKEND_KAS)
+    inner.reclaim = lambda: None
+    inner._claim_shared_turn = lambda: None
+    inner._end_shared_turn = AsyncMock()
+    inner.apply_pending_mcp_reinjection = AsyncMock()
+    delivery = SimpleNamespace(stream=deliver, prepare_command=lambda _command: None)
+    inner.essential_delivery = delivery
+    outer = AcpProvider.__new__(AcpProvider)
+    outer._client = inner
+    outer.essential_delivery = delivery
+    return outer, inner
+
+
+async def _drain_provider(events):
+    async for _event in events:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_the_provider_hands_the_users_message_to_the_new_handle_once():
+    old: list = []
+    seen: list = []
+    outer, inner = _sign_in_provider(old)
+    _other, replacement = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    assert old == seen == []
+
+    async def reinject():
+        inner._handle = replacement._handle
+
+    inner.apply_pending_mcp_reinjection = reinject
+    await _drain_provider(outer.stream("human turn"))
+    await _drain_provider(outer.stream("automated turn"))
+    assert (old, seen) == ([], ["sign in to notion", ""])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_reinjection_does_not_reuse_the_ask_on_an_automated_turn():
+    seen: list = []
+    outer, inner = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    inner.apply_pending_mcp_reinjection = AsyncMock(side_effect=RuntimeError("reinjection failed"))
+    with pytest.raises(RuntimeError, match="reinjection failed"):
+        await _drain_provider(outer.stream("human turn"))
+    assert seen == []
+    inner.apply_pending_mcp_reinjection = AsyncMock()
+    await _drain_provider(outer.stream("automated turn"))
+    assert seen == [""]
+    assert inner._end_shared_turn.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_ready_confirmation_does_not_reuse_the_ask_on_an_automated_turn():
+    seen: list = []
+    outer, _inner = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    outer._ready_confirmed_session = AsyncMock(side_effect=RuntimeError("confirmation failed"))
+    with pytest.raises(RuntimeError, match="confirmation failed"):
+        await _drain_provider(outer.stream("human turn"))
+    assert seen == []
+    outer._ready_confirmed_session = AsyncMock()
+    await _drain_provider(outer.stream("automated turn"))
+    assert seen == [""]
+
+
+@pytest.mark.asyncio
+async def test_a_command_discards_a_noted_ask_for_itself_and_the_next_turn():
+    seen: list = []
+    outer, _inner = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    await _drain_provider(outer.stream_command("/help"))
+    await _drain_provider(outer.stream("automated turn"))
+    assert seen == ["", ""]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_command_discards_a_noted_ask_before_confirmation():
+    seen: list = []
+    outer, _inner = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    outer._ready_confirmed_session = AsyncMock(side_effect=RuntimeError("confirmation failed"))
+    with pytest.raises(RuntimeError, match="confirmation failed"):
+        await _drain_provider(outer.stream_command("/help"))
+    outer._ready_confirmed_session = AsyncMock()
+    await _drain_provider(outer.stream("automated turn"))
+    assert seen == [""]
+
+
+def test_the_dashboards_provider_holds_the_users_message_only_for_shared_sessions():
+    from kiro_crew.acp.client import AcpClient
+    from kiro_crew.providers.base import LLMProvider
+
+    seen: list = []
+    outer, inner = _sign_in_provider(seen)
+    outer.note_user_message("sign in to notion")
+    assert outer._sign_in_ask == "sign in to notion"
+    assert not hasattr(inner, "_pending_sign_in_ask")
+    assert seen == []
+    # The direct client (kiro-cli) has no trigger; nothing is called or held.
+    outer._sign_in_ask = ""
+    outer._client = AcpClient.__new__(AcpClient)
+    outer.note_user_message("notion")
+    assert outer._sign_in_ask == ""
+    # Every other provider takes the declared no-op.
+    assert LLMProvider.note_user_message(outer, "notion") is None
 
 
 @pytest.mark.asyncio
@@ -456,6 +891,7 @@ async def test_a_server_connected_during_build_is_not_reset_after_the_frame(monk
 
     handle._runtime.begin_mcp_sign_in = begin
     handle._mcp_sign_in_needed = {"remote"}
+    handle._mcp_sign_in_wanted = {"remote"}
     real_to_thread = asyncio.to_thread
 
     async def to_thread(func, *args, **kwargs):
@@ -518,15 +954,18 @@ async def test_a_server_that_connected_between_turns_is_not_reset():
     begun: list = []
     handle, queue = _turn_handle(begun)
     handle._mcp_sign_in_needed = {"remote"}
+    handle._mcp_sign_in_wanted = {"remote"}
     queue.put_nowait(_status({"name": "remote", "status": "connected"}))
     await _first_event(handle)
     assert begun == []
     assert handle._mcp_sign_in_needed == set()
 
 
-async def _events(handle: AcpSessionHandle, limit: int = 8) -> list[AcpEvent]:
+async def _events(
+    handle: AcpSessionHandle, limit: int = 8, *, sign_in_ask: str = ""
+) -> list[AcpEvent]:
     """Start one turn; every event its dispatch loop yields, up to ``limit``."""
-    gen = handle.prompt("hi", timeout=0.2)
+    gen = handle.prompt("hi", timeout=0.2, sign_in_ask=sign_in_ask)
     events: list[AcpEvent] = []
     with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
         while len(events) < limit:
@@ -630,6 +1069,7 @@ async def test_a_stale_link_does_not_deduplicate_the_fresh_turn_start_link():
     begun: list = []
     handle, queue = _turn_handle(begun)
     handle._mcp_sign_in_needed = {"remote"}
+    handle._mcp_sign_in_wanted = {"remote"}
     queue.put_nowait(
         JsonRpcMessage(
             method=METHOD_MCP_OAUTH_REQUEST,
@@ -657,7 +1097,7 @@ async def test_a_stale_link_does_not_deduplicate_the_fresh_turn_start_link():
 
 
 @pytest.mark.asyncio
-async def test_timed_out_servers_take_turns_in_the_sign_in_slot(monkeypatch):
+async def test_named_servers_take_the_slot_one_at_a_time_and_lapse_once(monkeypatch):
     runtime = _runtime()
     begun: list = []
 
@@ -667,21 +1107,22 @@ async def test_timed_out_servers_take_turns_in_the_sign_in_slot(monkeypatch):
 
     monkeypatch.setattr(runtime, "_send_and_await", timeout)
     handle = AcpSessionHandle("s1", runtime._session_queues["s1"], runtime)
-    handle._mcp_sign_in_needed = {"a", "b"}
-    for name in ("a", "b", "a", "b"):
-        handle._offer_mcp_sign_in()
-        assert runtime.mcp_sign_in_holds("s1", name)
-        assert not runtime.mcp_sign_in_holds("s2", name)
-        assert not runtime.mcp_sign_in_holds("s1", "other")
-        await asyncio.gather(*runtime._answer_tasks)
-        assert not runtime.mcp_sign_in_holds("s1", name)
-    assert begun == [("s1", "a"), ("s1", "b"), ("s1", "a"), ("s1", "b")]
-
-
-def test_rotation_continues_after_the_last_offered_server_leaves():
-    begun: list = []
-    handle = _handle(begun)
-    handle._mcp_sign_in_last_offered = "b"
-    handle._mcp_sign_in_needed = {"a", "c"}
+    handle._mcp_sign_in_needed = {"alpha", "beta"}
+    handle.want_mcp_sign_in_named("alpha")
     handle._offer_mcp_sign_in()
-    assert begun == [("s1", "c")]
+    assert runtime.mcp_sign_in_holds("s1", "alpha")
+    # Naming "alpha" again while its card is live asks for nothing more; the
+    # slot is held, so "beta" waits for the next offer point.
+    handle.want_mcp_sign_in_named("alpha and beta")
+    handle._offer_mcp_sign_in()
+    assert handle._mcp_sign_in_wanted == {"beta"}
+    assert not runtime.mcp_sign_in_holds("s1", "beta")
+    await asyncio.gather(*runtime._answer_tasks)
+    handle._offer_mcp_sign_in()
+    assert runtime.mcp_sign_in_holds("s1", "beta")
+    assert not runtime.mcp_sign_in_holds("s2", "beta")
+    await asyncio.gather(*runtime._answer_tasks)
+    # Both lapsed unanswered: neither is offered again until named again.
+    handle._offer_mcp_sign_in()
+    assert runtime._mcp_sign_in is None
+    assert begun == [("s1", "alpha"), ("s1", "beta")]
