@@ -263,12 +263,6 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, loop: 'asyncio.AbstractEventLoop') -> 'None'",
     ),
-    "broadcast_browser_event": (
-        "function",
-        False,
-        False,
-        "(self, event_type: 'str', data: 'dict') -> 'None'",
-    ),
     "broadcast_context_usage": (
         "function",
         False,
@@ -330,6 +324,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         True,
         False,
         "(self, msg_type: 'str', data: 'WsPayload') -> 'int'",
+    ),
+    "deliver_ws_owners_bytes": (
+        "function",
+        True,
+        False,
+        "(self, payload: 'bytes') -> 'int'",
     ),
     "disable_yolo": ("function", False, False, "(self) -> 'None'"),
     "effective_max_background_turns": ("function", False, False, "(self) -> 'int'"),

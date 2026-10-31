@@ -68,7 +68,6 @@ from kiro_crew.config.sections import (
     _normalize_acp_backend,
     _normalize_jail,
     _normalize_yolo_duration,
-    _port_or_unset,
     _read_skip_permissions,
     _safe_bool,
     _safe_float,
@@ -1148,11 +1147,9 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         session_card_source_links=section.read("session_card_source_links", _safe_bool),
         default_memory_mode=_default_memory_mode_from(section.get("default_memory_mode")),
         widget_density=section.get("widget_density"),
-        use_builtin_browser=section.read("use_builtin_browser", _safe_bool),
         browser_local_origins=_sections.coerce_browser_local_origins(
             section.get("browser_local_origins")
         ),
-        browser_view_port=_port_or_unset(section.get("browser_view_port")),
         verbosity=_sections.normalize_verbosity(section.get("verbosity")),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),

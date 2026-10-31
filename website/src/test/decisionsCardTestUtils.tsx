@@ -39,12 +39,14 @@ export const pointsOf = (
   memoryText = false,
   judgeProvider = 'auto',
   nudgeEvidence = false,
+  browser = true,
 ) => {
   const granted: Record<string, boolean> = {
     tool_args: toolArgs,
     compaction,
     memory_text: memoryText,
     nudge_evidence: nudgeEvidence,
+    browser,
   }
   const status = (scope: string | null) =>
     !enabled ? 'off' : scope && !granted[scope] ? 'needs_scope' : 'active'
@@ -75,6 +77,9 @@ export const pointsOf = (
       lane: judgeLane,
       status: judgeLane === 'jev' ? status('nudge_evidence') : 'active',
     },
+    // The browser point. Its outline scope is the one the gateway reports granted when
+    // the keystone does not mention it, so the fixture's default is `true`.
+    { id: 'browser.step', needs_scope: 'browser', status: status('browser') },
   ]
 }
 
@@ -96,12 +101,17 @@ export const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentD
   memory_text: false,
   // The wake judge's evidence scope, false on the same terms.
   nudge_evidence: false,
+  // The browser point's two scopes: both on by default once consent stands.
+  browser: true,
+  browser_images: true,
   points: pointsOf(
     enabled,
     overrides.tool_args === true,
     overrides.compaction === true,
     overrides.memory_text === true,
     overrides.nudge_evidence === true,
+    false,
+    overrides.browser !== false,
   ),
   ...overrides,
 })
@@ -122,6 +132,8 @@ export const SCOPE_SWITCH: Record<string, string> = {
   memory_text:
     'Also send snippets of recalled memories so Jev can drop the ones that do not help',
   nudge_evidence: 'Also send what a watching loop has found so Jev can skip a turn',
+  browser: "Send outlines of the agent's browser tab",
+  browser_images: "Also send screenshots of the agent's browser tab",
 }
 
 /** The tool-argument consent switch, on `tool.risk`'s own panel. */

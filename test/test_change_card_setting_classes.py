@@ -66,6 +66,29 @@ def test_ordered_values_are_values_the_route_accepts():
 
 
 @pytest.mark.parametrize(
+    "path,before,after,risk",
+    [
+        ("dashboard.tailscale.pin_scope", "node", "login", "widen"),
+        ("dashboard.tailscale.pin_scope", "login", "node", "tighten"),
+        ("knowledge.auto_add_documents", False, True, "widen"),
+        ("knowledge.auto_add_documents", True, False, "tighten"),
+        ("agent.acp_backend", "", "claude", "code_exec"),
+        ("session.pool_agent", "", "builder", "code_exec"),
+        ("telemetry.enabled", False, True, "normal"),
+        ("browser.choice", "kiro_chromium", "user_chrome", "widen"),
+        ("browser.choice", "auto", "headless", "tighten"),
+        ("browser.live.mask_passwords", True, False, "widen"),
+        ("browser.credentials.enabled", False, True, "widen"),
+        ("browser.credentials.enabled", True, False, "tighten"),
+        ("browser.live.max_fps", 60, 15, "normal"),
+    ],
+)
+def test_newly_classified_paths_read_their_class_on_the_card(path, before, after, risk):
+    p = {"path": path, "value": after}
+    assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
+
+
+@pytest.mark.parametrize(
     "path,cls,before,after,risk",
     [
         (

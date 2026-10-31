@@ -67,7 +67,6 @@ from kiro_crew.agent_sdk.tool_search import (
     spec_grants_tool_search,
     with_client_meta_settings,
 )
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.constants import (
     INITIALIZE_TIMEOUT_SECS,
@@ -228,8 +227,6 @@ def _launch_tools() -> LaunchTools:
         augmented_path=augmented_path,
         scrub_agent_subprocess_env=scrub_agent_subprocess_env,
         apply_pod_home_remap=_apply_pod_home_remap,
-        browser_session_env=browser_session_env,
-        browser_socket_env=browser_socket_env,
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,

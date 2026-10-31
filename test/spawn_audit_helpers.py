@@ -422,35 +422,27 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # save (off the event loop) or the `kirocrew browse setup` CLI. Fixed
         # argv of trusted node-toolchain tools resolved via find_node_tool
         # (npm/npx/node) plus the ``playwright install <engine>`` subcommand,
-        # ``browser_cli`` spawns the Playwright CLI toolchain on fixed argv that
-        # the AGENT never contributes to, which is what makes them benign here:
-        #   * ``install_runner.py::_run`` runs the three install steps
-        #     (``npm install -g @playwright/cli@latest``,
-        #     ``playwright-cli install-browser``, ``playwright-cli install
-        #     --skills agents --global``). Every token is a constant in our code
-        #     and the only trigger is the operator pressing Install in Settings.
-        #     Sandboxing it would be wrong, not merely unnecessary: the install
-        #     needs the real npm registry and writes the global prefix.
-        #   * ``view.py::_spawn`` runs ``playwright-cli show --port <n>`` where
-        #     the port comes from our own bind probe, and the host is the
-        #     hardcoded loopback constant.
-        # ``view.py::stop`` spawns nothing: it reaps its own child's process
-        # group rather than issuing a global ``show --kill``, which would take
-        # an operator's independent session down with ours.
-        #   * ``launcher.py::_run_cli`` runs ``playwright-cli --json list`` and ``-s=panel-<8hex>
-        #     goto|open <url>`` (and ``close`` at shutdown) for the Browser
-        #     panel's address bar. The ONE free argv element is a URL the
-        #     dashboard OWNER typed: the route is owner-only, refuses
-        #     internal-secret (agent) callers, and ``validate_url`` admits only
-        #     http(s) with a host and no credentials before it reaches argv.
-        #     The session name is hex derived from the slot key. Not sandboxed
-        #     for the same reason ``show`` is not: the CLI launches the
-        #     operator's real browser daemon, which needs the real cache and
-        #     network, and the human at the dashboard is the approval.
-        # The agent's OWN browser commands are not spawned by us at all -- it
-        # runs them as ordinary shell tool calls through the standard approval
-        # path.
-        "browser_cli/install_runner.py::_run",
+        # Browser Harness (``browser_harness/``), the agent's one browser
+        # driver. Both spawns are fixed argv the AGENT never
+        # contributes to, and neither can be sandboxed without defeating it:
+        #   * ``install.py::_run`` runs ``<sys.executable> -m venv --clear <prefix>``
+        #     and ``<prefix>/bin/python -m pip install --require-hashes -r <lock>``.
+        #     Every token is a module constant or a path under the data home; the
+        #     lock file ships in the package and pins each wheel by sha256; the only
+        #     trigger is the owner pressing Install in Settings (the route refuses
+        #     internal-secret callers). The install needs the real PyPI and writes
+        #     the read-only prefix, which the sandbox exists to deny.
+        #   * ``supervisor.py::_spawn`` starts three children of the gateway: Kiro's
+        #     Chromium (the downloaded binary under the sealed prefix, flags from
+        #     ``_CHROMIUM_ARGS``, the profile path under the data home), the Harness
+        #     daemon (``<prefix>/bin/python -m browser_harness.daemon``) and the
+        #     helper worker (``<prefix>/bin/python -I helper_worker.py``), each in
+        #     the fenced environment ``env.daemon_env`` builds. The agent's browser
+        #     ops reach these children only through ``HarnessSupervisor.call``'s
+        #     helper allowlist, never through argv; the children must reach the
+        #     real browser and the loopback relay, so a sandbox would break them.
+        "browser_harness/install.py::_run",
+        "browser_harness/supervisor.py::_spawn",
         # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
         # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
         # name the manifest validated as a bare object name and whose bytes were
@@ -463,15 +455,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "acp/kas_bundle.py::_open_tar",
         "acp/kas_bundle.py::_probe_node",
         "acp/kas_bundle.py::_run_tool",
-        "browser_cli/launcher.py::_run_cli",
-        "browser_cli/view.py::_spawn",
-        # ``chromium_compat.py::_run_tool`` runs ``nm -D <chrome>`` and ``ldconfig -p``
-        # once at gateway start to decide whether the playwright-cli config needs an
-        # older cached Chromium. The tool comes from ``trusted_system_bin`` (fixed
-        # system dirs, never PATH), the flags are fixed, and the one free element is
-        # a ``chrome`` path under the gateway's own Playwright cache. No agent input
-        # reaches the argv; it only reads symbol tables, like the system probes above.
-        "browser_cli/chromium_compat.py::_run_tool",
         # The offline run of an authored dashboard page (``dashboard_verify``). The argv
         # is fixed: a system Python and a browser path, each from a fixed list of system
         # locations and each past the strict provider-executable check (root-owned, not a

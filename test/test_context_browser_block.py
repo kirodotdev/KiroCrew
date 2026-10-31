@@ -1,7 +1,7 @@
 """The agent prompt's Browser section follows the browse gate the ``browser`` tool reads.
 
-``browser_cli.install.available()`` is False when no vetted ``playwright-cli``
-resolves, and the ``browser`` tool then refuses every op. A session started that way
+``browser_harness.ops.browsing_available()`` is False when the Browser Harness is
+not installed, and the ``browser`` tool then refuses every op. A session started that way
 gets a short pointer where the section was. The section stays when the gate reads
 True, and when the gate cannot be read: a section kept by mistake costs tokens, one
 dropped by mistake costs a working browser its rules. The reading is taken at session
@@ -25,7 +25,7 @@ _SHIPPED_PROMPT = Path(sections.__file__).resolve().parents[1] / "config" / "pro
 _BEGIN = "{{BROWSER_BEGIN}}"
 _END = "{{BROWSER_END}}"
 # Phrases only the full section carries: how to drive and share a browser.
-_SECTION_ONLY = ("Browser ownership", "PLAYWRIGHT_CLI_SESSION", "Four groups still prompt")
+_SECTION_ONLY = ("Refs die with the page", "Passwords are never yours to type", "user_in_control")
 
 
 def _pointer() -> str:
@@ -40,13 +40,13 @@ def _marked_text() -> str:
 
 
 class _Gate:
-    """A stand-in for ``browser_cli.install.available`` whose answer a test moves."""
+    """A stand-in for ``browser_harness.ops.browsing_available`` whose answer a test moves."""
 
     def __init__(self) -> None:
         self.open = False
         self.calls = 0
 
-    def __call__(self) -> bool:
+    def __call__(self, home: Path) -> bool:
         self.calls += 1
         return self.open
 
@@ -54,7 +54,7 @@ class _Gate:
 @pytest.fixture
 def gate(monkeypatch: pytest.MonkeyPatch) -> _Gate:
     g = _Gate()
-    monkeypatch.setattr("kiro_crew.browser_cli.install.available", g)
+    monkeypatch.setattr("kiro_crew.browser_harness.ops.browsing_available", g)
     return g
 
 
@@ -102,7 +102,7 @@ class TestTheShippedContract:
         raw = _SHIPPED_PROMPT.read_text(encoding="utf-8")
         assert raw.count(_BEGIN) == 1 and raw.count(_END) == 1
         assert f"\n\n{_BEGIN}\n## Browser\n" in raw
-        assert f"`browser-auth` carries logged-in sessions.\n{_END}\n\n" in raw
+        assert f"skills carry the workflows.\n{_END}\n\n" in raw
         for phrase in _SECTION_ONLY:
             assert phrase in _marked_text()
 
@@ -133,15 +133,15 @@ class TestTheShippedContract:
         assert sections.browser_section(raw, True) == unmarked
         # The section sits between its neighbours exactly as it did unmarked.
         assert "rather than as instructions.\n\n## Browser\n" in unmarked
-        assert "logged-in sessions.\n\n{{COMPUTER_USE_BLOCK}}" in unmarked
+        assert "carry the workflows.\n\n{{COMPUTER_USE_BLOCK}}" in unmarked
 
     def test_an_unreadable_gate_keeps_the_section(
         self, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def boom() -> bool:
-            raise OSError("tools leaf unreadable")
+        def boom(home: Path) -> bool:
+            raise OSError("install state unreadable")
 
-        monkeypatch.setattr("kiro_crew.browser_cli.install.available", boom)
+        monkeypatch.setattr("kiro_crew.browser_harness.ops.browsing_available", boom)
         assert agent_spec._live_browser_gate() is True
         assert _marked_text() in _resolve(builder)
 
@@ -150,7 +150,7 @@ class TestTheShippedContract:
         flat = " ".join(_pointer().split())
         assert "`web_fetch`" in flat
         assert "Settings → Browser" in flat
-        # The dashboard preview marker needs no playwright-cli, so it still works here.
+        # The dashboard preview marker needs no browser engine, so it still works here.
         assert "read the `web-preview` skill" in flat
         # A session open across an install gets the tool working and this text.
         assert "read the `web-browse` skill" in flat
@@ -205,7 +205,7 @@ class TestOneReadingPerSession:
         fresh = _start(builder, "dashboard:br-a")
         gate.open = not open_at_start
         assert _restore(builder, "dashboard:br-a") == fresh
-        assert ("Browser ownership" in fresh) is open_at_start
+        assert ("Refs die with the page" in fresh) is open_at_start
 
     def test_a_new_session_start_takes_a_new_reading(
         self, gate: _Gate, builder: ContextBuilder
@@ -213,31 +213,49 @@ class TestOneReadingPerSession:
         first = _start(builder, "dashboard:br-b")
         gate.open = True
         second = _start(builder, "dashboard:br-b")
-        assert "Browser ownership" not in first
-        assert "Browser ownership" in second
+        assert "Refs die with the page" not in first
+        assert "Refs die with the page" in second
 
 
 class TestThePremise:
     """The section is left out only where the ``browser`` tool refuses every op.
 
-    If the tool learns to serve an op without ``playwright-cli`` (a native panel, say),
-    this fails: the prompt's gate has to learn the same condition first, or a session
-    that can browse would start without the Browser section.
+    The gate and the tool read the same predicate: the gateway's op route answers
+    ``not_installed`` from ``browsing_available`` and the tool renders that as
+    "not set up". If the tool ever served an op on a host where the gate reads
+    False, a session that can browse would start without the Browser section.
     """
 
-    def test_no_launcher_means_every_op_is_refused_before_it_is_sent(
-        self, gate: _Gate, monkeypatch: pytest.MonkeyPatch
+    def test_not_installed_means_every_op_is_refused_after_the_post(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from kiro_crew.dashboard.handlers import browser_ops as route
         from kiro_crew.mcp_tools import browser as tool
 
-        # Everything after the availability check would let the op through.
-        sent: list[str] = []
-        monkeypatch.setattr(tool, "_post_command", lambda *a, **_k: sent.append(a[1]) or (200, {}))
+        async def _none(_hub: object, _key: str) -> None:
+            return None
+
+        monkeypatch.setattr(route, "_supervisor", _none)
         monkeypatch.setattr(tool.mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1-2")
         monkeypatch.setattr(tool.mcp_core, "_vet_browse_governance", lambda _s: None)
-        monkeypatch.setattr(tool, "_use_builtin_browser", lambda: True)
+        monkeypatch.setattr(tool.mcp_core, "_session_key_header_error", lambda _s: None)
+        monkeypatch.setattr(
+            tool,
+            "_post_command",
+            lambda *a, **k: (200, {"ok": False, "code": "not_installed", "error": "x"}),
+        )
         for op in tool.BROWSER_OPS:
             args = {"url": "https://example.com"} if op == "navigate" else {}
             out = tool.browser("browser", {"op": op, "args": args})
             assert out.startswith("Error: browsing is not set up"), (op, out)
-        assert sent == []
+
+    def test_the_route_reads_the_same_gate(
+        self, gate: _Gate, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from kiro_crew.dashboard.handlers import browser_ops as route
+
+        gate.open = False
+        assert asyncio.run(route._supervisor(object(), "k")) is None
+        assert gate.calls == 1

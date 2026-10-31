@@ -61,7 +61,6 @@ if TYPE_CHECKING:
         api_remote_artifacts_clone,
         api_remote_artifacts_fork,
         handlers,
-        logger,
         setup_spawn_resume_routes,
     )
 
@@ -581,37 +580,16 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
     app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
     app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
-    app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
-    app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
-    app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
-    app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
-    app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
-    app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
-    # Same-origin relay for the CLI browser view: the panel frames this path
-    # instead of the raw loopback URL, so the live view is reachable wherever
-    # the dashboard is (SSH forward, tunnel) with no second forwarded port.
-    # HTTP and WebSocket both. Authenticated by the per-instance capability
-    # token embedded in the path (NOT the session cookie: the panel frames it
-    # in an opaque-origin sandbox that sends none) — the prefix is on
-    # token_auth's bypass list and the handler enforces the token itself. See
-    # handlers/browser_view_relay.py for the rewrites and the full posture.
-    app.router.add_get("/browser-view", handlers.api_browser_view_relay)
-    app.router.add_get("/browser-view/{tail:.*}", handlers.api_browser_view_relay)
-    # The Browser panel's address bar on the non-native transport: opens an
-    # owner-typed URL in the gateway host's Playwright CLI browser and shows it
-    # through the view above. Owner-only (cookie/token) and deliberately NOT on
-    # any internal-path list -- the handler refuses internal-secret callers too,
-    # because agent browsing must keep going through the shell approval ladder.
-    app.router.add_post("/api/browser/open", handlers.api_browser_open)
-    # Native browser command channel (agent->Electron). Loopback + internal-secret
-    # only; see the _STRICT_INTERNAL_API_PATHS entries and each handler's re-assert.
-    app.router.add_post("/api/browser/command", handlers.api_browser_command)
-    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
-    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
-    # Distinctive boot marker: this line exists ONLY in the command-bus-gateway
-    # build, so its presence in gateway.log proves this worktree's backend is the
-    # one actually running (vs a stale / frozen bundled backend).
-    logger.debug("browser-cmdbus gateway: /api/browser/command{,-drain,-result} registered")
+    # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
+    # the engine's install state and connection, the install job, a bounded
+    # connect test and a disconnect. Owner cookie/token only; every one of them
+    # refuses an internal-secret caller, so an agent cannot install an interpreter
+    # the gateway executes or connect to the owner's Chrome by itself. The old
+    # ``/api/browser/install`` pair (Playwright CLI) is replaced here outright.
+    app.router.add_get("/api/browser/status", handlers.api_browser_harness_status)
+    app.router.add_post("/api/browser/install", handlers.api_browser_harness_install)
+    app.router.add_post("/api/browser/test", handlers.api_browser_harness_test)
+    app.router.add_post("/api/browser/disconnect", handlers.api_browser_harness_disconnect)
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
     # HERE (rather than in the dashboard-only block, where the browser-called
     # config pair sits) so the headless ``--slack-only`` server exposes it too —
@@ -619,6 +597,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     # ``_STRICT_INTERNAL_API_PATHS``: loopback + ``X-Internal-Secret`` only, no
     # cookie fall-through, because no browser ever calls it.
     app.router.add_post("/api/computer-use/invoke", handlers.api_computer_use_invoke)
+    # The ``browser`` MCP tool's forwarding leg onto the Browser Harness. Same
+    # trust class as ``invoke``: loopback + ``X-Internal-Secret`` only, listed in
+    # ``_STRICT_INTERNAL_API_PATHS``, no browser caller, headless server too.
+    app.router.add_post("/api/browser/op", handlers.api_browser_op)
+    # The parked ``browser`` tool's hand-back poll while the person holds the browser.
+    app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
+    # The parked ``ask`` op's poll: an outcome word, never what the person typed.
+    app.router.add_post("/api/browser/ask/poll", handlers.api_browser_ask_poll)
     # The live-view (PiP) frame ingress. Registered alongside ``invoke`` (not in
     # the dashboard-only block) because the capture that produces a frame runs on
     # BOTH entrypoints — a ``--slack-only`` gateway drives the desktop too, and its

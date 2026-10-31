@@ -592,9 +592,7 @@ def _classify(pid: int, cmdline: bytes, gateway_pid: int | None, owner: str | No
         return "gateway"
     if any(token in flat for token in _GATEWAY_ENTRY_TOKENS):
         return "gateway"
-    if session_pid._BROWSER_DAEMON_ENTRY in flat or basename.startswith(
-        (b"chrome", b"chromium", b"headless")
-    ):
+    if basename.startswith((b"chrome", b"chromium", b"headless")):
         return "browser"
     if session_pid._work_sweep_cmdline_is_test_runner(cmdline) or basename in (
         b"vitest",

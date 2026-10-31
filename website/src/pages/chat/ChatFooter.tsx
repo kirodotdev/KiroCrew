@@ -10,6 +10,7 @@ import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
 import { useOptionalTheme } from '../../hooks/useTheme'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useBrowserLiveInControl } from '../../hooks/useBrowserLive'
 import { PackLoaderImage } from './PackLoaderImage'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
@@ -278,13 +279,18 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
  *  (ChatEmbed) passes a window wider than its poll interval, because its tick
  *  only advances once per poll and a shorter window would flash the indicator
  *  between every two reads of a reply that is still arriving. */
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel }: {
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null }: {
   running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number
   /** Replaces "Thinking…" while the turn is not yet thinking — a remote session
    *  environment still starting (`useEnvironmentStartLabel`). */
   statusLabel?: EnvironmentStart | null
+  /** The slot this footer stands under. While the person holds that session's
+   *  browser (BrowserLiveCard takeover) the line reads "Waiting for you to hand
+   *  the browser back" instead of "Thinking…", because the agent is not. */
+  browserSessionKey?: string | null
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const browserInControl = useBrowserLiveInControl(browserSessionKey)
   const slug = useThemeSlug()
   const themeState = useOptionalTheme()
   const packSlug = packSlugOf(slug)
@@ -349,7 +355,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
             role="status"
             // The stage name only, not the ticking elapsed time, so assistive
             // tech is not re-announced every second.
-            aria-label={statusLabel ? statusLabel.stage : i18nT('pages.chat.chatFooter.thinking')}
+            aria-label={browserInControl ? i18nT('pages.chat.browserLiveCard.waiting_for_hand_back') : statusLabel ? statusLabel.stage : i18nT('pages.chat.chatFooter.thinking')}
           >
             {/* A throwing theme loader must not reach the route-level boundary and
                 blank the chat; it renders nothing (the label alone then carries
@@ -376,7 +382,9 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
             {/* A starting remote environment names its stage, with the elapsed
                 time, in place of "Thinking…". Either label is aria-hidden: the
                 status row's aria-label carries the accessible name. */}
-            {statusLabel
+            {browserInControl
+              ? <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.browserLiveCard.waiting_for_hand_back')}</span>
+              : statusLabel
               ? <span aria-hidden="true" className="text-muted text-[13px] font-mono tabular-nums">{statusLabel.label}</span>
               : <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}
           </div>

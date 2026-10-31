@@ -599,6 +599,8 @@ describe('every api method issues one well-formed /api request', () => {
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     browseFiles: ['sw-1', CALLER_SIGNAL],
+    browserLiveRecordings: ['sw-1', CALLER_SIGNAL],
+    browserLiveRecording: ['sw-1', 'sw-2', CALLER_SIGNAL],
     // The creator filter takes one query object (server-side filter and page).
     sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
     sharedCrewCancelWork: ['sw-1', 3],

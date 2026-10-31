@@ -37,12 +37,6 @@ from kiro_crew.apps.hooks_integration import (  # noqa: F401
 from kiro_crew.apps.manager import cleanup_migrated_builtin, register_builtin_apps
 from kiro_crew.autonudge import get_instance as _autonudge_get  # noqa: F401
 from kiro_crew.autonudge_authz import authorize_and_add_nudge  # noqa: F401
-from kiro_crew.browser_cli import launch as browser_cli_launch
-from kiro_crew.browser_cli import launcher as browser_cli_launcher  # noqa: F401
-from kiro_crew.browser_cli import managed_launcher as browser_cli_managed_launcher  # noqa: F401
-from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
-from kiro_crew.browser_cli import token as browser_cli_token
-from kiro_crew.browser_cli import view as browser_cli_view  # noqa: F401
 from kiro_crew.channel_transcript_migration import migrate_channel_transcripts  # noqa: F401
 from kiro_crew.config import data_home
 from kiro_crew.config.loader import (  # noqa: F401
@@ -237,9 +231,7 @@ from kiro_crew.dashboard.server_runtime.app_platform import (  # noqa: F401
     _warm_materialized_agents,
 )
 from kiro_crew.dashboard.server_runtime.browser_lifecycle import (  # noqa: F401
-    _prune_browser_snapshots_loop,
-    _register_browser_install_cleanup,
-    _register_browser_view_cleanup,
+    _register_browser_harness_lifecycle,
 )
 from kiro_crew.dashboard.server_runtime.config_watch import (  # noqa: F401
     _kick_config_watch,
@@ -1195,9 +1187,7 @@ async def start_dashboard(
         # ``runner.setup()`` freezes the app's signal lists. See
         # ``_register_instances_hooks`` for why ordering matters.
         _register_instances_hooks(app, state, port)
-        # Install cleanup stays first, before browser relay/session shutdown.
-        _register_browser_install_cleanup(app, state)
-        _register_browser_view_cleanup(app, state)
+        _register_browser_harness_lifecycle(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)
@@ -1446,34 +1436,6 @@ async def start_dashboard(
     _reaper = asyncio.create_task(handlers.reap_orphaned_terminals(app))
     _reaper.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
     state._terminal_reaper = _reaper  # prevent GC
-
-    # Point every `playwright-cli` invocation at the service-owned snapshot
-    # directory, and keep that directory bounded.
-    #
-    # The variable goes on the GATEWAY's own environment because the agent runs the
-    # CLI as a shell command in a descendant process: an env var is the only channel
-    # that reaches an invocation the gateway never constructs. An invocation that
-    # misses it writes into whatever directory the agent happened to be in, where
-    # the pruner does not look and files accumulate without bound. The CLI accepts
-    # this only as an env var, since `--config` is rejected on the follow-up
-    # commands that make up most of a session.
-    os.environ.update(browser_cli_snapshots.cli_env_overrides())
-    # The optional attach token rides the same channel for the same reason: the
-    # agent runs the CLI as a shell command, so only an inherited environment
-    # reaches it. Absent by default, in which case this adds nothing.
-    os.environ.update(browser_cli_token.cli_env_overrides())
-    # Name the engine Kiro Crew actually installs. The CLI's own default is the
-    # branded Chrome channel at an OS path the product never provisions, so
-    # without this the first browse fails on a host where every readiness signal
-    # is honestly green. Same channel and same reason as the two above; defers to
-    # an operator who set the variable themselves.
-    #
-    # Off the event loop: computing the override writes the config file, and this
-    # runs on the gateway's startup path.
-    os.environ.update(await asyncio.to_thread(browser_cli_launch.cli_env_overrides))
-    _snap_pruner = asyncio.create_task(_prune_browser_snapshots_loop())
-    _snap_pruner.add_done_callback(lambda t: t.result() if not t.cancelled() else None)
-    state._browser_snapshot_pruner = _snap_pruner  # prevent GC
 
     # Start terminal title poller (pushes live foreground-command / cwd titles)
     _title_poller = asyncio.create_task(handlers.poll_terminal_titles(app))

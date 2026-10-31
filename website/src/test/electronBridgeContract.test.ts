@@ -31,7 +31,7 @@ const bridgeContracts = {
   wslAPI: { name: 'WslAPI', methods: ['detect'] },
   folderPickAPI: { name: 'FolderPickAPI', methods: ['available', 'pick'] },
   zoomAPI: { name: 'ZoomAPI', methods: ['get', 'set', 'step'] },
-  browserAPI: { name: 'BrowserAPI', methods: ['open', 'navigate', 'setBounds', 'getState', 'control', 'onDidNavigate'] },
+  browserAPI: { name: 'BrowserAPI', methods: ['open', 'navigate', 'setBounds', 'getState', 'annotate', 'onDidNavigate'] },
   updateAPI: { name: 'UpdateAPI', methods: ['onState', 'check', 'download', 'install', 'getInfo'] },
 } as const
 

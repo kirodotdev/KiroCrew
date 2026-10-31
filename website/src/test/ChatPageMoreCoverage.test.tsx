@@ -940,12 +940,10 @@ describe('ChatPage window-event listeners', () => {
     await waitFor(() => expect(localStorage.getItem('mc-sidebar-pinned')).not.toBe(first))
   })
 
-  it('leaves the activity panel alone when the agent runs a playwright-cli shell command', async () => {
-    // A shell `playwright-cli` call drives an agent-owned headless Chromium that
-    // the Browser panel has no way to frame: the native view is reached only by
-    // `browser` MCP ops (surfaced by `browser:agent-opened`), and the gateway's
-    // framed `show` server lives in its own session namespace. Opening the
-    // panel here could only land on the "not running" card, so it must not.
+  it('leaves the activity panel alone when the agent runs a browser-ish shell command', async () => {
+    // A shell command that drives a browser lands nowhere the side panel can
+    // frame: the agent's browser is shown in the chat, so a tool-call preview
+    // must not open the panel.
     delete (window as unknown as { browserAPI?: unknown }).browserAPI
     const { store } = await renderTurn()
     expect(store.getState().chat.activityOpen).toBe(false)
@@ -955,39 +953,13 @@ describe('ChatPage window-event listeners', () => {
         detail: {
           slot: 'chat-1',
           is_shell: true,
-          input_preview: 'playwright-cli open https://example.test',
+          input_preview: 'chromium --headless=new https://example.test',
         },
       }))
     })
 
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(store.getState().chat.activityOpen).toBe(false)
-  })
-
-  it('leaves the activity panel alone on a playwright-cli shell command even when the native bridge is present', async () => {
-    // Bridge presence is not evidence the shell browse landed in the native
-    // view — it never does. The desktop path opens the panel from the main
-    // process's `browser:agent-opened` signal, not from the tool-call preview.
-    ;(window as unknown as { browserAPI?: unknown }).browserAPI = {
-      trackSession: vi.fn(async () => ({ ok: true })),
-      onAgentOpened: vi.fn(() => () => {}),
-    }
-    try {
-      const { store } = await renderTurn()
-      act(() => {
-        window.dispatchEvent(new CustomEvent('kirocrew-tool-call', {
-          detail: {
-            slot: 'chat-1',
-            is_shell: true,
-            input_preview: 'playwright-cli snapshot',
-          },
-        }))
-      })
-      await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
-      expect(store.getState().chat.activityOpen).toBe(false)
-    } finally {
-      delete (window as unknown as { browserAPI?: unknown }).browserAPI
-    }
   })
 
   it('ignores a run-in-terminal request that carries no command', async () => {

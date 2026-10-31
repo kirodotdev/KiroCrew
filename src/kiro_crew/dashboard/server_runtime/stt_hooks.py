@@ -305,10 +305,10 @@ def _register_stt_hooks(app: web.Application) -> None:
     # provider is not re-handshaken on every decision. Gated on the module having been
     # imported at all: a gateway that never made a decision has nothing to close.
     async def _decision_http_shutdown(app_: web.Application) -> None:
-        if "kiro_crew.decisions.impl_jev" not in sys.modules:
+        if "kiro_crew.decisions.impl_systemone" not in sys.modules:
             return
-        from kiro_crew.decisions import impl_jev
+        from kiro_crew.decisions import impl_systemone
 
-        await impl_jev.close_sessions()
+        await impl_systemone.close_sessions()
 
     app.on_cleanup.append(_decision_http_shutdown)

@@ -93,7 +93,9 @@ export default function ChatTitleOverlay({
           what a phone keyboard does — where they painted over the caret.
           Scoping the lift to the edit is safe because opening the drawer
           blurs the input, which commits and closes the editor. */}
-      <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} {...{ [SELECTION_INERT_ATTR]: '' }}>
+      {/* `data-transcript-top-overlay`: what the transcript scrolls under; a card
+          that must keep its header visible measures it (browserLiveClearance). */}
+      <div className={`absolute top-0 left-0 right-1.5 ${editingTitle ? 'z-[47]' : 'z-[45]'} pointer-events-none`} style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} {...{ [SELECTION_INERT_ATTR]: '' }} data-transcript-top-overlay="">
         {/* The row's left padding GLIDES between its open (20px) and
             collapsed (60px, clearing the stationary toggle + divider)
             values on the same 320ms curve as the panel — an instant

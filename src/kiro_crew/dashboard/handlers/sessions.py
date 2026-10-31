@@ -123,6 +123,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.sessions_parts.slot_teardown import (  # noqa: F401
         _CREW_LOG_TEARDOWN_FLUSH_SECONDS,
         _live_session_units,
+        _remove_browser_recordings,
         _remove_session_crew_logs,
         _remove_slot_for_history_key,
     )

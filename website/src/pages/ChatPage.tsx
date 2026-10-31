@@ -750,9 +750,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // then the cold file tabs' reads.
   const { runInTerminalScope } = useChatEventBridges({
     activeSlot,
-    activeSlotRef,
     messages,
-    slots,
     dispatch,
     queryClient,
     showActionError,

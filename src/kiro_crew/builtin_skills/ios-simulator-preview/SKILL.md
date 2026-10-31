@@ -1,19 +1,19 @@
 ---
 name: ios-simulator-preview
-description: Show a live iOS Simulator in the dashboard's Browser side panel while building or testing an iOS app. Use when the user asks to preview an iOS/SwiftUI app, run an app in the simulator, "show me the app", test in the iOS simulator, or watch you drive an iOS app. macOS + Xcode only.
+description: Show a live iOS Simulator in the dashboard's Preview side tab while building or testing an iOS app. Use when the user asks to preview an iOS/SwiftUI app, run an app in the simulator, "show me the app", test in the iOS simulator, or watch you drive an iOS app. macOS + Xcode only.
 triggers: ios simulator, iphone simulator, iphone preview, swiftui preview, run in simulator, xcode app preview, mirror simulator, show me the app on iphone
 ---
 
 # iOS Simulator Preview (Browser-tab mirror)
 
-Mirror a running iOS Simulator into KiroCrew's Browser side panel so the user
+Mirror a running iOS Simulator into Kiro Crew's Preview side tab so the user
 watches the app — and you driving it — live next to the chat.
 
 Architecture, end to end, all local: **simulator → `serve-sim` (loopback HTTP)
-→ the `kirocrew:preview` marker → Browser panel iframe.** Nothing leaves the
+→ the `kirocrew:preview` marker → Preview tab iframe.** Nothing leaves the
 machine. This mirrors OpenAI Codex's `ios-simulator-browser` approach (same
 `serve-sim` mirror) with one substitution: Codex opens the URL in its in-app
-browser via a browser tool, while KiroCrew's panel is driven by the hidden
+browser via a browser tool, while Kiro Crew's Preview tab is driven by the hidden
 preview marker (see the `web-preview` skill).
 
 ## Requirements
@@ -67,7 +67,7 @@ device, else the newest iPhone, else creates one.
 
 Prints JSON: `{"udid", "name", "url", "pid", "log"}`.
 
-### 2. Open it in the Browser panel
+### 2. Open it in the Preview tab
 
 Emit the hidden marker in your NEXT message, using the exact `url` from step 1:
 
@@ -76,12 +76,12 @@ Emit the hidden marker in your NEXT message, using the exact `url` from step 1:
 ```
 
 This is the only reliable auto-open path — a bare URL in prose merely pre-fills
-the panel. Name the mirrored device in prose too.
+the tab. Name the mirrored device in prose too.
 
 Do NOT reach for the `browser` MCP tool here: its `navigate` op refuses loopback,
 private and link-local targets outright, so the mirror URL is unreachable that
-way. The marker is the path; `playwright-cli` would work but prompts the user for
-approval on every local address.
+way unless the user listed that exact origin in Settings → Browser. The marker
+is the path.
 
 **A loaded page is not proof the stream is healthy.** Confirm real frames are
 arriving (see Failure modes) before telling the user it works.

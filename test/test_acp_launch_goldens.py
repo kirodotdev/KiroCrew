@@ -638,7 +638,6 @@ class _Recording:
         self.wrap_kwargs: dict = {}
         self.factory_argv: list[str] = []
         self.factory_kwargs: dict = {}
-        self.socket_env_arg: dict | None = None
         self.forward_args: tuple | None = None
         self.pod_internal_sandbox: bool | None = None
 
@@ -648,7 +647,6 @@ def _launch_tools(
     *,
     scratch: _Scratch,
     delegate: bool = False,
-    browser_env: dict[str, str] | None = None,
     spawn_error: BaseException | None = None,
     retrying=None,
 ):
@@ -689,15 +687,6 @@ def _launch_tools(
         rec.calls.append(f"apply_pod_home_remap:{pod_home_remap}")
         return dict(env, POD_REMAP=str(pod_home_remap))
 
-    def _browser_session(env):
-        rec.calls.append("browser_session_env")
-        return dict(browser_env or {})
-
-    def _browser_socket(env):
-        rec.calls.append("browser_socket_env")
-        rec.socket_env_arg = dict(env)
-        return {"BROWSER_SOCKET": "sock"}
-
     def _xdist(env):
         rec.calls.append("inject_xdist_auto_cap")
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
@@ -727,8 +716,6 @@ def _launch_tools(
         augmented_path=lambda path: f"{path}:/augmented",
         scrub_agent_subprocess_env=_scrub,
         apply_pod_home_remap=_pod_remap,
-        browser_session_env=_browser_session,
-        browser_socket_env=_browser_socket,
         inject_xdist_auto_cap=_xdist,
         bind_voice_safe_agent_workspace_async=_bind,
         create_subprocess_limited=_create,
@@ -833,7 +820,7 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
             env_after_scratch=_step("after_scratch"),
             pod_home_remap=True,
         ),
-        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch"), browser_env={"B": "kc-1"}),
+        _launch_tools(rec, scratch=_Scratch(tmp_path / "scratch")),
     )
 
     before = seen["before_scrub"]
@@ -845,9 +832,7 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert "POD_REMAP" not in after_scrub and "KIROCREW_SPAWNED" not in after_scrub
     after_marker = seen["after_marker"]
     assert after_marker["POD_REMAP"] == "True" and after_marker["KIROCREW_SPAWNED"] == "1"
-    assert "B" not in after_marker
     after_scratch = seen["after_scratch"]
-    assert after_scratch["B"] == "kc-1"
     assert after_scratch["KIROCREW_SCRATCH"] == str(tmp_path / "scratch")
     assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in after_scratch
     child = rec.factory_kwargs["env"]
@@ -855,43 +840,6 @@ def test_the_child_environment_is_built_in_one_fixed_order(monkeypatch, tmp_path
     assert rec.calls.index("scrub_agent_subprocess_env") < rec.calls.index(
         "apply_pod_home_remap:True"
     )
-
-
-def test_the_browser_session_reaches_the_child_with_its_socket_env(monkeypatch, tmp_path) -> None:
-    """Each agent process gets its own named browser session, and its lifecycle socket.
-
-    Without the name, two agents' nameless browser commands resolve to one shared
-    ``default`` browser and navigate and close each other's pages. The socket env is
-    resolved from the gateway's environment plus that name, off the loop through the
-    guarded hop, because it reads the filesystem while the sandbox launcher is live.
-    """
-    _launch_env(monkeypatch, GATEWAY="g")
-    host = _FakeHost(tmp_path)
-    rec = _Recording()
-    _run_launch(
-        host,
-        _request(),
-        _launch_tools(rec, scratch=_Scratch(None), browser_env={"AGENT_BROWSER_SESSION": "kc-7"}),
-    )
-
-    child = rec.factory_kwargs["env"]
-    assert child["AGENT_BROWSER_SESSION"] == "kc-7"
-    assert child["BROWSER_SOCKET"] == "sock"
-    lookup = rec.socket_env_arg
-    assert lookup is not None
-    assert (lookup["GATEWAY"], lookup["AGENT_BROWSER_SESSION"]) == ("g", "kc-7")
-    # The GATEWAY's environment plus the name, never the child's: neither the session
-    # overlay nor anything the tail wrote on the child reaches the lookup.
-    assert "EXTRA" not in lookup and "KIROCREW_SPAWNED" not in lookup
-    assert "_browser_socket" in host.guarded
-
-
-def test_no_browser_session_means_no_socket_lookup(monkeypatch, tmp_path) -> None:
-    _launch_env(monkeypatch)
-    rec = _Recording()
-    _run_launch(_FakeHost(tmp_path), _request(), _launch_tools(rec, scratch=_Scratch(None)))
-    assert "browser_socket_env" not in rec.calls
-    assert "BROWSER_SOCKET" not in rec.factory_kwargs["env"]
 
 
 def test_a_failed_spawn_releases_the_workspace_and_the_sandbox_launcher(

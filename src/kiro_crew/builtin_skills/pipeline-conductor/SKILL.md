@@ -860,9 +860,9 @@ Fill `{...}` from the spec; keep every clause — each one closes a failure mode
 > `pod api`, pod-e2e/Playwright, or another real product route. Run pod
 > status/token/API commands through the worktree's `./.venv/bin/kirocrew` after
 > provisioning: the globally installed binary may be sandbox-blind to the pod
-> process's sockets and fail closed on ownership proof. If `playwright-cli`
-> cannot launch on the host, the repository's own Playwright runner against the
-> same live pod is equivalent evidence; record the engine and launch flags, and
+> process's sockets and fail closed on ownership proof. If the `browser`
+> tool cannot open the pod's loopback origin on the host, the repository's own
+> Playwright runner against the same live pod is equivalent evidence; record the engine and launch flags, and
 > treat a missing REQUIRED engine (for example Safari/WebKit-specific behavior)
 > as `missing=<capability>` rather than silently substituting Chromium.
 > Record the scenario, exact probe, and failing observable. A unit test, direct

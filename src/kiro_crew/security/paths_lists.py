@@ -361,13 +361,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # operator's logged-in browser without them seeing a prompt. The gateway hands
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
-    # Gateway-executed browser launcher and its vendored package tree. Agent
-    # subprocesses receive a READONLY sandbox view so their browser commands can
-    # run it; file tools must not inspect or replace the executable the
-    # unsandboxed gateway later uses for startup cleanup and owner launches.
-    "playwright-cli",
+    # The Browser Harness venv the gateway executes for its daemon and helper
+    # worker, with Kiro's Chromium beside it (``browser_harness.install``).
+    # READONLY in-sandbox, fenced from file tools so the agent cannot swap the
+    # interpreter the gateway runs against the user's whole Chrome.
+    "browser-harness",
+    # The Harness daemon's runtime directory: its IPC socket (the Windows port file
+    # carries the IPC token), pid file and log (``browser_harness.supervisor``).
+    # Whoever can open the socket drives the user's Chrome over raw CDP, so the
+    # gateway is the only client; masked in every sandbox mode too.
+    "browser-harness-ipc",
+    # Kiro's Chromium profile. Cookies from a takeover login live here, and the
+    # agent must never read them as a file; also sandbox-masked.
+    "browser-profile",
     # KAS engine bundles the gateway installs then executes (``acp.kas_bundle``);
-    # same class as ``playwright-cli``: READONLY in-sandbox, fenced from file tools.
+    # same class as ``browser-harness``: READONLY in-sandbox, fenced from file tools.
     "engines",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
@@ -894,14 +902,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     # config.json / config.local.json: security-relevant resource ceilings.
-    # playwright-cli-config.json: the browse launch config
-    # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
-    # every invocation, so it is write-protected rather than sensitive. But it is
-    # an INPUT TO A SECURITY DECISION: the schema accepts
-    # ``launchOptions.chromiumSandbox``, so an agent that could rewrite it would
-    # turn the browser sandbox OFF for every later browse, and the change persists
-    # until the next gateway start re-converges the file. Kiro Crew generates it
-    # directly and does NOT route through this gate, so its own write still works.
     # subagents: the canonical run records a cold continuation restores app
     # ownership from. Gateway writers bypass this tool gate; an agent may read a
     # run's results but cannot turn an app-owned run into a personal run. Its
@@ -917,7 +917,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     for leaf in (
         "config.json",
         "config.local.json",
-        "playwright-cli-config.json",
         "subagents",
         "app-agent-launch",
     )
@@ -944,9 +943,9 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
 
 
 _WRITE_PROTECTED_HOME_PATHS += [
-    # The cloud launcher's config. WRITE-protected for the same reason as
-    # ``playwright-cli-config.json`` above and by the same placement-not-logic fix:
-    # it holds no credential (its own module docstring is explicit that it stores a
+    # The cloud launcher's config. WRITE-protected by the placement-not-logic fix
+    # (the gate refuses only the agent's own file-edit tool, the product's own
+    # writers bypass it): it holds no credential (its own module docstring is explicit that it stores a
     # profile NAME, and the Fargate block stores secret names and ARNs, never
     # values), and the gateway must READ it on every request to build the remote
     # provisioner list, so sealing it against reads would break the Set-up tab.

@@ -546,8 +546,9 @@ describe('a refused scope write says so', () => {
       .filter(row => row.needs_scope !== null)
       .map(row => row.needs_scope)
       .sort()
-    expect(scoped).toEqual(['compaction', 'memory_text', 'nudge_evidence', 'tool_args'])
-    for (const scope of scoped as ScopeName[]) {
+    expect(scoped).toEqual(['browser', 'compaction', 'memory_text', 'nudge_evidence', 'tool_args'])
+    // The browser point's switch is pinned by its own describe at the end of this file.
+    for (const scope of scoped.filter(s => s !== 'browser') as ScopeName[]) {
       expect(await openScope(scope)).toBeInTheDocument()
     }
   })
@@ -644,5 +645,58 @@ describe("the wake judge's point on the card", () => {
     stubGateway(consentOf(false))
     renderSection()
     expect(await scopeSwitchOnPanel('nudge_evidence')).toBeNull()
+  })
+})
+
+describe("the browser point's two switches", () => {
+  const BROWSER_POINT = 'Browser steps: pick and check'
+  async function openBrowserPanel() {
+    await waitFor(() => {
+      expect(pointRow(BROWSER_POINT)).toBeInTheDocument()
+    })
+    openPoint(BROWSER_POINT)
+    // flake-ok: waits behind DecisionsCard's React.lazy DecisionsPointPanel, which this file imports up front so the chunk is warm
+    return await waitFor(() => screen.getByRole('switch', { name: SCOPE_SWITCH.browser }))
+  }
+  const imagesSwitch = () => screen.queryByRole('switch', { name: SCOPE_SWITCH.browser_images })
+
+  it('draws outlines and screenshots ON by default once consent stands', async () => {
+    cleanup()
+    stubGateway(consentOf(true))
+    renderSection()
+    const outlines = await openBrowserPanel()
+    expect(outlines.getAttribute('aria-checked')).toBe('true')
+    expect(imagesSwitch()?.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('draws screenshots OFF for an explicit no', async () => {
+    cleanup()
+    stubGateway(consentOf(true, { browser_images: false }))
+    renderSection()
+    await openBrowserPanel()
+    expect(imagesSwitch()?.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('offers no screenshot switch while outlines are off', async () => {
+    cleanup()
+    stubGateway(consentOf(true, { browser: false }))
+    renderSection()
+    const outlines = await openBrowserPanel()
+    expect(outlines.getAttribute('aria-checked')).toBe('false')
+    expect(imagesSwitch()).toBeNull()
+  })
+
+  it('revokes screenshots through the consent route with an explicit false', async () => {
+    cleanup()
+    stubGateway(consentOf(true))
+    const scopeSave = vi
+      .spyOn(api, 'saveDecisionsScope')
+      .mockResolvedValue(consentOf(true, { browser_images: false }))
+    renderSection()
+    await openBrowserPanel()
+    imagesSwitch()?.click()
+    await waitFor(() => {
+      expect(scopeSave).toHaveBeenCalledWith('browser_images', false)
+    })
   })
 })
