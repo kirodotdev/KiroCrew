@@ -17,6 +17,7 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 from __future__ import annotations
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -610,6 +611,10 @@ ACP_BACKENDS_NATIVE_TODOS = frozenset({ACP_BACKEND_CLAUDE})
 #   and its ACP reference says a command it does not list is sent to the model as
 #   an ordinary prompt. ``clear`` is also outside its prompt-command allowlist, so a
 #   ``/clear`` that reached the client would be refused rather than sent.
+# - antigravity: its prompt-command allowlist
+#   (``ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST`` in ``agent_sdk.backends_routing``)
+#   admits only ``plan`` and ``usage``, so a ``/clear`` that reached the client
+#   would be refused rather than sent.
 #
 # goose is NOT a member: its prompt handler runs ``/clear`` itself
 # (``CompactionOperation.run_command`` returns an empty conversation), so it keeps
@@ -624,6 +629,7 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 

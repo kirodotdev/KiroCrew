@@ -154,4 +154,9 @@ describe('acpBackendName / acpBackendShortName', () => {
     expect(acpBackendShortName(ACP_BACKEND_KAS)).toBe('Kiro Agent')
     expect(acpBackendName({ id: ACP_BACKEND_KIRO })).toBe('Kiro CLI')
   })
+
+  it('names the Antigravity harness by its product name, not its raw id', () => {
+    expect(acpBackendName({ id: 'antigravity' })).toBe('Google Antigravity')
+    expect(acpBackendShortName('antigravity')).toBe('Google Antigravity')
+  })
 })

@@ -352,14 +352,16 @@ def test_codex_still_needs_its_read_only_mode() -> None:
     assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
 
 
-def test_known_membership_is_unchanged_by_the_move() -> None:
-    """``ACP_BACKENDS_KNOWN`` gained and lost nothing.
+def test_known_membership_is_explicit() -> None:
+    """``ACP_BACKENDS_KNOWN`` names every accepted id.
 
     Membership is the gate on the ``acp_backend`` kwarg, so a widened set means
-    provider construction accepts a value it must reject.
+    provider construction accepts a value it must reject. Antigravity is the one
+    deliberate addition after the capability move.
     """
     assert sorted(sdk_backends.ACP_BACKENDS_KNOWN) == [
         "",
+        "antigravity",
         "claude",
         "codex",
         "copilot",
@@ -742,16 +744,20 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
 
     # A fourth fact the three above assume: the harness asks about EVERY call, so
     # ``_deny_zero_tools`` sees each one. Copilot CLI 1.0.100 reads a file inside the
-    # session's own directory without asking (measured, see the set's comment), so a
-    # total ban cannot be honoured there even though the three facts hold.
-    reads_unasked = {sdk_backends.ACP_BACKEND_COPILOT}
+    # session's own directory without asking (measured, see the set's comment).
+    # Antigravity advertises the default permission flow, but no authenticated turn
+    # proves every native and MCP call asks, so its ban is not claimed.
+    cannot_honour_total_ban = {
+        sdk_backends.ACP_BACKEND_ANTIGRAVITY,
+        sdk_backends.ACP_BACKEND_COPILOT,
+    }
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         routing = routing_for(backend)
         expected = routing is sdk_backends.Routing.AGENT_SPEC or (
             routing in ENFORCED_ROUTINGS
             and (backend in MIRRORS or projection_for(backend).kind is ProjectionKind.BROKER_ONLY)
             and backend not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
-            and backend not in reads_unasked
+            and backend not in cannot_honour_total_ban
         )
         actual = backend in sdk_backends.ACP_BACKENDS_HONOR_ZERO_TOOL_BAN
         assert actual == expected, (

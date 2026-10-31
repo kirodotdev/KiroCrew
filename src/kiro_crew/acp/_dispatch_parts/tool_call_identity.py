@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN
+from kiro_crew.acp_backends import ACP_BACKEND_ANTIGRAVITY
 from kiro_crew.mcp_gateway.tool_surface import mcp_identity_name, mcp_identity_unreadable
 
 _ACP_SHELL_KIND = "execute"
@@ -208,15 +209,17 @@ def _permission_tool_id(params: dict[str, Any]) -> str:
     return _harness_identifier(tool_id)
 
 
-def harness_tool_name(update: dict[str, Any]) -> str:
+def harness_tool_name(update: dict[str, Any], *, backend: str = "") -> str:
     """The tool's own name as a ``tool_call`` frame states it, or "".
 
     goose writes it in ``_meta.goose.toolCall.toolName`` and claude-agent-acp in
     ``_meta.claudeCode.toolName``; opencode writes it as the first frame's
-    ``title`` (``bash``), where later updates carry the command. Read from that
-    first frame only, and only as an identifier: a title with whitespace or any
-    other prose character is not a name and yields "". Which backend's table the
-    name is looked up in is decided by the permission event's caller
+    ``title`` (``bash``), where later updates carry the command. On *backend*
+    Antigravity, a native non-execution tool name is wrapped as ``Run <name>?``;
+    that spelling is unwrapped only there. Read from the first frame only, and
+    only as an identifier: a title with whitespace or any other prose character
+    is not a name and yields "". Which backend's table the name is looked up in
+    is decided by the permission event's caller
     (:func:`kiro_crew.acp.harness_tool_names.qualified_harness_tool_id`), so the
     title of a backend with no table is never read as a name.
     """
@@ -231,6 +234,13 @@ def harness_tool_name(update: dict[str, Any]) -> str:
         name = claude.get("toolName") or ""
     if name is None:
         name = update.get("title")
+        if (
+            backend == ACP_BACKEND_ANTIGRAVITY
+            and isinstance(name, str)
+            and name.startswith("Run ")
+            and name.endswith("?")
+        ):
+            name = name[4:-1]
     # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
     # fuses an operator-chosen server name with the tool's, and one dropped here
     # leaves a deny hook matching the title alone.
@@ -241,6 +251,81 @@ def harness_tool_name(update: dict[str, Any]) -> str:
     ):
         return ""
     return name
+
+
+#: How Antigravity's tools spell the command and the files they act on. Every key
+#: has a PascalCase form and a snake_case twin. All twelve spellings appear as
+#: strings in both executables of the pinned 1.4.4 Windows archive, and in this
+#: PR's synthesized turn; no signed-in session has shown them on the wire. The
+#: shared readers look for neither: they read
+#: ``command`` and the ``TARGET_PATH_KEYS`` spellings (``path``, ``file_path``,
+#: ``filePath``, ``targetFile``).
+_ANTIGRAVITY_COMMAND_KEYS = ("CommandLine", "command_line")
+_ANTIGRAVITY_PATH_KEYS = (
+    "AbsolutePath",
+    "absolute_path",
+    "TargetFile",
+    "target_file",
+    "SearchPath",
+    "search_path",
+    "DirectoryPath",
+    "directory_path",
+    "SearchDirectory",
+    "search_directory",
+)
+
+
+def _antigravity_stated_commands(params: dict[str, Any]) -> list[Any]:
+    """Every non-empty command spelling *params* states, ``command`` included."""
+    return [
+        params[k]
+        for k in (*_ANTIGRAVITY_COMMAND_KEYS, "command")
+        if params.get(k) not in (None, "")
+    ]
+
+
+def antigravity_command_conflict(params: object) -> bool:
+    """True when *params* state a command and its spellings are not one string.
+
+    Such a call has no command the gate can verify, whichever spelling runs.
+    """
+    if not isinstance(params, dict):
+        return False
+    stated = _antigravity_stated_commands(params)
+    return bool(stated) and not (all(isinstance(v, str) for v in stated) and len(set(stated)) == 1)
+
+
+def antigravity_gate_params(params: dict[str, Any] | None, *, shell: bool) -> dict[str, Any] | None:
+    """*params* with Antigravity's argument names also under the names the gate reads.
+
+    Without this a shell call carries no ``command`` and the unverifiable-shell tier
+    refuses it, and a file tool carries no path the sensitive-path check can see.
+    Returns a copy; the cached trusted params are never edited. The spellings were
+    read from the pinned runtime's strings, not from a signed-in session.
+
+    ``command`` is set only on a shell call (*shell*), and only when every spelling
+    present, an existing ``command`` included, states the same string. Any
+    disagreement removes ``command``, so the call stays unverifiable and is refused.
+    Each path-spelling value is added to ``path``. A lone value leaves ``path`` a
+    string, so a rule that reads a string ``path`` still sees it.
+    """
+    if not isinstance(params, dict):
+        return params
+    out = dict(params)
+    if shell:
+        if antigravity_command_conflict(params):
+            out.pop("command", None)
+        else:
+            stated = _antigravity_stated_commands(params)
+            if stated:
+                out["command"] = stated[0]
+    targets = [params[k] for k in _ANTIGRAVITY_PATH_KEYS if params.get(k) not in (None, "")]
+    if targets:
+        prior = out.get("path")
+        kept = prior if isinstance(prior, list) else ([prior] if prior not in (None, "") else [])
+        merged = [*kept, *(t for t in targets if t not in kept)]
+        out["path"] = merged if isinstance(prior, list) or len(merged) > 1 else merged[0]
+    return out
 
 
 class _MetaIdentityChannel(NamedTuple):
@@ -340,6 +425,14 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # carries no ``kind`` -- so this pair is the only thing on the wire that says
         # "this is a command".
         builtin_shell=("developer", "shell"),
+    ),
+    # Google Antigravity states an MCP call in the tool frame's ``_meta.mcp``
+    # object. Both halves are harness-authored; eager MCP tools carry the same
+    # pair, so an identity does not depend on the dispatch-envelope spelling.
+    _MetaIdentityChannel(
+        key="mcp",
+        server_field="server",
+        tool_field="tool",
     ),
 )
 

@@ -59,11 +59,12 @@ seam spawned (`src/kiro_crew/agent_sdk/provider_identity.py`,
 | Claude Code seam | `provider=claude_code` | not at all — nothing reads the spec | Crew injects the spec's effect into context itself (the `is_cc` branches) |
 | claude-agent-acp harness | `acp_backend="claude"` | not as a spec file — Crew projects field by field | `providers/mirrors/claude_code.py` is the per-field ruling; [How the other backends consume a spec](#how-the-other-backends-consume-a-spec) is the table |
 
-Three surfaces, not three backends. `src/kiro_crew/agent_sdk/backends.py` names
-eight (`""`, `kas`, `claude`, `codex`, `opencode`, `pi`, `goose`, `deepseek`),
+These rows are different surfaces, not different backends.
+`src/kiro_crew/agent_sdk/backends.py` names ten (`""`, `kas`, `claude`, `codex`,
+`opencode`, `pi`, `goose`, `deepseek`, `copilot`, `antigravity`),
 and only `kas` reads the markdown form (`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`).
 [How the other backends consume a spec](#how-the-other-backends-consume-a-spec)
-below is what happens to the other five.
+below is what happens to the other seven.
 
 These two are separate rows because they are separate axes, and only one is
 dormant. `provider=claude_code` is dormant in the public build, whose config
@@ -83,14 +84,14 @@ you cannot add your own keys to a spec.
 
 ## How the other backends consume a spec
 
-The five backends missing from the table above — `codex`, `opencode`, `goose`,
-`pi` and `deepseek` — receive **no agent definition in any shape**: no
+The seven backends missing from the table above — `codex`, `opencode`, `goose`,
+`pi`, `deepseek`, `copilot` and `antigravity` — receive **no agent definition in any shape**: no
 `--agent`, and no spec written anywhere, so nothing reads a spec AS a spec
-there. That is not the same as receiving nothing. On three of them individual
+there. That is not the same as receiving nothing. On most of them individual
 fields still arrive, one at a time, through whichever channel that harness reads
 — a `session/new` parameter, a `session/set_config_option` call after it, or one
-environment variable. The `acp_backend="claude"` row above is a fourth harness
-answered the same way, and `src/kiro_crew/providers/mirrors/` is where all four
+environment variable. The `acp_backend="claude"` row above is another harness
+answered the same way, and `src/kiro_crew/providers/mirrors/` is where these
 answers are recorded.
 
 Four cases, and the difference between them is the whole answer:
@@ -102,8 +103,8 @@ Four cases, and the difference between them is the whole answer:
   `_meta.kiro.customAgents` (`acp/kas_agents.py`, `to_client_custom_agent`).
   Kind `external`: a real projection down a real channel whose code has not yet
   moved into the mirrors folder.
-- **The four MIRRORED harnesses get individual fields, decided one by one.**
-  `claude`, `codex`, `opencode` and `goose`. Crew reads the spec and a mirror
+- **The six MIRRORED harnesses get individual fields, decided one by one.**
+  `claude`, `codex`, `opencode`, `goose`, `copilot` and `antigravity`. Crew reads the spec and a mirror
   rules on each field. `providers/mirrors/base.py` is the vocabulary: `Concern`
   is the closed list of things a spec expresses, so adding one obliges every
   backend to answer it; `Disposition` is the four answers (`delivered`,
@@ -116,7 +117,7 @@ Four cases, and the difference between them is the whole answer:
   `agent_sdk/backends_models.py`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`), and `prompt`,
   as ordinary context text. They are still in `registry.py`'s `PROJECTIONS`, which
   carries an entry for every backend precisely so absence is a statement rather
-  than a lookup miss — `MIRRORS` is the four above, `PROJECTIONS` is all eight.
+  than a lookup miss — `MIRRORS` is the six above, `PROJECTIONS` is all ten.
 
 **Where the mirror runs.** At session establishment, on both ACP seams, over the
 shared translation in `acp/session_mcp.py` (`session_mcp_projection`):
@@ -133,8 +134,9 @@ when the harness asks permission for them (`acp/client_permissions.py`,
 `_deny_spec_disabled_tool`). Only `codex.py` fills that second half —
 `claude_code.py` puts its deny rules in the settings file instead,
 `opencode.py` hands its rules back as `harness_deny_rules` for the client to seed
-into the harness's own `permission` config, and `goose.py` returns an empty set and
-withholds the whole server, which `base.py` calls out on `SessionProjection` itself. A mirrored backend's
+into the harness's own `permission` config, and `goose.py`, `copilot.py` and
+`antigravity.py` return an empty deny set and withhold the whole server, which
+`base.py` calls out on `SessionProjection` itself. A mirrored backend's
 broker stubs are placed by the mirror rather than appended afterwards —
 `AcpClient._pooled_mcp_servers` is inert for one — so a single withhold rule
 covers the whole array instead of an unnarrowed append re-adding what the
@@ -152,6 +154,8 @@ underneath.
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
+| `copilot` | `copilot.py` | `mcpServers` (with stdio also carried in its launch file); the harness-advertised model choice | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `permissions.defaultMode` → fixed by `allow_all=off`; `prompt`, `resources`, `autoApprove` and `hooks` withheld |
+| `antigravity` | `antigravity.py` | `mcpServers` through the session array; `model` and `thinking_level` config options | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop at each permission request | `permissions.defaultMode` → fixed by `mode=default`; `prompt`, `resources`, `autoApprove` withheld |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 
@@ -297,15 +301,16 @@ Four classes cover the rest, and `no-channel` is not one of them:
 `no-channel` is the fourth `Disposition` and a different statement, which is why
 `hooks` sits in that column on `claude` and `codex` without being a withhold:
 the backend HAS the capability and this transport cannot carry it. Both run
-hooks natively; what is missing is the delivery path. On `goose` and `opencode`
-the ruling is `translated` instead: their session carries no hooks field either,
+hooks natively; what is missing is the delivery path. On `goose`, `opencode` and
+`antigravity` the ruling is `translated` instead: their session carries no hooks field either,
 so Crew's own turn loop fires the field (`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`). `Ruling.__post_init__` refuses a
 `no-channel` ruling that does not name the channel it would have to travel on,
 which is what keeps a gap from reading as a decision.
 
 `providers/mirrors/identity.py` is shared by the mirrors that carry identity ON
-an element: `codex.py` and `opencode.py` call it directly, `goose.py` reaches it
-through `opencode_projection`, and `claude_code.py` does not use it at all,
+an element: `codex.py` and `opencode.py` call it directly, and `goose.py`,
+`copilot.py` and `antigravity.py` reach it through `opencode_projection`.
+`claude_code.py` does not use it at all,
 because a claude MCP child inherits the adapter's process env and needs no
 element-level carry. `control_plane_identity_env` is that carried env, and
 `identity_bound_crew_servers` derives which managed servers must not be mounted
@@ -314,8 +319,8 @@ call.
 
 How far a per-tool MCP restriction survives is declared separately, as
 `per_tool_deny` on the projection record (`registry.py`, `PerToolDeny`):
-`settings-file` on `claude` and `opencode`, `per-call` on `codex`, `whole-server`
-on `goose`. It is a declaration, not a requirement — what it owes you is knowing
+`settings-file` on `claude` and `opencode`, `per-call` on `codex`, and
+`whole-server` on `goose`, `copilot` and `antigravity`. It is a declaration, not a requirement — what it owes you is knowing
 which of the three you are getting BEFORE a session runs.
 
 ### What this means for a spec author
@@ -332,12 +337,14 @@ is the part worth knowing before you switch:
   mounts the whole server everywhere else, so a spec that pins one tool of a
   server widens to that server's siblings on all four mirrors. If that matters,
   the restriction has to be `disabledTools`, not a narrow `tools` ref.
-- **A per-tool restriction can cost the whole server on `goose` and `codex`.**
+- **A per-tool restriction can cost the whole server on `goose`, `codex`,
+  `copilot` and `antigravity`.**
   `per_tool_deny` on the projection record says which of three forms you get
   BEFORE a session runs. `settings-file` on `claude` and `opencode` keeps the
   server mounted and the harness refuses the tool; on `opencode`, a lower config
   source that already names the tool can outrank Crew's rule, and that server is
-  withheld. `whole-server` on `goose` drops the server. `per-call` on `codex` is narrower than it sounds: it keeps the server mounted and refuses the call for Crew's own
+  withheld. `whole-server` on `goose`, `copilot` and `antigravity` drops the
+  server. `per-call` on `codex` is narrower than it sounds: it keeps the server mounted and refuses the call for Crew's own
   CONTROL PLANE only, whose tools carry no annotations so codex asks permission
   for every one of them. A narrowed third-party server is withheld whole there
   too, because codex approves a `readOnlyHint` tool internally without asking, so
@@ -346,9 +353,10 @@ is the part worth knowing before you switch:
 - **`autoApprove` and a spec-written `permissions` block travel nowhere.**
   Deliberately, and this is the one degradation you want: every call reaches
   Crew's gate instead of being pre-approved inside the harness.
-- **`hooks` reaches only two mirrors, and `resources` only half-reaches.**
-  `hooks` is `translated` on `goose` and `opencode`, where Crew's turn loop fires
-  it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
+- **`hooks` reaches three mirrors, and `resources` only half-reaches.**
+  `hooks` is `translated` on `goose`, `opencode` and `antigravity`, where Crew's
+  turn loop fires it; it is `no-channel` on `claude` and `codex` and withheld on
+  `copilot`. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
   `file://` steering glob is the one that silently reaches nothing

@@ -20,6 +20,7 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.mcp_session_report import BUCKET_CAP, ERROR_CAP, NAME_CAP
 from kiro_crew.acp.mcp_startable import prune_unstartable, unstartable_reason
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -96,8 +97,9 @@ def test_prune_keeps_order_and_names_each_pruned_server():
 # ── The session/new path ─────────────────────────────────────────────────────
 
 
-def test_goose_deepseek_and_copilot_are_the_pruned_backends():
+def test_antigravity_goose_deepseek_and_copilot_are_the_pruned_backends():
     assert ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP == {
+        ACP_BACKEND_ANTIGRAVITY,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,

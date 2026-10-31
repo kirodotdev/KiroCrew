@@ -44,6 +44,7 @@ from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.harness import antigravity as antigravity_mod
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import codex as codex_harness_mod
 from kiro_crew.acp.harness import deepseek as deepseek_mod
@@ -86,6 +87,8 @@ _OPENCODE_BIN = "/opt/bin/opencode"
 _GOOSE_BIN = "/opt/bin/goose"
 _DEEPSEEK_BIN = "/opt/bin/dsh"
 _COPILOT_BIN = "/opt/bin/copilot"
+_ANTIGRAVITY_SERVER = "/opt/bin/agy_acp_server.par"
+_ANTIGRAVITY_HELPER = "/opt/bin/localharness_external"
 _SEARCH_PATH = "/opt/bin"
 _OPENCODE_CONFIG = '{"permission":"ask"}'
 
@@ -424,6 +427,15 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path, backend: str = "")
             ),
             patch.object(
                 client_mod, "_resolve_codex_acp_bin", return_value=(_CODEX_ACP_ARGV, _SEARCH_PATH)
+            ),
+            patch.object(
+                antigravity_mod,
+                "resolve_antigravity_runtime",
+                return_value=antigravity_mod.AntigravityResolution(
+                    server=_ANTIGRAVITY_SERVER,
+                    helper=_ANTIGRAVITY_HELPER,
+                    search_path=_SEARCH_PATH,
+                ),
             ),
             patch.object(pi_mod, "_resolve_pi_acp_bin", return_value=(_PI_ACP_ARGV, _SEARCH_PATH)),
             patch.object(pi_mod, "_resolve_pi_bin", return_value=(_PI_BIN, _SEARCH_PATH)),

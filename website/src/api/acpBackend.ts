@@ -85,6 +85,7 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
     case ACP_BACKEND_KIRO: return i18nT('pages.developer.agentBackendTab.kiro_cli')
     case 'claude': return i18nT('pages.developer.agentBackendTab.claude_code')
     case ACP_BACKEND_KAS: return i18nT('pages.developer.agentBackendTab.kas_kiro_agent')
+    case 'antigravity': return i18nT('pages.developer.agentBackendTab.antigravity')
     case 'codex': return i18nT('pages.developer.agentBackendTab.codex')
     case 'copilot': return i18nT('pages.developer.agentBackendTab.copilot')
     case 'deepseek': return i18nT('pages.developer.agentBackendTab.deepseek')

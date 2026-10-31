@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, FrozenSet
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -148,6 +149,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -371,6 +373,13 @@ ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KA
 # session's own directory WITHOUT a permission request (measured -- its ``view``
 # ran unasked), so ``_deny_zero_tools`` never sees that call and a total ban cannot
 # be honoured.
+#
+# antigravity is NOT a member yet although its routing is enforced and it is
+# ``AcpClient``-served: no authenticated turn has shown that every native and MCP
+# call reaches ``session/request_permission``. Its live handshake advertises the
+# ``default`` permission flow, but an advertisement is not a completed turn. The
+# knowledge/research pool therefore does not select it as a zero-tool-safe worker
+# until a live zero-tool capture lands.
 ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -396,7 +405,12 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # file is built from the pruned elements and the wire array is pruned the same way,
 # which is what names the server on the session's MCP report.
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
-    {ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_COPILOT}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
+    }
 )
 
 # Backends that read reasoning effort from the workspace ``cli.json`` overlay

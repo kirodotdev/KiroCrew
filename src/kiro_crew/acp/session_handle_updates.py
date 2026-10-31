@@ -292,6 +292,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
             cache_scope=frame_sid,
             cache_overflow=self._tool_call_cache_overflow_for_wire(),
+            backend=self._runtime.acp_backend,
         )
         # A child's rows share the parent's stores and the admission's
         # population; released here under the child's own scope, since
@@ -416,6 +417,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
                     cache_scope=self._session_id,
                     cache_overflow=self._tool_call_cache_overflow_for_wire(),
+                    backend=self._runtime.acp_backend,
                 )
                 self._release_settled_tool_call(update, self._session_id)
                 return _child_prefix
@@ -444,6 +446,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         identity_unreadable_cache=self._identity_unreadable_cache_for_wire(),
         cache_scope=self._session_id,
         cache_overflow=self._tool_call_cache_overflow_for_wire(),
+        backend=self._runtime.acp_backend,
     )
     if (
         session_update == "agent_message_chunk"

@@ -20,6 +20,7 @@ import os
 from typing import Mapping
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -63,6 +64,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -160,6 +162,7 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -197,6 +200,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_GOOSE: "thinking_effort",
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
+    ACP_BACKEND_ANTIGRAVITY: "thinking_level",
 }
 
 #: The spelling used by every backend without a row in
@@ -258,7 +262,13 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
 # take a level, is the right authority for them.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
-    {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+    }
 )
 
 
@@ -404,8 +414,22 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
+
+# Backends whose ``configOptions`` ``model`` select is the canonical model
+# vocabulary even when the same session response also carries a ``models``
+# object. Most advertised-selection hosts advertise one list or the other; this
+# set exists for a host that advertises both with different values.
+#
+# Antigravity ACP 1.4.4 advertises ``models.availableModels`` as model+thinking
+# pairs (``gemini-3.8-flash-high``) while its ``model`` select accepts the bare
+# model id and its ``thinking_level`` select carries the effort. A write of the
+# pair returns success but leaves ``currentValue`` unchanged, so treating the
+# pair list as the picker vocabulary makes a model switch silently do nothing.
+# The select is therefore the authority for this host.
+ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL = frozenset({ACP_BACKEND_ANTIGRAVITY})
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -524,6 +548,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # to them, so sharing the ``acp`` bucket would let a Copilot session replace the
     # list the picker offers for kiro-cli with models kiro-cli cannot serve.
     ACP_BACKEND_COPILOT: "copilot",
+    ACP_BACKEND_ANTIGRAVITY: "antigravity",
 }
 
 

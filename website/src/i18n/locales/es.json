@@ -14133,6 +14133,7 @@
         "use_button_in_use": "En uso",
         "use_switches_new_sessions": "Las sesiones nuevas pasan de {{current}} a {{name}}.",
         "word_not_offered": "No ofrecido",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

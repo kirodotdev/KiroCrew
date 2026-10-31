@@ -964,3 +964,46 @@ back read-only to the one Copilot CLI child it is for (`extra_expose_files`). It
 removed as soon as `initialize` answers (measured safe: the harness reads it at boot),
 and on a failed handshake, a failed write or a refused spawn too. An existing masked
 directory whose purpose fits was the answer, not a new entry on a sandbox list.
+
+## Worked example: Google Antigravity
+
+The run to read for a two-file distribution, a permission mode that can be switched
+off from the harness, and evidence that stops honestly before authentication. It is
+in `ACP_BACKENDS_KNOWN` and it is selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_ANTIGRAVITY`, `PROVIDER_LABEL_ANTIGRAVITY`, policy name mapped, and its own `antigravity` model namespace. |
+| 2 capability sets | Every set has an explicit decision. Member of `ACP_BACKENDS_SESSION_MCP_ARRAY`, `ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP`, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, `ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL`, `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`, `ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`, `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` and `ACP_BACKENDS_INDEPENDENT_SETUP`. In `ACP_BACKENDS_LOCAL_CLEAR`: its prompt-command allowlist admits only `plan` and `usage`, so a `/clear` handed to the client is refused rather than sent, and the dashboard answers it instead. Out of session sharing and the shared ACP runtime, steer, compaction, Side Chat read-only execution, member capability loading and `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`. It publishes `_meta.mcp`, but stays out of `ACP_BACKENDS_META_IDENTITY` until an authenticated corpus covers every tool class the fail-closed refusal would judge. |
+| 3 spawn path | Done — the registry's standalone `agy_acp_server.par` plus its sibling `localharness_external`. `ANTIGRAVITY_ACP_BIN` and `ANTIGRAVITY_HARNESS_PATH` are the explicit overrides; resolution treats the pair as one install, and the child always receives the exact helper path in `ANTIGRAVITY_HARNESS_PATH`. |
+| 4 handshake | Done — integer `1`, captured from Antigravity ACP 1.4.4. The client refuses any other reported release because several later checks depend on that release's wire shape. |
+| 5 auth declaration | Done — `own_credential_file`, the consumer and business token leaves under `~/.gemini/antigravity-acp/`, `GEMINI_HOME` re-anchored, and both leaves listed as adapter-owned and masked from agent files. `settings.json` is not a credential leaf: the 1.4.4 runtime holds only `auth.type` and `gcp.project`/`gcp.location` there, and API-key auth reads `GEMINI_API_KEY` from the launch environment. |
+| 6 install probe | Done — `agent_sdk/backend_install.py` names whichever archive member is absent; the run installs the `1.4.4` archive rather than accepting the interactive `agy` TUI as a substitute. |
+| 7 selectability | **Selectable**, on `Routing.SESSION_CONFIG`. Crew writes `mode=default` before the first prompt, refuses a session that does not advertise it, and stops a live session moved to `auto_edit` or `yolo`. |
+| 8 live spill | Partial by design. A live handshake, `session/new`, `session/load`, config-option writes and stdio MCP startup were captured. A stdio server was asked `server/discover` and `tools/list`. The required turn classes use a clearly labelled synthesized carrier because no authenticated Google account was available; no live model completion, authenticated tool result or total zero-tool ban is claimed. |
+| verified range | Antigravity ACP **1.4.4** exactly. The handshake, mode and config-option read-back fail closed on another release, so each new release is refused until a change re-verifies its handshake and bumps `ANTIGRAVITY_VERIFIED_VERSION`; that is an ongoing maintenance cost, the same as Copilot's pin. The registry lists only `1.4.5`, which the pin refuses, so the install hint and the refusal message name the exact `1.4.4` archives on `dl.google.com` instead of the registry page. Enterprise authentication policy remains unmeasured and is not claimed as verified enforcement. |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is an install that is one unit but two executables.** The ACP Registry
+entry launches `agy_acp_server`, which resolves `localharness_external` as a sibling.
+A resolver that reports the main file alone produces a healthy-looking install and a
+dead spawn. Crew resolves both before launch, reports the absent half by name, and
+passes the helper path explicitly rather than trusting a stale parent environment.
+
+**The second is that permission mode must be treated as a switch, not a preference.**
+Antigravity offers `default`, `auto_edit` and `yolo`; the latter two suppress the
+permission requests Crew depends on. The session starts in `default`, the value is
+read back after create and load, a forbidden mid-session mode stops the harness, and
+the prompt-command allowlist admits only `plan` and `usage`, so `/logout` cannot
+arrive through channel or subagent text. `default` advertises the prompt flow, but
+until an authenticated turn proves every native and MCP call asks, Crew does not
+claim that this harness can serve a `"tools": []` worker.
+
+**The third is where the evidence ends.** Authentication methods, prompt modalities,
+MCP startup and model/thinking options came from the live 1.4.4 runtime. A completed
+turn needs a Google sign-in or API key, which was not used. The corpus therefore
+pins dispatch from a synthesized turn while the handshake beside it remains live.
+Enterprise policies that may auto-proceed some terminal tools were visible in the
+runtime's source strings but were not driven against an enterprise account, so the
+contribution must not describe them as accepted.

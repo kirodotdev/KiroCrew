@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -283,6 +284,8 @@ ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
 #: and the claude, codex and pi adapters are Node entry scripts whose basenames live
 #: with their resolvers in the ACP layer, which this module must not import.
 ACP_BACKEND_PROCESS_NAMES: Mapping[str, str] = {
+    # The platform-specific archive member shares this executable stem.
+    ACP_BACKEND_ANTIGRAVITY: "agy_acp_server",
     ACP_BACKEND_KIRO: "kiro-cli",
     ACP_BACKEND_KAS: "kiro-cli",
     ACP_BACKEND_CLAUDE: "claude-agent-acp",

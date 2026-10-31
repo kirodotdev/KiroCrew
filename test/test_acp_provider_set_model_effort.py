@@ -15,6 +15,7 @@ import pytest
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -33,6 +34,7 @@ from kiro_crew.providers.acp import AcpProvider
 #: model takes an effort write). deepseek, goose, opencode and pi answer from the option
 #: their session advertised rather than the registry, so their fallback writes it too.
 BACKEND_CASES = {
+    ACP_BACKEND_ANTIGRAVITY: ("gemini-3.8-flash", "gemini-3.8-pro", True),
     ACP_BACKEND_CLAUDE: ("claude-opus-4.7", "claude-sonnet-4.6", True),
     ACP_BACKEND_CODEX: ("openai.gpt-6-astra", "openai.gpt-5.5-codex", True),
     ACP_BACKEND_DEEPSEEK: ("deepseek-3.2", "deepseek-v4", True),

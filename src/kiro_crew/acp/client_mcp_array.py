@@ -1129,6 +1129,16 @@ def _goose_session_mcp_servers(self: AcpClient) -> list:
     return servers
 
 
+def _antigravity_session_mcp_servers(self: AcpClient) -> list:
+    """MCP server array passed to Google Antigravity's session create and load.
+
+    Antigravity reads no Kiro agent spec, and its mirror owns both the translated
+    spec and the pooled broker stubs. The spawn path warms this in-memory cache off
+    the loop, so the shared ``session/new`` call site performs no disk read.
+    """
+    return self._session_mcp_servers()
+
+
 def _invalidate_session_mcp_projection(self: AcpClient) -> None:
     """Drop the MCP array, the spec snapshot that authorized it, and the
     member-projection verdict recorded against it.

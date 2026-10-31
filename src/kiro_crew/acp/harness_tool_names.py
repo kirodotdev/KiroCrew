@@ -45,7 +45,11 @@ import re
 from collections.abc import Iterable
 
 from kiro_crew.acp.kas_permissions import KIRO_TOOL_ALIASES
-from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
+)
 
 #: Joins a backend to the tool name its frame stated. Outside the characters a KAS
 #: ``toolId`` may carry, so the two id spaces cannot meet.
@@ -97,6 +101,49 @@ OPENCODE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
     "use_subagent": ("task",),
 }
 
+#: kiro-cli tool name -> Google Antigravity's canonical built-in tools.
+#:
+#: The standalone ACP runtime states a native non-execution tool name as
+#: ``Run <name>?`` in the first ``tool_call`` title. The parser unwraps that
+#: form; the kind fallback in :func:`qualified_harness_tool_id` remains the
+#: conservative answer when a frame supplies no usable exact name.
+ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("run_command", "shell"),
+    "fs_read": (
+        "client_view_file",
+        "view_file",
+        "read_file",
+        "list_directory",
+        "list_dir",
+        "search_directory",
+        "find_file",
+    ),
+    "fs_write": (
+        "client_create_file",
+        "client_edit_file",
+        "write_file",
+        "write_to_file",
+        "create_file",
+        "edit_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+    ),
+    "grep": ("grep_search",),
+    "glob": ("find_by_name", "find_file", "search_directory"),
+    "web_fetch": ("read_url_content",),
+    "web_search": ("search_web",),
+    "use_subagent": ("start_subagent",),
+}
+
+#: ACP kinds Antigravity uses when its first tool frame carries no exact name.
+ANTIGRAVITY_TOOL_ID_BY_KIND: dict[str, str] = {
+    "execute": "run_command",
+    "edit": "edit_file",
+    "read": "view_file",
+    "search": "search_directory",
+    "fetch": "read_url_content",
+}
+
 #: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
 #: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
 #: built-in that does the same job. It names that built-in on a permission event
@@ -130,6 +177,7 @@ GOOSE_READ_ONLY_BUILTINS: dict[tuple[str, str], str] = {
 
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
+    ACP_BACKEND_ANTIGRAVITY: ANTIGRAVITY_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,
     ACP_BACKEND_OPENCODE: OPENCODE_TOOL_IDS_BY_KIRO_TOOL,
 }
@@ -173,13 +221,28 @@ def _opencode_mcp_splits(tool_name: str, mcp_servers: Iterable[str]) -> list[str
     return list(dict.fromkeys(splits))
 
 
-def qualified_harness_tool_id(backend: str, tool_name: str, mcp_servers: Iterable[str] = ()) -> str:
+def qualified_harness_tool_id(
+    backend: str,
+    tool_name: str,
+    mcp_servers: Iterable[str] = (),
+    *,
+    tool_kind: str = "",
+    mcp_server: str = "",
+) -> str:
     """``backend#tool_name`` for a backend with a table, else ``""``.
 
     On opencode a name that is a placed server's fused MCP tool becomes its
     ``@server/tool`` split (see the module docstring).
     """
-    if backend not in HARNESS_TOOL_TABLES or not tool_name:
+    if backend not in HARNESS_TOOL_TABLES:
+        return ""
+    if backend == ACP_BACKEND_ANTIGRAVITY and mcp_server and tool_name:
+        return f"{backend}{HARNESS_TOOL_ID_SEPARATOR}@{mcp_server}/{tool_name}"
+    if backend == ACP_BACKEND_ANTIGRAVITY and (not tool_name or tool_kind == "execute"):
+        # An execute frame's title is the command line, so a one-token command
+        # (``ls``) would otherwise name the tool and miss every shell matcher.
+        tool_name = ANTIGRAVITY_TOOL_ID_BY_KIND.get(tool_kind, "")
+    if not tool_name:
         return ""
     if backend == ACP_BACKEND_OPENCODE:
         splits = _opencode_mcp_splits(tool_name, mcp_servers)

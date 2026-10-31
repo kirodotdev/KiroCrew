@@ -1187,7 +1187,17 @@ class TestReclaimOwnsEveryHarnessItTracked:
             "node.exe",
         }
 
-    @pytest.mark.parametrize("basename", ["mongoose", "dshx", "xdsh", "gooseberry"])
+    @pytest.mark.parametrize(
+        "basename",
+        [
+            "mongoose",
+            "dshx",
+            "xdsh",
+            "gooseberry",
+            "agy_acp_server.partial",
+            "agy_acp_server.par.bak",
+        ],
+    )
     def test_a_lookalike_basename_is_not_taken_for_a_harness(self, basename: str) -> None:
         """Short generic names must not match as substrings of a basename.
 
@@ -1210,6 +1220,43 @@ class TestReclaimOwnsEveryHarnessItTracked:
             assert name.encode() in _MANAGED_AGENT_BASENAMES, name
         assert b"claude" in _MANAGED_AGENT_BASENAMES
         assert b"kiro-cli-chat" in _MANAGED_AGENT_BASENAMES
+
+    def test_the_posix_antigravity_runtime_file_name_matches_exactly(self) -> None:
+        """POSIX ships the Antigravity runtime as ``agy_acp_server.par``, not the stem."""
+        from kiro_crew.session_pid import _MANAGED_AGENT_BASENAMES
+
+        assert b"agy_acp_server.par" in _MANAGED_AGENT_BASENAMES
+
+    def test_a_posix_antigravity_runtime_is_a_managed_agent_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An orphaned ``agy_acp_server.par`` must pass the identity check to be reaped."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(
+            sp,
+            "_pid_cmdline",
+            lambda pid, proc_root=None: b"/opt/agy/agy_acp_server.par\x00--flag\x00",
+        )
+
+        assert sp._is_managed_agent_process(4242) is True
+
+    def test_a_windows_antigravity_runtime_is_a_managed_agent_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows compares the ``.exe``-stripped image name, so the stem still matches."""
+        import kiro_crew.session_pid as sp
+
+        monkeypatch.setattr(sp.sys, "platform", "win32")
+        monkeypatch.setattr(sp, "_pid_cmdline", lambda pid, proc_root=None: b"")
+        monkeypatch.setattr(sp.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            sp.platform_compat,
+            "process_image_name",
+            lambda pid: r"C:\agy\agy_acp_server.exe",
+        )
+
+        assert sp._is_managed_agent_process(4242) is True
 
     def test_macos_reads_a_command_line_rather_than_substring_matching(
         self, monkeypatch: pytest.MonkeyPatch

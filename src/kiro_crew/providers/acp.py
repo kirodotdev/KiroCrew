@@ -43,6 +43,7 @@ from kiro_crew.acp.session_handle import (  # noqa: F401
 from kiro_crew.acp.session_mcp import agent_spec_snapshot  # noqa: F401
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (  # noqa: F401
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -594,6 +595,11 @@ class AcpProvider(LLMProvider):
     def is_copilot_backend(self) -> bool:
         """True when this ACP provider talks to GitHub Copilot CLI (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_COPILOT
+
+    @property
+    def is_antigravity_backend(self) -> bool:
+        """True when this ACP provider talks to Google Antigravity ACP (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
     def is_kas_backend(self) -> bool:

@@ -13665,6 +13665,7 @@
         "use_button_in_use": "使用中",
         "use_switches_new_sessions": "新しいセッションは {{current}} から {{name}} に切り替わります。",
         "word_not_offered": "非提供",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

@@ -13665,6 +13665,7 @@
         "use_button_in_use": "사용 중",
         "use_switches_new_sessions": "새 세션은 {{current}}에서 {{name}}(으)로 전환됩니다.",
         "word_not_offered": "제공 안 함",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

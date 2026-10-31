@@ -9321,6 +9321,7 @@
         "signed_in_body_no_refresh": "Agents run as this Kiro account. This sign-in has no refresh token, so it cannot renew itself — sign in again before it expires."
       },
       "agentBackendTab": {
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

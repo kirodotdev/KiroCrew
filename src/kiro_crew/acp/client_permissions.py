@@ -59,6 +59,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     session_config_drift_issue,
@@ -142,6 +143,10 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        # The pin exists for the mode checks below, so it is enforced here, before
+        # the mode write and before any prompt; Kiro never reaches this method.
+        self._refuse_unverified_antigravity_version()
     option_id, value = acp_tool_gate.permission_config_for(backend)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
     if issue:

@@ -264,7 +264,16 @@ _BROWSER_PLAUSIBLE_OWNER_NAMES = frozenset(
 )
 
 
-_BROWSER_PLAUSIBLE_OWNER_PREFIXES = ("chrome", "chromium", "kiro-", "playwright", "python")
+#: ``agy_acp_server`` is a prefix because Linux truncates a process name to 15
+#: bytes, so the POSIX ``agy_acp_server.par`` reads as ``agy_acp_server.``.
+_BROWSER_PLAUSIBLE_OWNER_PREFIXES = (
+    "agy_acp_server",
+    "chrome",
+    "chromium",
+    "kiro-",
+    "playwright",
+    "python",
+)
 
 
 def _browser_process_name_is_plausible(name: str) -> bool:

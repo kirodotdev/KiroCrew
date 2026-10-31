@@ -23,6 +23,7 @@ import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
@@ -190,6 +191,7 @@ _NO_NATIVE_CLEAR = (
     ACP_BACKEND_PI,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT,
+    ACP_BACKEND_ANTIGRAVITY,
 )
 
 

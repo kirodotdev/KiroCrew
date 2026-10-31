@@ -64,6 +64,7 @@ from pathlib import PurePosixPath
 from typing import Dict, FrozenSet, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -180,12 +181,14 @@ class AgentAuthDeclaration:
     #: EXFILTRATION -- a shell the model spawns inside the harness can read the file
     #: and send the secret somewhere. That is a real residual risk and it is carried
     #: knowingly, because the alternative is a harness that cannot sign in at all.
-    #: Four harnesses carry it today -- codex, OpenCode, pi and goose -- and the
-    #: maintainer weighed and accepted this exact trade rather than it being an
-    #: oversight. What bounds it is the subset rule above: the exclusion can only
-    #: re-open a file this same declaration put on the floor, so no harness can reach
-    #: another harness's credential or anything the floor fences for a different
-    #: reason.
+    #: Six harnesses carry it today -- codex, OpenCode, pi, goose, Copilot and
+    #: Antigravity. For codex, OpenCode, pi and goose the maintainer weighed and
+    #: accepted this exact trade rather than it being an oversight. Antigravity
+    #: declares the same exclusion for its own token files; its acceptance is for
+    #: the maintainer to confirm in review. What bounds it is the subset rule above:
+    #: the exclusion can only re-open a file this same declaration put on the floor,
+    #: so no harness can reach another harness's credential or anything the floor
+    #: fences for a different reason.
     #:
     #: It is NOT the only shape an enforced harness can take. A harness declaring
     #: :data:`ENTITLEMENT_HOST_VAULT` is fed its key as an environment variable at
@@ -795,6 +798,45 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # GitHub CLI to fall back to), answers ``session/new`` with -32000
         # ``Authentication required`` and creates no session.
         signed_out_signature="Authentication required",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_ANTIGRAVITY,
+        # The standalone ACP runtime owns authentication and keeps both consumer
+        # and Gemini Enterprise tokens under its private profile. On macOS it also
+        # mirrors them into the login keychain under the ``antigravity-acp`` and
+        # ``antigravity-acp-business`` accounts; the file forms are the readable
+        # leaves that belong on Crew's credential floor. Its 1.4.4 settings loader
+        # states that ``settings.json`` holds only ``auth.type`` and
+        # ``gcp.project``/``gcp.location``; credentials are never written there.
+        # API-key auth reads ``GEMINI_API_KEY`` from the launch environment.
+        credential_leaves=(
+            ".gemini/antigravity-acp/acp_token.json",
+            ".gemini/antigravity-acp/acp_business_token.json",
+        ),
+        home_override_env_vars=("GEMINI_HOME",),
+        override_relative_leaves=(
+            "antigravity-acp/acp_token.json",
+            "antigravity-acp/acp_business_token.json",
+        ),
+        # This runtime authenticates itself from those files, so its child is the
+        # same trust carve-out as the other enforced FILE-authenticated harnesses.
+        adapter_own_leaves=(
+            ".gemini/antigravity-acp/acp_token.json",
+            ".gemini/antigravity-acp/acp_business_token.json",
+        ),
+        sign_in_remedy=(
+            "Google Antigravity ACP signs in on its own. Set auth.type to "
+            "oauth-personal in $GEMINI_HOME/antigravity-acp/settings.json and start "
+            "a new chat; the runtime opens Google sign-in in the browser."
+        ),
+        signed_out_message=(
+            "Google Antigravity ACP is not signed in. Set auth.type to "
+            "`oauth-personal` in `~/.gemini/antigravity-acp/settings.json`, then "
+            "start a new chat to open Google sign-in."
+        ),
+        signed_out_signature="No authentication method selected",
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),
 )
 

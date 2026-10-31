@@ -13899,6 +13899,7 @@
         "use_button_in_use": "ব্যবহৃত হচ্ছে",
         "use_switches_new_sessions": "নতুন সেশনগুলি {{current}} থেকে {{name}}-এ চলে যায়।",
         "word_not_offered": "অপ্রদত্ত",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

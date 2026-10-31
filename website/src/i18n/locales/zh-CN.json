@@ -13665,6 +13665,7 @@
         "use_button_in_use": "正在使用",
         "use_switches_new_sessions": "新会话将从 {{current}} 切换到 {{name}}。",
         "word_not_offered": "未提供",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

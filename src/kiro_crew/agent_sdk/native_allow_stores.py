@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -95,6 +96,8 @@ NATIVE_ALLOW_STORES: Mapping[str, tuple[NativeAllowStore, ...]] = {
 
 #: Harnesses with no row above, and why.
 NATIVE_ALLOW_STORES_NONE: Mapping[str, str] = {
+    ACP_BACKEND_ANTIGRAVITY: "no on-disk tool allow list is known; verified sessions "
+    "remain in the required mode=default and ask through session/request_permission",
     ACP_BACKEND_KIRO: "its stores, ~/.kiro/agents and ~/.kiro/settings/mcp.json, are "
     "fenced by name in security.paths_lists",
     ACP_BACKEND_KAS: "it runs kiro-cli's engine and reads the same stores as kiro",

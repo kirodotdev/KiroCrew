@@ -14367,6 +14367,7 @@
         "use_button_in_use": "Используется",
         "use_switches_new_sessions": "Новые сессии переключаются с {{current}} на {{name}}.",
         "word_not_offered": "Не предлагается",
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

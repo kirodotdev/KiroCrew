@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
@@ -436,6 +437,32 @@ def _probe_pi() -> BackendInstallState:
     )
 
 
+def _probe_antigravity() -> BackendInstallState:
+    """Google Antigravity needs BOTH archive members, and names either absence."""
+    server_present, helper_present = acp_driver.antigravity_components_resolve()
+    missing: List[str] = []
+    if not server_present:
+        missing.append("agy_acp_server")
+    if not helper_present:
+        missing.append("localharness_external")
+
+    policy_id = _policy_id(ACP_BACKEND_ANTIGRAVITY)
+    if not missing:
+        return BackendInstallState(
+            ACP_BACKEND_ANTIGRAVITY,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.antigravity_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_ANTIGRAVITY,
+        policy_id,
+        MISSING,
+        tuple(missing),
+        acp_driver.antigravity_install_hint(),
+    )
+
+
 #: Backend id -> its probe. A probe that answers by calling :func:`probe_backend`
 #: for ANOTHER backend must also be named in :func:`forget_probe`, in BOTH
 #: directions: its own entry is a copy, so evicting the copy alone rebuilds it from
@@ -448,6 +475,7 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
     ACP_BACKEND_PI: _probe_pi,
+    ACP_BACKEND_ANTIGRAVITY: _probe_antigravity,
     # Every harness that serves ACP from its own binary is probed by the one function
     # above, bound to its id. Generated from the membership rather than listed, so
     # onboarding a harness of that shape adds no row here at all -- and a harness with

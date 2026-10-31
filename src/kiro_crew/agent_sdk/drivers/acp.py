@@ -771,6 +771,35 @@ def self_served_resolves(backend: str) -> bool:
     return bool(binary)
 
 
+def antigravity_components_resolve() -> tuple[bool, bool]:
+    """``(server, helper)`` for Google Antigravity's two-file distribution.
+
+    The install probe must distinguish a complete archive from either half, so
+    unlike a self-served binary this is not one conjunction. The fresh resolve
+    does not replace the spawn cache: a probe after an install reports
+    ``restart_required`` instead of changing what the running gateway will spawn.
+    """
+    from kiro_crew.acp.harness.antigravity import probe_antigravity_runtime
+
+    resolution = probe_antigravity_runtime()
+    return bool(resolution.server), bool(resolution.helper)
+
+
+def antigravity_cached_negative() -> bool:
+    """Whether the running process cached an incomplete Antigravity pair."""
+    from kiro_crew.acp.harness.antigravity import antigravity_cached_resolution
+
+    cached = antigravity_cached_resolution()
+    return cached is not None and (not cached.server or not cached.helper)
+
+
+def antigravity_install_hint() -> str:
+    """The registry/version guidance shared with the spawn failure."""
+    from kiro_crew.acp.harness.antigravity import ANTIGRAVITY_INSTALL_HINT
+
+    return ANTIGRAVITY_INSTALL_HINT
+
+
 def self_served_cached_negative(backend: str) -> bool:
     """Has the RUNNING gateway already resolved *backend*'s binary as absent?
 
@@ -933,6 +962,13 @@ def forget_cached_resolution(backend: str) -> None:
     for name in sentinel_globals:
         if hasattr(_client, name):
             setattr(_client, name, unresolved)
+
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_ANTIGRAVITY
+
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        from kiro_crew.acp.harness.antigravity import forget_antigravity_resolution
+
+        forget_antigravity_resolution()
 
     # The self-served harnesses share one dict keyed by backend, so forgetting one
     # is a key deletion and the others keep their answers.

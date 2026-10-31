@@ -63,6 +63,7 @@ from pathlib import PurePosixPath
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_LAUNCH,
@@ -125,6 +126,7 @@ UNENFORCED_CONTROLS = (
 #: their own: neither has a launch record, and the name an operator knows the harness
 #: by is not its adapter's package name.
 _LABELS: dict = {
+    ACP_BACKEND_ANTIGRAVITY: "Google Antigravity",
     ACP_BACKEND_CODEX: "OpenAI Codex",
     ACP_BACKEND_PI: "Pi",
     **{backend: record.label for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},

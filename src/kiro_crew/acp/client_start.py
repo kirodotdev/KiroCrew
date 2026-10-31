@@ -64,6 +64,7 @@ from kiro_crew.acp.transport_errors import (
     registration_rate_limited_error,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -165,11 +166,14 @@ PROTOCOL_VERSION_GOOSE = launch_for(ACP_BACKEND_GOOSE).protocol_version
 # so it speaks the SPEC dialect too. Verified off its own wire, and its own literal
 # for the same reason the two above have one (harness-parity H10).
 PROTOCOL_VERSION_DEEPSEEK = launch_for(ACP_BACKEND_DEEPSEEK).protocol_version
+#: Google Antigravity's standalone ACP server answers with protocol version 1.
+PROTOCOL_VERSION_ANTIGRAVITY = 1
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
 #: later is one row here; an id with no row speaks kiro-cli's date-stamped dialect.
 _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
+    ACP_BACKEND_ANTIGRAVITY: PROTOCOL_VERSION_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE: PROTOCOL_VERSION_CLAUDE,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
     # Every harness whose own binary serves ACP declares its dialect in its
@@ -635,6 +639,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
             *(self._copilot_session_mcp_servers() if self._is_copilot else []),
+            *(self._antigravity_session_mcp_servers() if self._is_antigravity else []),
             *(self._pi_session_mcp_servers() if self._is_pi else []),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ],
@@ -714,6 +719,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
             *(self._copilot_session_mcp_servers() if self._is_copilot else []),
+            *(self._antigravity_session_mcp_servers() if self._is_antigravity else []),
             *(self._pi_session_mcp_servers() if self._is_pi else []),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ]
@@ -944,6 +950,7 @@ async def _initialize_session(self: AcpClient) -> None:
                         *(self._goose_session_mcp_servers() if self._is_goose else []),
                         *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
                         *(self._copilot_session_mcp_servers() if self._is_copilot else []),
+                        *(self._antigravity_session_mcp_servers() if self._is_antigravity else []),
                         *(self._pi_session_mcp_servers() if self._is_pi else []),
                         *(await asyncio.to_thread(self._pooled_mcp_servers)),
                     ],

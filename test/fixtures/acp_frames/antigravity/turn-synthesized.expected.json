@@ -1,0 +1,182 @@
+[
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "CommandLine": "printf ok",
+          "command_line": "printf ok"
+        },
+        "title": "printf ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"CommandLine\": \"printf ok\",\n  \"command_line\": \"printf ok\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "printf ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "CommandLine": "printf ok",
+          "command_line": "printf ok"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "printf ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"CommandLine\": \"printf ok\",\n  \"command_line\": \"printf ok\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "{\"commandLine\": \"printf ok\", \"combinedOutput\": \"ok\", \"formatted_output\": \"ok\", \"exitCode\": 0}",
+        "tool_output_bytes": 93,
+        "tool_output_digest": "c6a0e4f2a048e1e4181996a51c7193a8f0ce20136b9bdc35928000860e13b618",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "raw_tool_params": {
+          "message": "probe"
+        },
+        "title": "marker",
+        "tool_call_id": "call-2",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"message\": \"probe\"\n}",
+        "tool_kind": "other",
+        "tool_name": "marker",
+        "wire_title": "marker"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe",
+        "options": [
+          {
+            "id": "allow_always",
+            "label": "Allow Always"
+          },
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "message": "probe"
+        },
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "marker",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"message\": \"probe\"\n}",
+        "tool_kind": "other",
+        "tool_name": "marker"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "stop_reason": "end_turn"
+  }
+]

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -40,6 +41,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
+from kiro_crew.providers.mirrors.antigravity import AntigravityMirror
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
@@ -219,6 +221,7 @@ class McpProjection:
 
 #: Backends whose spec projection lives in this folder.
 MIRRORS: dict[str, type[AgentConfigMirror]] = {
+    ACP_BACKEND_ANTIGRAVITY: AntigravityMirror,
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
     ACP_BACKEND_CODEX: CodexMirror,
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
@@ -233,6 +236,14 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
 #: selectable backend to exactly one entry here, so a new harness cannot reach the
 #: dashboard switch without one of these four answers being written down.
 PROJECTIONS: dict[str, McpProjection] = {
+    ACP_BACKEND_ANTIGRAVITY: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="antigravity.py -- the session/new mcpServers array, with a stdio server "
+        "observed reaching Antigravity 1.4.4 and being asked server/discover and "
+        "tools/list. A completed authenticated tool call was not available on the "
+        "recording host, so no narrower per-call deny claim is made",
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
+    ),
     ACP_BACKEND_KIRO: McpProjection(
         kind=ProjectionKind.NATIVE,
         reason=(
