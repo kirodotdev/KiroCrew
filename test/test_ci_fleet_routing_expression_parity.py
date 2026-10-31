@@ -208,6 +208,9 @@ _HOSTED_EXCEPTION_RUNNERS: dict[tuple[str, str], object] = {
     ("fork-workflow-guard.yml", "strip-stale-override"): {"group": "kirocrew-runners"},
     ("issue-summary.yml", "summarize"): _GROUP_LABEL_EXPR,
     ("issue-triage.yml", "triage"): _GROUP_LABEL_EXPR,
+    # The AI-review override handler: same `issue_comment` trigger and the same
+    # actor-allowlist reason for staying off the fleet as the two above.
+    ("ai-review-human-override.yml", "record"): _GROUP_LABEL_EXPR,
     ("nightly.yml", "version"): _GROUP_LABEL_EXPR,
     ("ci-runner-watchdog.yml", "watchdog"): {"group": "kirocrew-runners"},
     ("merge-queue-ruleset.yml", "check"): {"group": "kirocrew-runners"},
