@@ -51,7 +51,7 @@ import { SessionSourceChips } from './SessionSourceChips'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { summarizeCrewWorkers } from '../../lib/crewWorkers'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
-import { crewWaitingApprovals } from '../chat/command-center/model'
+import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
 import { MemberRowHead } from './MemberRowFace'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
@@ -470,6 +470,10 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // each one's `pending_approval` on its own row, which the person's list leaves
   // out, so the root's row carries the wait.
   const crewWaiting = useAppSelector(st => crewRoot ? crewWaitingApprovals(st.dashboard.slots)[s.key] ?? 0 : 0)
+  // A session this one opened (a dispatched worker) is mid-turn. Read only when
+  // the loop-waiting row could fire, so other rows skip the slot scan.
+  const openedRunning = useAppSelector(st => (s.has_options && !s.running)
+    ? openedSessionRunning(st.dashboard.slots, s.key) : false)
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
@@ -727,8 +731,12 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     // resurrected — the staleness that reverted the buried-[OPTIONS:] scan
     // (#10615). Idle only: a running turn IS the loop working, and a stalled
     // loop's danger row (below) outranks an ask its dead turn cannot collect.
+    // Live work also means the loop is moving: a conductor ends most replies
+    // with a courtesy `[OPTIONS:]` line, and while its sub-agents, workflow,
+    // queue or dispatched workers run, that line is not a pause on the person.
     const loopWaiting = (!!goalLoop || monitorOwnsRunning)
       && !!s.has_options && !s.running && !s.interrupted
+      && !liveWorkSupersedesInterruption && !openedRunning
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;

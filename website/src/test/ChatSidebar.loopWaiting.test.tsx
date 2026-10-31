@@ -183,6 +183,39 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 
+  it('a conductor loop whose dispatched worker is running stays on the progress row despite [OPTIONS:]', () => {
+    // Between patrol cycles the conductor turn is idle and its reply ends with
+    // a courtesy [OPTIONS:] menu, but the worker it opened is mid-turn: the
+    // loop is moving, so the row must not claim it waits on the person.
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true },
+      { key: 'w', title: 'worker', running: true, messages: 3, created_by: 'k' },
+    ]
+    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText('Loop 5/300')).toBeTruthy()
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+    expect(queryByText(/Paused at 5\/300/)).toBeNull()
+  })
+
+  it('a loop whose own sub-agents run stays on the progress row despite [OPTIONS:]', () => {
+    const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, subagents_running: true }]
+    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })
+    expect(getByText('Loop 7/24')).toBeTruthy()
+    expect(queryByText(WAITING_LABEL)).toBeNull()
+  })
+
+  it('a loop whose workers are all idle still waits on you — the genuine ask keeps its row', () => {
+    const slots = [
+      { key: 'k', title: 'conductor', running: false, messages: 5, has_options: true },
+      { key: 'w', title: 'worker', running: false, messages: 3, created_by: 'k' },
+      // A running session someone ELSE opened does not count for this loop.
+      { key: 'o', title: 'other', running: true, messages: 3, created_by: 'x' },
+    ]
+    const { getByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 5, max_cycles: 300 } } })
+    expect(getByText(WAITING_LABEL)).toBeTruthy()
+    expect(getByText(/Paused at 5\/300/)).toBeTruthy()
+  })
+
   it('an owed approval outranks the waiting row', () => {
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: true, pending_approval: true }]
     const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 7, max_cycles: 24 } } })

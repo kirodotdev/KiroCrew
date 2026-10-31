@@ -111,6 +111,14 @@ export interface CommandCenterSources {
   crewWaiting?: Record<string, number>
 }
 
+/** Whether a session that `key` opened is mid-turn right now: a Crew Mode
+ *  worker (`crew_root`) or any session it created (`created_by`). A loop whose
+ *  dispatched workers are running is still moving, so its own idle reply's
+ *  `[OPTIONS:]` line is not a pause that waits on the person. */
+export function openedSessionRunning(slots: readonly ChatSlot[], key: string): boolean {
+  return slots.some(s => s.key !== key && !!s.running && (s.created_by === key || crewRootOf(s) === key))
+}
+
 /** `{root: n}` for each Crew Mode root with n workers whose tool approval waits. */
 export function crewWaitingApprovals(slots: readonly ChatSlot[]): Record<string, number> {
   const out: Record<string, number> = {}
