@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Iterator
@@ -201,6 +202,81 @@ class TestCronPreviewCallToolPath:
         # Verify call was made (redaction doesn't alter clean inputs)
         assert len(call_args) == 1
         assert call_args[0] == {"inputs": ["https://example.com"]}
+
+    def test_preview_passes_a_same_server_returned_id_back_unchanged(self, tmp_path: Path, capsys):
+        """Preview matches production: an opaque id the same server returned this
+        run reaches it unchanged on the next call, instead of the scan rewriting
+        it to the placeholder and the call failing. Test suggested by @rohnkum.
+        """
+        # A Graph-style opaque conversation id the bare-secret pass flags.
+        opaque = "AAQk" + "QmR8TxP3nK7wZ2vL9sYc1dHfJ4gWbN6mQ0pX5tVa" + "Bc3De7Fg"
+        _write_script(
+            tmp_path, "s.py",
+            "import json\n"
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            "    r = ctx.call_tool('mail', 'search', {'q': 'hi'})\n"
+            "    cid = json.loads(r)['items'][0]['id']\n"
+            "    ctx.call_tool('mail', 'read', {'conversationId': cid})\n"
+            "    raise Report('ok')\n")
+        received = []
+
+        class _MC:
+            def __init__(self, server, session_key=""):
+                self.server = server
+
+            def call_tool(self, tool, args):
+                received.append((tool, args))
+                # The search returns the opaque id; the read echoes its args.
+                return json.dumps({"items": [{"id": opaque}]}) if tool == "search" else "ok"
+
+            def is_running(self):
+                return True
+
+            def close(self):
+                pass
+
+        with _patch_resolve(tmp_path):
+            with patch("kiro_crew.cron_script.McpToolClient", _MC):
+                _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        read_args = [a for (t, a) in received if t == "read"]
+        assert read_args == [{"conversationId": opaque}]
+
+    def test_preview_refuses_a_script_supplied_bare_secret(self, tmp_path: Path, capsys):
+        """Preview is fail-loud too: a credential-shaped value the script
+        introduces itself (not returned by the server) raises the named-path
+        error and never reaches the server as the placeholder."""
+        opaque = "AAQk" + "QmR8TxP3nK7wZ2vL9sYc1dHfJ4gWbN6mQ0pX5tVa" + "Bc3De7Fg"
+        _write_script(
+            tmp_path, "s.py",
+            f"def run(ctx):\n"
+            f"    ctx.call_tool('mail', 'send', {{'token': {opaque!r}}})\n")
+        received = []
+
+        class _MC:
+            def __init__(self, server, session_key=""):
+                pass
+
+            def call_tool(self, tool, args):
+                received.append(args)
+                return "ok"
+
+            def is_running(self):
+                return True
+
+            def close(self):
+                pass
+
+        with _patch_resolve(tmp_path):
+            with patch("kiro_crew.cron_script.McpToolClient", _MC):
+                with pytest.raises(SystemExit):
+                    _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        # The refusal surfaced (named path), the server never got the value, and
+        # the placeholder was never sent.
+        assert "args.token" in out
+        assert received == []
+        assert opaque not in out
 
     def test_call_tool_audits_via_sel(self, tmp_path: Path, capsys):
         """SEL log_tool_invocation fires for each call_tool."""

@@ -15,6 +15,7 @@ fixtures the three share.
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from functools import partial
 from pathlib import Path
@@ -31,6 +32,7 @@ import kiro_crew.cron_script as cron_script
 from kiro_crew import platform_compat as pc
 from kiro_crew.cron_script import (
     Done,
+    McpArgRedactionError,
     McpToolError,
     Report,
     ScriptContext,
@@ -938,6 +940,200 @@ class TestScriptContextKeepsServers:
         stuck.close = refuse
         ctx.close()
         assert [s.closed for s in started] == [1, 1]
+
+
+class TestCallToolSameServerArgExemption:
+    """call_tool: a value THIS server returned this run is sent back unchanged;
+    any other credential-shaped arg is refused (never sent redacted).
+    """
+
+    # A Microsoft-Graph-style opaque id: base64 of binary, built so the
+    # bare-secret pass flags it (40+ base64 chars, high entropy, few vowels).
+    OPAQUE_ID = "AAQk" + "QmR8TxP3nK7wZ2vL9sYc1dHfJ4gWbN6mQ0pX5tVa" + "Bc3De7Fg"
+
+    @pytest.fixture
+    def started(self, monkeypatch):
+        """Fake MCP servers. Each records the args it RECEIVED and returns a
+        scripted result the context will record returned values from."""
+        started = []
+
+        class FakeClient:
+            def __init__(self, server, session_key=""):
+                self.server = server
+                self.received = []  # the args each call actually got
+                self.result = ""  # what the next call_tool returns
+                self.running = True
+                self.closed = 0
+                started.append(self)
+
+            def call_tool(self, name, arguments):
+                self.received.append(arguments)
+                return self.result
+
+            def is_running(self):
+                return self.running
+
+            def close(self):
+                self.closed += 1
+                self.running = False
+
+        monkeypatch.setattr("kiro_crew.cron_script.McpToolClient", FakeClient)
+        return started
+
+    @staticmethod
+    def _ctx():
+        return ScriptContext(job=SimpleNamespace(id="j1", message=""))
+
+    def test_a_same_server_returned_id_is_sent_unchanged(self, started):
+        """(a) An id the SAME server returned reaches it unchanged on the next
+        call, even when its shape would otherwise trip the credential scan."""
+        ctx = self._ctx()
+        # First call starts the server AND returns a result carrying the id;
+        # KeptMcpServers records returned string values right after the call.
+        ctx.call_tool("mail", "search", {"q": "hi"})
+        started[0].result = json.dumps({"items": [{"id": self.OPAQUE_ID}]})
+        ctx.call_tool("mail", "search", {"q": "hi again"})  # now the id is recorded
+        # Pass the id back to the SAME server: it must arrive unchanged.
+        ctx.call_tool("mail", "read", {"conversationId": self.OPAQUE_ID})
+        assert started[0].received[-1] == {"conversationId": self.OPAQUE_ID}
+
+    def test_an_id_passed_to_a_different_server_is_refused_naming_the_path(self, started):
+        """(b) An id one server returned, passed to a DIFFERENT server, is
+        refused with an error naming the argument path; the value is not echoed."""
+        ctx = self._ctx()
+        ctx.call_tool("mail", "search", {"q": "x"})
+        started[0].result = json.dumps({"id": self.OPAQUE_ID})
+        ctx.call_tool("mail", "search", {"q": "x2"})  # records the id for "mail"
+        with pytest.raises(McpArgRedactionError) as exc:
+            ctx.call_tool("calendar", "read", {"event": {"id": self.OPAQUE_ID}})
+        assert "args.event.id" in str(exc.value)
+        assert self.OPAQUE_ID not in str(exc.value)
+        # The calendar server was never handed the placeholder.
+        calendar = [s for s in started if s.server == "calendar"]
+        assert calendar == [] or all(
+            "[REDACTED" not in json.dumps(c.received) for c in calendar
+        )
+
+    def test_a_bare_secret_the_script_supplies_itself_is_refused(self, started):
+        """(c) A credential-shaped value the script introduces (not seen from the
+        server) is refused, and the stub never receives the placeholder."""
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})  # start the server, nothing returned
+        before = len(started[0].received)
+        with pytest.raises(McpArgRedactionError) as exc:
+            ctx.call_tool("mail", "send", {"token": self.OPAQUE_ID})
+        assert "args.token" in str(exc.value)
+        # The refused call never reached the server.
+        assert len(started[0].received) == before
+        assert all("[REDACTED" not in json.dumps(r) for r in started[0].received)
+
+    def test_the_audit_sink_still_records_only_server_tool_outcome_error(self, started):
+        """(d) The audit log carries no args: _audit_tool_call receives only
+        server/tool/outcome/error, and never the arguments."""
+        ctx = self._ctx()
+        seen = []
+        ctx._audit_tool_call = lambda server, tool, outcome, error="": seen.append(
+            (server, tool, outcome, error)
+        )
+        ctx.call_tool("mail", "read", {"conversationId": "plain-ok"})
+        assert seen == [("mail", "read", "ok", "")]
+
+    def test_a_non_credential_arg_passes_through(self, started):
+        """A plain argument is unaffected: sent unchanged, no exemption needed."""
+        ctx = self._ctx()
+        ctx.call_tool("mail", "read", {"folder": "Inbox", "limit": 50})
+        assert started[0].received[-1] == {"folder": "Inbox", "limit": 50}
+
+    def test_a_credential_shaped_key_is_not_echoed_in_the_refusal(self, started):
+        """A credential-shaped dict KEY refuses the call, and the refusal names a
+        redacted path segment, never the raw key."""
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})
+        before = len(started[0].received)
+        with pytest.raises(McpArgRedactionError) as exc:
+            ctx.call_tool("mail", "send", {self.OPAQUE_ID: "v"})
+        assert self.OPAQUE_ID not in str(exc.value)
+        assert len(started[0].received) == before
+
+    def test_a_refusal_is_recorded_as_an_audited_error(self, started):
+        """A refused call reaches the audit sink as an error outcome, with a
+        sanitized reason that does not echo the value."""
+        ctx = self._ctx()
+        seen = []
+        ctx._audit_tool_call = lambda server, tool, outcome, error="": seen.append(
+            (server, tool, outcome, error)
+        )
+        with pytest.raises(McpArgRedactionError):
+            ctx.call_tool("mail", "send", {"token": self.OPAQUE_ID})
+        assert len(seen) == 1
+        server, tool, outcome, error = seen[0]
+        assert (server, tool, outcome) == ("mail", "send", "error")
+        assert self.OPAQUE_ID not in error
+
+    def test_a_deeply_nested_result_does_not_abort_the_call(self, started):
+        """A successful result too deeply nested to walk is still returned; only
+        its exemptions are dropped."""
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})  # start the server
+        depth = sys.getrecursionlimit() + 500
+        nested = "[" * depth + "1" + "]" * depth
+        started[0].result = nested
+        # The call returns the successful text rather than raising.
+        assert ctx.call_tool("mail", "search", {"q": "x"}) == nested
+
+    def test_retained_values_are_bounded_per_server(self, started):
+        """A result carrying more distinct strings than the per-server cap
+        records only up to the cap; the rest are simply scanned when reused."""
+        from kiro_crew.cron_script import _MAX_RETAINED_VALUES_PER_SERVER
+
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})  # start the server
+        many = [f"v{i:06d}" for i in range(_MAX_RETAINED_VALUES_PER_SERVER + 50)]
+        started[0].result = json.dumps(many)
+        ctx.call_tool("mail", "search", {"q": "x"})
+        recorded = ctx._kept_servers.recorded_values("mail")
+        assert len(recorded) == _MAX_RETAINED_VALUES_PER_SERVER
+
+    def test_repeated_values_do_not_spend_capacity_meant_for_a_new_id(self, started):
+        """A result that repeats already-retained strings up to the cap still
+        leaves room for, and records, a genuinely new id that follows."""
+        from kiro_crew.cron_script import _MAX_RETAINED_VALUES_PER_SERVER
+
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})
+        # Fill one short of the cap with distinct values.
+        first = [f"v{i:06d}" for i in range(_MAX_RETAINED_VALUES_PER_SERVER - 1)]
+        started[0].result = json.dumps(first)
+        ctx.call_tool("mail", "a", {})
+        # A result that repeats all of those plus one NEW id: only the new id is
+        # fresh, so it fits the last slot instead of being crowded out.
+        started[0].result = json.dumps(first + [self.OPAQUE_ID])
+        ctx.call_tool("mail", "b", {})
+        recorded = ctx._kept_servers.recorded_values("mail")
+        assert self.OPAQUE_ID in recorded
+        assert len(recorded) == _MAX_RETAINED_VALUES_PER_SERVER
+        # And the new id is now exempt: passing it back reaches the server.
+        ctx.call_tool("mail", "read", {"id": self.OPAQUE_ID})
+        assert started[0].received[-1] == {"id": self.OPAQUE_ID}
+
+    def test_an_overflow_refusal_discloses_the_truncation(self, started):
+        """When a server's record overflowed and a value it returned was dropped,
+        refusing that value says the record may be incomplete, not that the value
+        was never returned."""
+        from kiro_crew.cron_script import _MAX_RETAINED_VALUES_PER_SERVER
+
+        ctx = self._ctx()
+        ctx.call_tool("mail", "warm", {})
+        # Overflow the record with distinct credential-shaped values, none equal
+        # to OPAQUE_ID, so OPAQUE_ID (also returned) is among those dropped.
+        overflow = [f"AAQk{i:04d}" + self.OPAQUE_ID[8:] for i in range(_MAX_RETAINED_VALUES_PER_SERVER + 5)]
+        started[0].result = json.dumps(overflow + [self.OPAQUE_ID])
+        ctx.call_tool("mail", "a", {})
+        assert ctx._kept_servers.retention_truncated("mail")
+        with pytest.raises(McpArgRedactionError) as exc:
+            ctx.call_tool("mail", "read", {"id": self.OPAQUE_ID})
+        assert "retain" in str(exc.value).lower()
+        assert self.OPAQUE_ID not in str(exc.value)
 
 
 class TestRunCommandSandboxedEdgeCases:
