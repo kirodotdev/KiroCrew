@@ -442,6 +442,12 @@ class AcpClient:
         #: read this instead of the empty wire array. Set by the Strands adapter
         #: (``acp/harness/strands.py``) at each spawn.
         self._launch_mcp_servers: list[Any] | None = None
+        # Set by a dashboard MCP write on a relaunch-reload harness; applied before
+        # the next prompt (``acp/relaunch_reload.py``).
+        self._mcp_relaunch_pending = False
+        # A session id a relaunch could not reopen; turns are refused until a
+        # replacement serves it (``acp/relaunch_reload.py``).
+        self._relaunch_owed_session = ""
         # MCP OAuth requests collected during session init from
         # `_kiro.dev/mcp/oauth_request` notifications. Drained by callers via
         # `pop_pending_oauth_requests()` after `ensure_ready()` so the UI can

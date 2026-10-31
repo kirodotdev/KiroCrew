@@ -684,6 +684,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "would read as kiro-cli lacking what it has; one fact needs one line, and "
         "that line cannot be projected while the other half cannot"
     ),
+    "ACP_BACKENDS_MCP_RELAUNCH_RELOAD": (
+        "a third half of the same fact -- whether a freshly installed MCP server "
+        "reaches a RUNNING session, here by Crew relaunching the process with the "
+        "new launch file and loading the same session. Off the card for the reason "
+        "the re-sent projection is: the fact needs one line, and that line cannot be "
+        "projected while the version-gated hot-reload half cannot"
+    ),
 }
 
 #: The set that is the membership floor rather than a capability.

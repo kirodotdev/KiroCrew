@@ -208,6 +208,10 @@ with no row here.
    * - ``ACP_BACKENDS_MCP_WIRE_REINJECT``
      - pre-session registry query (whether the dashboard may skip a session reset
        because Crew re-sends the projection at the next turn boundary)
+   * - ``ACP_BACKENDS_MCP_RELAUNCH_RELOAD``
+     - pre-session registry query (whether the dashboard may skip a session reset
+       because Crew relaunches the process and loads the same session at the next
+       turn boundary)
    * - ``ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN``
      - pre-session registry query (whether a per-template MCP addition reaches a
        session of a template Crew does not own)
@@ -1066,6 +1070,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
