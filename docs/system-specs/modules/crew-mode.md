@@ -2027,8 +2027,8 @@ the opener always stays. The panel chord toggles only while a mate is
 open.
 
 The Profile tab holds the mate's own settings (`CrewProfileSettings`):
-permission (Normal / Reads / Trust), model and effort, the worker pair and the
-dashboard lock. They are changed there, never in the chat. The Profile tab
+permission (Normal / Reads / Trust), model and effort, the worker pair and
+Dynamic capabilities. They are changed there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the mate's own
 name read as a riddle); nothing else of the settings
@@ -2674,9 +2674,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   records the yes and wakes the crewmate once (`page_offer.write_prompt`, through
   `goal_setup._schedule`) to write its page, `dashboard_save` it and
   `dashboard_apply` it with no second card, then post the same one ready
-  message. A locked layout refuses that apply as it does any other, and the
-  crewmate says so once and stops; one `dashboard_rollback` brings the template
-  back. A no, or the card expiring, writes nothing. Asked-once is
+  message. One `dashboard_rollback` brings the template back. A no, or the card expiring, writes nothing. Asked-once is
   `crew-panels/<slug>.page-offer.json` (`page_offer.record_path`, beyond the
   crewmate's own shell), written when the card is raised, so a yes, a no and an
   expiry all count. The one exception is a yes whose wake never started: the yes

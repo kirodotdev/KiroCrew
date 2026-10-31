@@ -108,59 +108,23 @@ async def test_the_route_serves_a_script_as_written_and_still_masks_visible_text
 
 
 @pytest.mark.asyncio
-async def test_the_persons_lock_outranks_the_crewmates_package(
-    wired: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """THE LOCK IS A CEILING OVER THE CREWMATE, so package selection cannot step over it.
+async def test_a_leftover_lock_file_does_not_keep_the_package_off_the_tab(wired: Any) -> None:
+    """The structure lock was removed. A ``<slug>.dashboard-lock`` file it left behind is
+    not read, so a bound package is served exactly as for any crewmate, and the body
+    carries no ``structure_locked`` key."""
+    from kiro_crew import agent_panel
 
-    The lock exists so a crewmate cannot change which page the tab shows, and
-    ``instance.read`` is the only reader of it. Selecting a bound package returned
-    BEFORE that read, so writing its own ``kind="dashboard"`` artifact -- ordinary
-    agent work -- moved the tab off the page the person pinned; with the package
-    unapplied it moved it to the empty state. Nothing unusual is needed for that.
-
-    Measured by what the route SERVES, not by a call count: the locked record is the
-    answer, and the package page is not in it.
-    """
-    served: dict[str, Any] = {}
-
-    async def _no_package(*_a: Any, **_k: Any) -> Any:
-        served["package_served"] = True
-        raise AssertionError("the package branch ran while the layout was locked")
-
-    import dataclasses
-
-    from kiro_crew.dashboard_templates import instance as instance_mod
-
-    monkeypatch.setattr(md.instance, "is_locked", lambda slug: True)
-    monkeypatch.setattr(md, "_serve_package", _no_package)
-    # Stubbed beside `is_locked` so the two agree: the product reads the lock through
-    # `instance.read` as well, and saying "locked" to one and not the other would
-    # assert against a state no gateway reaches.
-    real_read = instance_mod.read
-    monkeypatch.setattr(
-        md.instance,
-        "read",
-        lambda slug: dataclasses.replace(real_read(slug), structure_locked=True),
-    )
+    legacy = agent_panel.panel_dir() / f"{SLUG}.dashboard-lock"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"slug": "x", "at_ms": 1, "record": null}', encoding="utf-8")
     status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
     assert status == 200, body
-    assert "package_served" not in served
-    assert PAGE not in (
-        body.get("rendered_html") or ""
-    ), "the mate's own page was served over the page the person locked"
-    assert (
-        body.get("structure_locked") is True
-    ), "the body does not tell the tab the layout is locked"
+    assert PAGE in body["rendered_html"]
+    assert "structure_locked" not in body
 
 
 @pytest.mark.asyncio
-async def test_a_locked_pinned_package_tells_the_tab_it_is_locked(wired: Any) -> None:
-    """A pinned package page carries the person's lock, as a template page does.
-
-    The Profile switch and the Dashboard's lock badge read ``structure_locked`` from
-    this body; a package page that left it out read as unlocked after a refetch.
-    """
+async def test_a_pinned_package_body_carries_no_lock(wired: Any) -> None:
     from kiro_crew.dashboard_templates import instance as instance_mod
 
     instance_mod.apply_package(
@@ -169,19 +133,14 @@ async def test_a_locked_pinned_package_tells_the_tab_it_is_locked(wired: Any) ->
         package_version=APPLIED_VERSION,
         content=dp.dump_package(_package()),
     )
-    instance_mod.set_structure_lock(SLUG, True)
-
     status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
-
     assert status == 200, body
     assert PAGE in body["rendered_html"], "the pinned package is the page in force"
-    assert body.get("structure_locked") is True
+    assert "structure_locked" not in body
 
 
 @pytest.mark.asyncio
-async def test_an_unlocked_crewmate_still_gets_its_package(wired: Any) -> None:
-    """The limit: the lock is the only thing that outranks the package, so a crewmate
-    nobody locked is unaffected -- which is every crewmate today."""
+async def test_a_crewmate_gets_its_package(wired: Any) -> None:
     status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
     assert status == 200
     assert PAGE in body["rendered_html"]

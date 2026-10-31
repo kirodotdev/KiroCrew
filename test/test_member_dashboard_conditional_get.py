@@ -70,13 +70,13 @@ async def test_the_empty_state_carries_no_etag():
         assert "ETag" not in resp.headers
 
 
-async def test_a_lock_toggle_is_never_served_as_a_304_on_the_real_route():
-    """A layout-lock change moves the body (`structure_locked`), so a re-read echoing
-    the pre-toggle ETag must be recomposed (200) with a new ETag, never short-circuited
-    to a 304 with the stale lock state. This drives the REAL route: it reads once, flips
-    the lock through the store the handler reads (`instance.set_structure_lock`), and
-    re-reads with the old validator -- so it proves the property on the handler, not on
-    a local digest of a hand-built dict."""
+async def test_a_new_version_is_never_served_as_a_304_on_the_real_route():
+    """A new instance version moves the body (`instance_version`), so a re-read echoing
+    the earlier ETag must be recomposed (200) with a new ETag, never short-circuited to
+    a 304 with the old page. This drives the REAL route: it reads once, writes a new
+    version through the store the handler reads, and re-reads with the old validator --
+    so it proves the property on the handler, not on a local digest of a hand-built
+    dict."""
     async with _client() as client:
         instance.adopt(SLUG, "fixture-board")
         first = await client.get(_q(""))
@@ -84,27 +84,17 @@ async def test_a_lock_toggle_is_never_served_as_a_304_on_the_real_route():
         etag_before = first.headers.get("ETag")
         assert etag_before, "a composed read must carry an ETag"
         # The same read, unchanged, still revalidates to a 304 -- the perf win holds
-        # right up until the lock moves.
+        # right up until the page moves.
         unchanged = await client.get(_q(""), headers={"If-None-Match": etag_before})
         assert unchanged.status == 304
-        # Flip the layout lock through the SAME store the route reads. This moves the
-        # body's `structure_locked` without touching any instance/template version.
-        locked = instance.set_structure_lock(SLUG, True)
-        assert locked.structure_locked is True
-        # The pre-toggle validator does not match the moved body, so the handler
-        # recomposes and sends a full 200 with a NEW ETag -- the stale lock is never
-        # handed back via a 304.
+        assert instance.adopt(SLUG, "fixture-board").instance_version == 2
         after = await client.get(_q(""), headers={"If-None-Match": etag_before})
-        assert after.status == 200, (
-            "a page whose lock changed was served a 304 against the pre-toggle ETag "
-            "-- a lock toggle must move the content validator"
-        )
-        etag_after = after.headers.get("ETag")
         assert (
-            etag_after and etag_after != etag_before
-        ), "the lock toggle did not change the ETag, so a stale lock could be 304'd"
-        body = await after.json()
-        assert body.get("structure_locked") is True
+            after.status == 200
+        ), "a page with a new version was served a 304 against the earlier ETag"
+        etag_after = after.headers.get("ETag")
+        assert etag_after and etag_after != etag_before
+        assert (await after.json())["instance_version"] == 2
 
 
 @asynccontextmanager

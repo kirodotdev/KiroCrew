@@ -273,24 +273,20 @@ async def test_one_rollback_goes_back_to_a_package_or_to_the_template(monkeypatc
 
 
 async def test_the_page_read_draws_what_the_record_puts_in_force(monkeypatch, store):
-    """The page read follows the record: pinned, locked, then released."""
+    """The page read follows the record: pinned, then released."""
     from kiro_crew.dashboard.handlers import member_dashboard
 
     async with _client(monkeypatch) as client:
         await _save_and_apply(client, _package_body())
         [slug] = store.records
-        pinned, older, locked = member_dashboard._package_in_force(SLUG)
+        pinned, older = member_dashboard._package_in_force(SLUG)
         assert pinned is not None and (pinned.slug, pinned.version) == (slug, 1)
-        assert older is False and locked is False
-        # The lock keeps the pinned page the person locked, and the page reports it.
-        _instance().set_structure_lock(SLUG, True)
-        assert member_dashboard._package_in_force(SLUG)[::2] == (pinned, True)
-        _instance().set_structure_lock(SLUG, False)
+        assert older is False
         applied = await client.post(
             "/api/agent-panel/dashboard/apply", json={"template_id": "project-report"}
         )
         assert applied.status == 200, await applied.text()
-        assert member_dashboard._package_in_force(SLUG) == (None, False, False)
+        assert member_dashboard._package_in_force(SLUG) == (None, False)
 
 
 async def test_the_pinned_page_survives_whatever_happens_to_the_artifact(monkeypatch, store):
@@ -333,8 +329,11 @@ async def test_only_pinned_pages_are_kept_after_a_save(monkeypatch, store):
     assert not stray.exists()
 
 
-async def test_an_older_locked_record_checks_writes_against_its_template(monkeypatch, tmp_path):
-    """A record from before pins keeps its template under the lock, for the write too."""
+async def test_an_older_record_checks_writes_against_its_bound_package(monkeypatch, tmp_path):
+    """A record from before pins follows its bound package, for the write too.
+
+    A ``<slug>.dashboard-lock`` file beside such a record is not read, so the bound
+    package is the Model a write is checked against."""
     from kiro_crew import artifacts
     from kiro_crew import dashboard_package as reader
     from kiro_crew.artifacts import ArtifactStore
@@ -356,10 +355,12 @@ async def test_an_older_locked_record_checks_writes_against_its_template(monkeyp
     real.update(art.slug, content=json.dumps(pkg), actor="user", snapshot_token=read.content_token)
 
     assert reader.read_package_model(SLUG).from_package is True
-    instance_store.set_structure_lock(SLUG, True)
-    locked = reader.read_package_model(SLUG)
-    assert locked.from_package is False
-    assert locked.model is not None and locked.model.manifest.id == "project-report"
+    from kiro_crew import agent_panel
+
+    legacy = agent_panel.panel_dir() / f"{SLUG}.dashboard-lock"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"slug": SLUG, "at_ms": 1, "record": raw}), encoding="utf-8")
+    assert reader.read_package_model(SLUG).from_package is True
 
 
 def test_a_package_enum_keeps_its_choices_for_the_write_check():
@@ -500,17 +501,19 @@ async def test_a_root_session_save_is_refused_and_writes_nothing(monkeypatch, st
     assert store.records == {}
 
 
-async def test_a_locked_layout_refuses_the_apply_and_keeps_the_page(monkeypatch, store):
-    """The lock refuses the apply; the save is only a write to the crewmate's artifact."""
-    instance_store = _instance()
-    instance_store.set_structure_lock(SLUG, True)
+async def test_a_leftover_lock_file_does_not_refuse_the_apply(monkeypatch, store):
+    """The structure lock was removed: a lock file it left behind refuses nothing."""
+    from kiro_crew import agent_panel
+
+    legacy = agent_panel.panel_dir() / f"{SLUG}.dashboard-lock"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text('{"slug": "x", "at_ms": 1, "record": null}', encoding="utf-8")
     async with _client(monkeypatch) as client:
         assert (await _save(client, _package_body())).status == 200
         resp = await _apply(client)
         body = await resp.json()
-    assert resp.status == 423, body
-    assert body["code"] == "dashboard_locked"
-    assert instance_store.read(SLUG).package_slug == ""
+    assert resp.status == 200, body
+    assert _instance().read(SLUG).package_slug != ""
 
 
 async def test_dashboard_write_is_checked_against_the_package_in_force(monkeypatch, tmp_path):

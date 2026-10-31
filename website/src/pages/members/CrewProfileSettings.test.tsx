@@ -29,7 +29,6 @@ const mockApi = vi.hoisted(() => ({
   agentResolvedModel: vi.fn(),
   harnessModels: vi.fn(),
   memberDashboard: vi.fn(),
-  memberDashboardLock: vi.fn(),
   kirocrewConfig: vi.fn(),
 }))
 vi.mock('../../api/client', () => ({ api: mockApi }))
@@ -43,7 +42,6 @@ import { ProfilePagePushContext, type ProfilePagePush } from './CrewProfilePanel
 import { isTrustRootTarget } from '../../guide/findTargetPolicy'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
-import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
 import { PREVIEW_CREWMATE_HARNESS } from '../../utils/previewFlags'
 
 let lastQc: QueryClient
@@ -97,8 +95,7 @@ const checked = (key: string) => within(page(key)).getByRole('radio', { checked:
 beforeEach(() => {
   vi.clearAllMocks()
   modelsState.isDegraded = false
-  mockApi.memberDashboard.mockResolvedValue({ structure_locked: false })
-  mockApi.memberDashboardLock.mockResolvedValue({ ok: true, structure_locked: true })
+  mockApi.memberDashboard.mockResolvedValue({})
   mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
   mockApi.chatMode.mockResolvedValue({ ok: true })
   mockApi.chatSlotModel.mockResolvedValue({ ok: true })
@@ -541,79 +538,17 @@ describe('CrewProfileSettings worker model and effort', () => {
   })
 })
 
-/* The person's lock on the mate's dynamic dashboard lives HERE, on the
- * mate's card, as one labelled switch in the group with a line of help as
- * the group's caption. The Dashboard tab only shows a badge
- * (CrewDynamicDashboard.test.tsx pins that it has no control). */
-describe('CrewProfileSettings dashboard lock', () => {
-  const SWITCH = 'Lock dashboard layout'
-
-  it('offers the switch and reads lock state', async () => {
+/* The dashboard structure lock was removed: a crewmate no longer changes its page
+ * on its own and rollback undoes a change, so the card has no lock switch and no
+ * longer reads the dashboard to learn a lock state. */
+describe('CrewProfileSettings without a dashboard lock', () => {
+  it('offers no lock switch and does not read the dashboard', async () => {
     setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'false'))
-    expect(screen.getByTestId('crew-profile-dashboard-lock')).toHaveTextContent(SWITCH)
-    expect(group()).toHaveTextContent(
-      "While locked, oncall can't replace its dashboard with a different layout or restore an older one.",
-    )
-  })
-
-  it('reads the lock off the dashboard body, so it shows what the gateway holds', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'))
-    expect(mockApi.memberDashboard).toHaveBeenCalledWith('oncall', 'oncall')
-  })
-
-  it('is held until the read answers: a switch that moves first shows a state nothing holds', async () => {
-    let answer: (v: { structure_locked: boolean }) => void = () => {}
-    mockApi.memberDashboard.mockReturnValue(new Promise((r) => { answer = r }))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    expect(sw).toHaveAttribute('aria-disabled', 'true')
-    fireEvent.click(sw)
-    expect(mockApi.memberDashboardLock).not.toHaveBeenCalled()
-    answer({ structure_locked: false })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-  })
-
-  it('flips the lock through the owner route, then re-reads every dashboard query for the mate', async () => {
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    const spy = vi.spyOn(lastQc, 'invalidateQueries')
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', true))
-    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, 'oncall'] }))
-    // The tab's frame reads under the same prefix, so it is refreshed by that one call.
-    expect(spy.mock.calls.some(([arg]) => (arg as { queryKey: string[] }).queryKey[0] === MEMBER_DASHBOARD_QUERY_PREFIX)).toBe(true)
-  })
-
-  it('says which change failed and what stayed the same', async () => {
-    mockApi.memberDashboard.mockResolvedValue({ structure_locked: true })
-    mockApi.memberDashboardLock.mockRejectedValue(new Error('403'))
-    setup(member())
-    const sw = await screen.findByRole('switch', { name: SWITCH })
-    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled'))
-    fireEvent.click(sw)
-    await waitFor(() => expect(mockApi.memberDashboardLock).toHaveBeenCalledWith('oncall', 'oncall', false))
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't unlock the dashboard. It's still locked. Try again.",
-    )
-  })
-
-  it('hides the switch and shows error + hint when the lock cannot be read', async () => {
-    mockApi.memberDashboard.mockRejectedValue(new Error('500'))
-    setup(member())
-    expect(await screen.findByTestId('crew-profile-dashboard-lock-error')).toHaveTextContent(
-      "Couldn't read whether the dashboard is locked.",
-    )
-    // Switch is hidden when the state is unknown (showing a dim off switch
-    // for an unknown state would look identical to "unlocked" and mislead),
-    // but the caption is still shown so the row is not context-free.
-    expect(screen.queryByRole('switch', { name: SWITCH })).toBeNull()
-    expect(group()).toHaveTextContent("can't replace")
+    await screen.findByTestId('crew-profile-dynamic-capabilities')
+    expect(screen.queryByRole('switch', { name: 'Lock dashboard layout' })).toBeNull()
+    expect(screen.queryByTestId('crew-profile-dashboard-lock')).toBeNull()
+    expect(group()).not.toHaveTextContent("can't replace its dashboard")
+    expect(mockApi.memberDashboard).not.toHaveBeenCalled()
   })
 })
 
