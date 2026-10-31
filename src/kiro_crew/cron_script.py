@@ -35,6 +35,24 @@ from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import _facade_mirror, platform_compat
 from kiro_crew.config.loader import config_dir
+
+# Moved to kiro_crew.cron_apps_mask to keep this module under the per-file size rule.
+# Re-exported here so the public surface and the tests still read them from this module;
+# they are the same objects, not copies.
+from kiro_crew.cron_apps_mask import (  # noqa: F401
+    _APP_BUNDLE_SECRET_LEAVES,
+    CronAppsMask,
+    _all_app_secret_ids,
+    _all_app_secret_paths,
+    _app_name_under,
+    _bundle_links_a_secret,
+    _is_bundle_name,
+    _is_bundle_token,
+    _path_within,
+    _plain_file_identity,
+    _safe_cron_cwd,
+    cron_apps_mask,
+)
 from kiro_crew.cron_script_child_env import (
     _SCRATCH_OWNER_ERROR,
     _allocate_cron_scratch,
@@ -90,6 +108,7 @@ def run_script_sandboxed(
     secret_env_pin: str = "",
     delivery: str = "",
     internal_secret_provider: Callable[[], str] | None = None,
+    owner_app: str = "",
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
@@ -341,17 +360,47 @@ def run_script_sandboxed(
         # STRICT sandbox profile (credential stores and every crew-internal
         # dir hidden), keeping the child's reachable surface as small as the
         # sandbox can make it. Ungranted scripts keep their normal view.
+        #
+        # Both branches also mask every app's ``.app_secret`` leaf, so no app's
+        # credential is readable; an app's bundle code and ``data/`` stay
+        # readable/writable as on main (no window is opened and nothing is sealed
+        # read-only for the apps tree). A granted script additionally hides ``crons/``
+        # and the script's own parent.
         if stdin_payload is not None:
+            apps_mask = cron_apps_mask()
             hidden = tuple(
                 dict.fromkeys(
                     (
                         str(config_dir() / "crons"),
                         str(Path(file_path_str).resolve().parent),
+                        *apps_mask.hidden,
                     )
                 )
             )
         else:
-            hidden = ()
+            apps_mask = cron_apps_mask(script_file=file_path_str, owner_app=owner_app)
+            hidden = apps_mask.hidden
+        if apps_mask.refusal:
+            # The cron's own bundle hard-links an app secret, or the secret set could
+            # not be built: running would leave a credential readable. Refuse this one
+            # app's spawn (every other app's cron is unaffected) rather than run unmasked.
+            return {"status": "error", "error": f"❌ {apps_mask.refusal}"}
+        # The script child must not inherit a working directory inside the apps tree:
+        # the mask hides each ``.app_secret`` by ABSOLUTE path, so a relative read from
+        # a cwd under an app would read past it (same exposure the command path has). Pin a
+        # cwd that cannot resolve into the tree; refuse if none can be established.
+        from kiro_crew.apps.manager import apps_dir as _apps_dir
+
+        safe_cwd = _safe_cron_cwd(os.path.realpath(str(_apps_dir())))
+        if safe_cwd is None:
+            return {
+                "status": "error",
+                "error": (
+                    "❌ cron refused: no working directory outside the apps tree could "
+                    "be established for the script child, so a relative read could reach "
+                    "another app's secret. Retry from a directory outside the apps tree."
+                ),
+            }
         # Same tier as ``run_command_sandboxed`` below: a script body is
         # agent-written, so it is the HIGHER-capability cron surface, and it
         # ran the WIDER profile — ``standard`` leaves ~/.aws/credentials, the
@@ -381,6 +430,8 @@ def run_script_sandboxed(
             argv,
             mode=sandbox_mode,
             extra_hidden_dirs=hidden,
+            extra_required_mask_targets=apps_mask.required,
+            extra_mask_guard_targets=apps_mask.guard,
             seal_hidden_dirs=True,
             extra_private_dirs=(str(cron_scratch),) if cron_scratch is not None else (),
         )
@@ -483,6 +534,7 @@ def run_script_sandboxed(
                 stderr=subprocess.PIPE,
                 env=clean_env,
                 start_new_session=True,
+                cwd=safe_cwd,  # never an apps-tree cwd; see _safe_cron_cwd
                 abort_retry=lambda: _spawn_cancelled(job_id),
                 # Locale decoding, declared deliberate. A cron runs an ARBITRARY
                 # command, so its output is in the host's encoding, not
@@ -848,6 +900,7 @@ def run_command_sandboxed(
     job_id: str | None = None,
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
+    owner_app: str = "",
 ) -> dict:
     """Run a shell command in a sandboxed subprocess via wrap_argv().
 
@@ -927,10 +980,40 @@ def run_command_sandboxed(
         if shell is None:
             return {"status": "error", "output": _no_command_shell_message(), "exit_code": -1}
         argv = _command_argv(shell, command)
+        # Leaf-only apps mask, same as the script path: every app's ``.app_secret`` is
+        # hidden from the command child by absolute path (the cron's own included), while
+        # every app's code and ``data/`` stay readable/writable as on main. If the cron's
+        # own bundle hard-links another app's secret, only that app's command cron is
+        # refused (see :func:`cron_apps_mask`).
+        apps_mask = cron_apps_mask(script_file="", owner_app=owner_app)
+        if apps_mask.refusal:
+            return {"status": "error", "output": f"❌ {apps_mask.refusal}", "exit_code": -1}
+        # The child must not inherit a working directory inside the apps tree: the mask
+        # hides each ``.app_secret`` by ABSOLUTE path, so a child whose cwd is under an
+        # app could read a sibling app's secret through a RELATIVE path that never hits
+        # the mask. Pin a cwd that cannot resolve into the tree; refuse if none can be
+        # established (fail-closed rather than launch with an apps-tree cwd).
+        from kiro_crew.apps.manager import apps_dir as _apps_dir
+
+        safe_cwd = _safe_cron_cwd(os.path.realpath(str(_apps_dir())))
+        if safe_cwd is None:
+            return {
+                "status": "error",
+                "output": (
+                    "❌ cron refused: no working directory outside the apps tree could "
+                    "be established for the command child, so a relative read could "
+                    "reach another app's secret. Retry from a directory outside the "
+                    "apps tree."
+                ),
+                "exit_code": -1,
+            }
         cron_scratch = _allocate_cron_scratch(job_id)
         sandboxed_argv, sandbox_cleanup = wrap_argv(
             argv,
             mode="cc",
+            extra_hidden_dirs=apps_mask.hidden,
+            extra_required_mask_targets=apps_mask.required,
+            extra_mask_guard_targets=apps_mask.guard,
             extra_private_dirs=(str(cron_scratch),) if cron_scratch is not None else (),
         )
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
@@ -961,6 +1044,7 @@ def run_command_sandboxed(
                 stderr=subprocess.PIPE,
                 env=clean_env,
                 start_new_session=True,
+                cwd=safe_cwd,  # never an apps-tree cwd; see _safe_cron_cwd
                 abort_retry=lambda: _spawn_cancelled(job_id),
                 # Locale decoding, declared deliberate. A cron runs an ARBITRARY
                 # command, so its output is in the host's encoding, not

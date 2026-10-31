@@ -145,6 +145,8 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
         # (it is already captured in job.command), but the governance
         # POLICY it was vetted against can tighten during the queue
         # wait, and the gate above ran before that wait.
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
         result = await run_in_cron_pool(
             _vet_at_claim_then,
             handoff,
@@ -155,6 +157,7 @@ async def _cron_run_command(self: GatewayOrchestrator, job: CronJob) -> str | No
             job.id,
             job.secret_env,
             job.secret_env_pin,
+            app_owner_name(job.created_by),
             timeout=_claim_backstop(job, cmd_timeout),
         )
         if result.get("status") == "cancelled":
@@ -597,6 +600,8 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
         # runs inside the worker, after the wait, so the decision
         # holds at the moment of use.  It shares the backstop below,
         # which is why it must stay short.
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
         result = await run_in_cron_pool(
             _vet_at_claim_then,
             handoff,
@@ -615,6 +620,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
                 job.thread_ts or "",
             ),
             self._live_internal_secret,
+            app_owner_name(job.created_by),
             timeout=_claim_backstop(job, script_timeout),
         )
         status = result.get("status", "error")
