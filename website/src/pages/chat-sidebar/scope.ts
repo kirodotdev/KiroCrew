@@ -208,6 +208,10 @@ export interface SidebarScope {
   setCleanupOpen: SetState<boolean>
   folderCleanupOpen: boolean
   setFolderCleanupOpen: SetState<boolean>
+  /** The folder whose "Close sessions and delete…" panel is open, or null.
+   *  Per-folder (unlike the header's folder cleanup), set from the folder menu. */
+  closeAndDeleteFolder: ChatFolder | null
+  setCloseAndDeleteFolder: SetState<ChatFolder | null>
   setManageTagsOpen: SetState<boolean>
   broadcastOpen: boolean
   setBroadcastOpen: SetState<boolean>
