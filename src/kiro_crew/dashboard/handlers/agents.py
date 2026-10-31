@@ -286,7 +286,7 @@ from kiro_crew.dashboard.agent_admin.template_lineage import (  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import get_reasoning_effort_ordered
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _BLOCKED_SLASH_COMMANDS,
-    _DASHBOARD_SERVED_SLASH_COMMANDS,
+    _LOCAL_HARNESS_MENU_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
     _history_key_for,
@@ -1608,7 +1608,7 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # sends the engine's compaction verb or explains that the harness compacts
     # by itself, and never gives that notice.
     if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & (_DASHBOARD_SERVED_SLASH_COMMANDS | {"/compact"})
+        offered = offered & _LOCAL_HARNESS_MENU_COMMANDS
     return web.json_response(
         [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
     )
