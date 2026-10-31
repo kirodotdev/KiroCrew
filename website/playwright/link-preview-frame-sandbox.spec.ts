@@ -8,12 +8,12 @@ import { test, expect } from '@playwright/test'
  * The app list, the mint and the frame document are routed here so no app has to
  * be installed; the frame element, its sandbox and its placement are the
  * dashboard's own. The frame document carries the same `sandbox allow-scripts`
- * response policy the gateway sends (`apps/link_preview_frame.py`, pinned by
- * test/test_app_link_preview_frame.py).
+ * response policy the gateway sends (`apps/app_frame.py`, pinned by
+ * test/test_app_frame.py).
  */
 
 const APP = 'probe-app'
-const FRAME = `/link-preview-frame/${APP}/ffffffffffffffff/t0k3n`
+const FRAME = `/app-frame/${APP}/linkPreviews/cards/ffffffffffffffff/t0k3n`
 
 const PROBE = `<!doctype html><html><body><script>
 const out = { origin: self.origin };
@@ -43,7 +43,7 @@ test('the link-preview frame cannot read the dashboard', async ({ page }) => {
       manifest: { contributes: { linkPreviews: [{ id: 'cards', entry: 'dist/lp.mjs', hosts: ['probe.example.com'] }] } },
     }],
   }))
-  await page.route(`**/api/apps/${APP}/link-preview*`, (route) => route.fulfill({
+  await page.route(`**/api/apps/${APP}/frames/linkPreviews/*`, (route) => route.fulfill({
     json: { frame: FRAME, frameId: 'ffffffffffffffff', capability: 'ffffffffffffffff~cap', ttl: 900 },
   }))
   await page.route(`**${FRAME}`, (route) => route.fulfill({

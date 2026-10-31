@@ -54,12 +54,12 @@ logger = logging.getLogger("kiro_crew.dashboard.token_auth")
 # relay constant-time-compares the token BEFORE running its per-request
 # ownership probes and answers a uniform 404 without it. See
 # dashboard/handlers/browser_view_relay.py for the full security model.
-# /link-preview-frame/ and /link-preview-fetch/ are an app's link-preview card:
+# /app-frame/ and /app-frame-fetch/ are an app frame (a link-preview card or a message action):
 # the frame document (auth: an HMAC path token) and its ctx.fetch (auth: the
 # capability in the X-KiroCrew-Capability header, never a cookie), both minted by
-# the session-authed POST /api/apps/<name>/link-preview. The frame is an
+# the session-authed mints under /api/apps/<name>/. The frame is an
 # opaque-origin sandbox that does not reliably send a cookie. See
-# apps/link_preview_frame.py for the full security model.
+# apps/app_frame.py for the full security model.
 _BYPASS_PREFIXES = (
     "/assets/",
     "/static/",
@@ -68,8 +68,8 @@ _BYPASS_PREFIXES = (
     "/artifact-app/",
     "/sandbox-doc/",
     "/browser-view/",
-    "/link-preview-frame/",
-    "/link-preview-fetch/",
+    "/app-frame/",
+    "/app-frame-fetch/",
 )
 _BYPASS_EXACT = {
     "/logo.png",
@@ -210,7 +210,7 @@ CSRF_EXEMPT_EXACT_METHODS: dict[str, frozenset[str]] = {
 }
 
 
-# An app's link-preview fetch (``apps/link_preview_frame.py``) is exempt on every
+# An app frame.s fetch (``apps/app_frame.py``) is exempt on every
 # method for the reason the webhook is: its handler reads no cookie at all and
 # authenticates the capability in the ``X-KiroCrew-Capability`` header, which a
 # cross-origin page can neither obtain nor forge. The exemption is REQUIRED: the
@@ -223,10 +223,10 @@ def is_csrf_exempt(path: str, method: str) -> bool:
     """Whether *path* + *method* is exempt from the CSRF Origin check.
 
     The single read point for :data:`CSRF_EXEMPT_EXACT_METHODS` and the
-    link-preview fetch prefix, so both dashboard middleware chains share one
+    app-frame fetch prefix, so both dashboard middleware chains share one
     exemption rather than a literal list each.
     """
-    if path.startswith("/link-preview-fetch/"):
+    if path.startswith("/app-frame-fetch/"):
         return True
     return method in CSRF_EXEMPT_EXACT_METHODS.get(path, frozenset())
 
@@ -279,11 +279,11 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     # never the SPA shell, which would render the dashboard inside the
     # Browser panel's own frame.
     "/browser-view",
-    # An app's link-preview frame and its fetch (apps/link_preview_frame.py):
+    # An app frame and its fetch (apps/app_frame.py):
     # token-credentialed data routes that must never answer with the shell, which
-    # would load the dashboard inside the card's frame.
-    "/link-preview-frame/",
-    "/link-preview-fetch/",
+    # would load the dashboard inside the app.s frame.
+    "/app-frame/",
+    "/app-frame-fetch/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served

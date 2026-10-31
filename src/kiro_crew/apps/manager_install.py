@@ -22,7 +22,6 @@ from typing import Iterator
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
-from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -59,6 +58,7 @@ from kiro_crew.apps.manager_tree import (
     gateway_data_dir_obstruction,
 )
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 

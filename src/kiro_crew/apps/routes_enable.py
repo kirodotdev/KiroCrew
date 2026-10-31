@@ -31,7 +31,6 @@ from kiro_crew.apps.hooks_integration import on_app_enable
 
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
-from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES
 from kiro_crew.apps.manager import (
     app_enabled_state,
     app_lifecycle_lock,
@@ -41,6 +40,7 @@ from kiro_crew.apps.manager import (
     get_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
+from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.apps.registry import minimal_env
 from kiro_crew.apps.routes_lifecycle import (
     _deregister_app_off_loop,
@@ -305,7 +305,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     if isinstance(raw_grants, dict):
         grants_consent = {
             family: [e for e in raw_grants.get(family) or [] if isinstance(e, str)]
-            for family in ("api", "events", *LINK_PREVIEW_GRANT_FAMILIES)
+            for family in ("api", "events", *point_grant_families())
             if isinstance(raw_grants.get(family) or [], list)
         }
     if session_approval_consent or grants_consent is not None:

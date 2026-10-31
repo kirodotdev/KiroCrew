@@ -22,17 +22,13 @@ import { activeElementIsEditable, isEditableTarget } from '../utils/editableTarg
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { i18nT } from '../i18n/t'
 import { resolveLinkPreviews, providerFor, type ResolvedLinkPreview } from './linkPreviewRegistry'
+import { currentTheme } from '../appFrame/sandboxFrame'
 import { FrameHost, mintFrame, type FrameHostOptions } from './linkPreviewFrames'
 import { resolveTextPreview, setLinkPreviewTextPatterns, setTextPatternsOff } from './textPatterns'
 
 const HOVER_DELAY_MS = 300
 /** A provider whose frame failed to load or activate is tried again on a hover this long after. */
 export const RETRY_AFTER_MS = 30_000
-
-function currentTheme(): 'dark' | 'light' {
-  const root = document.documentElement
-  return root.classList.contains('dark') || /dark/.test(root.dataset.theme ?? '') ? 'dark' : 'light'
-}
 
 /** The URL a provider is shown by default: no query and no fragment, which can
  *  carry signed tokens or other secrets. `fullUrl` in the manifest opts out. */
@@ -86,7 +82,7 @@ export default function LinkPreviewLayer() {
 
   useEffect(() => {
     const host = new FrameHost({
-      mint: (app, frameId) => mintForFrames(app, frameId),
+      mint: (app, frameId, providerId) => mintForFrames(app, frameId, providerId),
       theme: currentTheme,
       onFailed: (frame, why) => {
         // eslint-disable-next-line no-console -- an app's link preview failing to load is otherwise silent

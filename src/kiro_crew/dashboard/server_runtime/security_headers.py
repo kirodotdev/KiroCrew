@@ -149,7 +149,7 @@ def parent_port_frame_ancestors(port: int) -> list[str]:
     """The loopback origins of an embedding parent dashboard on ``port``.
 
     Also used by a document whose request carries no dashboard credential (the
-    link-preview frame), which recovers the port from its own signed URL instead.
+    app frame), which recovers the port from its own signed URL instead.
     """
     if not 1 <= port <= 65535:
         return []

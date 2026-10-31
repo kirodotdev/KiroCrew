@@ -16,8 +16,9 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.apps import link_preview_frame as lpf
+from kiro_crew.apps import app_frame as lpf
 from kiro_crew.apps import link_preview_grants as g
+from kiro_crew.apps import point_grants as pg
 from kiro_crew.apps.manager_records import (
     STAGED_GRANT_FAMILIES,
     _approved_grants_after_manifest_change,
@@ -102,7 +103,7 @@ def test_the_descriptor_is_hosts_and_patterns() -> None:
     m = _manifest(
         ["A.Example.com.", ".b.example.com"], [{"id": "t", "pattern": "T-\\d+", "flags": "gi"}]
     )
-    src = g.grant_source(m)
+    src = pg.grant_source(m)
     assert src is not None
     assert src["api"] == ["/api/x"]
     assert src["linkPreviewHosts"] == ["a.example.com", ".b.example.com"]
@@ -112,8 +113,8 @@ def test_the_descriptor_is_hosts_and_patterns() -> None:
 
 
 def test_a_widening_update_holds_the_new_host_and_pattern_back() -> None:
-    old = g.grant_source(_manifest(["a.example.com"], [{"id": "t", "pattern": "T-\\d+"}]))
-    new = g.grant_source(
+    old = pg.grant_source(_manifest(["a.example.com"], [{"id": "t", "pattern": "T-\\d+"}]))
+    new = pg.grant_source(
         _manifest(["a.example.com", "b.example.com"], [{"id": "t", "pattern": "T-\\d+|.*"}])
     )
     approved = _approved_grants_after_manifest_change(
@@ -134,8 +135,8 @@ def _with_full_url(m: dict[str, Any], on: bool) -> dict[str, Any]:
 
 def test_turning_full_urls_on_is_held_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """Query and fragment can carry a signed link's credential: asking for them widens."""
-    old = g.grant_source(_with_full_url(_manifest(["a.example.com"]), False))
-    new = g.grant_source(_with_full_url(_manifest(["a.example.com"]), True))
+    old = pg.grant_source(_with_full_url(_manifest(["a.example.com"]), False))
+    new = pg.grant_source(_with_full_url(_manifest(["a.example.com"]), True))
     assert old is not None and new is not None
     assert old["linkPreviewFullUrl"] == []
     assert new["linkPreviewFullUrl"] == [g.FULL_URL_ENTRY]
@@ -162,8 +163,8 @@ def test_turning_full_urls_on_is_held_back(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_a_narrowing_update_needs_nothing() -> None:
-    old = g.grant_source(_manifest(["a.example.com", "b.example.com"]))
-    new = g.grant_source(_manifest(["a.example.com"]))
+    old = pg.grant_source(_manifest(["a.example.com", "b.example.com"]))
+    new = pg.grant_source(_manifest(["a.example.com"]))
     approved = _approved_grants_after_manifest_change(
         existing_approved=_declared_grant_entries(old), old_permissions=old, new_permissions=new
     )
@@ -176,8 +177,8 @@ def test_a_stored_set_from_before_the_families_approves_what_the_replaced_manife
 ):
     legacy = _parse_approved_grants({"api": ["/api/x"], "events": []})
     assert "linkPreviewHosts" not in legacy
-    old = g.grant_source(_manifest(["a.example.com"]))
-    new = g.grant_source(_manifest(["a.example.com", "c.example.com"]))
+    old = pg.grant_source(_manifest(["a.example.com"]))
+    new = pg.grant_source(_manifest(["a.example.com", "c.example.com"]))
     approved = _approved_grants_after_manifest_change(
         existing_approved=legacy, old_permissions=old, new_permissions=new
     )

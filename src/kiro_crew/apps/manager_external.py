@@ -17,7 +17,6 @@ from typing import Any
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
-from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -48,6 +47,7 @@ from kiro_crew.apps.manifest import (
     cron_permission_error,
     is_reserved_app_name,
 )
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sel import sel
 

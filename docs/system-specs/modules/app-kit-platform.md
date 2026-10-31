@@ -4035,8 +4035,8 @@ into the dashboard (§18). A hover card is drawn over a chat that holds the user
 conversation and composer draft, so the module runs in an iframe the dashboard
 creates (`website/src/linkPreview/linkPreviewFrames.ts`), `sandbox="allow-scripts"`
 with no `allow-same-origin`. The frame document is served from the gateway's own
-port at `GET /link-preview-frame/{name}/{frame_id}/{token}`
-(`apps/link_preview_frame.py`) with `Content-Security-Policy: sandbox
+port at `GET /app-frame/{name}/linkPreviews/{id}/{frame_id}/{token}`
+(`apps/app_frame.py`, the frame model every frame-backed point shares, §18b) with `Content-Security-Policy: sandbox
 allow-scripts`, so it is an opaque origin even when opened top-level. No second
 listener is added: an opaque origin is cross-origin to the dashboard wherever it
 is served from, as the MCP-app frames already are.
@@ -4058,11 +4058,12 @@ The boundary:
   token. The dashboard reads only typed messages from that frame's own window
   (`readFrameMessage`), and each one can only show, hide, size, move or clip that
   one iframe.
-- **Its fetch.** `/link-preview-fetch/{name}/{path}` answers only a request whose
+- **Its fetch.** `/app-frame-fetch/{name}/{path}` answers only a request whose
   `X-KiroCrew-Capability` verifies. The capability is minted per frame by
-  `POST /api/apps/{name}/link-preview`, which only a person's dashboard session
+  `POST /api/apps/{name}/frames/linkPreviews/{id}`, which only a person's dashboard session
   may call (an app token, an internal caller or a link token is refused), and is
-  bound to the app, the client address and the frame id, for 15 minutes; the
+  bound to the app, the client address, the frame id and the `(point, id)`, for 15
+  minutes; every fetch re-resolves the entry through the point's resolver; the
   dashboard renews it at half that. The route reaches the routes the app
   registered (`RouteRegistry.dispatch`, never the router, so a core route under
   `/api/apps/{name}/` cannot match) or its process backend (`handle_app_api_proxy`
@@ -4135,10 +4136,77 @@ The boundary:
   check is made: shape analysis cannot be complete, so the runtime budget is the
   guarantee.
 
-Writers: `apps/link_preview_frame.py`, `apps/link_preview_grants.py`,
-`apps/manager_records.py` (the staged families), `apps/routes_static.py` (the UI file CORS
-answer), `apps/routes_proxy.py` (strips the capability), `dashboard/token_auth_paths.py`
-(bypass, SPA exclusion, CSRF exemption), `website/src/linkPreview/*`.
+Writers: `apps/app_frame.py`, `apps/link_preview_grants.py`, `apps/app_hosts.py`,
+`apps/point_grants.py`, `apps/manager_records.py` (the staged families),
+`apps/routes_static.py` (the UI file CORS answer), `apps/routes_proxy.py` (strips
+the capability), `dashboard/token_auth_paths.py` (bypass, SPA exclusion, CSRF
+exemption), `website/src/appFrame/*`, `website/src/linkPreview/*`.
+
+## 18b. One frame contract for every frame-backed point
+
+`linkPreviews` is the first point on the §18a model; every later point that draws
+app UI (a button on a message, an item on a selection, a composer action, a
+claimed link) reuses it rather than copying it. The shared pieces and their one
+owner each:
+
+- **Keyed per `(point, id)`.** `point` is the manifest key under `contributes`
+  (`POINT_RE`, lower camel case); `id` is that entry's own id (`POINT_ID_RE`,
+  `[a-z][a-z0-9_-]{0,63}`). Mint `POST /api/apps/{name}/frames/{point}/{id}`
+  (dashboard session only; `?frame=` renews that frame), frame
+  `GET /app-frame/{name}/{point}/{id}/{frame_id}/{token}`, fetch
+  `/app-frame-fetch/{name}/{path}`. The frame token signs `(app, client, frame id,
+  parent port, point, id)` and the capability (`<frame id>~<point>~<id>~<signed>`)
+  signs `(app, client, frame id, point, id)`, so neither opens another entry nor
+  can be relabelled to one. The `frames` route segment is reserved
+  (`CORE_APP_ROUTE_SEGMENTS`).
+- **A resolver per point** (`register_frame_point(point, resolve, script)` in
+  `apps/app_frame.py`). `resolve(app_name, id) -> (entry, process_backed, app) |
+  None` says whether that entry is enabled and granted; the mint, the frame
+  document and every fetch call it, off the event loop, so revoking an entry stops
+  its frame, its renewal and its next fetch. An unregistered point is a 404.
+  `clean_entry` and `process_backed` are the helpers a resolver uses. The points
+  this package ships register at the bottom of the module.
+- **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
+  capability and renewal, `ctx.fetch`, module load, `init` / `capability` /
+  `theme` / `dispose`, the link bridge, `escape`) plus `_INVOCATION` plus the
+  point's script, which defines `POINT = { ctx, accepts(handler), missing, message(m) }`.
+- **The invocation contract**, for a point whose work starts with one user act.
+  The host mints a string `invocationId` per act and sends it in the point's own
+  invoke message with `deadlineMs`; the point script hands its handler
+  `invocationControls(invocationId)`, frozen to that id: `offerCopy(text)` and
+  `offerOpen(url)` post a sequenced `result.offer { invocationId, seq, kind, value }`
+  and resolve on the host's `result.ack` or `result.error { code: stale | too_large
+  | not_allowed }`; `resize`, `close` and `error` post `invocation.resize`,
+  `invocation.close`, `invocation.error`. The host sends `invoke.cancel {
+  invocationId, reason }` when the act ends without a result, which the runtime
+  hands to the handler's `cancel`. The host side is `HostInvocation`
+  (`website/src/appFrame/invocation.ts`): it accepts an offer only for the open
+  invocation and a `seq` above the last, re-arms the deadline on each resize and
+  accepted offer, and acts on an offer only through a host-drawn button (Copy
+  writes the clipboard on the user's click; Open takes an `https:` URL without
+  userinfo). `readInvocationMessage` caps a frame message at
+  `MAX_HOST_MESSAGE_BYTES` (64 KB of JSON); a copy is at most 32,000 UTF-16 units
+  and a URL 2,048. `displaySafe` strips C0 controls and bidi overrides from any
+  text the host shows from a frame. The link-preview point keeps its own
+  show/card messages (§18a) and does not use the contract.
+- **Grant families from one registry** (`apps/point_grants.py`).
+  `register_point_grants(families, entries)` adds a point's families and the
+  function that derives them from a manifest's `contributes`; `grant_source` is the
+  one reader every install, update and approval path uses, and
+  `STAGED_GRANT_FAMILIES` and the enable route's consent read
+  `point_grant_families()`. A family name already taken, or `api` / `events`, is
+  refused.
+- **One host rule** (`apps/app_hosts.py`): `normalize_host` (lowercase, IDNA, no
+  trailing dot, leading dot kept) and `host_refusal` (not a hostname, a public
+  suffix or a bare TLD), for every point that names hosts.
+- **Dashboard side** (`website/src/appFrame/`): `createSandboxedFrame` (the
+  attributes), `mintAppFrame(app, point, id, frameId?)` (accepts only an
+  `/app-frame/` URL), `loadMintedFrame` (`init` on the first load, teardown on a
+  second), `postToFrame`, `renewIntervalMs`, `currentTheme`, and the tag and
+  per-frame token bucket in `frameProtocol.ts`.
+
+Writers: `apps/app_frame.py`, `apps/app_hosts.py`, `apps/point_grants.py`,
+`website/src/appFrame/*`.
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 

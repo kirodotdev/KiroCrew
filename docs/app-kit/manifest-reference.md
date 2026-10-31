@@ -749,7 +749,7 @@ At most **one** provider per app; a link goes to the first enabled app whose
 **Where the module runs.** Never in the dashboard's document. On the first hover
 the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
 with no `allow-same-origin`, and loads a frame document the gateway serves at
-`/link-preview-frame/<app>/…` with its own `Content-Security-Policy: sandbox
+`/app-frame/<app>/linkPreviews/<id>/…` with its own `Content-Security-Policy: sandbox
 allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
 its cookies, its storage or its token. The iframe is `credentialless`, the frame's
 CSP starts from `default-src 'none'` (scripts and network on the gateway only,

@@ -266,8 +266,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         shipped_builtin_app_root,
     )
     from kiro_crew.apps.link_preview_grants import (  # noqa: F401
-        LINK_PREVIEW_GRANT_FAMILIES,
-        grant_source,
         link_preview_grant_row,
     )
     from kiro_crew.apps.manifest import (  # noqa: F401
@@ -277,6 +275,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         contain_command_agents,
         cron_permission_error,
         is_reserved_app_name,
+    )
+    from kiro_crew.apps.point_grants import (  # noqa: F401
+        grant_source,
+        point_grant_families,
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,

@@ -25,8 +25,8 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps.point_grants import point_grant_families
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
@@ -480,12 +480,11 @@ def _write_installed(
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
-# with its own disable-until-consent path below; these are entry lists. The two
-# link-preview families come from ``contributes.linkPreviews`` (see
-# ``link_preview_grants``); a stored set from before they existed does not carry
-# them, and a missing family approves what the manifest declares, as a missing
+# with its own disable-until-consent path below; these are entry lists. The
+# point families (``contributes.linkPreviews`` and the other points, registered in
+# ``point_grants``) follow; a stored set from before one existed does not carry it, and a missing family approves what the manifest declares, as a missing
 # file does for an install that never stored one.
-STAGED_GRANT_FAMILIES = ("api", "events", *LINK_PREVIEW_GRANT_FAMILIES)
+STAGED_GRANT_FAMILIES = ("api", "events", *point_grant_families())
 #: Families every stored set carries; the others are absent from an older file.
 _ALWAYS_STORED_FAMILIES = ("api", "events")
 
