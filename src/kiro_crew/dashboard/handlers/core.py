@@ -77,6 +77,8 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    REMOTE_EDITOR_HOST_RE,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
     TITLE_REFRESH_EVERY_TURNS_MAX,
@@ -294,8 +296,39 @@ async def api_branding(request: web.Request) -> web.Response:
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
+            # Remote-editor link config, read through the same `useBranding`
+            # hook as `direct_local` (FilePathMenu shows the "Open in <editor>"
+            # row whenever both values are set; it does not gate on
+            # `direct_local`, which cannot see an `ssh -L` forward). Both values
+            # are CLAMPED here, not merely forwarded: a three-segment key is kept
+            # by the loader even when it fails schema validation (past the repair
+            # depth cap), so a hand-edited config.json could hold an unknown
+            # editor or a host with URL metacharacters. An unknown editor becomes
+            # "" (row hidden) and a host that is not charset-clean becomes ""
+            # (no malformed link), so the browser never builds a link from an
+            # unvalidated value.
+            "remote_editor": _remote_editor_branding(cfg),
         }
     )
+
+
+def _remote_editor_branding(cfg: KiroCrewConfig) -> dict[str, str]:
+    """Clamp the stored remote-editor config to what a link may safely use.
+
+    Returns ``{"editor", "host"}`` with an unknown editor or a non-charset-clean
+    host reduced to ``""`` (feature off), so the client can trust both values
+    verbatim. The allowed editors (``REMOTE_EDITOR_IDS``) and the host charset
+    (``REMOTE_EDITOR_HOST_RE``) are the schema's own, imported from
+    ``config.sections`` so this clamp, the write gate in ``_EDITABLE_CONFIG``
+    and the schema cannot drift. Reads defensively because the field is a plain
+    dict that may carry loader-kept junk (see :func:`api_branding`).
+    """
+    raw = cfg.dashboard.remote_editor if isinstance(cfg.dashboard.remote_editor, dict) else {}
+    editor = raw.get("editor", "")
+    host = raw.get("host", "")
+    editor = editor if editor in REMOTE_EDITOR_IDS else ""
+    host = host if isinstance(host, str) and REMOTE_EDITOR_HOST_RE.fullmatch(host) else ""
+    return {"editor": editor, "host": host}
 
 
 async def _liveness_payload(request: web.Request) -> dict[str, object]:

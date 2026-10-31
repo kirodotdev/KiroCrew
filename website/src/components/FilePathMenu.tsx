@@ -39,7 +39,7 @@
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, FolderOpen, FolderTree, Copy, Check, AlertCircle, PenLine, PanelRight } from 'lucide-react'
+import { ExternalLink, FolderOpen, FolderTree, Copy, Check, AlertCircle, PenLine, PanelRight, Code2 } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -52,7 +52,8 @@ import { useBranding } from '../hooks/useBranding'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
-import { canOpenFileInEditor, openFileInEditor } from '../lib/electron'
+import { canOpenFileInEditor, isElectron, openFileInEditor } from '../lib/electron'
+import { isEmbeddedPane } from '../lib/embedded'
 import { parentDir } from '../apps/file-explorer/deepLink'
 import { i18nT } from '../i18n/t'
 
@@ -209,6 +210,173 @@ export function useOpenInEditor(filePath: string, kind?: FilePathKind) {
   return { canOpenInEditor, openInEditor, editorError, clearEditorError }
 }
 
+/**
+ * The VS Code-family editors the "Open in <editor>" row can target. The id IS
+ * the URL scheme; each keeps the `vscode-remote` authority, so the link is
+ * `<scheme>://vscode-remote/ssh-remote+<host><path>`. `label` is the brand
+ * proper noun — passed to i18n as an interpolation var, never a catalog value,
+ * so it is displayed verbatim in every language.
+ *
+ * This map is also the frontend's own allowlist: `remoteEditorUrl` returns null
+ * for any editor id not a key here, so even a value the server-side clamp missed
+ * cannot mint a link to an arbitrary registered protocol handler.
+ */
+export const REMOTE_EDITORS: Record<string, { scheme: string; label: string }> = {
+  vscode: { scheme: 'vscode', label: 'VS Code' },
+  kiro: { scheme: 'kiro', label: 'Kiro' },
+}
+
+/**
+ * Build the remote-authority editor URL for `absPath`, or null when the feature
+ * is off (no editor), no host is set, or the editor id is unknown.
+ *
+ * The host goes verbatim after `ssh-remote+` — it is charset-restricted at the
+ * config boundary, so it cannot carry URL structure. Every path SEGMENT is
+ * percent-encoded (so a space, `#`, `?` or `%` in a filename cannot break out of
+ * the path) while the `/` separators stay literal, which is the shape a
+ * vscode-remote authority expects.
+ *
+ * Non-UTF-8 POSIX filenames can arrive as lone surrogates that URI encoding
+ * rejects; hiding the editor row is safer than crashing the file surface.
+ *
+ * Only ABSOLUTE paths are accepted: a relative path would glue its first
+ * segment directly onto the SSH authority (`prod` + `-backup/x` would target
+ * host `prod-backup`), so anything not starting with `/` returns null.
+ *
+ * Dot segments (`.` / `..`) are rejected too. `encodeURIComponent` leaves them
+ * unchanged, and URL parsing then removes them BEFORE the editor reads the
+ * `ssh-remote+<host>` path segment, so `/x/../../ssh-remote+evil/y` would open
+ * an SSH session to `evil` and `/../etc/hosts` would target host `etc`. The
+ * gateway's own realpath accepts such a path as a real file, so the check must
+ * live here. Dotted NAMES (`.env`, `..b`, `...`) are ordinary segments and
+ * stay allowed. As a last line, the built URL is re-parsed and must still
+ * carry `/ssh-remote+<host>/` as its leading path segment.
+ */
+export function remoteEditorUrl(editor: string, host: string, absPath: string): string | null {
+  const entry = REMOTE_EDITORS[editor]
+  if (!entry || !host || !absPath || !absPath.startsWith('/')) return null
+  const segments = absPath.split('/')
+  if (segments.some((s) => s === '.' || s === '..')) return null
+  let encodedPath: string
+  try {
+    encodedPath = segments.map(encodeURIComponent).join('/')
+  } catch (error) {
+    if (error instanceof URIError) return null
+    throw error
+  }
+  const url = `${entry.scheme}://vscode-remote/ssh-remote+${host}${encodedPath}`
+  const authority = `/ssh-remote+${host}/`
+  try {
+    const parsed = new URL(url)
+    if (parsed.host !== 'vscode-remote' || !parsed.pathname.startsWith(authority)) return null
+  } catch {
+    return null
+  }
+  return url
+}
+
+/**
+ * The remote-editor menu action for `filePath`, or null when the row must not
+ * render. Shown whenever an editor AND a host are configured.
+ *
+ * It is deliberately NOT gated on `directLocal`. That flag cannot tell an
+ * `ssh -L` port-forward from a browser on the gateway host (the request arrives
+ * on loopback either way), and a headless gateway reached over a forward is the
+ * main topology this row exists for. Configuring an SSH host is itself the
+ * user's statement that the gateway is reached remotely, and the link only ever
+ * acts on the viewer's own machine (their local editor, over their own SSH), so
+ * showing it on a genuinely local session costs nothing: the link still works,
+ * it just connects to this host over SSH.
+ *
+ * Unlike the Open row it is deliberately NOT gated on `kind`: a vscode-remote
+ * authority opens a directory as a remote workspace, which is useful for editing
+ * a whole config tree. Shared by the three file-location surfaces (this menu,
+ * MarkdownPanel's overflow, FileViewer's overflow) so the row is gated and
+ * labelled identically everywhere, the same way `useCanOpenFile` /
+ * `useRevealLabel` are shared.
+ *
+ * `open` is the click handler and `sent` / `label` are its acknowledgment. The
+ * built link is not returned: `open` is the only way to route it (see
+ * `openRemoteEditor`), so a consumer cannot skip the acknowledgment by
+ * navigating the URL itself. A custom-scheme navigation is fire-and-forget:
+ * when no handler is registered for `vscode://` / `kiro://`, or the editor's
+ * SSH connection fails, the browser drops the navigation silently and the page
+ * reports nothing back. With no toast in the app, the ONE place that can tell
+ * the user anything is the row itself, so after a click `label` swaps from
+ * "Open in <editor>" to a sent-plus-troubleshooting hint and `sent` is true
+ * (the consumer uses it to let the row wrap). The hint has no timer of its own:
+ * it would otherwise vanish mid-read while the menu is still open, and the
+ * troubleshooting line is exactly what a user whose editor did not open needs
+ * to be reading. It stays until the menu closes — the consumer calls `reset()`
+ * from its menu's close path (FilePathMenu's items unmount with the Radix
+ * content, so there the unmount cleanup is the reset) — and is also reset on
+ * path change, so a menu moved to another file does not show it as already
+ * sent.
+ */
+export function useRemoteEditorOpen(
+  filePath: string,
+): { label: string; open: () => void; sent: boolean; reset: () => void } | null {
+  const { remoteEditor } = useBranding()
+  const [sent, setSent] = useState(false)
+  // Stable so a consumer can hang a close-effect on it without re-firing.
+  const reset = useCallback(() => setSent(false), [])
+  // An acknowledgment belongs to the path it was earned for: moving the menu
+  // to another file must not show it as already sent.
+  useEffect(() => { setSent(false) }, [filePath])
+  // `!remoteEditor` guards a branding value that has not loaded yet or a
+  // partial test stub that omits the field.
+  if (!remoteEditor) return null
+  // Inside an embedded instance pane the frame's CSP `frame-src` refuses a
+  // custom-scheme navigation before it reaches the OS. Electron also denies
+  // the renderer's `openExternal` permission and exposes no URL-launch bridge,
+  // so assigning `window.location.href` there cannot hand the scheme to the OS.
+  // In either host the row would be a dead click that then blames the editor.
+  if (isEmbeddedPane() || isElectron) return null
+  const url = remoteEditorUrl(remoteEditor.editor, remoteEditor.host, filePath)
+  if (!url) return null
+  const editor = REMOTE_EDITORS[remoteEditor.editor].label
+  const open = () => {
+    openRemoteEditor(url)
+    setSent(true)
+  }
+  return {
+    label: i18nT(sent
+      ? 'components.filePathMenu.remote_editor_sent'
+      : 'components.filePathMenu.open_in_remote_editor', { editor }),
+    open,
+    sent,
+    reset,
+  }
+}
+
+/**
+ * The screen-reader half of the "Sent to <editor>" acknowledgment. The row's
+ * label swap is a silent in-place text change (an `aria-label` rewrite announces
+ * nothing), so this renders the same hint into a visually-hidden polite live
+ * region while `sent` is on, and nothing otherwise. The region is mounted (empty)
+ * from the moment the menu opens so the later text change is what gets announced.
+ * Shared by the three file-location menus beside their remote-editor row, the
+ * same way the row itself is shared through `useRemoteEditorOpen`.
+ */
+export function RemoteEditorSentStatus({ action }: { action: { label: string; sent: boolean } }) {
+  return (
+    <span role="status" aria-live="polite" className="sr-only" data-testid="remote-editor-sent-status">
+      {action.sent ? action.label : ''}
+    </span>
+  )
+}
+
+/**
+ * Route a custom-scheme editor link. Uses `window.location.href` (not an
+ * `<a href>` the chat-markdown link rewriter would rewrite — see #9925), which
+ * hands the URL to the OS scheme handler and leaves the dashboard page in place.
+ * Only `useRemoteEditorOpen`'s `open` calls it, so the acknowledgment cannot be
+ * skipped by a consumer routing the URL directly; not exported for that reason.
+ */
+function openRemoteEditor(url: string): void {
+  window.location.href = url
+}
+
 // ── Menu-item building blocks ────────────────────────────────────────────────
 
 /** The host's in-app openers. Each one, when passed, adds its menu row; a host
@@ -323,6 +491,11 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
   // The one shared Open gate (see useCanOpenFile) — the same predicate the two
   // overflow menus consume, so a Windows/dir target hides Open identically.
   const canOpen = useCanOpenFile(kind)
+  // The shared remote-editor action (see useRemoteEditorOpen): an "Open in
+  // <editor>" row whenever an editor and SSH host are configured, gated and
+  // labelled identically to the MarkdownPanel / FileViewer overflows. null when
+  // the feature is off.
+  const remoteEditorAction = useRemoteEditorOpen(filePath)
 
   // In-app rows: gated on the host's handler alone, never on locality, so a
   // viewer on another machine always has an entry that acts on its own screen.
@@ -422,6 +595,30 @@ function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePat
           message={editorError}
           describedBy={editorErrorId}
         />
+      )}
+      {/* Open in the user's LOCAL editor over their own SSH session (see
+          useRemoteEditorOpen), beside the desktop shell's Open in editor: both
+          launch an editor on the viewer's machine rather than acting on the
+          gateway host. preventDefault keeps the menu open, matching the Copy
+          row: the OS scheme handoff reports nothing back, so the row's label
+          swap is the only acknowledgment and it must stay on screen to be
+          read. `sent` lets the longer hint wrap instead of widening the menu,
+          at the same cap the in-menu ErrorNotice uses; the sibling live region
+          (RemoteEditorSentStatus) is what announces that swap to a screen
+          reader. Directory targets are
+          allowed (opens as a remote workspace), so it is not gated on `kind`. */}
+      {remoteEditorAction && (
+        <>
+          <ContextMenuItem
+            onSelect={(e) => { e.preventDefault(); remoteEditorAction.open() }}
+            aria-label={remoteEditorAction.label}
+            className={remoteEditorAction.sent ? 'whitespace-normal max-w-[260px]' : undefined}
+          >
+            <Code2 size={14} className="lucide-inline" />
+            {remoteEditorAction.label}
+          </ContextMenuItem>
+          <RemoteEditorSentStatus action={remoteEditorAction} />
+        </>
       )}
       {canOpen && (
         <ContextMenuItem

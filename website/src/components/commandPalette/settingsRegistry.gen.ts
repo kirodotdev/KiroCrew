@@ -2099,6 +2099,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.editor",
+    "label": "Editor",
+    "labelKey": "pages.settings.displayPanel.remote_editor_editor",
+    "description": "For a gateway on another machine: adds an option to file menus that opens the gateway's file in your local editor over your own SSH session.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.editor"
+  },
+  {
     "id": "display.enable-ligatures",
     "label": "Enable ligatures",
     "labelKey": "pages.settings.displayPanel.custom_font_ligatures",
@@ -2267,6 +2280,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "sub": "sidebar"
     },
     "configKey": "dashboard.show_unread_dot"
+  },
+  {
+    "id": "display.ssh-host",
+    "label": "SSH host",
+    "labelKey": "pages.settings.displayPanel.remote_editor_host",
+    "description": "The name you'd use with ssh to reach the gateway: a hostname or ~/.ssh/config alias, with no port or path. The alias must exist on every machine you open this dashboard from.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "remote-editor"
+    },
+    "configKey": "dashboard.remote_editor.host"
   },
   {
     "id": "display.theme",

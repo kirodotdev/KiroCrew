@@ -50,6 +50,8 @@ from kiro_crew.config.sections import (
     FEATURE_PREVIEW_FLAGS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
 )
@@ -320,6 +322,22 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "dashboard.terminal.external_app": {
         "type": "enum",
         "values": ["", *EXTERNAL_TERMINAL_APPS],
+    },
+    # Remote-editor link (Settings → Display → Remote editor). Both keys are
+    # three segments deep, so the loader keeps a bad value on load and the write
+    # gate is the real enforcement point for anything a UI or CLI writes.
+    # `editor` is an enum, not a free string: the value ends up interpolated into
+    # a clickable custom-scheme URL, so an open set would let a write mint a link
+    # to any protocol handler. "" = off. The values list and the host pattern
+    # are the schema's own (`config.sections.REMOTE_EDITOR_*`), also used by the
+    # branding clamp, so the write gate and the read path cannot disagree.
+    "dashboard.remote_editor.editor": {"type": "enum", "values": ["", *REMOTE_EDITOR_IDS]},
+    # SSH authority the link connects over. Charset-restricted so it cannot
+    # inject path/query/authority structure into the generated URL; "" clears it.
+    "dashboard.remote_editor.host": {
+        "type": "str",
+        "max_len": 256,
+        "pattern": REMOTE_EDITOR_HOST_PATTERN,
     },
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in

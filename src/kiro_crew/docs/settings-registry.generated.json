@@ -1209,6 +1209,14 @@
       "hint": "How the session color is applied to the row."
     },
     {
+      "id": "display.editor",
+      "label": "Editor",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.editor",
+      "description": "For a gateway on another machine: adds an option to file menus that opens the gateway's file in your local editor over your own SSH session.",
+      "configKey": "dashboard.remote_editor.editor"
+    },
+    {
       "id": "display.enable-ligatures",
       "label": "Enable ligatures",
       "tab": "display",
@@ -1306,6 +1314,14 @@
       "tab": "display",
       "route": "/settings/display/sidebar?highlight=key%3Adashboard.show_unread_dot",
       "configKey": "dashboard.show_unread_dot"
+    },
+    {
+      "id": "display.ssh-host",
+      "label": "SSH host",
+      "tab": "display",
+      "route": "/settings/display/remote-editor?highlight=key%3Adashboard.remote_editor.host",
+      "description": "The name you'd use with ssh to reach the gateway: a hostname or ~/.ssh/config alias, with no port or path. The alias must exist on every machine you open this dashboard from.",
+      "configKey": "dashboard.remote_editor.host"
     },
     {
       "id": "display.theme",

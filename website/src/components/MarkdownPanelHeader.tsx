@@ -11,7 +11,8 @@ import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
-import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile } from './FilePathMenu'
+import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useRemoteEditorOpen, RemoteEditorSentStatus } from './FilePathMenu'
+import { cn } from '../lib/utils'
 import { useFileArtifactState, useFileKnowledgeState, type ReportError } from './useMarkdownPanelFileState'
 
 /**
@@ -370,6 +371,9 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // path against, so for one of those the row would only promise an error.
   const filesApp = useFilesAppTarget()
   const openInFiles = filesApp && isAbsolutePath(filePath) ? filesApp : null
+  // Shared remote-editor row (see FilePathMenu.useRemoteEditorOpen): a remote
+  // session's "Open in <editor>" link, iconless to match this group.
+  const remoteEditorAction = useRemoteEditorOpen(filePath)
   const knowledge = useFileKnowledgeState(filePath, onError)
   const artifact = useFileArtifactState(filePath, content, onError)
   const contribItems = useFileMenuItems('file-overflow')
@@ -378,17 +382,20 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
   // Reset the per-mutation success flags whenever the menu closes so the
   // i18nT('components.markdownPanel.added') / 'Snapshotted!' acknowledgement doesn't bleed into the next
-  // open if the user closed quickly. Destructure the callbacks so the dep
-  // array stays stable across renders (object refs from hooks change every
-  // render, causing the effect to re-fire constantly).
+  // open if the user closed quickly. The remote-editor "Sent to …" hint resets
+  // the same way: it has no timer, so this close is what ends it. Destructure
+  // the callbacks so the dep array stays stable across renders (object refs
+  // from hooks change every render, causing the effect to re-fire constantly).
   const knowledgeReset = knowledge.reset
   const artifactResetAdd = artifact.resetAdd
+  const remoteEditorReset = remoteEditorAction?.reset
   useEffect(() => {
     if (!open) {
       knowledgeReset()
       artifactResetAdd()
+      remoteEditorReset?.()
     }
-  }, [open, knowledgeReset, artifactResetAdd])
+  }, [open, knowledgeReset, artifactResetAdd, remoteEditorReset])
   useEffect(() => {
     if (!open) return
     const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
@@ -514,6 +521,22 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
             </button>
+          )}
+          {/* Remote-editor link (configured editor + SSH host — see useRemoteEditorOpen).
+              Iconless like its neighbours; hands off to the OS scheme handler. The
+              menu stays OPEN on click, unlike its neighbours: the handoff reports
+              nothing back, so the row's label swap ("Sent to …") is the only
+              acknowledgment the user gets, and it must be on screen to be read.
+              `sent` lifts the row's nowrap so the longer hint wraps inside the
+              menu's width cap instead of being clipped. The sibling live region
+              announces the swap to a screen reader. */}
+          {remoteEditorAction && (
+            <>
+              <button role="menuitem" data-option tabIndex={-1} className={cn(menuRowCls, remoteEditorAction.sent && 'whitespace-normal')} onClick={remoteEditorAction.open}>
+                {remoteEditorAction.label}
+              </button>
+              <RemoteEditorSentStatus action={remoteEditorAction} />
+            </>
           )}
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
             {i18nT('components.markdownPanel.copy_path')}

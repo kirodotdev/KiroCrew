@@ -88,6 +88,15 @@ def test_session_environment_paths_keep_their_class(path, cls, before, after, ri
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
 
 
+def test_remote_editor_host_is_code_exec_and_editor_cannot_widen():
+    # Pins the CLASS, not just the card: a host moved back to the cannot-widen
+    # list would silently drop the warning on an agent-proposed SSH destination.
+    assert "dashboard.remote_editor.host" in catalog._CODE_EXEC_SETTINGS
+    assert "dashboard.remote_editor.host" not in catalog._CANNOT_WIDEN_SETTINGS
+    assert "dashboard.remote_editor.editor" in catalog._CANNOT_WIDEN_SETTINGS
+    assert "dashboard.remote_editor.editor" not in catalog._CODE_EXEC_SETTINGS
+
+
 @pytest.mark.parametrize(
     "before,after,risk",
     [

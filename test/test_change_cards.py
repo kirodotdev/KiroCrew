@@ -78,6 +78,12 @@ def test_a_secret_card_has_no_value_field_at_all():
                 ("knowledge.auto_add_documents", True, False, "tighten"),
                 ("agent.acp_backend", "", "claude", "code_exec"),
                 ("session.pool_agent", "", "builder", "code_exec"),
+                # The host is where the USER's editor opens SSH with the user's keys.
+                ("dashboard.remote_editor.host", "", "user@evil.example", "code_exec"),
+                ("dashboard.remote_editor.host", "dev.example.com", "", "code_exec"),
+                # The editor is a closed allowlist of local schemes: nothing to widen.
+                ("dashboard.remote_editor.editor", "", "vscode", "normal"),
+                ("dashboard.remote_editor.editor", "vscode", "kiro", "normal"),
                 ("telemetry.enabled", False, True, "normal"),
             ],
         ),
