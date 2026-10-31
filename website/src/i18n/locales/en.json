@@ -5837,7 +5837,8 @@
       "download_as_html": "Download as HTML",
       "open_in_new_tab": "Open in new tab",
       "retry": "Retry",
-      "save_failed": "save failed"
+      "save_failed": "save failed",
+      "open_artifact_named": "Open artifact “{{slug}}”"
     },
     "widgetPlaceholder": {
       "generating": "generating…"
@@ -9163,7 +9164,6 @@
       "view_list": "List",
       "add_job": "Add Job",
       "agent": "agent ·",
-      "and_their_run_history_this_action_cannot_be_undo": "and their run history. This action cannot be undone.",
       "ask_in_chat": "ask in chat",
       "cancel": "Cancel",
       "cancel_run": "Cancel Run",
@@ -9198,22 +9198,15 @@
       "running": "Running",
       "schedule": "Schedule",
       "schedule_recurring_tasks_to_run_automatically_ch": "Schedule recurring tasks to run automatically — check pipelines, generate reports, monitor services, or anything your agent can do.",
-      "scheduled_job_one": "{{count}} scheduled job",
-      "scheduled_job_other": "{{count}} scheduled jobs",
       "script_python": "script · python",
       "select_all_jobs": "Select all jobs",
       "select_deselect_all_jobs_matching_the_current_fi": "Select / deselect all visible jobs (collapsed folders excluded)",
-      "selected": "selected",
       "start_from_a_pre_made_schedule": "Start from a pre-made schedule",
       "status": "Status",
       "strict": "Strict",
-      "this_permanently_removes_the_selected_job_one": "This permanently removes the selected job",
-      "this_permanently_removes_the_selected_job_other": "This permanently removes the selected jobs",
       "this_will_permanently_remove_the_scheduled_job_t": "This will permanently remove the scheduled job. This action cannot be undone.",
-      "to_confirm": "to confirm",
       "try_remind_me_to_check_my_pipeline_every_morning": "— try \"remind me to check my pipeline every morning\"",
       "type": "Type",
-      "type_verb_to_confirm": "Type",
       "no_owning_session": "No owning session",
       "owning_session": "Owning session",
       "type_crewmate": "Mate",
@@ -9222,7 +9215,16 @@
       "details_tab": "Details",
       "logs_tab": "Logs",
       "delete_n_selected_jobs_one": "Delete {{count}} selected job",
-      "delete_n_selected_jobs_other": "Delete {{count}} selected jobs"
+      "delete_n_selected_jobs_other": "Delete {{count}} selected jobs",
+      "n_selected_one": "{{count}} selected",
+      "n_selected_other": "{{count}} selected",
+      "delete_n_selected_one": "Delete {{count}} selected",
+      "delete_n_selected_other": "Delete {{count}} selected",
+      "delete_n_scheduled_jobs_title_one": "Delete {{count}} scheduled job?",
+      "delete_n_scheduled_jobs_title_other": "Delete {{count}} scheduled jobs?",
+      "bulk_delete_removes_jobs_and_history_one": "This permanently removes the selected job and its run history. This action cannot be undone.",
+      "bulk_delete_removes_jobs_and_history_other": "This permanently removes the selected jobs and their run history. This action cannot be undone.",
+      "type_token_to_confirm": "Type <token/> to confirm"
     },
     "servicesTab": {
       "connected": "Connected",
