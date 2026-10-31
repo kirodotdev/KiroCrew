@@ -659,3 +659,196 @@ async def test_a_silent_run_rings_no_bell_and_still_counts_as_delivered(done: _D
 
     assert done.notices() == []
     assert info._report_delivered is True
+
+
+# ── a cron parent whose tab is open ──────────────────────────────────────────
+
+
+class _WatchedFuture(asyncio.Future):  # type: ignore[type-arg]
+    """A turn stand-in that records when something starts waiting on it."""
+
+    watched = False
+
+    def add_done_callback(self, fn: Any, *, context: Any = None) -> None:
+        self.watched = True
+        super().add_done_callback(fn, context=context)
+
+
+def _cron_tab(done: _Done, parent: str = "cron:j1:r1") -> Any:
+    done.tabs[parent] = "cron-j1"
+    return done.tab("cron-j1")
+
+
+@pytest.mark.asyncio
+async def test_an_open_cron_tab_takes_the_turn_and_the_cron_session_still_resets(
+    done: _Done,
+) -> None:
+    slot = _cron_tab(done)
+    info = make_info(parent="cron:j1:r1")
+
+    await done.done(info)
+    await done.drain()
+
+    assert [c[0] for c in done.chats] == [slot]
+    assert not any(c[0] == "acquire" for c in done.calls)
+    done.sessions.reset.assert_awaited_once_with("cron:j1:r1", skip_if_busy=True)
+    done.orch.cron_svc.clear_active_session_key.assert_called_once_with("j1", "cron:j1:r1")
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_on_done_returns_while_the_cron_tab_turn_holds_the_session(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    release: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started: list[str] = []
+
+    async def _held_turn(_state: Any, _slot: Any, text: str, **_kw: Any) -> None:
+        started.append(text)
+        await release
+
+    monkeypatch.setattr(done, "_run_chat", _held_turn)
+    delivery = asyncio.ensure_future(done.on_done(make_info(parent="cron:j1:r1")))
+    await _until(lambda: bool(started), "the tab turn")
+    await _until(delivery.done, "on_done returning after the tab hand-off")
+    delivery.result()
+
+    # A cron fire that ends now reads this count and defers its own reset.
+    assert not release.done()
+    assert done.orch._cron_injecting == {"cron:j1:r1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    release.set_result(None)
+    await done.drain()
+
+    assert ("reset", "cron:j1:r1") in done.calls
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cron_tab_turn_keeps_the_reset_deferred_past_injection_timeout(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    monkeypatch.setattr(gw_mod, "INJECTION_TIMEOUT", 0.01)
+    release: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def _held_turn(_state: Any, _slot: Any, _text: str, **_kw: Any) -> None:
+        started.set_result(None)
+        await release
+
+    monkeypatch.setattr(done, "_run_chat", _held_turn)
+    delivery = asyncio.ensure_future(done.on_done(make_info(parent="cron:j1:r1")))
+    await _until(started.done, "the cron tab turn")
+    await _until(delivery.done, "on_done returning after the tab hand-off")
+    delivery.result()
+
+    beyond_bound: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_later(
+        gw_mod.INJECTION_TIMEOUT * 2, beyond_bound.set_result, None
+    )
+    await _until(beyond_bound.done, "the old injection timeout passing")
+
+    assert done.orch._cron_injecting == {"cron:j1:r1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    release.set_result(None)
+    await done.drain()
+
+    done.sessions.reset.assert_awaited_once_with("cron:j1:r1", skip_if_busy=True)
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_queued_sibling_keeps_the_cron_session_behind_an_open_tab(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cron_tab(done)
+    monkeypatch.setattr(gw_mod, "_subagent_queued_count", AsyncMock(return_value=1))
+
+    await done.done(make_info(parent="cron:j1:r1"))
+    await done.drain()
+
+    assert len(done.chats) == 1
+    assert not any(c[0] == "reset" for c in done.calls)
+    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cron_completion_skipped_by_the_tab_still_resets_the_session(
+    done: _Done,
+) -> None:
+    slot = _cron_tab(done)
+    slot._subagents_inline_collected = {"a1"}
+
+    await done.done(make_info(parent="cron:j1:r1"))
+
+    assert done.chats == []
+    done.sessions.reset.assert_awaited_once_with("cron:j1:r1", skip_if_busy=True)
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_busy_cron_session_keeps_its_registration_behind_an_open_tab(
+    done: _Done,
+) -> None:
+    _cron_tab(done, parent="cron:j1")
+    done.sessions.reset = AsyncMock(return_value=False)
+
+    await done.done(make_info(parent="cron:j1"))
+    await done.drain()
+
+    done.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
+    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_completion_queued_behind_a_busy_cron_tab_resets_after_the_tab_goes_idle(
+    done: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slot = _cron_tab(done, parent="cron:j1")
+    monkeypatch.setattr(gw_mod, "INJECTION_TIMEOUT", 0.01)
+    loop = asyncio.get_running_loop()
+    running: asyncio.Future[None] = loop.create_future()
+    slot.running = True
+    slot.task = running
+
+    await done.done(make_info(parent="cron:j1"))
+
+    assert done.chats == [] and len(slot.queued) == 1
+    assert done.orch._cron_injecting == {"cron:j1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    # The drain starts the queued card's turn before the running one completes.
+    queued_turn = _WatchedFuture(loop=loop)
+    slot._queue.pop(0)
+    slot.task = queued_turn
+    running.set_result(None)
+    await _until(lambda: queued_turn.watched, "the settlement waiting on the queued turn")
+    assert done.orch._cron_injecting == {"cron:j1": 1}
+    assert not any(c[0] == "reset" for c in done.calls)
+
+    slot.running = False
+    slot.task = None
+    queued_turn.set_result(None)
+    await done.drain()
+
+    done.sessions.reset.assert_awaited_once_with("cron:j1", skip_if_busy=True)
+    assert done.orch._cron_injecting == {}
+
+
+@pytest.mark.asyncio
+async def test_a_parked_cron_completion_leaves_the_session_for_its_turn(done: _Done) -> None:
+    slot = _cron_tab(done, parent="cron:j1")
+    done.drain_refuses = True
+
+    await done.done(make_info(parent="cron:j1"))
+    await done.drain()
+
+    assert done.chats == [] and len(slot._queue) == 1
+    assert not any(c[0] == "reset" for c in done.calls)
+    done.orch.cron_svc.clear_active_session_key.assert_not_called()
+    assert done.orch._cron_injecting == {}
