@@ -4008,19 +4008,19 @@
       "stats": {
         "busiest_day": "最多チャットの日：{{date}}（{{count}}件のメッセージ）",
         "companion_days": "{{time}}一緒にいます",
-        "drags": "{{count}}回ドラッグしました",
+        "drags_other": "{{n}}回ドラッグしました",
         "earliest_time": "最早：{{time}}に起床",
         "first_use": "{{name}}とのストーリーが始まったばかり",
         "latest_time": "最遅：{{time}}まで起きていました",
-        "longest_chat": "最長チャット：{{count}}件のメッセージ",
+        "longest_chat_other": "最長チャット：{{n}}件のメッセージ",
         "messages": "{{total}}件のメッセージ（{{sent}}件があなた · {{received}}件{{name}}）",
         "mood_top": "ムード",
-        "peeks": "{{count}}回ピーク",
-        "screenshots": "スクリーンを{{count}}回確認",
+        "peeks_other": "{{n}}回ピーク",
+        "screenshots_other": "スクリーンを{{n}}回確認",
         "streak": "（{{streak}}日連続）",
         "thinking_time": "{{time}}考えました",
         "title": "思い出",
-        "walks": "{{count}}ステップ"
+        "walks_other": "{{n}}ステップ"
       },
       "tip": {
         "bedtime": "試してみてください：「11時に寝るよう教えて」",
@@ -16082,7 +16082,7 @@
       "status_error": "終了",
       "status_running": "実行中",
       "title": "セッション内訳",
-      "tool_count": "ツール {{count}} 件",
+      "tool_count_other": "ツール {{n}} 件",
       "unknown_agent": "サブエージェント",
       "unknown_model": "不明"
     },
@@ -16126,7 +16126,7 @@
       "prev_page": "前へ",
       "preview_sweep": "一括削除をプレビュー",
       "reclaim_by_age": "経過日数で回収",
-      "refused_heading": "{{count}}件のセッションを移動できませんでした",
+      "refused_heading_other": "{{n}}件のセッションを移動できませんでした",
       "refused_in_use": "セッションは使用中です",
       "refused_resumable": "まだ再開可能",
       "refused_too_fresh": "セッションが新しすぎます",

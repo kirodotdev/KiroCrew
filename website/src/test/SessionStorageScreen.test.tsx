@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import SessionStorageScreen from '../pages/system/SessionStorageScreen'
+import {
+  consumeChatHandoff, installSoftNavigate, __resetErrorJournalForTests, __resetNavSeamForTests,
+} from '../utils/errorReport'
 import type { SessionInventoryList, SessionInventoryDetail, SessionStorageCleanup, SessionStorageEmptyJob, SessionTrashResult } from '../types'
 
 globalThis.ResizeObserver = class {
@@ -268,10 +271,87 @@ describe('SessionStorageScreen (inventory)', () => {
     await userEvent.click(screen.getByRole('button', { name: /Move to Trash/ }))
 
     await waitFor(() => expect(screen.getByText(/could not be moved/)).toBeTruthy())
+    // One refusal is counted in the singular, and the refusal is an announced
+    // error notice rather than a plain box.
+    expect(screen.getByText('1 session could not be moved')).toBeTruthy()
+    expect(
+      screen.getAllByRole('alert').some(el => el.textContent?.includes('1 session could not be moved')),
+    ).toBe(true)
     // The refusal line carries the session's title and the reason…
     expect(screen.getByText(/Refactor the ACP adapter: .*in use/i)).toBeTruthy()
     // …and does not print the id.
     expect(screen.queryByText(/dashboard_chat-70:/)).toBeNull()
+  })
+
+  it('gives each refused session its own row inside the alert', async () => {
+    trashFn.mockResolvedValueOnce({
+      sessions: 0,
+      bytes: 0,
+      batch_id: '',
+      refused: [
+        { uid: 'dashboard_chat-70', reason: 'in_use' },
+        { uid: 'dashboard_chat-52', reason: 'too_fresh' },
+      ],
+    })
+
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    const checkboxes = screen.getAllByRole('checkbox')
+    await userEvent.click(checkboxes[0])
+    await userEvent.click(screen.getByRole('button', { name: /Move to Trash/ }))
+
+    await waitFor(() => expect(screen.getByText('2 sessions could not be moved')).toBeTruthy())
+    const alert = screen.getAllByRole('alert').find(el => el.textContent?.includes('2 sessions could not be moved'))
+    const rows = Array.from(alert?.querySelectorAll('li') ?? []).map(li => li.textContent)
+    expect(rows).toEqual([
+      expect.stringMatching(/^Refactor the ACP adapter: .*in use/i),
+      expect.stringMatching(/^Sydney property platform: /),
+    ])
+  })
+
+  it('hands the agent each refused session and its reason, not only the heading', async () => {
+    __resetErrorJournalForTests()
+    __resetNavSeamForTests()
+    const navigated: string[] = []
+    installSoftNavigate(to => { navigated.push(to) })
+    trashFn.mockResolvedValueOnce({
+      sessions: 0,
+      bytes: 0,
+      batch_id: '',
+      refused: [
+        { uid: 'dashboard_chat-70', reason: 'in_use' },
+        { uid: 'dashboard_chat-52', reason: 'too_fresh' },
+      ],
+    })
+
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    await userEvent.click(screen.getAllByRole('checkbox')[0])
+    await userEvent.click(screen.getByRole('button', { name: /Move to Trash/ }))
+
+    const notice = await screen.findByTestId('session-storage-refused')
+    fireEvent.click(within(notice).getByRole('button', { name: /ask the agent/i }))
+
+    expect(navigated).toEqual(['/chat'])
+    const staged = consumeChatHandoff() ?? ''
+    expect(staged).toContain('2 sessions could not be moved')
+    expect(staged).toContain('/api/system/session-storage/trash')
+    expect(staged).toContain('dashboard_chat-70: in_use')
+    expect(staged).toContain('dashboard_chat-52: too_fresh')
+  })
+
+  it('says so when the move request itself fails, with the agent hand-off', async () => {
+    trashFn.mockRejectedValueOnce(new Error('could not reach the gateway'))
+
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+    await userEvent.click(screen.getAllByRole('checkbox')[0])
+    await userEvent.click(screen.getByRole('button', { name: /Move to Trash/ }))
+
+    const notice = await screen.findByTestId('session-storage-trash-failed')
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(notice.textContent).toContain('could not reach the gateway')
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
 
   /**
