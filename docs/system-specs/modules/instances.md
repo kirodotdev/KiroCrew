@@ -1767,12 +1767,24 @@ window is a Session Manager preference, not a value this code knows.
 `diagnose_instance_ssm` mirrors the SSH ladder with an SSM first rung, so an
 offline agent is not reported as a dead remote gateway:
 
-1. managed node online? (`describe-instance-information`) → no ⇒ `ssm_unreachable`
+1. managed node online? (`describe-instance-information`) → no ⇒ `ssm_unreachable`,
+   or `ssm_target_missing` when the read succeeded and SSM lists no node with that id
 2. remote dashboard up? (`send-command` + curl on the remote loopback) → no ⇒ `remote_down`
 3. local forward reachable? → no ⇒ `tunnel_down`, else `ok`
 
-`ssm_unreachable` is an SSM-specific diagnosis code; the shared rungs reuse SSM-worded
-reasons so the copy never tells an SSM user to "check SSH access".
+`ssm_unreachable` and `ssm_target_missing` are SSM-specific diagnosis codes; the shared
+rungs reuse SSM-worded reasons so the copy never tells an SSM user to "check SSH access".
+`ssm_target_missing` exists because `ssm_target` is a fixed id: after an instance is
+terminated or replaced (an Auto Scaling instance refresh gives it a new id) the row keeps
+the old one, and `StartSession` answers that id with the same "not connected" error as
+an offline agent. The first rung's own read already separates the two -- a listed node
+with a non-`Online` `PingStatus` versus no listed node at all -- so this costs no extra
+AWS call and no extra permission. A wrong account or region also lists no node, so the
+reason names both causes. A terminated instance SSM still lists, a read that prints
+nothing, and a read that errors all read as `ssm_unreachable`, as before, so if SSM
+answers an unknown id with an error rather than an empty list the result degrades to
+the old code rather than a wrong one. Resolving a replacement automatically is not done
+here.
 
 ### Reuse of the launcher's SSM primitives
 
