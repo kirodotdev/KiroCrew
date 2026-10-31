@@ -17302,6 +17302,7 @@
         "no_color": "कोई रंग नहीं",
         "none_auto_cycle_or_pick_a_fixed_color": "कोई नहीं, स्वतः-चक्र, या कोई निश्चित रंग चुनें।",
         "palette": "पैलेट",
+        "palette_categorical": "श्रेणीबद्ध",
         "select_a_theme_for_the_dashboard": "डैशबोर्ड के लिए थीम चुनें",
         "sidebar_colors": "साइडबार रंग",
         "terminal": "टर्मिनल",

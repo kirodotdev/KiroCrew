@@ -15,7 +15,7 @@ import Modal from '../../components/Modal'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity } from '../../store/dashboardSlice'
 import { useSessionPalette } from '../../hooks/useSessionPalette'
-import { PALETTE_NAMES, INTENSITY_NAMES } from '../../utils/sessionColors'
+import { PALETTE_NAMES, INTENSITY_NAMES, paletteSlot } from '../../utils/sessionColors'
 import type { DefaultColorSetting, PaletteName, IntensityName, SessionColorMode } from '../../utils/sessionColors'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
@@ -207,6 +207,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const dispatch = useAppDispatch()
   const { paletteColors: colors, colorMode, paletteName, intensity, boost } = useSessionPalette()
   const defaultColor = useAppSelector(s => s.dashboard.sessionDefaultColor) as DefaultColorSetting
+  const defaultSlot = typeof defaultColor === 'number' ? paletteSlot(defaultColor, colors.length) : null
 
   // Recency-tint count is persisted server-side (dashboard.recent_tint_count) via the shared
   // kirocrewConfig query, so the choice follows the user across browsers/restarts.
@@ -1049,7 +1050,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.displayPanel.palette')}
             hint={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
             value={paletteName}
-            options={PALETTE_NAMES.map(p => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
+            options={PALETTE_NAMES.map(p => ({ value: p, label: p === 'categorical' ? i18nT('pages.settings.displayPanel.palette_categorical') : p.charAt(0).toUpperCase() + p.slice(1) }))}
             onChange={v => dispatch(setSessionColorsPalette(v as PaletteName))}
           />
           <SettingsButtonGroup
@@ -1095,7 +1096,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             <div className="flex flex-wrap items-center gap-1.5">
               <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (
-                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} aria-pressed={defaultColor === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
+                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} aria-pressed={defaultSlot === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
               ))}
               <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
             </div>

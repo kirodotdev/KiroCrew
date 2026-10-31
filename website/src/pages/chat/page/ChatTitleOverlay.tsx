@@ -47,6 +47,8 @@ interface ChatTitleOverlayProps {
   returnSelfToMain: () => void
   splitFeatureEnabled: boolean
   currentSlot: ChatSlot | undefined
+  /** CSS variables for the session colour band; absent for an uncoloured session. */
+  headerColorStyle?: Record<string, string>
   effectiveMode: string | undefined
   title: string
   activeIsSplitAnchor: boolean
@@ -74,7 +76,7 @@ interface ChatTitleOverlayProps {
  */
 export default function ChatTitleOverlay({
   embedMode, popout, activeSlot, dispatch, filteredSlots, isMobile, titleInTopbar, activityOpen, setActionError, showActionError, onPinCollapsedHeight, pinCardRef, pinExpanded, pinFoldRef, pinned,
-  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, effectiveMode, title,
+  scrollToPinnedPrompt, scrollTranscriptBy, setPinExpanded, activePoppedOut, focusActivePopout, openActivePopout, returnSelfToMain, splitFeatureEnabled, currentSlot, headerColorStyle, effectiveMode, title,
   activeIsSplitAnchor, editingTitle, enterSplit, setEditingTitleSlot, setSidebarPinned, sidebarAutoHidden, sidebarPinned, sidePanelDock, splitAnchorForActive, toggleAct, openSidebar, sidebarOnScreen,
   sidebarOpen, sidePanelWantsMount, mobileNewSessionItem, mobileSessionsToggle, popOutTip, activityTip,
 }: ChatTitleOverlayProps) {
@@ -125,7 +127,7 @@ export default function ChatTitleOverlay({
           </div>
         )}
         {!titleInTopbar && !currentCrewRoot && (
-        <div className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
+        <div style={headerColorStyle} className={`@container/chathead relative pr-1.5 pt-[9px] pb-2 flex items-center gap-2 bg-bg pointer-events-none ${headerColorStyle ? 'chat-header-colored' : ''} transition-[padding-left] duration-[240ms] [transition-timing-function:cubic-bezier(.32,.72,0,1)] ${!isMobile && embedMode !== 'chat' && filteredSlots.length > 0 && !sidebarOpen ? 'pl-[60px]' : isMobile ? (embedMode === 'chat' ? 'pl-4' : 'pl-3') : 'pl-5'}`}>
           {/* Divider between toggle and title — ALWAYS mounted and
               absolute (zero width, no flex-gap participation) so it can
               never change the row's layout; it rides the row (title
@@ -135,6 +137,7 @@ export default function ChatTitleOverlay({
             <span aria-hidden="true" className={`absolute left-[52px] top-[13px] w-px h-5 bg-border transition-opacity ${sidebarOpen ? 'opacity-0 duration-100' : 'opacity-100 duration-150 delay-[90ms]'}`} />
           )}
           {embedMode !== 'chat' && isMobile && mobileSessionsToggle}
+          {headerColorStyle && <span className="chat-header-dot" aria-hidden="true" />}
           <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">
           <div className="flex items-center rounded-l-md rounded-r-[2px] px-1.5 py-0.5 group-hover/header:bg-bg-hover transition-colors">
           <ChatHeaderMenu

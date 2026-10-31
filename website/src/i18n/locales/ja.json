@@ -17006,6 +17006,7 @@
         "no_color": "色なし",
         "none_auto_cycle_or_pick_a_fixed_color": "なし、自動サイクル、または固定カラーを選択します。",
         "palette": "パレット",
+        "palette_categorical": "カテゴリ別",
         "select_a_theme_for_the_dashboard": "ダッシュボードのテーマを選択",
         "sidebar_colors": "サイドバーカラー",
         "terminal": "ターミナル",

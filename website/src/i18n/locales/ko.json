@@ -17006,6 +17006,7 @@
         "no_color": "색상 없음",
         "none_auto_cycle_or_pick_a_fixed_color": "없음, 자동 순환 또는 고정 색상을 선택합니다.",
         "palette": "팔레트",
+        "palette_categorical": "범주형",
         "select_a_theme_for_the_dashboard": "대시보드에 사용할 테마 선택",
         "sidebar_colors": "사이드바 색상",
         "terminal": "터미널",
