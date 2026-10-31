@@ -91,6 +91,17 @@ def _learn(args: argparse.Namespace) -> None:
     jsonl_store = LessonStore()
     cfg = KiroCrewConfig.load()
     action = getattr(args, "learn_action", None)
+    # A blank argument (an unset "$VAR") is refused before the vector store is
+    # opened and before any lesson is read or written, with the same words as
+    # POST/DELETE /api/lessons. Every rule contains the empty string, so a blank
+    # `remove` selector would delete every lesson, and a blank `add` would save
+    # a lesson with no rule.
+    if action == "add" and not str(args.rule).strip():
+        print("rule is required", file=sys.stderr)
+        sys.exit(2)
+    if action == "remove" and not str(args.query).strip():
+        print("rule substring required", file=sys.stderr)
+        sys.exit(2)
     # Global persistence switch (memory.persistence_enabled): the CLI writes to
     # the store directly (no HTTP), so it carries its own check mirroring the
     # POST /api/lessons refusal. Refused ahead of the vector store because
