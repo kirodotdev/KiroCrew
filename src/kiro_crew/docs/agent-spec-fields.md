@@ -154,6 +154,7 @@ underneath.
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
+| `strands` | `strands.py` | `mcpServers`, by the `--mcp-config` launch file, never the wire [10]; `model`, as the `--model` launch argument [10] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7] | `availableModels` — no vocabulary advertised; `autoApprove` and `permissions.defaultMode` — gate-preserving (Crew's gate module asks for every call); `prompt` — context-instead [10]; `resources` — no-reader [6]; `hooks` — no channel |
 
 **An empty `tools` list is a second, stronger case of the "allowlist" row.** `tools:
 []` reads as "mount nothing" for the MCP array on every mirror, same as any other
@@ -255,6 +256,19 @@ mounts anything.
    every harness alike (`build_message` appends the `[AGENT SYSTEM PROMPT]` block for
    a custom agent with no backend condition on it). What a mirror decides, and
    these two therefore go without, is the MCP surface.
+10. `strands` runs the Strands CLI in its Python-project ACP mode, which refuses a
+   non-empty `session/new` or `session/load` `mcpServers` array. So the mirror's
+   array is written to an owner-only `--mcp-config` file the CLI reads at start,
+   removed once `initialize` answers, and nothing is spliced onto the wire
+   (`acp/harness/strands.py`). The CLI's own discovery of other tools' MCP and
+   skill files (`~/.kiro/settings/mcp.json`, `~/.claude.json` and the rest) is off
+   for the child, so that file is the whole MCP set. The model is a launch argument
+   because this mode has no ACP model channel. With no chat model, `agent.strands_provider`
+   (default `bedrock`) and `agent.strands_model` (default `auto`, which passes no `--model`)
+   decide it: `--model <provider>/<model>`. The spec's `prompt` is not sent as
+   the `_meta` `strands/agent-definition` instructions: those replace the project's
+   own system prompt, and the prompt already arrives as the `[AGENT SYSTEM PROMPT]`
+   block.
 
 **No mirrored harness READS `resources`, and the two URI schemes under that one
 key survive that differently.** Neither is loaded natively: the harness is not

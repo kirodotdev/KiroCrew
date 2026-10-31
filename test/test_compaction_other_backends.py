@@ -262,8 +262,15 @@ class TestEveryKnownBackendIsClassified:
     """
 
     #: Known backends deliberately outside all three compaction sets, each with why.
-    #: Empty: every known backend is classified.
-    UNCLASSIFIED: frozenset = frozenset()
+    #:
+    #: ``strands``: the Strands CLI's project mode sends no compaction status and no
+    #: ``usage_update`` (``test/fixtures/acp_frames/strands/``), so neither Crew's
+    #: ``/compact`` nor a recycle at a measured fill can be driven, and whether the
+    #: context is bounded is the PROJECT's choice (strands-harness's
+    #: ``context_manager`` defaults to ``"auto"``, an operator's project may pass
+    #: ``"off"``). Claiming harness-managed would be true for the bundled project
+    #: only, so it declines and the gate's WARNING says so.
+    UNCLASSIFIED: frozenset = frozenset({"strands"})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 
@@ -624,6 +625,9 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
+        # strands sends every prompt to its model as text in project mode, ``/clear``
+        # included, so the dashboard answers it.
+        ACP_BACKEND_STRANDS,
     }
 )
 

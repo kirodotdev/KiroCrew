@@ -79,6 +79,19 @@ def coerce_deepseek_env(raw: object) -> dict[str, str]:
 #: tools, MCP servers, the operator's own programs -- where no denylist could
 #: enumerate every loader, proxy, certificate or interpreter variable that
 #: changes what that code does.
+#: ``agent.strands_provider``'s values: the ``provider/`` prefixes the pinned Strands
+#: CLI's ``--model`` accepts. The one list both the setting and the harness read.
+STRANDS_PROVIDER_CHOICES: tuple[str, ...] = (
+    "bedrock",
+    "bedrock-mantle",
+    "anthropic",
+    "openai",
+    "google",
+    "ollama",
+    "litellm",
+)
+
+
 CHILD_ENV_DEFAULT_NAMES = frozenset({"TOKIO_WORKER_THREADS", "RAYON_NUM_THREADS"})
 
 #: Inclusive bounds of a thread-pool size. Zero is refused because the two
