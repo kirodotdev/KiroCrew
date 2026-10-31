@@ -52,6 +52,10 @@ from kiro_crew.apps.manifest import (
     RESERVED_ROUTE_APP_NAMES,
     SEMVER_RE,
     AppManifest,
+    mcp_entry_references_env,
+    mcp_url_kind,
+    mcp_url_violation,
+    mistyped_mcp_server_fields,
 )
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.terminal_safe import safe_terminal_line
@@ -1097,6 +1101,32 @@ def _bounded_manifest_value(
     return value, True
 
 
+def _mcp_invalid_reason(config: dict[str, Any]) -> str:
+    """Why :func:`mcp_url_kind` rejected *config*, in the converter's own words.
+
+    The checks are read in the SAME order :func:`mcp_url_kind` applies them, so the
+    message names the first cause rather than a guess. By the time this runs the
+    entry is already an object (the loop checked), so a cleartext remote url is the
+    only cause left once a mistyped field, a ``${VAR}`` reference and a url-shape
+    violation are ruled out.
+    """
+    mistyped = mistyped_mcp_server_fields(config)
+    if mistyped:
+        return f"the server has mistyped field(s): {', '.join(mistyped)}"
+    if mcp_entry_references_env(config):
+        return (
+            "the server carries a ${VAR} reference the runtime would expand from the "
+            "operator's environment, which a converted app's servers never see"
+        )
+    url = config.get("url")
+    if isinstance(url, str):
+        violation = mcp_url_violation(url)
+        if violation:
+            return f"the server url {violation}"
+        return "the server url is plain http to a host that is not this machine"
+    return "the server is not a valid MCP endpoint for a converted app"
+
+
 def _convert_mcp_servers(root: Path, declared: object, report: ImportReport) -> dict[str, Any]:
     if declared is None:
         return {}
@@ -1154,6 +1184,20 @@ def _convert_mcp_servers(root: Path, declared: object, report: ImportReport) -> 
         if not _has_transport(config):
             report.warnings.append(
                 f"mcpServers[{name}] declares neither a command nor a url; dropped"
+            )
+            continue
+        # A converted app runs no gateway-launched backend, so the only url kinds
+        # it can resolve to are "remote" (kept) and "invalid" (dropped). The rule
+        # applied here on import: no mistyped field, no ``${VAR}`` the runtime would
+        # expand from the operator's environment, and no cleartext http to a
+        # non-loopback host.
+        if mcp_url_kind(config, gateway_backend=False) == "invalid":
+            report.unmapped.append(
+                UnmappedKind(
+                    kind=f"mcpServers[{name}]",
+                    bucket="d",
+                    reason=_mcp_invalid_reason(config),
+                )
             )
             continue
         relative_fields = _package_relative_fields(config)
