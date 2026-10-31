@@ -12921,6 +12921,7 @@
         "by_you": "Por você",
         "exit_full_screen": "Sair da tela cheia",
         "failed": "Falhou",
+        "frame_failed": "Não foi possível carregar esta parte da gravação. Ela pode ter sido apagada.",
         "full_screen": "Tela cheia",
         "go_live": "Ao vivo",
         "jump_to_step": "Ir para a etapa {{n}}: {{label}}",

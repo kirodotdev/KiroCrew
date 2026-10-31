@@ -16,7 +16,7 @@ logs an event: keystrokes never enter a log or the transcript.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from kiro_crew.browser_harness.screencast import Relay
@@ -376,18 +376,104 @@ def cdp_calls(event: InputEvent, scale: float = 1.0) -> list[tuple[str, dict[str
     return [("Input.dispatchKeyEvent", down), ("Input.dispatchKeyEvent", up)]
 
 
+#: Most keys and buttons one takeover tracks as held. A hand-back sends one release
+#: per entry under one short deadline, so the count bounds how long it takes; a
+#: press past the cap reaches the page but is not tracked.
+MAX_HELD_INPUTS = 32
+
+_KEY_DOWN_TYPES = frozenset({"keyDown", "rawKeyDown"})
+
+
+class HeldInput:
+    """The keys and mouse buttons the person's forwarded events left down.
+
+    The card sends a press and its release as separate events, so a hand-back can
+    land between the two: the release then reaches a lock that is already open and
+    is refused, and the page would keep the key or button down. :meth:`note_call`
+    follows every CDP command the page acknowledged, one transition at a time, so a
+    click whose press went out and whose release failed still counts as down.
+    :meth:`drain` returns the matching releases for whatever is still down, which
+    the hub sends before it gives the lock up.
+    """
+
+    def __init__(self) -> None:
+        self._keys: dict[str, InputEvent] = {}
+        self._buttons: dict[str, InputEvent] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self._keys or self._buttons)
+
+    def __len__(self) -> int:
+        return len(self._keys) + len(self._buttons)
+
+    def note_call(self, event: InputEvent, method: str, params: dict[str, Any]) -> None:
+        """Follow one CDP command of *event* that the page acknowledged."""
+        kind = params.get("type")
+        if method == "Input.dispatchKeyEvent":
+            ident = event.code or event.key
+            if kind in _KEY_DOWN_TYPES:
+                if ident in self._keys or len(self) < MAX_HELD_INPUTS:
+                    self._keys[ident] = InputEvent(
+                        type="key", action="down", key=event.key, code=event.code
+                    )
+            elif kind == "keyUp":
+                self._keys.pop(ident, None)
+            return
+        if method != "Input.dispatchMouseEvent":
+            return  # Input.insertText holds nothing down
+        if kind == "mousePressed":
+            if event.button in self._buttons or len(self) < MAX_HELD_INPUTS:
+                self._buttons[event.button] = event
+        elif kind == "mouseReleased":
+            self._buttons.pop(event.button, None)
+        elif kind == "mouseMoved":
+            # A release goes where the pointer is, not where the press was.
+            for name, held in self._buttons.items():
+                self._buttons[name] = replace(held, x=event.x, y=event.y, frame_w=event.frame_w)
+
+    def drain(self) -> list[InputEvent]:
+        """The release for everything still down (keys, then buttons); forgets it all."""
+        ups = [
+            InputEvent(type="key", action="up", key=e.key, code=e.code) for e in self._keys.values()
+        ]
+        ups += [
+            InputEvent(
+                type="mouse",
+                action="up",
+                x=e.x,
+                y=e.y,
+                button=e.button,
+                clicks=1,
+                frame_w=e.frame_w,
+            )
+            for e in self._buttons.values()
+        ]
+        self._keys.clear()
+        self._buttons.clear()
+        return ups
+
+
 async def dispatch_input(
-    relay: Relay, session_id: str, event: dict[str, Any], *, scale: float = 1.0
+    relay: Relay,
+    session_id: str,
+    event: dict[str, Any],
+    *,
+    scale: float = 1.0,
+    held: HeldInput | None = None,
 ) -> int:
     """Validate one card event and send it to the page. Returns the CDP calls made.
 
     *scale* is the stream's frame-to-CSS ratio (see :func:`cdp_calls`). Raises
-    :class:`InputEventError` for a malformed event before anything is sent.
+    :class:`InputEventError` for a malformed event before anything is sent. Each
+    command the page acknowledges is noted on *held* as it lands, so a failure
+    part way through a click or a key press leaves *held* matching the page.
     """
     parsed = parse_input_event(event)
     calls = cdp_calls(parsed, scale)
     for method, params in calls:
         await relay.send(method, params, session_id)
+        if held is not None:
+            held.note_call(parsed, method, params)
     return len(calls)
 
 
@@ -443,9 +529,11 @@ async def focused_field(relay: Relay, session_id: str) -> dict[str, Any]:
 
 __all__ = [
     "AGENT",
+    "HeldInput",
     "InputEvent",
     "InputEventError",
     "InputLock",
+    "MAX_HELD_INPUTS",
     "USER",
     "USER_IN_CONTROL",
     "cdp_calls",

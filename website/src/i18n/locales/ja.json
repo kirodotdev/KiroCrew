@@ -12531,6 +12531,7 @@
         "by_you": "あなたの操作",
         "exit_full_screen": "全画面を終了",
         "failed": "失敗",
+        "frame_failed": "記録のこの部分を読み込めませんでした。削除された可能性があります。",
         "full_screen": "全画面",
         "go_live": "ライブ",
         "jump_to_step": "ステップ {{n}} に移動: {{label}}",

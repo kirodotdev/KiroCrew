@@ -12921,6 +12921,7 @@
         "by_you": "Par toi",
         "exit_full_screen": "Quitter le plein écran",
         "failed": "Échec",
+        "frame_failed": "Impossible de charger cette partie de l’enregistrement. Elle a peut-être été effacée.",
         "full_screen": "Plein écran",
         "go_live": "En direct",
         "jump_to_step": "Aller à l’étape {{n}} : {{label}}",

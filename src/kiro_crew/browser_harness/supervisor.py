@@ -988,13 +988,19 @@ async def _devtools_ws_url(profile: Path) -> str | None:
 
 
 def _fd_at_or_above(fd: int, floor: int) -> int:
-    """Return an fd for the same file at or above *floor*, closing lower duplicates."""
-    while fd < floor:
-        higher = os.dup(fd)
-        os.close(fd)
-        fd = higher
-    os.set_inheritable(fd, True)
-    return fd
+    """Return an fd for the same file at or above *floor*; *fd* itself is closed.
+
+    ``F_DUPFD`` picks the lowest free fd at or above *floor* in one call. A loop of
+    ``os.dup`` cannot: with two free slots below *floor* it bounces between them.
+    POSIX only; the pipe launcher is its one caller.
+    """
+    if fd >= floor:
+        os.set_inheritable(fd, True)
+        return fd
+    higher = platform_compat.dup_fd_at_or_above(fd, floor)
+    os.close(fd)
+    os.set_inheritable(higher, True)
+    return higher
 
 
 def _alive(proc: asyncio.subprocess.Process | None) -> bool:

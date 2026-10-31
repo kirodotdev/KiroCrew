@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from browser_live_helpers import SESSION, FakeRelay
 
@@ -312,3 +314,46 @@ async def test_dispatch_passes_the_scale_through() -> None:
         relay, SESSION, {"type": "mouse", "x": 100, "y": 50, "button": "left"}, scale=0.625
     )
     assert relay.calls[0][1]["x"] == 160.0 and relay.calls[0][1]["y"] == 80.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_notes_each_acknowledged_command_on_the_held_input() -> None:
+    """A click whose press lands and whose release fails leaves the button held."""
+    relay = FakeRelay()
+    held = tk.HeldInput()
+    real_send = relay.send
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if (params or {}).get("type") == "mouseReleased":
+            raise RuntimeError("boom")
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await tk.dispatch_input(
+            relay, SESSION, {"type": "mouse", "x": 4, "y": 5, "button": "left"}, held=held
+        )
+    [up] = held.drain()
+    assert (up.type, up.action, up.button, up.x, up.y) == ("mouse", "up", "left", 4, 5)
+    # A full key press, and committed text, leave nothing down.
+    await tk.dispatch_input(relay, SESSION, {"type": "key", "key": "a", "code": "KeyA"}, held=held)
+    await tk.dispatch_input(relay, SESSION, {"type": "key", "text": "é"}, held=held)
+    assert not held and held.drain() == []
+
+
+def test_held_input_tracks_at_most_the_cap() -> None:
+    held = tk.HeldInput()
+    for n in range(tk.MAX_HELD_INPUTS + 5):
+        ev = tk.parse_input_event({"type": "key", "action": "down", "key": "x", "code": f"K{n}"})
+        held.note_call(ev, "Input.dispatchKeyEvent", {"type": "rawKeyDown"})
+    assert len(held) == tk.MAX_HELD_INPUTS
+    # One already tracked is still updated at the cap; a new button is not taken on.
+    again = tk.parse_input_event({"type": "key", "action": "down", "key": "y", "code": "K0"})
+    held.note_call(again, "Input.dispatchKeyEvent", {"type": "keyDown"})
+    press = tk.parse_input_event(
+        {"type": "mouse", "action": "down", "x": 1, "y": 1, "button": "left"}
+    )
+    held.note_call(press, "Input.dispatchMouseEvent", {"type": "mousePressed"})
+    ups = held.drain()
+    assert len(ups) == tk.MAX_HELD_INPUTS and ups[0].key == "y"
+    assert all(u.type == "key" for u in ups)

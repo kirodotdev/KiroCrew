@@ -69,7 +69,7 @@ beforeEach(() => {
     ack: vi.fn(async () => ({ ok: true })),
     visibility: vi.fn(async () => ({ ok: true })),
     claim: vi.fn(async () => ({ ok: true })),
-    input: vi.fn(async () => ({ ok: true })),
+    input: vi.fn(async () => ({ ok: true, sent: 1 })),
     answer: vi.fn(async () => ({ ok: true, outcome: 'filled' })),
   }
   restore = browserLiveStore.__setWritesForTests(writes)

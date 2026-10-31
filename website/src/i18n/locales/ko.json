@@ -12531,6 +12531,7 @@
         "by_you": "내 동작",
         "exit_full_screen": "전체 화면 종료",
         "failed": "실패",
+        "frame_failed": "녹화의 이 부분을 불러오지 못했습니다. 삭제되었을 수 있습니다.",
         "full_screen": "전체 화면",
         "go_live": "실시간",
         "jump_to_step": "{{n}}단계로 이동: {{label}}",

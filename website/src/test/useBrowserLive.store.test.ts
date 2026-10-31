@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-import { REPLAY_RINGS_KEPT, TAKEOVER_HEARTBEAT_MS, UNSEEN_FRAMES_BEFORE_PAUSE, browserLiveStore, readBrowserLiveEvent } from '../hooks/useBrowserLive'
+import { HANDBACK_DRAIN_MS, REPLAY_RINGS_KEPT, TAKEOVER_HEARTBEAT_MS, UNSEEN_FRAMES_BEFORE_PAUSE, browserLiveStore, readBrowserLiveEvent } from '../hooks/useBrowserLive'
 import type { DecodedBrowserFrame } from '../hooks/useBrowserLive.frame'
 import { encodeBrowserFrame } from '../hooks/useBrowserLive.frame'
 
@@ -26,7 +26,7 @@ function stubWrites(claimOk = true) {
     visibility: vi.fn(async () => ({ ok: true })),
     claim: vi.fn(async () => { if (!claimOk) throw new Error('403'); return { ok: true } }),
     release: vi.fn(async () => ({ ok: true })),
-    input: vi.fn(async () => ({ ok: true })),
+    input: vi.fn(async () => ({ ok: true, sent: 1 })),
     open: vi.fn(async () => ({ ok: true })),
     reopen: vi.fn(async (): Promise<unknown> => ({ ok: true })),
     close: vi.fn(async () => ({ ok: true })),
@@ -318,6 +318,38 @@ describe('claim and release', () => {
     expect(writes.release).toHaveBeenCalledWith(S)
   })
 
+  it('a hand-back waits for the canvases to send their releases, and only so long', async () => {
+    browserLiveStore.applyEvent(ev())
+    await browserLiveStore.claim(S)
+    let sent: () => void = () => {}
+    const drain = vi.fn(() => new Promise<void>((resolve) => { sent = resolve }))
+    const off = browserLiveStore.onHandBack(S, drain)
+    const done = browserLiveStore.release(S)
+    expect(drain).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(writes.release).not.toHaveBeenCalled()
+    sent()
+    await expect(done).resolves.toBe(true)
+    expect(writes.release).toHaveBeenCalledTimes(1)
+
+    // A chain stuck behind a slow POST holds the hand-back for HANDBACK_DRAIN_MS at most.
+    await browserLiveStore.claim(S)
+    drain.mockImplementation(() => new Promise<void>(() => {}))
+    const stuck = browserLiveStore.release(S)
+    await vi.advanceTimersByTimeAsync(HANDBACK_DRAIN_MS - 1)
+    expect(writes.release).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(stuck).resolves.toBe(true)
+    expect(writes.release).toHaveBeenCalledTimes(2)
+
+    // Unregistered, the hand-back goes at once.
+    off()
+    await browserLiveStore.claim(S)
+    await browserLiveStore.release(S)
+    expect(drain).toHaveBeenCalledTimes(2)
+    expect(writes.release).toHaveBeenCalledTimes(3)
+  })
+
   it('input and open-in-browser go straight to their writes', async () => {
     browserLiveStore.applyEvent(ev())
     await browserLiveStore.sendInput(S, { type: 'key', action: 'down', key: 'a', code: 'KeyA', text: 'a', modifiers: 0 })
@@ -416,6 +448,20 @@ describe('a hand back the gateway refuses', () => {
     await browserLiveStore.sendInput(S, { type: 'key', action: 'down', key: 'a', code: 'KeyA', text: 'a', modifiers: 0 })
     expect(browserLiveStore.current(S)!.state).toBe('in_control')
     expect(browserLiveStore.current(S)!.controlError).toBe('no_stream')
+  })
+
+  it('an input counts as sent only when the gateway says it dispatched it, and never rejects', async () => {
+    browserLiveStore.applyEvent(ev())
+    await browserLiveStore.claim(S)
+    const key = { type: 'key', action: 'down', key: 'a', code: 'KeyA', text: 'a', modifiers: 0 } as const
+    writes.input.mockImplementationOnce(async () => ({ sent: 2, focus: { editable: false } }))
+    await expect(browserLiveStore.sendInput(S, key)).resolves.toEqual({ sent: true, reply: { sent: 2, focus: { editable: false } } })
+    writes.input.mockImplementationOnce(async () => ({ sent: 0 }))
+    await expect(browserLiveStore.sendInput(S, key)).resolves.toMatchObject({ sent: false })
+    writes.input.mockImplementationOnce(async () => ({ ok: true }))
+    await expect(browserLiveStore.sendInput(S, key)).resolves.toMatchObject({ sent: false })
+    writes.input.mockImplementationOnce(async () => { throw new Error('net') })
+    await expect(browserLiveStore.sendInput(S, key)).resolves.toEqual({ sent: false, reply: undefined })
   })
 })
 

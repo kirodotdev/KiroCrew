@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { motion, useReducedMotion } from 'framer-motion'
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Globe, Keyboard } from 'lucide-react'
 
+import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { decode } from './BrowserLiveCardCanvas'
@@ -101,6 +102,12 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 export function ReplayCanvas({ rec, index, label }: { rec: Recording; index: number; label: string }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const drawn = useRef<ReplayFrame | null>(null)
+  // The frame that would not load (the recording was cleared on the gateway):
+  // the picture is wiped and a notice says why, rather than leaving an earlier
+  // frame on screen while the timeline and the overlay move on. Kept by
+  // identity, so the notice shows only while that frame is the one on screen.
+  const [failedFrame, setFailedFrame] = useState<ReplayFrame | null>(null)
+  const failed = failedFrame !== null && failedFrame === rec.frames[index]
   useEffect(() => {
     const frame = rec.frames[index]
     const canvas = ref.current
@@ -112,8 +119,15 @@ export function ReplayCanvas({ rec, index, label }: { rec: Recording; index: num
       let img: ImageBitmap | HTMLImageElement
       try {
         img = typeof frame.src === 'string' ? await loadImage(frame.src) : await decode(frame.src)
-      } catch { return }
+      } catch {
+        if (cancelled) return
+        canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
+        drawn.current = null
+        setFailedFrame(frame)
+        return
+      }
       if (cancelled) return
+      setFailedFrame(null)
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
       const ctx = canvas.getContext('2d')
       if (!ctx) return
@@ -138,9 +152,17 @@ export function ReplayCanvas({ rec, index, label }: { rec: Recording; index: num
     return () => { cancelled = true }
   }, [rec, index])
   return (
-    <div role="img" aria-label={label} className="block w-full h-full">
-      <canvas ref={ref} aria-hidden="true" data-testid="browser-replay-canvas" data-frame-index={index} className="block w-full h-full bg-[var(--card)]" />
-    </div>
+    <>
+      {/* A failed frame has no picture to name: the notice below speaks for it. */}
+      <div role={failed ? undefined : 'img'} aria-label={failed ? undefined : label} className="block w-full h-full">
+        <canvas ref={ref} aria-hidden="true" data-testid="browser-replay-canvas" data-frame-index={index} data-failed={failed ? 'true' : undefined} className="block w-full h-full bg-[var(--card)]" />
+      </div>
+      {failed && (
+        <div className="absolute inset-0 z-10 grid place-items-center p-4">
+          <ErrorNotice variant="inline" message={i18nT('pages.chat.browserLiveStage.frame_failed')} testId="browser-replay-frame-error" />
+        </div>
+      )}
+    </>
   )
 }
 

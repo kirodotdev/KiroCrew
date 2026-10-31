@@ -23,6 +23,8 @@ interface HeldKey { down: BrowserInputEvent; sent: boolean; pending: number }
 
 /** A mouse press the page may hold. */
 interface HeldPress { button: number; count: number; down: BrowserInputEvent; last: Pt; sent: boolean }
+/** What a queued job reports back: when its turn came, and whether it reached the page. */
+interface JobHooks { start?: () => void; done?: (sent: boolean) => void }
 
 /** Wheel deltas add up, at the newest position. */
 function addWheel(prev: BrowserInputEvent, next: BrowserInputEvent): BrowserInputEvent {
@@ -266,25 +268,44 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
   interactiveRef.current = interactive
   const genRef = useRef(0)
   const ordered = useRef<Promise<unknown>>(Promise.resolve())
+  /** Jobs on the chain not yet finished: a hand-back waits only when there are some. */
+  const inFlight = useRef(0)
   const openJob = useRef<CoalesceJob | null>(null)
 
-  // `onRun` is told, when the job's turn comes, whether it passed the
-  // generation check and so went out: a press records it, so its release is
-  // sent only for a press the page was actually sent.
-  const enqueue = useCallback((take: () => readonly BrowserInputEvent[], release = false, onRun?: (sent: boolean) => void): Promise<unknown> => {
+  // `hooks.start` runs when the job's turn comes; `hooks.done` is told, once
+  // the job has run, whether every event of it reached the page: it passed the
+  // generation check AND the gateway answered that it dispatched it. A press
+  // records that, so its release is sent only for a press the page actually has.
+  const enqueue = useCallback((take: () => readonly BrowserInputEvent[], release = false, hooks?: JobHooks): Promise<unknown> => {
     const gen = genRef.current
+    inFlight.current += 1
     // A failed send must not stop every later one: the chain always resolves.
     const next = ordered.current
       .then(async () => {
-        const evs = take()
-        const ok = release || (gen === genRef.current && interactiveRef.current)
-        onRun?.(ok)
-        if (!ok) return undefined
-        let reply: unknown
-        for (const ev of evs) reply = await browserLiveStore.sendInput(sessionKey, ev)
-        return reply
+        let sent = false
+        try {
+          hooks?.start?.()
+          const evs = take()
+          // A release undoes a press of its own takeover, so it may run after the
+          // hand-back; once the card has taken control again it is dropped, so it can
+          // never lift a key the new takeover is holding.
+          const current = gen === genRef.current
+          const allowed = release ? current || !interactiveRef.current : current && interactiveRef.current
+          if (!allowed) return undefined
+          let reply: unknown
+          sent = evs.length > 0
+          for (const ev of evs) {
+            const out = await browserLiveStore.sendInput(sessionKey, ev)
+            sent = sent && out.sent
+            reply = out.reply
+          }
+          return reply
+        } finally {
+          hooks?.done?.(sent)
+        }
       })
       .catch(() => undefined)
+      .finally(() => { inFlight.current -= 1 })
     ordered.current = next
     return next
   }, [sessionKey])
@@ -323,15 +344,15 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
   }, [coalesce])
 
   /** A discrete job: the moves and wheels recorded before it go first. */
-  const sendJobInOrder = useCallback((take: () => readonly BrowserInputEvent[], onRun?: (sent: boolean) => void): Promise<unknown> => {
+  const sendJobInOrder = useCallback((take: () => readonly BrowserInputEvent[], hooks?: JobHooks): Promise<unknown> => {
     flushMove()
     flushWheel()
     openJob.current = null
-    return enqueue(take, false, onRun)
+    return enqueue(take, false, hooks)
   }, [enqueue, flushMove, flushWheel])
 
-  const sendInOrder = useCallback((ev: BrowserInputEvent, onRun?: (sent: boolean) => void): Promise<unknown> =>
-    sendJobInOrder(() => [ev], onRun), [sendJobInOrder])
+  const sendInOrder = useCallback((ev: BrowserInputEvent, hooks?: JobHooks): Promise<unknown> =>
+    sendJobInOrder(() => [ev], hooks), [sendJobInOrder])
 
   /** The last desktop press, so the next one can tell a double click; null once it cannot be one. */
   const lastPress = useRef<PressRecord | null>(null)
@@ -347,7 +368,7 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     if (!held) { held = { down, sent: false, pending: 0 }; keysDown.current.set(code, held) }
     const rec = held
     rec.pending += 1
-    void sendInOrder(down, (sent) => { rec.pending -= 1; if (sent) rec.sent = true })
+    void sendInOrder(down, { start: () => { rec.pending -= 1 }, done: (sent) => { if (sent) rec.sent = true } })
   }, [sendInOrder])
 
   /** A repeat with an earlier down of its key still queued adds nothing but queue. */
@@ -379,6 +400,15 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     if (!press) return
     void enqueue(() => (press.sent ? [{ ...press.down, action: 'up', x: press.last.x, y: press.last.y }] : []), true)
   }, [enqueue])
+
+  // A hand-back from anywhere (the card's button, the stage, Esc) first queues
+  // the releases for what this canvas holds and waits for its chain to send
+  // them, so they reach the page before the gateway opens the lock.
+  useEffect(() => browserLiveStore.onHandBack(sessionKey, () => {
+    releaseKeys()
+    releaseMouse()
+    return inFlight.current > 0 ? ordered.current : null
+  }), [sessionKey, releaseKeys, releaseMouse])
 
   const box = () => {
     const r = canvasRef.current?.getBoundingClientRect()
@@ -598,7 +628,7 @@ const BrowserLiveCardCanvas = forwardRef<BrowserLiveCanvasHandle, Props>(functio
     lastPress.current = { t: now, x: e.clientX, y: e.clientY, button: e.button, count: clicks }
     const press: HeldPress = { button: e.button, count: clicks, down, last: { x: down.x ?? 0, y: down.y ?? 0 }, sent: false }
     heldPress.current = press
-    void sendInOrder(down, (sent) => { press.sent = sent })
+    void sendInOrder(down, { done: (sent) => { press.sent = sent } })
   }
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!interactive || isTouch(e)) return

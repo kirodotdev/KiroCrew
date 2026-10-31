@@ -34,7 +34,9 @@ from kiro_crew.browser_harness.screencast import (
 )
 from kiro_crew.browser_harness.takeover import (
     USER,
+    HeldInput,
     InputLock,
+    cdp_calls,
     dispatch_input,
     focused_field,
     frame_scale,
@@ -72,6 +74,10 @@ STATES = frozenset(
 MAX_STEP_LABEL = 120
 #: Steps kept per turn; older ones fold into the count.
 MAX_STEPS = 200
+#: The whole budget for releasing what the person held when control goes back:
+#: waiting for the event in flight plus every release sent. The input lock stays
+#: shut meanwhile, so a slow page delays the agent by this much at most.
+HELD_RELEASE_DEADLINE_S = 2.0
 
 Publish = Callable[[str, Mapping[str, Any]], Awaitable[Any]]
 SendFrame = Callable[[bytes], Awaitable[Any]]
@@ -170,6 +176,16 @@ class LiveSession:
     #: A scoped takeover's rect (x, y, w, h) in viewport CSS pixels: while set, card
     #: input outside it is dropped (:meth:`LiveHub.input_event`). Cleared on release.
     input_rect: tuple[float, float, float, float] | None = None
+    #: Keys and buttons the person's events left down (:meth:`LiveHub.input_event`);
+    #: every way the lock opens releases them on the page first. A release takes
+    #: this object as its own and puts a fresh one here for the next takeover.
+    held: HeldInput = field(default_factory=HeldInput)
+    #: Held around each forwarded event, so a release waits for the event in
+    #: flight before it reads what that event left down.
+    input_fence: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: A release of control is sending the held input's releases: the lock is still
+    #: shut, but no card event is forwarded and no new release starts.
+    releasing: bool = False
 
     @property
     def relay(self) -> Relay | None:
@@ -555,9 +571,78 @@ class LiveHub:
         stream, sess.stream = sess.stream, None
         if stream is not None:
             self._spawn(stream.stop())
+        # Every path that opens a person's lock released this first; anything still
+        # here belongs to no takeover.
+        sess.held = HeldInput()
+        sess.releasing = False
         if self.recorder is not None:
             self.recorder.turn_ended(sess.session_key)
         self._emit(sess)
+
+    def _take_held(self, sess: LiveSession) -> HeldInput:
+        """Start a release of control: the held input so far is now this release's.
+
+        From here no card event is forwarded (``releasing``), and the session holds a
+        fresh :class:`HeldInput`, so a later takeover's presses never reach this
+        release. The lock stays shut until :meth:`_release_input` has finished.
+        """
+        sess.releasing = True
+        held, sess.held = sess.held, HeldInput()
+        return held
+
+    async def _release_input(
+        self,
+        sess: LiveSession,
+        held: HeldInput,
+        stream: LiveStream | None,
+        finish: Callable[[], None],
+        before_finish: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Release *held* on *stream*, then run *finish*, which opens the lock.
+
+        *finish* runs in a ``finally``: a release past its deadline, a refused one or
+        a cancelled caller still hands the lock back.
+        """
+        try:
+            await self._send_releases(sess, held, stream)
+            if before_finish is not None:
+                await before_finish()
+        finally:
+            sess.releasing = False
+            finish()
+
+    async def _send_releases(
+        self, sess: LiveSession, held: HeldInput, stream: LiveStream | None
+    ) -> None:
+        """Send a release for every key and button in *held*, within one deadline.
+
+        Waits for the event in flight (``input_fence``) first, with no deadline of
+        its own: it notes onto *held* as each of its commands lands, so a press it
+        was still sending is released too, and none of its commands can reach the
+        page after control is handed back. That wait is bounded by the event's own
+        CDP send timeouts. A release the page refuses is logged and the rest still
+        go; past ``HELD_RELEASE_DEADLINE_S`` the remaining releases are dropped.
+        """
+        async with sess.input_fence:
+            ups = held.drain()
+        if not ups or stream is None or not stream.session_id:
+            return
+
+        async def _send() -> None:
+            device_width = float(getattr(stream, "device_width", 0.0) or 0.0)
+            fallback = float(getattr(stream, "scale", 1.0) or 1.0)
+            for up in ups:
+                scale = frame_scale(up, device_width, fallback)
+                for method, params in cdp_calls(up, scale):
+                    try:
+                        await stream.relay.send(method, params, stream.session_id)
+                    except Exception:  # noqa: BLE001 - one refused release never blocks the rest
+                        logger.debug("browser live: held input not released", exc_info=True)
+
+        try:
+            await asyncio.wait_for(_send(), HELD_RELEASE_DEADLINE_S)
+        except TimeoutError:
+            logger.info("browser live: releasing held input of %s timed out", sess.session_key)
 
     # ── the replay recorder's events ───────────────────────────────────────
 
@@ -636,7 +721,7 @@ class LiveHub:
         self._expire_stale_claim(sess)
         return sess.lock.held()
 
-    def _expire_stale_claim(self, sess: LiveSession) -> bool:
+    def _expire_stale_claim(self, sess: LiveSession) -> None:
         """Hand back a takeover that outlived its turn and whose card went quiet.
 
         Applies only to a claim held by the person past the turn it was taken in
@@ -645,17 +730,26 @@ class LiveHub:
         inside its own running turn is never expired here: the agent's hold
         (``HOLD_TIMEOUT_S``) bounds that one. Checked lazily wherever the agent
         side asks who holds the browser, so a dead card frees the chat on the
-        next op or hand-back poll. Returns whether it folded.
+        next op or hand-back poll.
+
+        With input held down, or an event still on its way to the page, the lock
+        stays shut while the releases go out in the background and the fold runs
+        after them: the agent's op, waiting on the lock, reaches the page only once
+        the page has let go of what the person held.
         """
-        if not (sess.lock.held() and sess.lock.owner == USER):
-            return False
+        if sess.releasing or not (sess.lock.held() and sess.lock.owner == USER):
+            return
         if not (sess.turn_over or sess.claim_turn != sess.turn_id):
-            return False
+            return
         if self._clock() - sess.seen_at < TAKEOVER_IDLE_S:
-            return False
+            return
         logger.info("browser live: handing back an idle takeover of %s", sess.session_key)
-        self._fold(sess)
-        return True
+        stream = sess.stream
+        if stream is None or not (sess.held or sess.input_fence.locked()):
+            self._fold(sess)
+            return
+        held = self._take_held(sess)
+        self._spawn(self._release_input(sess, held, stream, lambda: self._fold(sess)))
 
     async def wait_for_release(self, session_key: str, timeout: float) -> bool:
         """Wait until the person hands the browser back, at most *timeout* seconds.
@@ -883,6 +977,9 @@ class LiveHub:
         after the awaits: an Esc that lands in between has already said ``live``.
         """
         sess = self._session(session_key)
+        if sess.releasing:
+            # The last takeover's releases are still going out; this one starts after.
+            await sess.released.wait()
         if sess.state in (STATE_DONE, STATE_ERROR):
             # A finished card has no browser to take: the stream is gone and the
             # agent is not driving anything to be fenced off.
@@ -921,6 +1018,9 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is None:
             return ""
+        if sess.releasing:
+            # Already being handed back (the idle expiry): nothing more to release.
+            await sess.released.wait()
         said = bool(note or choice)
         if said:
             self._record_handback(sess, note, choice)
@@ -928,9 +1028,14 @@ class LiveHub:
         if was_held and sess.fold_on_release:
             # The agent's turn ended while the person held the browser: this hand-back
             # is what folds the card (see ``turn_ended``).
-            if sess.stream is not None:
-                await sess.stream.set_takeover(False)
-            self._fold(sess)
+            stream = sess.stream
+            held = self._take_held(sess)
+
+            async def _quiet() -> None:
+                if stream is not None:
+                    await stream.set_takeover(False)
+
+            await self._release_input(sess, held, stream, lambda: self._fold(sess), _quiet)
             return DELIVERED_CHAT if said else ""
         waiting, sess.parked = sess.parked, False
         if said and waiting and not sess.turn_over and sess.handback is None:
@@ -942,8 +1047,15 @@ class LiveHub:
             delivered = ""
         sess.handback_options = []
         sess.input_rect = None
-        sess.lock.release()
-        sess.released.set()
+
+        def _open() -> None:
+            sess.lock.release()
+            sess.released.set()
+
+        if was_held:
+            await self._release_input(sess, self._take_held(sess), sess.stream, _open)
+        else:
+            _open()
         if sess.stream is not None:
             await sess.stream.set_takeover(False)
         if sess.state == STATE_IN_CONTROL:
@@ -1016,7 +1128,18 @@ class LiveHub:
         if sess.input_rect is not None and not _inside_scope(parsed, sess.input_rect, scale):
             # A scoped takeover (a human_check): only the widget's box takes input.
             return 0
-        sent = await dispatch_input(stream.relay, stream.session_id, event, scale=scale)
+        async with sess.input_fence:
+            if (
+                sess.releasing
+                or not sess.lock.held()
+                or sess.lock.owner != USER
+                or sess.stream is not stream
+            ):
+                # Handed back while this event waited behind the one in flight.
+                raise LookupError("not_in_control")
+            sent = await dispatch_input(
+                stream.relay, stream.session_id, event, scale=scale, held=sess.held
+            )
         stream.note_input()
         if self.recorder is not None:
             # Validated already (parse_input_event raised otherwise). The recorder keeps
@@ -1115,11 +1238,22 @@ class LiveHub:
         card folds at the turn's end, never on this route).
         """
         sess = self._sessions.get(session_key)
+        if sess is not None and sess.releasing:
+            await sess.released.wait()
         if sess is None or sess.state == STATE_DONE or not sess.turn_over:
             return False
-        if sess.stream is not None and sess.lock.held():
-            await sess.stream.set_takeover(False)
-        self._fold(sess)
+        if not sess.lock.held():
+            self._fold(sess)
+            return True
+        stream = sess.stream
+
+        async def _quiet() -> None:
+            if stream is not None:
+                await stream.set_takeover(False)
+
+        await self._release_input(
+            sess, self._take_held(sess), stream, lambda: self._fold(sess), _quiet
+        )
         return True
 
     async def open_in_browser(self, session_key: str) -> bool:

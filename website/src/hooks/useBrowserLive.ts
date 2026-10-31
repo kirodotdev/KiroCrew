@@ -192,6 +192,21 @@ export const UNSEEN_FRAMES_BEFORE_PAUSE = 30
  * idle bound (`TAKEOVER_IDLE_S`, 5 minutes) and be handed back.
  */
 export const TAKEOVER_HEARTBEAT_MS = 60_000
+/**
+ * The longest a hand-back waits for the canvas's own releases to go out. The
+ * gateway releases whatever is still down at the hand-back anyway; the wait
+ * only keeps the card's key-ups and mouse-ups ahead of it when the link is quick.
+ */
+export const HANDBACK_DRAIN_MS = 1_000
+
+/** What one takeover event came to: whether the page got it, and the gateway's answer. */
+export interface BrowserInputOutcome { sent: boolean; reply: unknown }
+
+/** The input route answers `{sent: n}`, n the CDP commands it made; 0 means none reached the page. */
+function inputDispatched(reply: unknown): boolean {
+  const sent = (reply as { sent?: unknown } | null | undefined)?.sent
+  return typeof sent === 'number' && sent > 0
+}
 
 /** The text a failed write leaves for the card: the gateway's own, else the error's. */
 function errorText(e: unknown): string {
@@ -297,6 +312,8 @@ class BrowserLiveStore {
   private frameListeners = new Map<string, Set<FrameListener>>()
   private documentListening = false
   private heartbeat: ReturnType<typeof setInterval> | null = null
+  /** Per session, each mounted canvas's "release what you hold" (see `onHandBack`). */
+  private handBackDrains = new Map<string, Set<() => Promise<unknown> | null>>()
   /** Injected for tests; production uses the facade's methods. */
   private writes = {
     ack: (k: string, seq: number, stream: string) => api.browserLiveAck(k, seq, stream) as Promise<unknown>,
@@ -619,7 +636,18 @@ class BrowserLiveStore {
     const s = this.session(sessionKey)
     const before = s.current
     if (before?.state !== 'in_control') return false
+    // The canvases queue their key-ups and mouse-ups first, on their own ordered
+    // input chains, and the hand-back goes once those have drained (bounded).
+    const drains = [...(this.handBackDrains.get(sessionKey) ?? [])]
+      .map(drain => drain())
+      .filter((p): p is Promise<unknown> => p !== null)
     this.setState(sessionKey, 'live', '')
+    if (drains.length) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const bound = new Promise<void>((resolve) => { timer = setTimeout(resolve, HANDBACK_DRAIN_MS) })
+      await Promise.race([Promise.allSettled(drains), bound])
+      clearTimeout(timer)
+    }
     const note = said?.note?.trim().slice(0, HANDBACK_NOTE_MAX) || undefined
     const choice = said?.choice?.trim().slice(0, 40) || undefined
     const body = note || choice ? { ...(note ? { note } : {}), ...(choice ? { choice } : {}) } : undefined
@@ -639,13 +667,37 @@ class BrowserLiveStore {
     }
   }
 
-  /** One takeover event. A refusal is kept for the card; the keystroke itself never is. */
-  sendInput(sessionKey: string, event: BrowserInputEvent): Promise<unknown> {
-    return this.writes.input(sessionKey, event).catch((e: unknown) => {
-      const s = this.session(sessionKey)
-      if (s.current?.state === 'in_control') this.setState(sessionKey, 'in_control', errorText(e))
-      return undefined
-    })
+  /**
+   * Register a canvas's hand-back drain: called as the hand-back starts, it
+   * queues the releases for what the canvas holds and answers a promise that
+   * resolves once its input chain has sent them, or `null` when the chain is
+   * idle (the hand-back then goes at once). Returns the unregister.
+   */
+  onHandBack(sessionKey: string, drain: () => Promise<unknown> | null): () => void {
+    let set = this.handBackDrains.get(sessionKey)
+    if (!set) { set = new Set(); this.handBackDrains.set(sessionKey, set) }
+    set.add(drain)
+    return () => {
+      const cur = this.handBackDrains.get(sessionKey)
+      cur?.delete(drain)
+      if (cur && cur.size === 0) this.handBackDrains.delete(sessionKey)
+    }
+  }
+
+  /**
+   * One takeover event. Never rejects: `sent` is true only when the gateway
+   * answered that it dispatched the event to the page, and `reply` is its
+   * answer. A refusal is kept for the card; the keystroke itself never is.
+   */
+  sendInput(sessionKey: string, event: BrowserInputEvent): Promise<BrowserInputOutcome> {
+    return this.writes.input(sessionKey, event).then(
+      (reply: unknown) => ({ sent: inputDispatched(reply), reply }),
+      (e: unknown) => {
+        const s = this.session(sessionKey)
+        if (s.current?.state === 'in_control') this.setState(sessionKey, 'in_control', errorText(e))
+        return { sent: false, reply: undefined }
+      },
+    )
   }
 
   /** Bring the agent's browser window forward. A failure is kept as the card's control error. */
@@ -745,6 +797,7 @@ class BrowserLiveStore {
     this.sessions.clear()
     this.anchors.clear()
     this.frameListeners.clear()
+    this.handBackDrains.clear()
     this.notify()
   }
 }

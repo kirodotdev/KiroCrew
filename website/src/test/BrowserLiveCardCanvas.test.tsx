@@ -30,7 +30,7 @@ function flushDecodes() { for (const d of decodes.splice(0)) d.resolve({ close: 
 beforeEach(() => {
   browserLiveStore.__resetForTests()
   browserLiveStore.applyEvent({ session_key: S, turn_id: 't1', state: 'live', url: 'https://x.test/' })
-  writes = { input: vi.fn(async () => ({ ok: true })) }
+  writes = { input: vi.fn(async () => ({ ok: true, sent: 1 })) }
   restore = browserLiveStore.__setWritesForTests({ ...writes, ack: vi.fn(async () => ({ ok: true })) })
   ctx = { drawImage: vi.fn(), fillRect: vi.fn(), fillStyle: '' }
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D)
@@ -238,9 +238,9 @@ describe('takeover input', () => {
     writes.input.mockImplementation((_k: string, ev: { action?: string }) => {
       if (ev.action === 'down' && !held) {
         held = true
-        return new Promise(r => { release = () => r({ ok: true }) })
+        return new Promise(r => { release = () => r({ ok: true, sent: 1 }) })
       }
-      return Promise.resolve({ ok: true })
+      return Promise.resolve({ ok: true, sent: 1 })
     })
     return () => release()
   }
@@ -734,7 +734,7 @@ describe('takeover input', () => {
   const stallNext = () => {
     let resolve!: (v: unknown) => void
     writes.input.mockImplementationOnce(() => new Promise(r => { resolve = r }))
-    return (v: unknown = { ok: true }) => resolve(v)
+    return (v: unknown = { ok: true, sent: 1 }) => resolve(v)
   }
 
   it('desktop: the letter typed right after an IME commit goes out; the commit Enter does not', async () => {
@@ -766,6 +766,48 @@ describe('takeover input', () => {
     await settle()
     // The press was out, so its button is let go; the keys were never sent, so no release.
     expect(sent().map(e => [e.type, e.action])).toEqual([['mouse', 'down'], ['mouse', 'up']])
+  })
+
+  it('a release still queued when the card takes control again is dropped', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    fireEvent.keyDown(proxy, { key: 'k', code: 'KeyK', keyCode: 75 })
+    await settle()
+    const release = stallNext()
+    fireEvent.keyDown(proxy, { key: 'j', code: 'KeyJ', keyCode: 74 })
+    await settle()
+    handBack(rerender)
+    retake(rerender)
+    release()
+    await settle()
+    // The k-up was queued behind the stalled j-down for the old takeover; the new
+    // takeover may be holding k, so the old release must not lift it.
+    const ups = sent().filter(e => e.type === 'key' && e.action === 'up').map(e => e.key)
+    expect(ups).toEqual([])
+  })
+
+  it('a key down whose POST failed is not held: a blur sends no lone key-up', async () => {
+    mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const proxy = await desktopClick()
+    writes.input.mockImplementationOnce(async () => { throw new Error('net') })
+    fireEvent.keyDown(proxy, { key: 'a', code: 'KeyA', keyCode: 65 })
+    act(() => proxy.blur())
+    await settle()
+    expect(sent().map(e => [e.action, e.key])).toEqual([['down', 'a']])
+  })
+
+  it('a press the gateway answered with nothing dispatched sends no lone release at hand-back', async () => {
+    const { rerender } = mount({ interactive: true })
+    act(() => browserLiveStore.applyFrame(frame(1)))
+    const canvas = screen.getByTestId('browser-live-canvas')
+    writes.input.mockImplementationOnce(async () => ({ sent: 0 }))
+    fireEvent.pointerDown(canvas, { clientX: 160, clientY: 100, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse' })
+    await settle()
+    handBack(rerender)
+    await settle()
+    expect(sent().map(e => [e.type, e.action])).toEqual([['mouse', 'down']])
   })
 
   it('a pointercancel during a press releases the page button once, at the last position', async () => {

@@ -12531,6 +12531,7 @@
         "by_you": "你的操作",
         "exit_full_screen": "退出全屏",
         "failed": "失败",
+        "frame_failed": "无法加载这段录制内容，它可能已被清除。",
         "full_screen": "全屏",
         "go_live": "实时",
         "jump_to_step": "跳到第 {{n}} 步：{{label}}",

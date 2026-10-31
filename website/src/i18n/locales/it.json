@@ -12921,6 +12921,7 @@
         "by_you": "Da te",
         "exit_full_screen": "Esci da schermo intero",
         "failed": "Non riuscito",
+        "frame_failed": "Impossibile caricare questa parte della registrazione. Potrebbe essere stata cancellata.",
         "full_screen": "Schermo intero",
         "go_live": "Dal vivo",
         "jump_to_step": "Vai al passo {{n}}: {{label}}",

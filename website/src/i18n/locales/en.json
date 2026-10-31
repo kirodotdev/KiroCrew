@@ -7123,6 +7123,7 @@
         "by_you": "By you",
         "exit_full_screen": "Exit full screen",
         "failed": "Failed",
+        "frame_failed": "This part of the recording could not be loaded. It may have been cleared.",
         "full_screen": "Full screen",
         "go_live": "Live",
         "jump_to_step": "Jump to step {{n}}: {{label}}",

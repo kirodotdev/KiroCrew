@@ -12921,6 +12921,7 @@
         "by_you": "Por ti",
         "exit_full_screen": "Salir de pantalla completa",
         "failed": "Falló",
+        "frame_failed": "No se pudo cargar esta parte de la grabación. Puede que se haya borrado.",
         "full_screen": "Pantalla completa",
         "go_live": "En vivo",
         "jump_to_step": "Ir al paso {{n}}: {{label}}",

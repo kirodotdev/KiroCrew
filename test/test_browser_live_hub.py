@@ -12,6 +12,7 @@ from browser_live_helpers import SESSION, FakeRelay
 from kiro_crew.browser_harness import live_hub as lh
 from kiro_crew.browser_harness import screencast as sc
 from kiro_crew.browser_harness.takeover import InputEventError
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -784,3 +785,314 @@ async def test_the_handback_poll_frees_a_quiet_claim_from_an_earlier_turn() -> N
     await h.claim("chat-1")
     h.turn_ended("chat-1")
     assert await h.wait_for_release("chat-1", 3.0) is True
+
+
+# ── hand-back releases what the person held down ─────────────────────────
+
+
+async def test_hand_back_releases_the_keys_and_buttons_still_down(hub) -> None:
+    """The card queues its key-up/mouse-up behind an input in flight, and the
+    hand-back request can reach the hub first: the page must not keep them down."""
+    h, _wire = hub
+    relay = FakeRelay()
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
+    await h.input_event(
+        "chat-1", {"type": "key", "action": "down", "key": "Shift", "code": "ShiftLeft"}
+    )
+    await h.input_event("chat-1", {"type": "key", "action": "up", "key": "a", "code": "KeyA"})
+    down = {"type": "mouse", "action": "down", "x": 10, "y": 20, "button": "left"}
+    await h.input_event("chat-1", down)
+    await h.input_event("chat-1", {**down, "action": "move", "x": 30, "y": 40})
+    before = len(relay.calls)
+    await h.release("chat-1")
+    released = relay.calls[before:]
+    assert [(m, p["type"]) for m, p, _s in released] == [
+        ("Input.dispatchKeyEvent", "keyUp"),
+        ("Input.dispatchMouseEvent", "mouseReleased"),
+    ]
+    assert released[0][1]["code"] == "ShiftLeft" and released[0][2] == SESSION
+    # The release lands where the pointer is, not where the press was.
+    assert (released[1][1]["x"], released[1][1]["y"], released[1][1]["button"]) == (30, 40, "left")
+    # The card's own late release meets an open lock: refused, and nothing is sent.
+    with pytest.raises(LookupError, match="not_in_control"):
+        await h.input_event("chat-1", {"type": "key", "action": "up", "key": "Shift"})
+    assert len(relay.calls) == before + 2
+
+
+async def test_hand_back_with_nothing_held_sends_no_input(hub) -> None:
+    h, _wire = hub
+    relay = FakeRelay()
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    # A click and a key press each release themselves.
+    await h.input_event("chat-1", {"type": "mouse", "x": 1, "y": 1, "button": "left"})
+    await h.input_event("chat-1", {"type": "key", "key": "a", "code": "KeyA"})
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 1, "y": 1, "button": "right"}
+    )
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "up", "x": 1, "y": 1, "button": "right"}
+    )
+    before = len(relay.calls)
+    await h.release("chat-1")
+    assert relay.calls[before:] == []
+
+
+async def test_a_server_side_hand_back_releases_held_input_before_the_stream_stops() -> None:
+    """An idle takeover past its turn folds without the card (no release request):
+    the held key and button are still released, before the stream goes away."""
+    clock = _Clock()
+    h, _wire, stream = await _held_past_its_turn(clock)
+    relay = stream.relay
+    order: list[str] = []
+    real_send, real_stop = relay.send, stream.stop
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        order.append(f"{method}:{(params or {}).get('type')}")
+        return await real_send(method, params, session_id)
+
+    async def stop() -> None:
+        order.append("stop")
+        await real_stop()
+
+    relay.send, stream.stop = send, stop
+    await h.input_event(
+        "chat-1", {"type": "key", "action": "down", "key": "Enter", "code": "Enter"}
+    )
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 5, "y": 6, "button": "middle"}
+    )
+    order.clear()
+    clock.t += lh.TAKEOVER_IDLE_S + 1
+    # The lock stays shut while the releases go out; the fold follows them.
+    assert h.in_control("chat-1") is True
+    assert await h.wait_for_release("chat-1", 5.0) is True
+    await _settled(h)
+    assert h.get("chat-1").state == "done"
+    assert order == [
+        "Input.dispatchKeyEvent:keyUp",
+        "Input.dispatchMouseEvent:mouseReleased",
+        "stop",
+    ]
+
+
+async def test_closing_a_view_held_past_its_turn_releases_held_input(hub) -> None:
+    h, _wire = hub
+    relay = FakeRelay()
+    h.turn_started("chat-1", "t1")
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "x", "code": "KeyX"})
+    h.turn_ended("chat-1")
+    before = len(relay.calls)
+    assert await h.close_view("chat-1") is True
+    await _settled(h)
+    assert [(m, p["type"]) for m, p, _s in relay.calls[before:]] == [
+        ("Input.dispatchKeyEvent", "keyUp")
+    ]
+
+
+class _GatedRelay(FakeRelay):
+    """A relay whose releases (keyUp, mouseReleased) wait for ``gate`` to open.
+
+    ``entered`` is set once a release reaches the relay, so a test knows the hub is
+    inside its cleanup with the lock still shut.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def send(
+        self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None
+    ) -> dict[str, Any]:
+        if (params or {}).get("type") in ("keyUp", "mouseReleased"):
+            self.entered.set()
+            await self.gate.wait()
+        return await super().send(method, params, session_id)
+
+
+def _types(calls: list[tuple[str, dict[str, Any], str | None]]) -> list[str]:
+    return [p.get("type", m) for m, p, _s in calls]
+
+
+async def test_an_idle_expiry_keeps_the_agent_op_behind_the_synthetic_releases() -> None:
+    """The expiry is found by the agent's own ``in_control`` check: its op must wait
+    until the page has let go of what the person held, not race those releases."""
+    clock = _Clock()
+    wire = Wire()
+    h = lh.LiveHub(clock=clock)
+    h.bind(wire.publish, wire.send_frame)
+    relay = _GatedRelay()
+    h.turn_started("chat-1", "t1")
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
+    h.turn_ended("chat-1")
+    clock.t += lh.TAKEOVER_IDLE_S + 1
+    assert h.in_control("chat-1") is True
+    agent = asyncio.ensure_future(h.wait_for_release("chat-1", 30.0))
+    await relay.entered.wait()
+    # Inside the cleanup: the lock is shut, the agent waits, and card input is refused.
+    assert h.in_control("chat-1") is True and not agent.done()
+    with pytest.raises(LookupError, match="not_in_control"):
+        await h.input_event("chat-1", {"type": "key", "action": "down", "key": "b"})
+    relay.gate.set()
+    assert await agent is True
+    assert _types(relay.calls) == ["rawKeyDown", "keyUp"]
+    await _settled(h)
+    assert h.get("chat-1").state == "done" and h.get("chat-1").stream is None
+
+
+async def test_a_new_takeover_keeps_its_own_held_input_from_the_last_cleanup(hub) -> None:
+    """A retake waits for the last hand-back's releases; what it presses is its own
+    and goes out only with its own hand-back."""
+    h, _wire = hub
+    relay = _GatedRelay()
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
+    first = h.get("chat-1").held
+    hand_back = asyncio.ensure_future(h.release("chat-1"))
+    await relay.entered.wait()
+    # The release owns the old held input; the session already holds a fresh one.
+    assert h.get("chat-1").held is not first and not h.get("chat-1").held
+    retake = asyncio.ensure_future(h.claim("chat-1"))
+    relay.gate.set()
+    assert await hand_back == "" and await retake is True
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "b", "code": "KeyB"})
+    assert len(h.get("chat-1").held) == 1
+    await h.release("chat-1")
+    ups = [p for _m, p, _s in relay.calls if p.get("type") == "keyUp"]
+    assert [p["code"] for p in ups] == ["KeyA", "KeyB"]
+
+
+async def test_a_hung_page_is_bounded_by_the_release_deadline_and_the_lock_still_opens(
+    hub, monkeypatch
+) -> None:
+    h, _wire = hub
+    monkeypatch.setattr(lh, "HELD_RELEASE_DEADLINE_S", 0.05)
+    relay = _GatedRelay()  # the gate never opens: every release hangs
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    for code in ("KeyA", "KeyB", "KeyC"):
+        await h.input_event("chat-1", {"type": "key", "action": "down", "key": "x", "code": code})
+    await h.input_event(
+        "chat-1", {"type": "mouse", "action": "down", "x": 1, "y": 1, "button": "left"}
+    )
+    assert await h.release("chat-1") == ""
+    sess = h.get("chat-1")
+    assert h.in_control("chat-1") is False and sess.released.is_set()
+    assert sess.releasing is False and sess.state == lh.STATE_LIVE
+    # Only the first release was tried before the one deadline ran out.
+    assert _types(relay.calls).count("keyUp") == 0 and relay.entered.is_set()
+
+
+async def test_a_slow_input_in_flight_lands_and_is_released_before_the_lock_opens(
+    hub, monkeypatch
+) -> None:
+    """The release deadline bounds the releases, not the wait for the event in flight:
+    a key-down still being sent at hand-back must not land after the lock opens."""
+    h, _wire = hub
+    monkeypatch.setattr(lh, "HELD_RELEASE_DEADLINE_S", 0.05)
+    relay = FakeRelay()
+    real_send = relay.send
+    gate = asyncio.Event()
+    sending = asyncio.Event()
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if (params or {}).get("type") == "rawKeyDown":
+            sending.set()
+            await gate.wait()
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    down = asyncio.ensure_future(
+        h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
+    )
+    await await_until(sending, what="the key-down to reach the page")
+    release = asyncio.ensure_future(h.release("chat-1"))
+    # flake-ok: proving the lock stays shut PAST the release deadline needs that much time
+    await asyncio.sleep(lh.HELD_RELEASE_DEADLINE_S * 4)
+    assert not release.done() and h.in_control("chat-1"), "opened with a press in flight"
+    gate.set()
+    await down
+    assert await release == ""
+    assert h.in_control("chat-1") is False
+    assert _types(relay.calls)[-2:] == ["rawKeyDown", "keyUp"]
+
+
+async def test_a_press_acknowledged_before_its_release_failed_is_released_at_hand_back(
+    hub,
+) -> None:
+    """A click is two CDP commands: when the press lands and the release fails, the
+    page holds the button, so the hand-back must let it go."""
+    h, _wire = hub
+    relay = FakeRelay()
+    real_send = relay.send
+    failing = {"mouseReleased", "keyUp"}
+
+    async def send(method: str, params: Any = None, session_id: Any = None) -> Any:
+        if (params or {}).get("type") in failing:
+            raise RuntimeError("page gone quiet")
+        return await real_send(method, params, session_id)
+
+    relay.send = send  # type: ignore[method-assign]
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    with pytest.raises(RuntimeError):
+        await h.input_event("chat-1", {"type": "mouse", "x": 7, "y": 8, "button": "left"})
+    with pytest.raises(RuntimeError):
+        await h.input_event("chat-1", {"type": "key", "key": "Enter", "code": "Enter"})
+    assert len(h.get("chat-1").held) == 2
+    failing.clear()
+    before = len(relay.calls)
+    await h.release("chat-1")
+    released = relay.calls[before:]
+    assert _types(released) == ["keyUp", "mouseReleased"]
+    assert (released[1][1]["x"], released[1][1]["button"]) == (7, "left")
+
+
+async def test_closing_a_view_while_an_expiry_releases_waits_for_that_release() -> None:
+    clock = _Clock()
+    wire = Wire()
+    h = lh.LiveHub(clock=clock)
+    h.bind(wire.publish, wire.send_frame)
+    relay = _GatedRelay()
+    h.turn_started("chat-1", "t1")
+    await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+    await h.claim("chat-1")
+    await h.input_event("chat-1", {"type": "key", "action": "down", "key": "a", "code": "KeyA"})
+    h.turn_ended("chat-1")
+    clock.t += lh.TAKEOVER_IDLE_S + 1
+    h.in_control("chat-1")
+    await relay.entered.wait()
+    closing = asyncio.ensure_future(h.close_view("chat-1"))
+    handing = asyncio.ensure_future(h.release("chat-1"))
+    relay.gate.set()
+    # The expiry folded the card; neither caller sends a second release.
+    assert await closing is False and await handing == ""
+    assert _types(relay.calls) == ["rawKeyDown", "keyUp"]

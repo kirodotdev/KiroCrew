@@ -508,6 +508,20 @@ def fchmod_safe(fd: int, mode: int) -> None:
             logger.warning("Cannot set permissions on fd %d", fd)
 
 
+def dup_fd_at_or_above(fd: int, floor: int) -> int:
+    """A new fd for *fd*'s file: the lowest free one at or above *floor* (``F_DUPFD``).
+
+    *fd* stays open; the duplicate is not inheritable. POSIX only: raises
+    :class:`OSError` (``ENOTSUP``) on Windows, which has no descriptor numbering to
+    place.
+    """
+    if not IS_POSIX:
+        raise OSError(errno.ENOTSUP, "F_DUPFD is POSIX only")
+    import fcntl
+
+    return fcntl.fcntl(fd, fcntl.F_DUPFD, floor)
+
+
 def chmod_safe(path: str | os.PathLike, mode: int) -> None:
     """Apply ``mode`` to ``path``. Logs warning on failure.
     No-op on Windows.

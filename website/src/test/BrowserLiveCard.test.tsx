@@ -55,7 +55,7 @@ beforeEach(() => {
     visibility: vi.fn(async () => ({ ok: true })),
     claim: vi.fn(async () => ({ ok: true })),
     release: vi.fn(async () => ({ ok: true })),
-    input: vi.fn(async () => ({ ok: true })),
+    input: vi.fn(async () => ({ ok: true, sent: 1 })),
     open: vi.fn(async () => ({ ok: true })),
     reopen: vi.fn(async () => ({ ok: true })),
     close: vi.fn(async () => ({ ok: true })),
@@ -140,9 +140,12 @@ describe('BrowserLiveCard faces', () => {
     // microtask later.
     await waitFor(() => expect(writes.input).toHaveBeenCalledWith(S, expect.objectContaining({ type: 'key', action: 'down', key: 'a', text: 'a' })))
     fireEvent.keyDown(canvas, { key: 'Escape', code: 'Escape' })
-    expect(writes.release).toHaveBeenCalledWith(S)
-    expect(writes.input).toHaveBeenCalledTimes(1)
+    // The held "a" is released on the canvas's chain first, then the hand-back goes.
     expect(screen.getByTestId('browser-live-card')).toHaveAttribute('data-state', 'live')
+    await waitFor(() => expect(writes.release).toHaveBeenCalledWith(S))
+    expect(writes.input).toHaveBeenCalledTimes(2)
+    expect(writes.input).toHaveBeenLastCalledWith(S, expect.objectContaining({ type: 'key', action: 'up', key: 'a' }))
+    expect(writes.input.mock.invocationCallOrder[1]).toBeLessThan(writes.release.mock.invocationCallOrder[0])
   })
 
   it('the Hand back button releases too', () => {

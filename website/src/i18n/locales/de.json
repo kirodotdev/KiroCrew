@@ -12726,6 +12726,7 @@
         "by_you": "Von dir",
         "exit_full_screen": "Vollbild beenden",
         "failed": "Fehlgeschlagen",
+        "frame_failed": "Dieser Teil der Aufzeichnung konnte nicht geladen werden. Er wurde möglicherweise gelöscht.",
         "full_screen": "Vollbild",
         "go_live": "Live",
         "jump_to_step": "Zu Schritt {{n}} springen: {{label}}",
