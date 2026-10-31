@@ -132,21 +132,55 @@ def kirocrew_bin() -> str:
        manager has no meaningful working directory, so a relative override
        would produce an invalid ``ExecStart`` / ``ProgramArguments`` and the
        service would fail to start.
-    2. ``shutil.which("kirocrew")`` — the installed console script.
-    3. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
+    2. The ``kirocrew`` console script beside the running interpreter — the
+       install doing the installing. ``~/.local/bin/kirocrew`` is a shared,
+       mutable name that any other install (a source clone's ``install.sh`` or
+       ``kirocrew setup``) may repoint later; a service that persisted it would
+       silently start running that other install on its next restart. Skipped
+       when it lies in a linked git worktree or an AppImage runtime mount,
+       which are reaped out from under a persisted path.
+    3. ``shutil.which("kirocrew")`` — the installed console script, for an
+       install whose console script does not sit beside its interpreter.
+    4. ``sys.argv[0]`` — for development installs where ``kirocrew`` isn't on
        the global PATH.
     """
     override = os.environ.get("KIROCREW_SERVICE_BIN", "").strip()
     if override:
         return os.path.abspath(override)
-    # Neither automatic source may name a versioned tree in a persisted
-    # ExecStart: a later update's prune can remove it after this process exits.
+    # No automatic source may name a versioned tree in a persisted ExecStart:
+    # a later update's prune can remove it after this process exits.
     from kiro_crew.platform.tree_liveness import through_stable_link
 
+    running = _running_install_bin()
+    if running is not None:
+        return through_stable_link(running)
     found = shutil.which("kirocrew")
     if found:
         return through_stable_link(found)
     return through_stable_link(os.path.realpath(sys.argv[0]))
+
+
+def _running_install_bin() -> str | None:
+    """The console script beside ``sys.executable``, or ``None``.
+
+    The interpreter's ``bin/`` directory is used as-is, not resolved: a venv's
+    ``bin/python3`` is a symlink to the base interpreter, and resolving it
+    would leave the venv entirely.
+    """
+    from kiro_crew.config.paths import _in_ephemeral_tree, _in_linked_git_worktree
+
+    sibling = Path(sys.executable).parent / (
+        "kirocrew.exe" if os.name == "nt" else "kirocrew"
+    )
+    try:
+        if not (sibling.is_file() and os.access(sibling, os.X_OK)):
+            return None
+        resolved = sibling.resolve()
+    except OSError:
+        return None
+    if _in_linked_git_worktree(resolved) or _in_ephemeral_tree(resolved):
+        return None
+    return str(sibling)
 
 
 def service_environment(home: str) -> "dict[str, str]":
