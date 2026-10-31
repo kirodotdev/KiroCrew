@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Check, AlertTriangle, Plus, X, Lock } from 'lucide-react'
+import { ExternalLink, Check, AlertTriangle, Plus, X, Lock, RefreshCw } from 'lucide-react'
 import { SlackIcon } from '../../components/SlackIcon'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Input, Btn } from '../../components/ui'
 import { api, type SlackConfigData, type SlackConfigSave } from '../../api/client'
+import { ApiError } from '../../api/apiError'
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
@@ -68,26 +69,67 @@ function StatusBadge({ config }: { config: SlackConfigData }) {
 }
 
 /**
- * The gateway's startup failure (`connect_error`), kept apart from
+ * The sentence for a recorded connect failure. One mapper for the startup
+ * reading and a Reconnect click, so the same failure reads the same way
+ * whichever attempt produced it.
+ */
+function describeConnectError(code: string): string {
+  switch (code) {
+    case 'invalid_auth': return i18nT('pages.settings.slackPanel.connect_error_invalid_auth')
+    case 'tokens_missing': return i18nT('pages.settings.slackPanel.connect_error_tokens_missing')
+    case 'owner_id_missing': return i18nT('pages.settings.slackPanel.connect_error_owner_id_missing')
+    case 'enterprise_validation_failed': return i18nT('pages.settings.slackPanel.connect_error_enterprise_validation_failed')
+    case 'denied_by_policy': return i18nT('pages.settings.slackPanel.connect_error_denied_by_policy')
+    case 'workspace_switch_needs_restart': return i18nT('pages.settings.slackPanel.connect_error_workspace_switch_needs_restart')
+    default: return i18nT('pages.settings.slackPanel.connect_error_other', { error: code })
+  }
+}
+
+/**
+ * The gateway's recorded connect failure (`connect_error`), kept apart from
  * {@link connectionHint}: it is the outcome of something that FAILED, so it
  * renders through `ErrorNotice`, while the hint describes a state that has not
  * gone wrong yet.
  */
 function connectError(config: SlackConfigData): string {
   if (config.connected || !config.configured || !config.connect_error) return ''
-  if (config.connect_error === 'invalid_auth') {
-    return i18nT('pages.settings.slackPanel.slack_rejected_the_stored_tokens_invalid_auth_re')
-  }
-  return i18nT('pages.settings.slackPanel.slack_connection_failed_at_startup', { error: config.connect_error })
+  return describeConnectError(config.connect_error)
 }
 
 /** One-line explanation of WHY Slack is not connected, with the fix. */
 function connectionHint(config: SlackConfigData): string {
-  // A startup failure is shown by `connectError`; "saved but not yet active"
+  // A recorded failure is shown by `connectError`; "saved but not yet active"
   // would only repeat it underneath.
   if (config.connected || !config.configured || config.connect_error) return ''
-  return i18nT('pages.settings.slackPanel.tokens_are_saved_but_not_yet_active_restart_the')
+  return i18nT('pages.settings.slackPanel.tokens_saved_click_reconnect')
 }
+
+/**
+ * Why a Reconnect click got no handshake result. A refusal the gateway answered
+ * carries its own `code`; anything else (no answer, an unstructured body from a
+ * proxy) means the request never reached a gateway that could answer it.
+ */
+function reconnectRefusal(e: unknown): string {
+  let code = ''
+  if (e instanceof ApiError) {
+    try {
+      const body: unknown = JSON.parse(e.body)
+      if (body && typeof body === 'object' && typeof (body as { code?: unknown }).code === 'string') {
+        code = (body as { code: string }).code
+      }
+    } catch {
+      code = ''
+    }
+  }
+  switch (code) {
+    case 'remote_read_only': return i18nT('pages.settings.slackPanel.slack_settings_are_managed_on_the_machine_runnin')
+    case 'slack_reconnect_unavailable': return i18nT('pages.settings.slackPanel.reconnect_unavailable')
+    case 'credential_store_unreadable': return i18nT('pages.settings.slackPanel.reconnect_credentials_unreadable')
+    default: return i18nT('pages.settings.slackPanel.reconnect_failed_is_the_gateway_running')
+  }
+}
+
+type ReconnectOutcome = { connected: true } | { connected: false; message: string }
 
 /** Editor for a list of plain string IDs (channels, enterprise orgs, user IDs, emails). */
 export function TagListEditor({ label, description, values, placeholder, onChange, validate, readOnly }: {
@@ -173,6 +215,14 @@ export function SlackPanel() {
   const [formKey, setFormKey] = useState(0)  // bump to remount secret fields after save
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
+  // Sticky until a reconnect succeeds: a later config-only save must not hide
+  // that earlier saved credentials are still not live.
+  const [reconnectHint, setReconnectHint] = useState(false)
+  // Counts saves that asked for a reconnect. A reconnect clears the hint only
+  // when no such save landed after it started: that save's credentials may
+  // not be the ones the reconnect read.
+  const credSaves = useRef(0)
+  const [reconnectOutcome, setReconnectOutcome] = useState<ReconnectOutcome | null>(null)
   const [verifyWarning, setVerifyWarning] = useState('')
   const [tokensVerified, setTokensVerified] = useState(false)
   const [manifestCopied, setManifestCopied] = useState(false)
@@ -262,6 +312,10 @@ export function SlackPanel() {
     onSuccess: (res, vars) => {
       setSaved(true)
       setRestartHint(!!res.restart_required)
+      if (res.reconnect_required) {
+        credSaves.current += 1
+        setReconnectHint(true)
+      }
       setVerifyWarning(res.verify_warning || '')
       setTokensVerified(!!(vars.bot_token || vars.app_token) && !res.verify_warning)
       syncArmed.current = true
@@ -281,6 +335,29 @@ export function SlackPanel() {
         : qc.invalidateQueries({ queryKey: ['slack-manifest-status'] }))
         .then(() => qc.invalidateQueries({ queryKey: ['slack-config'] }))
     },
+  })
+
+  const reconnectMut = useMutation({
+    mutationFn: () => api.reconnectSlack(),
+    // The previous outcome steps aside while the click is in flight, so
+    // "Reconnecting…" never sits beside a red "failed" from the last try.
+    onMutate: () => {
+      setReconnectOutcome(null)
+      return { credSavesAtStart: credSaves.current }
+    },
+    onSuccess: (res, _vars, ctx) => {
+      if (res.connected) {
+        setReconnectOutcome({ connected: true })
+        if (ctx?.credSavesAtStart === credSaves.current) setReconnectHint(false)
+      } else {
+        setReconnectOutcome({
+          connected: false,
+          message: i18nT('pages.settings.slackPanel.reconnect_failed', { reason: describeConnectError(res.connect_error) }),
+        })
+      }
+      qc.invalidateQueries({ queryKey: ['slack-config'] })
+    },
+    onError: (e: unknown) => setReconnectOutcome({ connected: false, message: reconnectRefusal(e) }),
   })
 
   const handleSave = useCallback(() => {
@@ -311,8 +388,17 @@ export function SlackPanel() {
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
-  const startupError = connectError(data)
-  const hint = connectionHint(data)
+  // A click's own outcome (or one in flight) replaces the recorded reading:
+  // both describe the same connection, and two notices read as two problems.
+  const showRecorded = !reconnectMut.isPending && reconnectOutcome === null
+  const startupError = showRecorded ? connectError(data) : ''
+  const hint = showRecorded ? connectionHint(data) : ''
+  const reconnectBtn = (testId: string) => (
+    <Btn data-testid={testId} className="shrink-0" onClick={() => reconnectMut.mutate()} disabled={reconnectMut.isPending}>
+      <RefreshCw size={13} />
+      {reconnectMut.isPending ? i18nT('pages.settings.slackPanel.reconnecting') : i18nT('pages.settings.slackPanel.reconnect')}
+    </Btn>
+  )
 
   return (
     <>
@@ -325,6 +411,8 @@ export function SlackPanel() {
           <div className="flex items-center gap-3 flex-wrap">
             <h3 className="text-[15px] font-semibold text-text-strong">{i18nT('pages.settings.slackPanel.slack')}</h3>
             <StatusBadge config={data} />
+            {/* Hidden on read-only remote sessions, like Save: the route is local-only. */}
+            {!ro && reconnectBtn('slack-reconnect')}
           </div>
           <p className="text-[12px] text-muted mt-1">
             {i18nT('pages.settings.slackPanel.talk_to_your_agents_from_slack_over_socket_mode')}
@@ -334,6 +422,13 @@ export function SlackPanel() {
               command, session folder) live in this panel's local state —
               navigating to the chat would discard them. */}
           <ErrorNotice message={startupError} className="mt-2" />
+          {reconnectOutcome?.connected && (
+            <p className="text-[12px] text-ok mt-1 flex items-center gap-1.5">
+              <Check size={12} className="flex-none" />
+              {i18nT('pages.settings.slackPanel.reconnect_succeeded')}
+            </p>
+          )}
+          <ErrorNotice message={reconnectOutcome && !reconnectOutcome.connected ? reconnectOutcome.message : ''} className="mt-2" />
           {hint && (
             <p className="text-[12px] text-warn mt-1 flex items-center gap-1.5">
               <AlertTriangle size={12} className="flex-none" />
@@ -537,14 +632,23 @@ export function SlackPanel() {
       </SettingsSection>
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
-      {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
+      {!ro && <div className="flex flex-wrap items-center gap-3 mt-1 mb-4">
         <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
           {saveMut.isPending ? i18nT('pages.settings.slackPanel.saving') : i18nT('pages.settings.slackPanel.save_slack_settings')}
         </Btn>
+        {/* Beside the confirmation too: the header button may be scrolled off
+            above the long form. */}
+        {reconnectHint && reconnectBtn('slack-reconnect-save-row')}
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokensVerified ? (restartHint ? i18nT('pages.settings.slackPanel.verified_with_slack_and_saved_restart_the_gatewa') : i18nT('pages.settings.slackPanel.verified_and_saved')) : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.saved')}
+            <Check size={14} /> {tokensVerified
+              ? (reconnectHint ? i18nT('pages.settings.slackPanel.verified_saved_click_reconnect') : i18nT('pages.settings.slackPanel.verified_and_saved'))
+              : reconnectHint ? i18nT('pages.settings.slackPanel.saved_click_reconnect')
+                : restartHint ? i18nT('pages.settings.slackPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.slackPanel.saved')}
           </span>
+        )}
+        {saved && reconnectHint && restartHint && (
+          <span className="text-[12px] text-muted">{i18nT('pages.settings.slackPanel.slash_command_needs_restart')}</span>
         )}
         {saved && verifyWarning && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-warn">

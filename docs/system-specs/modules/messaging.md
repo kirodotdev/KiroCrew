@@ -3616,7 +3616,7 @@ The extraction is gated by a **golden-transcript** harness (`test/test_slack_gol
 
 ## Slack settings API
 
-Three dashboard-only endpoints back the `/settings/channels/slack` panel (legacy `?tab=channels&channel=slack` and `?tab=slack` links redirect there). They are
+Four dashboard-only endpoints back the `/settings/channels/slack` panel (legacy `?tab=channels&channel=slack` and `?tab=slack` links redirect there). They are
 registered in the dashboard route block (NOT `_register_mcp_routes`, which is
 also mounted on the token-less API-only server) so they always sit behind
 dashboard token auth.
@@ -3633,12 +3633,61 @@ dashboard token auth.
   rejection returns 400 and writes nothing, network failure saves with
   `verify_warning`. `<field>_clear` must be a strict boolean. Secrets land in
   `config_dir/.env` via atomic 0600 `mkstemp` + `os.replace`, and
-  `os.environ` is synced afterward. Response `restart_required` is true for
-  actual env changes and for `command`, the one Slack config field a running
-  gateway cannot apply (the slash command is registered with the app manifest);
-  every other field applies live, including `allowed_enterprise_ids`, which is
-  re-read through the validated `enterprise.reload_allowed_team_ids`.
+  `os.environ` is synced afterward. Response `reconnect_required` is true for
+  actual env changes (tokens, owner ID), which `POST /api/slack/reconnect`
+  applies; `restart_required` is true only for `command`, the one Slack config
+  field a running gateway cannot apply (the slash command is registered with
+  the app manifest). Every other field applies live, including
+  `allowed_enterprise_ids`, which is re-read through the validated
+  `enterprise.reload_allowed_team_ids`.
   An empty `command` resets the slash command to the default.
+- `POST /api/slack/reconnect` — direct-local only, like the PUT (remote 403
+  `remote_read_only`). Runs `slack.reconnect.reconnect_slack`: reads the
+  credential store under the dashboard config lock (unreadable, or a Slack
+  credential whose raw value, environment first then `.env`, is a
+  `secret://` reference the vault did not resolve → 500
+  `credential_store_unreadable`, connection untouched), closes the current
+  socket client and unpublishes its Web API client, hoists the tokens and
+  owner (also `DashboardState.owner_id` and the handler owner allowlist),
+  recomputes `_slack_enabled`, then re-awaits `init_socket_mode` +
+  `_connect_slack` on the gateway loop with the boot `SeenCache`, skipping the
+  start-up declared YOLO grant (`init_socket_mode(..., declared_yolo=False)`)
+  so an owner's `!yolo off` survives a reconnect. The Web API
+  client is published (`orch.slack` and the dashboard) only behind a
+  connected socket, after the workspace gate and the channels policy admit it.
+  Answers `{connected, connect_error}`; the declines are `tokens_missing`,
+  `owner_id_missing`, `enterprise_validation_failed`, `denied_by_policy` and
+  `workspace_switch_needs_restart`, Slack API codes (`invalid_auth`) pass
+  through. A reconnect never switches workspaces: whenever boot published a
+  Web API client it pins that client's `auth.test` team (boot publishes it
+  whether or not the socket connects; a boot with a bot token but no app
+  token publishes none and pins nothing; a boot token Slack rejects as
+  never authenticated (`invalid_auth`, `not_authed`) releases the pin only
+  when no Slack work was admitted: no connected socket and no queued, held or
+  running turn; a revoked or expired token keeps it), a connected reconnect pins its
+  own, and a saved bot token for another team (or a pinned team that could
+  not be confirmed) leaves
+  Slack off until a restart, because queued and in-flight work names the
+  former workspace's channels. While a reconnect runs with no client
+  published, the Slack queue drains and the inbound route keep their entries
+  queued rather than dispatch them into the cleared client, and a connected
+  reconnect starts them again; an inbound message with attachments waits for
+  the attempt and is fetched with the client it publishes. A reconnect that
+  retires a published client and fails keeps that hold for the next
+  reconnect (the retry) for `HELD_WORK_GIVE_UP_SECS` (300 s); when that
+  window ends with no client, each held message leaves its queue and the
+  owner gets one dashboard notification naming the channel in words (a
+  tracked channel's saved name, "a direct message", else "a Slack
+  channel") and quoting the first 80 characters of the message, or saying
+  it was a voice memo or an attachment; Slack ids stay in its `meta`
+  (`events_queue.give_up_held_slack_work`), and the hold is released. A
+  gateway no reconnect took a client from handles a missing client as it
+  always has. Concurrent
+  callers share one attempt; a caller that goes away does not cancel it. 503
+  `slack_reconnect_unavailable` on a server with no socket owner, and until
+  boot's own `init_socket_mode` + `_connect_slack` have returned (the gateway
+  publishes `DashboardState.slack_reconnect` only then, so a reconnect never
+  opens a socket boot would replace without closing).
 - `GET /api/slack/manifest` — public manifest template rendered with
   `?alias=` (default `kirocrew`, never `$USER`) plus Slack's one-click
   create deep link and `command`, the slash command that manifest registers

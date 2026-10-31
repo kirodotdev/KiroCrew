@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import weakref
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine
 
@@ -338,6 +339,146 @@ def _on_tracked_done(task: asyncio.Task[object]) -> None:
         logger.debug("Tracked slash task failed: %s", exc)
 
 
+#: Session keys whose queue drain was held because Slack had no published
+#: client (a reconnect between closing the old socket and publishing the new
+#: one). Keyed weakly by orchestrator, like ``_stops_in_flight``.
+_held_while_slack_down: weakref.WeakKeyDictionary[Any, set[str]] = weakref.WeakKeyDictionary()
+
+
+def hold_if_slack_down(orch: GatewayOrchestrator, session_key: str) -> bool:
+    """Hold *session_key*'s queue while a reconnect has no client published.
+
+    A drain dequeues before it dispatches, so dispatching into the client a
+    reconnect cleared would lose the entry: the turn fails at its first post
+    and nothing retries it. Returns True (the entry stays queued) while
+    ``orch.slack`` is cleared and either a reconnect runs or a failed one
+    retired a published client (``reconnect.client_lost_to_reconnect``).
+    :func:`resume_held_slack_drains` starts the held keys again on the next
+    published client; :func:`give_up_held_slack_work` ends the hold with a
+    notice per held message when none comes. A gateway no reconnect took a
+    client from returns False, so a send with no client goes on as before.
+    """
+    # Lazy: reconnect imports this module's helpers inside its own functions.
+    from kiro_crew.slack.reconnect import client_lost_to_reconnect, reconnect_in_progress
+
+    if orch.slack is not None:
+        return False
+    if not (reconnect_in_progress(orch) or client_lost_to_reconnect(orch)):
+        return False
+    _held_while_slack_down.setdefault(orch, set()).add(session_key)
+    return True
+
+
+def resume_held_slack_drains(orch: GatewayOrchestrator) -> None:
+    """Start every queue drain held while Slack was down. Call with a client published."""
+    for session_key in sorted(_held_while_slack_down.pop(orch, set())):
+        _spawn_tracked(_drain_slack_queue(orch, session_key), owner=orch)
+
+
+def _take_queued(orch: GatewayOrchestrator, session_key: str) -> list[tuple[str, str, dict]]:
+    """Remove and return every entry queued for *session_key* (session queue, then stash)."""
+    taken: list[tuple[str, str, dict]] = []
+    if orch.sessions:
+        while True:
+            entry = orch.sessions.dequeue(session_key)
+            if not entry:
+                break
+            taken.append(entry)
+    taken.extend(orch._pending_queue.pop(session_key, []))
+    return taken
+
+
+#: How much of a message the undelivered notice quotes.
+_NOTICE_PREVIEW_CHARS = 80
+#: Slack markup (``<@U1>``, ``<#C1|general>``, ``<https://x|label>``).
+_SLACK_MARKUP = re.compile(r"<([^<>]*)>")
+
+
+def _notice_channel(orch: GatewayOrchestrator, channel: str) -> str:
+    """Where the message was sent, in words: a tracked channel's saved name, else generic."""
+    if channel.startswith("D"):
+        return "a direct message"
+    cfg = getattr(orch, "_cfg", None)
+    tracked = getattr(getattr(cfg, "slack", None), "tracking_channels", None) or []
+    for entry in tracked:
+        if isinstance(entry, dict) and entry.get("channel_id") == channel:
+            name = str(entry.get("name") or "").strip().lstrip("#")
+            if name:
+                return f"#{name}"
+    return "a Slack channel"
+
+
+def _unmark(match: re.Match[str]) -> str:
+    target, _, label = match.group(1).partition("|")
+    if target.startswith("#"):
+        return f"#{label}" if label else "#channel"
+    if target.startswith("@"):
+        return f"@{label}" if label else "@someone"
+    if target.startswith("!"):
+        return f"@{label or target[1:]}"
+    return label or target
+
+
+def _notice_subject(kwargs: dict) -> str:
+    """What was sent, in words: the start of its text, else the kind of attachment."""
+    text = " ".join(_SLACK_MARKUP.sub(_unmark, str(kwargs.get("spool_text") or "")).split())
+    if text:
+        if len(text) > _NOTICE_PREVIEW_CHARS:
+            text = text[:_NOTICE_PREVIEW_CHARS].rstrip() + "..."
+        return f'your message "{text}"'
+    if int(kwargs.get("spool_voice_memos") or 0) > 0:
+        return "a voice memo"
+    if int(kwargs.get("spool_attachments") or 0) > 0:
+        return "an attachment"
+    return "a message"
+
+
+def give_up_held_slack_work(orch: GatewayOrchestrator) -> int:
+    """End the hold after Slack did not come back: notify for each held message.
+
+    Called when a failed reconnect's give-up window ends with no client
+    published. Every message still queued for a held key, a stashed key or a
+    running session is taken out of its queue, its deferred temp files are
+    unlinked, and the owner gets one dashboard notification
+    (``dashboard_state.notify``) so none is dropped silently. The notice names
+    the channel in words (:func:`_notice_channel`) and quotes the start of the
+    message, or says it was a voice memo or an attachment
+    (:func:`_notice_subject`); Slack ids stay in ``meta``. Returns the number
+    of messages noticed.
+    """
+    keys = set(_held_while_slack_down.pop(orch, set()))
+    keys.update(orch._pending_queue)
+    keys.update(orch._session_tasks)
+    state = orch.dashboard_state
+    count = 0
+    for session_key in sorted(keys):
+        for msg_ts, _text, kwargs in _take_queued(orch, session_key):
+            count += 1
+            unlink_queued_temp_paths(kwargs)
+            channel = str(kwargs.get("channel", "") or "")
+            logger.warning(
+                "Slack did not reconnect: queued message %s in %s was not delivered",
+                msg_ts,
+                channel,
+            )
+            if state is None:
+                continue
+            try:
+                state.notify(
+                    "agent",
+                    "Slack: message not delivered",
+                    (
+                        f"Slack did not reconnect, so {_notice_subject(kwargs)} in "
+                        f"{_notice_channel(orch, channel)} was not delivered to the agent. "
+                        "Reconnect Slack in Settings, then send it again."
+                    ),
+                    meta={"channel": channel, "msg_ts": msg_ts, "session_key": session_key},
+                )
+            except Exception:
+                logger.warning("Could not post the Slack undelivered notice", exc_info=True)
+    return count
+
+
 async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> None:
     """Start the next queued message when no turn's own tail will drain it.
 
@@ -351,6 +492,8 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
     session_key = legacy_key(session_key) or session_key
     if _key_busy(orch, session_key) or not orch.sessions:
         return
+    if hold_if_slack_down(orch, session_key):
+        return
     _next = orch.sessions.dequeue(session_key)
     if not _next:
         # The pre-session stash, as the turn-end drains read it.
@@ -360,7 +503,9 @@ async def _drain_slack_queue(orch: GatewayOrchestrator, session_key: str) -> Non
         _next = _pq.pop(0)
         if not _pq:
             del orch._pending_queue[session_key]
-    task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next))
+    # The client is read in the same step as the dequeue, so a reconnect that
+    # clears ``orch.slack`` later cannot leave the entry with no client.
+    task = asyncio.ensure_future(_dispatch_queued(orch, session_key, *_next, slack=orch.slack))
     _track_router_task(orch, session_key, task, (_next[2] or {}).get("thread_ts"))
     orch._handler_tasks.add(task)
 
@@ -396,8 +541,16 @@ async def _dispatch_queued(
     msg_ts: str,
     text: str,
     kwargs: dict,
+    *,
+    slack: Any = None,
 ) -> None:
-    """Dispatch a queued message — remove ⏳ reaction and call handle_message."""
+    """Dispatch a queued message — remove ⏳ reaction and call handle_message.
+
+    *slack* is the client the drain read when it dequeued the entry; the turn
+    uses it throughout, so a reconnect clearing ``orch.slack`` mid-dispatch
+    cannot hand the turn a ``None`` client. Omitted, ``orch.slack`` is read once.
+    """
+    client = slack if slack is not None else orch.slack
     channel = kwargs.get("channel", "")
     thread_ts = kwargs.get("thread_ts")
     from_trusted_bot = bool(kwargs.get("from_trusted_bot", False))
@@ -407,9 +560,9 @@ async def _dispatch_queued(
     if not isinstance(_q_spool_text, str):
         _q_spool_text = None
     _q_spool_attachments = int(kwargs.get("spool_attachments") or 0)
-    if orch.slack:
+    if client:
         try:
-            await orch.slack.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
+            await client.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
             pass
     # Route the queued follow-up through the SAME gate as the initial message so
@@ -425,7 +578,7 @@ async def _dispatch_queued(
     try:
         if _use_transport:
             await handle_message_transport(
-                orch.slack,  # type: ignore[arg-type]
+                client,  # type: ignore[arg-type]
                 orch.sessions,  # type: ignore[arg-type]
                 channel,
                 text,
@@ -461,7 +614,7 @@ async def _dispatch_queued(
             )
             return
         await handle_message(
-            orch.slack,  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
             orch.sessions,  # type: ignore[arg-type]
             channel,
             text,
