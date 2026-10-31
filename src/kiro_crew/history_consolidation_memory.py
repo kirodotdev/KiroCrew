@@ -448,9 +448,9 @@ def _refuse_oversized_semantic(
         )
         if chars <= _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS:
             continue
-        # The writer's own reader, so an item it skips is never refused for size. Neither
-        # writer catches OverflowError (an integer too large for a float), so that item is
-        # left for its writer to raise on, like one it skips.
+        # The writer's own reader, so an item it skips is never refused for size. The V1
+        # writer does not catch OverflowError (an integer too large for a float), so that
+        # item is left for it to raise on, like one it skips; the member reader clamps it.
         try:
             confidence = read_confidence(item)
         except OverflowError:

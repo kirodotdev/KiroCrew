@@ -503,9 +503,11 @@ itself, so the screen and its writer cannot disagree on skipping an item for its
 confidence, on the member store's metadata check or on which metadata the V1
 writer hands over. Both skip a
 confidence `float()` cannot read or that is not finite; only the V1 reader also
-skips one outside 0..1, which the member store validates. An integer too large
-for a float raises `OverflowError` from both readers, and neither writer catches
-it; the screen leaves that item to its writer. What is copied rather than shared
+skips one outside 0..1. The member reader clamps that number into 0..1 with a
+warning through the memory import bound (`bulk_ingest._import_confidence`), so
+the fact is kept at 0..1, an integer too large for a float included. That integer
+raises `OverflowError` from the V1 reader, which its writer does not catch; the
+screen leaves that item to its writer. What is copied rather than shared
 must be kept in step by hand: the V1 check itself, `normalize_metadata`, which
 `set_semantic` calls rather than a function the screen shares; the screen's skip
 rules (an item that is not an object, a key that is not a string, a delete, an
