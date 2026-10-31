@@ -10633,6 +10633,7 @@
     "useWebSocket": {
       "response_ready": "Antwort ist bereit",
       "waiting_for_input": "Wartet auf deine Eingabe",
+      "turn_failed": "Dieser Durchlauf ist fehlgeschlagen. Öffne die Sitzung, um den Grund zu sehen.",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
       "approval_waiting": "Wartet auf deine Freigabe: {{name}}",
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",

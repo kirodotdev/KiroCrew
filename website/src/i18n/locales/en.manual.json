@@ -4693,6 +4693,7 @@
     "useWebSocket": {
       "response_ready": "Response ready",
       "waiting_for_input": "Waiting for your input",
+      "turn_failed": "This turn failed. Open the session to see why.",
       "tool_approval": "Tool approval: {{name}}",
       "approval_waiting": "Waiting for your approval: {{name}}",
       "approval_wait_expired": "The approval wait expired, so the request was denied.",
