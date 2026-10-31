@@ -49,15 +49,17 @@ from .exfil_oauth import (  # noqa: F401
     _oauth_url_payload_diagnostic,
     _valid_oauth_extension_path,
 )
-from .exfil_url_rules import (
+from .exfil_url_rules import (  # noqa: F401  # _URL_RE: kiro_crew.security serves it from here
     _EXFIL_PATTERNS,
     _EXFIL_PERCENT_RE,
     _EXFIL_QUERY_MIN_LEN,
     _HARD_CREDENTIAL_RE,
     _MAX_URL_DECODE_PASSES,
     _URL_RE,
+    _URL_SCAN_RE,
     _heavy_percent_encoding,
     _is_safe_presigned,
+    _url_scan_candidates,
 )
 from .redaction import (
     _contains_fixed_credential,
@@ -451,17 +453,33 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     """
     exempt_hosts = _exfil_exempt_hosts()
     warnings: list[str] = []
-    for match in _URL_RE.finditer(text):
+    for match in _URL_SCAN_RE.finditer(text):
+        flagged = _flagged_url_span(match, exempt_hosts)
+        if flagged:
+            warnings.append(flagged[2])
+    return warnings
+
+
+def _flagged_url_span(
+    match: re.Match[str], exempt_hosts: frozenset[str], rules: list[str] | None = None
+) -> tuple[str, str, str] | None:
+    """``(url, path_and_query, warning)`` for the span of *match* to replace, or None.
+
+    Each span from :func:`_url_scan_candidates` is judged narrowest first, and
+    the first flagged one is returned.
+    """
+    for url, path_and_query in _url_scan_candidates(match):
         warning = _exfil_url_warning(
             match.group(1),
-            match.group(3) or "",
+            path_and_query,
             exempt_hosts,
             port=match.group(2) or "",
-            is_https=match.group(0).lower().startswith("https://"),
+            is_https=url.lower().startswith("https://"),
+            _rule_out=rules,
         )
         if warning:
-            warnings.append(warning)
-    return warnings
+            return url, path_and_query, warning
+    return None
 
 
 #: Stable PREFIX of the substitution :func:`redact_exfiltration_urls` writes in
@@ -810,24 +828,16 @@ def redact_exfiltration_urls_with_records(
     seen: set[str] = set()
     blocked: dict[str, str] = {}
     overflow = 0
-    for match in _URL_RE.finditer(text):
+    for match in _URL_SCAN_RE.finditer(text):
         domain = match.group(1)
-        path_and_query = match.group(3) or ""
         port = match.group(2) or ""
-        is_https = match.group(0).lower().startswith("https://")
         rules: list[str] = []
-        warning = _exfil_url_warning(
-            domain,
-            path_and_query,
-            exempt_hosts,
-            port=port,
-            is_https=is_https,
-            _rule_out=rules,
-        )
-        if not warning:
+        flagged = _flagged_url_span(match, exempt_hosts, rules)
+        if not flagged:
             continue
+        matched, path_and_query, warning = flagged
+        is_https = matched.lower().startswith("https://")
         warnings.append(warning)
-        matched = match.group(0)
         placeholder = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"
         if removed_out is not None:
             removed_out.append((matched, placeholder))
@@ -991,8 +1001,11 @@ def restore_allowed_links(
             size += len(url)
             last = m.end()
         out = "".join(parts) + text[last:]
-        starts = {r.start(): r.group(0) for r in _URL_RE.finditer(out)}
-        failed = {d for d, at, url in placed if starts.get(at) != url}
+        starts = {
+            r.start(): {url for url, _ in _url_scan_candidates(r)}
+            for r in _URL_SCAN_RE.finditer(out)
+        }
+        failed = {d for d, at, url in placed if url not in starts.get(at, ())}
         if not failed:
             restored = {i for d in domains for i in by_domain[d]}
             return out, [r for i, r in enumerate(records) if i not in restored]

@@ -852,6 +852,13 @@ class TestOptimizerDraftUrls:
         assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
 
     @pytest.mark.asyncio
+    async def test_redacted_uppercase_scheme_draft_url_returns_the_draft(self):
+        url = "HTTPS" + _LONG_URL[len("https") :]
+        prompt = f"review {url} and make it better"
+        data = await _optimize_reply(prompt, f"Review the reference at {url} closely")
+        assert data == {"optimized": prompt, "changed": False, "reason": "draft_url_redacted"}
+
+    @pytest.mark.asyncio
     async def test_draft_url_before_a_period_the_model_drops_returns_the_draft(self):
         prompt = f"look at {_LONG_URL}."
         data = await _optimize_reply(prompt, f"Review the reference at {_LONG_URL} closely")
