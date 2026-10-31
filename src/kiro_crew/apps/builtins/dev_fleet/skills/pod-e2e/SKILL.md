@@ -96,6 +96,19 @@ drive the pod with the session: keep curl's cookie jar from that first request
 the window is refused with `403 token expired`; `pod_up` (or `kirocrew pod token
 <wt>`) on the running pod leaves it running and returns a fresh token.
 
+**Showing a pod to the user.** The pod binds loopback only, so its URL works only
+on the host it runs on. The dashboard's Browser panel (the `web-preview` marker)
+loads that URL in the *user's* browser: when the pod runs on a remote dev box and
+the user browses from a laptop, the preview stays blank even though the pod
+answers 200. In that case hand the user two steps instead of a marker: an SSH
+tunnel (`ssh -L <port>:127.0.0.1:<port> <host>`), then a fresh token link opened
+within its 5-minute window. An agent cannot mint that link from its shell: the
+safety policy blocks `kirocrew pod token` from agent sessions by design, so the
+agent's only source is `pod_up`. If `pod_up` is not available in the session, ask
+the user to run `kirocrew pod token <wt>` themselves; do not look for another way
+to mint it. When the user only needs to *see* the states, show the committed
+evidence frames inline instead.
+
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
 · `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
 `token`, `url`, `logs` and `provision` have no tool of their own yet: `pod_up`
@@ -468,6 +481,16 @@ kirocrew pod provision <wt> --venv-only
 
 Every failure teaches the next step: no worktree → create one; no venv → auto;
 no dist → build-or-`--provision`.
+
+`<wt>` is a pod name (letters, digits, `.`, `_`, `-`; no `/`) that names a
+worktree `git worktree list` shows: its directory **basename** (for
+`git worktree add ../KiroCrew-wt-foo`, it is `KiroCrew-wt-foo`), or a branch
+without a slash (`foo` also matches branch `feat/foo`). A path or a name with a
+slash, such as `feat/foo`, fails as "invalid pod name". The lookup runs
+`git worktree list` from `KIROCREW_POD_REPO`, else the current directory, so
+"no git worktree '<name>'" also appears when the command runs outside a checkout
+with `KIROCREW_POD_REPO` unset, even though the worktree exists. Check the name
+and where you ran from before creating a second worktree.
 
 - Playwright venv: controlled by env `KIROCREW_PW_PY`.
   If that interpreter is missing or not executable, the FE phase **fails** —
