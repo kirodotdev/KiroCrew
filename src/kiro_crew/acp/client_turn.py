@@ -33,7 +33,7 @@ import time
 from contextlib import aclosing
 from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator
 
-from kiro_crew.acp import pi_steer_turn
+from kiro_crew.acp import disposed_session, pi_steer_turn
 from kiro_crew.acp._dispatch import (
     DRAIN_YIELD_AFTER_S,
     MAX_ACTIVE_TOOL_CALLS,
@@ -99,6 +99,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
+    ACP_BACKENDS_RELOAD_DISPOSED_SESSION,
     prompt_command_issue,
 )
 from kiro_crew.executors import subprocess_executor
@@ -611,6 +612,19 @@ async def _prompt_loop(
             ):
                 self.last_prompt_stats.event_count -= 1
                 continue
+            # A harness that disposed this session's backend (see disposed_session):
+            # a cancelled turn ends as cancelled, any other raises, and an approval
+            # asked after the cancel is answered here rather than put to a person.
+            if self.backend in ACP_BACKENDS_RELOAD_DISPOSED_SESSION:
+                if action == "error" and (
+                    ended := disposed_session.settle_disposed_error(self, msg)
+                ):
+                    action, msg = "complete", ended
+                elif action == "permission" and await disposed_session.answer_late_permission(
+                    self, msg
+                ):
+                    self.last_prompt_stats.event_count -= 1
+                    continue
             # Single yield chokepoint: everything downstream (dispatch,
             # chat runner, a human answering an approval card) runs while
             # this generator is suspended here, so the whole gap is
