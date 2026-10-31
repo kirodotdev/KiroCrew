@@ -159,6 +159,11 @@
     "client": {
       "accepted_body_unreadable": "서버가 요청을 수락했지만 응답을 읽을 수 없었습니다.",
       "paste_token_url_or_raw_token": "로그인 URL을 붙여넣으세요…",
+      "scan_qr_code": "QR 코드 스캔",
+      "scan_qr_cancel": "스캔 취소",
+      "scan_qr_point_camera": "컴퓨터에 표시된 로그인 QR 코드에 카메라를 향하세요.",
+      "camera_permission_denied": "카메라 접근이 거부되어 QR 코드를 스캔할 수 없었습니다. 이 사이트에 카메라를 허용하거나 대신 로그인 URL을 붙여넣으세요.",
+      "camera_unavailable": "카메라를 열 수 없어 QR 코드를 스캔할 수 없었습니다. 대신 로그인 URL을 붙여넣으세요.",
       "proxy_challenge_reload": "이 브라우저 탭을 다시 로드하세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 그렇지 않다면 이 대시보드 앞단의 프록시나 방화벽이 요청을 거부한 것이니, 프록시 로그를 확인하거나 나중에 다시 시도하세요.",
       "proxy_challenge_framed": "새 탭에서 {{origin}} 을 여세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 이 패널 안에서는 로그인할 수 없습니다. 거기서 로그인한 뒤 이 페이지를 다시 로드하세요.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
