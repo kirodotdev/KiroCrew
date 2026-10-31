@@ -49,7 +49,8 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
-import { summarizeCrewWorkers } from '../../lib/crewWorkers'
+import { summarizeCrewWorkers, crewRowCounts } from '../../lib/crewWorkers'
+import { CrewRowCounts } from './CrewRowCounts'
 import { useCrewWorkerSummary } from '../chat/command-center/CrewWorkerList'
 import { crewWaitingApprovals, openedSessionRunning } from '../chat/command-center/model'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -300,16 +301,19 @@ function CrewRootSummaryLine({ root, fallback, own = null }: { root: string; fal
   // The server's groups (the worker list API), so the row, the panel and the
   // breadcrumb agree; the fallback until the list has answered. A failed poll
   // says so in the row's own status line; the next poll clears it. The left
-  // side is one state word, never cut; the right side is a ghost with the
-  // session count and, while any run, a green dot with the running count. The
-  // words "sessions" and "running" live in its tooltip and accessible name.
+  // side is one state word, never cut; then the crew's counts (working,
+  // waiting, needs you); the right side is the session count. The words live
+  // in the tooltips and accessible names.
   const { lastWorkers, failed } = useCrewWorkerSummary(root)
   // Only tool approvals reach the person; a worker's question is its conductor's.
   const { groups, approval, done, total } = summarizeCrewWorkers(lastWorkers ?? [])
-  const running = groups.filter(g => g === 'working').length
+  const rowCounts = crewRowCounts(groups)
+  // The state word and the working count read one number, so the row never says
+  // "Waiting" beside a working count.
+  const running = rowCounts.find(c => c.bucket === 'working')?.count ?? 0
   // No crew yet: the row's own state still reads as one word; with none, the fallback line.
   if (total === 0 && !failed && !own) return <>{fallback}</>
-  const counts = i18nT('components.crewMode.ultra_row_sessions', { count: total, running })
+  const counts = i18nT('pages.chatSidebar.session', { count: total })
   const [word, tone] = own ? [own.word, own.tone]
     : approval > 0 ? [i18nT('components.crewMode.ultra_needs_you'), 'crew-tone-warn font-medium']
     : running > 0 ? [i18nT('commandCenter.running'), 'text-text']
@@ -324,14 +328,11 @@ function CrewRootSummaryLine({ root, fallback, own = null }: { root: string; fal
       ) : (
         <span className={`shrink-0 whitespace-nowrap text-[12px] ${tone}`} data-testid="crew-root-state" title={own?.title || undefined}>{word}</span>
       )}
+      <CrewRowCounts counts={rowCounts} />
       {total > 0 && (
         <span className="ml-auto shrink-0 inline-flex items-center gap-1 text-[12px] tabular-nums crew-tone-muted" data-testid="crew-root-counts" title={counts} aria-label={counts} role="img">
           <MessageSquare size={11} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
           <span aria-hidden="true">{total}</span>
-          {running > 0 && <>
-            <span aria-hidden="true" className="ml-1 w-1.5 h-1.5 rounded-full bg-[var(--ok)]" data-testid="crew-root-running-dot" />
-            <span aria-hidden="true">{running}</span>
-          </>}
         </span>
       )}
     </div>
