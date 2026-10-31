@@ -1190,6 +1190,10 @@ class AcpEvent:
     #: launch did not prove stock dsh registers the read tools. Set only on a
     #: deepseek permission event; empty once proved and on every other backend.
     deepseek_read_only_issue: str = ""
+    #: Why a Side Chat READ_ONLY turn refuses this request before any gate tier
+    #: could approve it. Set only on a Strands side session's event, for every call
+    #: that is not the harness's own proven file read; empty everywhere else.
+    side_read_only_refusal: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the

@@ -76,6 +76,18 @@ from kiro_crew.agent_sdk.backends import (
 #   ``REJECT_ALL``.
 # * deepseek uses Crew's verified gate plugin, which turns stock dsh tool allows
 #   into asks. The owner proof below limits the read grant to stock dsh tools.
+# * strands: the CLI has no pre-approval store in project mode. Crew's gate module
+#   (``agent_sdk/gate_extensions/strands``) makes every Strands ``Agent`` raise one
+#   interrupt per tool call, and its envelope names the tool's owner, read off the
+#   tool object Strands resolved. Captured live on Strands CLI 0.2.3 through a
+#   real ``side_read_only`` session under READ_ONLY
+#   (``test/fixtures/acp_frames/strands/side-read-only-live.jsonl``): the built-in
+#   ``read`` of an absolute path ran, ``shell`` running ``ls`` and ``write`` were
+#   refused, and the refused write left no file. The side session mounts no MCP
+#   server, and
+#   only the harness's own ``read`` of an absolute path is named ``fs_read``
+#   (``acp._dispatch.is_strands_side_read``); every other call, a read-only shell
+#   command included, is refused before the gate (``side_read_only_refusal``).
 #
 # Off this set the side turn runs ``REJECT_ALL``, the pre-allowance posture, and
 # its footer says tools are unavailable there.
@@ -140,7 +152,14 @@ from kiro_crew.agent_sdk.backends import (
 # shadowed, MCP and command tools fail closed. The capture is
 # ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_STRANDS,
+    }
 )
 
 # Harnesses opted into the fail-closed approval posture: a ``tool_call`` frame carrying

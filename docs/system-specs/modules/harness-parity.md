@@ -332,6 +332,11 @@ bare name, so `@docs/web_fetch` does not run a `web_fetch` hook. `ACP_BACKENDS_M
 does not take strands: its refusal keys on the card, which this harness never
 trusts, and the envelope refusal already covers every request.
 
+The same owner proof is what admits strands to `ACP_BACKENDS_SIDE_READONLY`: on a
+Side Chat session only the harness's own `read` of an absolute path is named
+`fs_read`, and every other call is refused before the gate
+(`side_read_only_refusal`), so no shell command runs there ([side.md](side.md)).
+
 ### Heartbeat tools on a harness with no adapter-authored tool identity
 
 The heartbeat agent has no approver behind it, so `_heartbeat_approval`
