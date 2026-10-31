@@ -6215,6 +6215,20 @@
       "grant_role_user": "{{title}}: your own messages, not only replies",
       "grant_role_assistant": "{{title}}: assistant replies",
       "grant_format_markdown": "{{title}}: the message's markdown, with link addresses"
+    },
+    "linkOpen": {
+      "ask_title": "Open {{host}} links in {{app}}?",
+      "ask_body": "{{app}} gets only the link shown below.",
+      "always": "Always do this for {{host}}",
+      "open_in_app": "Open in {{app}}",
+      "open_in_browser": "Open in browser",
+      "opening": "Opening in {{app}}…",
+      "failed": "{{app}} couldn't open this link.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Copy",
+      "offer_open": "Open {{host}}",
+      "copy_failed": "Couldn't copy. Select the text in the app and copy it yourself.",
+      "more_actions": "More actions"
     }
   },
   "hooks": {

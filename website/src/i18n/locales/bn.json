@@ -10570,6 +10570,20 @@
       "grant_role_user": "{{title}}: তোমার নিজের বার্তাও, শুধু উত্তর নয়",
       "grant_role_assistant": "{{title}}: অ্যাসিস্ট্যান্টের উত্তর",
       "grant_format_markdown": "{{title}}: বার্তার Markdown, লিংকের ঠিকানাসহ"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} লিংক {{app}}-এ খুলবে?",
+      "ask_body": "{{app}} শুধু নিচে দেখানো লিংকটি পাবে।",
+      "always": "{{host}}-এর জন্য সবসময় এটি করো",
+      "open_in_app": "{{app}}-এ খোলো",
+      "open_in_browser": "ব্রাউজারে খোলো",
+      "opening": "{{app}}-এ খোলা হচ্ছে…",
+      "failed": "{{app}} এই লিংকটি খুলতে পারেনি।",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "কপি করো",
+      "offer_open": "{{host}} খোলো",
+      "copy_failed": "কপি করা যায়নি। অ্যাপে লেখাটি নির্বাচন করে নিজে কপি করো।",
+      "more_actions": "আরও কাজ"
     }
   },
   "hooks": {
@@ -10954,7 +10968,13 @@
       "grants_reconsent_link_patterns": "টেক্সট প্যাটার্ন: চ্যাটের যে লেখা এই প্যাটার্নগুলোর সাথে মেলে, তা অ্যাপের হোভার কার্ডকে দেখতে দেয়।",
       "grants_reconsent_link_full_url": "পুরো লিংক ঠিকানা: অ্যাপের হোভার কার্ড লিংকের ? বা # এর পরের অংশও দেখবে, যেখানে সাইন-ইন কোড থাকতে পারে।",
       "grants_reconsent_message_actions": "বার্তা অ্যাকশন: চ্যাট বার্তায় অ্যাপের মেনু আইটেম কী পড়তে পারে।",
-      "grants_approved": "অনুমোদিত: {{entries}}। অ্যাপটি এখন এগুলো ব্যবহার করতে পারে।"
+      "grants_approved": "অনুমোদিত: {{entries}}। অ্যাপটি এখন এগুলো ব্যবহার করতে পারে।",
+      "grants_reconsent_link_open_hosts": "খোলা লিংক: চ্যাট বার্তায় এই সাইটগুলোর কোনো লিংকে ক্লিক করলে অ্যাপটিকে সেটি খুলতে দেয়।",
+      "grants_reconsent_link_open_full_url": "খোলা লিংকের পুরো ঠিকানা: অ্যাপটি লিংকের ? বা # এর পরের অংশও দেখে, যেখানে সাইন-ইন কোড থাকতে পারে।",
+      "link_open_remembered": "মনে রাখা লিংক পছন্দ",
+      "link_open_choice_app": "{{name}}-এ খোলে",
+      "link_open_choice_browser": "তোমার ব্রাউজারে খোলে",
+      "link_open_forget": "ভুলে যাও"
     },
     "appPage": {
       "loading_app": "অ্যাপ লোড হচ্ছে…",

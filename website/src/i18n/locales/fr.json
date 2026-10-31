@@ -10734,6 +10734,20 @@
       "grant_role_user": "{{title}} : tes propres messages aussi, pas seulement les réponses",
       "grant_role_assistant": "{{title}} : réponses de l'assistant",
       "grant_format_markdown": "{{title}} : le Markdown du message, avec les adresses des liens"
+    },
+    "linkOpen": {
+      "ask_title": "Ouvrir les liens {{host}} dans {{app}} ?",
+      "ask_body": "{{app}} reçoit uniquement le lien affiché ci-dessous.",
+      "always": "Toujours faire ainsi pour {{host}}",
+      "open_in_app": "Ouvrir dans {{app}}",
+      "open_in_browser": "Ouvrir dans le navigateur",
+      "opening": "Ouverture dans {{app}}…",
+      "failed": "{{app}} n'a pas pu ouvrir ce lien.",
+      "panel_label": "{{app}} : {{host}}",
+      "offer_copy": "Copier",
+      "offer_open": "Ouvrir {{host}}",
+      "copy_failed": "Copie impossible. Sélectionne le texte dans l'app et copie-le toi-même.",
+      "more_actions": "Plus d'actions"
     }
   },
   "hooks": {
@@ -11120,7 +11134,13 @@
       "grants_reconsent_link_patterns": "Motifs de texte : permet aux cartes de survol de l’app de voir le texte du chat qui correspond à ces motifs.",
       "grants_reconsent_link_full_url": "Adresses de lien complètes : les cartes de survol de l’app voient aussi la partie d’un lien après « ? » ou « # », qui peut contenir un code de connexion.",
       "grants_reconsent_message_actions": "Actions sur les messages : ce que les éléments de menu de l'app sur les messages du chat peuvent lire.",
-      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
+      "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant.",
+      "grants_reconsent_link_open_hosts": "Liens ouverts : permet à l'app d'ouvrir les liens vers ces sites quand tu cliques sur l'un d'eux dans un message du chat.",
+      "grants_reconsent_link_open_full_url": "Adresses complètes des liens ouverts : l'app voit aussi la partie d'un lien après le point d'interrogation ou le dièse, qui peut contenir un code de connexion.",
+      "link_open_remembered": "Choix de liens mémorisés",
+      "link_open_choice_app": "S'ouvre dans {{name}}",
+      "link_open_choice_browser": "S'ouvre dans ton navigateur",
+      "link_open_forget": "Oublier"
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",

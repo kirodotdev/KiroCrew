@@ -1026,6 +1026,97 @@ second, is dropped unread. If the frame does not report `ready` within 10 second
 or the module fails to import, or `activate` throws or returns no `invoke`, the
 popover says the app didn't open. An `error` shows that the app couldn't finish.
 
+### `contributes.linkOpen` — Open a Claimed Link in the App
+
+A link-open entry lets the user open a link in a chat message inside the app,
+instead of a new browser tab. The host owns the click and the choice; the app owns
+what it shows, in the same sandboxed frame a link preview uses. No app code runs
+until the user picks the app.
+
+```json
+{
+  "contributes": {
+    "linkOpen": [
+      {
+        "id": "open",
+        "entry": "dist/link-open.mjs",
+        "hosts": ["tickets.example.com", ".example.dev"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `hosts` | string[] | 1-64 hostnames, with the same rules as `linkPreviews.hosts`. Only `https:` links on the default port and without a user name match |
+| `fullUrl` | boolean | Optional. `open` gets the URL without its query and fragment unless this is `true` and the owner approved it |
+
+At most **one** entry per app; a click goes to the first enabled app whose `hosts`
+claim the link.
+
+**Which clicks.** A plain left click on an `https:` link in a chat message whose
+host the entry claims. A click with Ctrl, Cmd, Shift or Alt, a middle click, a link
+outside a chat message and a link no app claims all behave exactly as before. So
+does a link to the dashboard itself (an artifact or a session), even when the
+dashboard is served at a host the entry claims.
+
+**The choice.** The first click asks: open the link in the app, or in the browser.
+With **Always** checked the answer is remembered for this entry and this one host
+only, not for every host the app claims. A remembered "browser" makes the link an
+ordinary link again. The app's page lists the remembered answers, each with
+**Forget**.
+
+**Approval.** The hosts and `fullUrl` are part of what the owner approves, like
+`linkPreviews`: an update that adds a host or turns `fullUrl` on waits on the app's
+page until the owner approves it. With no host approved the entry is off: no frame,
+no capability, no fetch.
+
+**Where the module runs.** In a host dialog, in a frame created when the user picks
+the app and removed when the dialog closes. It is the shared app frame: opaque
+origin, `credentialless`, the same CSP and `ctx.fetch` as a link preview. The dialog's header
+has one **More actions** menu beside close. It always holds **Open in browser**,
+which is the host's own and always works.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+}): {
+  // One call per open. Draw the link, then return; throw to fail it.
+  open(link: {
+    url: string                 // no query or fragment unless `fullUrl` was approved
+    theme: 'dark' | 'light'
+    invocationId: string        // the host's id for this open
+    deadlineMs: number          // how long the host waits for open() to settle
+    resize(size: { width: number; height: number }): void
+    close(): void               // the app is done: the host closes the dialog
+    error(message: string): void
+    offerCopy(text: string): Promise<{ ok: boolean; code?: string }>
+    offerOpen(url: string): Promise<{ ok: boolean; code?: string }>  // https only
+  }): void | Promise<void>
+  cancel?(invocationId: string, reason: string): void
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void
+}
+```
+
+Each open is one invocation on the shared invocation contract. When `open()`
+settles, the frame reports its size, which tells the host the link is drawn: the
+frame is shown and the deadline stops. When `open()` throws, or `link.error()` is
+called, the open fails. If neither happens within the deadline (10 seconds after the
+module is ready), the host cancels the invocation (`cancel(id, 'deadline')`) and
+shows "couldn't open this link" with **Open in browser**; a frame that does not
+report `ready` within 10 seconds, or whose module fails to import, shows the same.
+Closing the dialog first calls `cancel(id, 'closed')`. `offerCopy` and `offerOpen`
+put a **Copy** or **Open &lt;host&gt;** item in that menu: nothing is
+copied or opened until the user picks it. Links inside the frame open through the
+dashboard's link bridge.
+
 ### `backend` — App Backend Process
 
 ```json

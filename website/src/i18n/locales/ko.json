@@ -10406,6 +10406,20 @@
       "grant_role_user": "{{title}}: 답장뿐 아니라 내 메시지도",
       "grant_role_assistant": "{{title}}: 어시스턴트 답장",
       "grant_format_markdown": "{{title}}: 링크 주소를 포함한 메시지의 Markdown"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} 링크를 {{app}}에서 열까요?",
+      "ask_body": "{{app}}은(는) 아래에 표시된 링크만 받습니다.",
+      "always": "{{host}}에 대해 항상 이렇게 하기",
+      "open_in_app": "{{app}}에서 열기",
+      "open_in_browser": "브라우저에서 열기",
+      "opening": "{{app}}에서 여는 중…",
+      "failed": "{{app}}이(가) 이 링크를 열지 못했습니다.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "복사",
+      "offer_open": "{{host}} 열기",
+      "copy_failed": "복사하지 못했습니다. 앱에서 텍스트를 선택해 직접 복사하세요.",
+      "more_actions": "작업 더 보기"
     }
   },
   "hooks": {
@@ -10788,7 +10802,13 @@
       "grants_reconsent_link_patterns": "텍스트 패턴: 앱의 호버 카드가 이 패턴과 일치하는 채팅 텍스트를 볼 수 있게 합니다.",
       "grants_reconsent_link_full_url": "전체 링크 주소: 앱의 호버 카드가 링크에서 ? 또는 # 뒤의 부분도 봅니다. 이 부분에는 로그인 코드가 들어 있을 수 있습니다.",
       "grants_reconsent_message_actions": "메시지 작업: 채팅 메시지에 있는 앱 메뉴 항목이 읽을 수 있는 내용.",
-      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
+      "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다.",
+      "grants_reconsent_link_open_hosts": "여는 링크: 채팅 메시지에서 이 사이트로 가는 링크를 클릭하면 앱이 그 링크를 열 수 있습니다.",
+      "grants_reconsent_link_open_full_url": "여는 링크의 전체 주소: 앱이 링크의 ? 또는 # 뒤 부분도 봅니다. 여기에 로그인 코드가 들어 있을 수 있습니다.",
+      "link_open_remembered": "기억된 링크 선택",
+      "link_open_choice_app": "{{name}}에서 열림",
+      "link_open_choice_browser": "브라우저에서 열림",
+      "link_open_forget": "지우기"
     },
     "appPage": {
       "loading_app": "앱을 불러오는 중…",

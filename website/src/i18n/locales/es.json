@@ -10734,6 +10734,20 @@
       "grant_role_user": "{{title}}: también tus propios mensajes, no solo las respuestas",
       "grant_role_assistant": "{{title}}: respuestas del asistente",
       "grant_format_markdown": "{{title}}: el Markdown del mensaje, con las direcciones de los enlaces"
+    },
+    "linkOpen": {
+      "ask_title": "¿Abrir los enlaces de {{host}} en {{app}}?",
+      "ask_body": "{{app}} solo recibe el enlace que se muestra abajo.",
+      "always": "Hacer siempre esto con {{host}}",
+      "open_in_app": "Abrir en {{app}}",
+      "open_in_browser": "Abrir en el navegador",
+      "opening": "Abriendo en {{app}}…",
+      "failed": "{{app}} no pudo abrir este enlace.",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "Copiar",
+      "offer_open": "Abrir {{host}}",
+      "copy_failed": "No se pudo copiar. Selecciona el texto en la app y cópialo tú.",
+      "more_actions": "Más acciones"
     }
   },
   "hooks": {
@@ -11120,7 +11134,13 @@
       "grants_reconsent_link_patterns": "Patrones de texto: permite que las tarjetas de la app vean el texto del chat que coincide con estos patrones.",
       "grants_reconsent_link_full_url": "Direcciones de enlace completas: las tarjetas de la app también ven la parte de un enlace tras ? o #, que puede contener un código de inicio de sesión.",
       "grants_reconsent_message_actions": "Acciones de mensaje: lo que pueden leer las opciones de menú de la app en los mensajes del chat.",
-      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos."
+      "grants_approved": "Aprobados: {{entries}}. La app ya puede usarlos.",
+      "grants_reconsent_link_open_hosts": "Enlaces abiertos: permite a la app abrir enlaces a estos sitios cuando haces clic en uno en un mensaje del chat.",
+      "grants_reconsent_link_open_full_url": "Direcciones completas de los enlaces abiertos: la app también ve la parte de un enlace después de ? o #, que puede contener un código de inicio de sesión.",
+      "link_open_remembered": "Elecciones de enlaces guardadas",
+      "link_open_choice_app": "Se abre en {{name}}",
+      "link_open_choice_browser": "Se abre en tu navegador",
+      "link_open_forget": "Olvidar"
     },
     "appPage": {
       "loading_app": "Cargando la app…",

@@ -10570,6 +10570,20 @@
       "grant_role_user": "{{title}}: तुम्हारे अपने संदेश भी, केवल जवाब नहीं",
       "grant_role_assistant": "{{title}}: असिस्टेंट के जवाब",
       "grant_format_markdown": "{{title}}: संदेश का Markdown, लिंक पतों सहित"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} के लिंक {{app}} में खोलो?",
+      "ask_body": "{{app}} को केवल नीचे दिखाया गया लिंक मिलेगा।",
+      "always": "{{host}} के लिए हमेशा ऐसा करो",
+      "open_in_app": "{{app}} में खोलो",
+      "open_in_browser": "ब्राउज़र में खोलो",
+      "opening": "{{app}} में खुल रहा है…",
+      "failed": "{{app}} यह लिंक नहीं खोल सका।",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "कॉपी करो",
+      "offer_open": "{{host}} खोलो",
+      "copy_failed": "कॉपी नहीं हो सका। ऐप में टेक्स्ट चुनो और खुद कॉपी करो।",
+      "more_actions": "और कार्रवाइयाँ"
     }
   },
   "hooks": {
@@ -10954,7 +10968,13 @@
       "grants_reconsent_link_patterns": "टेक्स्ट पैटर्न: ऐप के होवर कार्ड को चैट का वह टेक्स्ट देखने देते हैं जो इन पैटर्न से मेल खाता है।",
       "grants_reconsent_link_full_url": "पूरे लिंक पते: ऐप के होवर कार्ड लिंक में ? या # के बाद का हिस्सा भी देखते हैं, जिसमें साइन-इन कोड हो सकता है।",
       "grants_reconsent_message_actions": "संदेश कार्रवाइयाँ: चैट संदेशों पर ऐप के मेनू आइटम क्या पढ़ सकते हैं।",
-      "grants_approved": "मंज़ूर: {{entries}}। ऐप अब इनका उपयोग कर सकता है।"
+      "grants_approved": "मंज़ूर: {{entries}}। ऐप अब इनका उपयोग कर सकता है।",
+      "grants_reconsent_link_open_hosts": "खोले गए लिंक: चैट संदेश में इन साइटों के किसी लिंक पर क्लिक करने पर ऐप को उसे खोलने देता है।",
+      "grants_reconsent_link_open_full_url": "खोले गए लिंक के पूरे पते: ऐप लिंक में ? या # के बाद का भाग भी देखता है, जिसमें साइन-इन कोड हो सकता है।",
+      "link_open_remembered": "याद रखे गए लिंक विकल्प",
+      "link_open_choice_app": "{{name}} में खुलता है",
+      "link_open_choice_browser": "तुम्हारे ब्राउज़र में खुलता है",
+      "link_open_forget": "भूल जाओ"
     },
     "appPage": {
       "loading_app": "ऐप लोड हो रहा है…",

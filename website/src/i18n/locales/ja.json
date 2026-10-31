@@ -10406,6 +10406,20 @@
       "grant_role_user": "{{title}}：返信だけでなく、あなた自身のメッセージも",
       "grant_role_assistant": "{{title}}：アシスタントの返信",
       "grant_format_markdown": "{{title}}：メッセージの Markdown（リンクのアドレスを含む）"
+    },
+    "linkOpen": {
+      "ask_title": "{{host}} のリンクを {{app}} で開きますか？",
+      "ask_body": "{{app}} に渡されるのは下のリンクだけです。",
+      "always": "{{host}} では常にこうする",
+      "open_in_app": "{{app}} で開く",
+      "open_in_browser": "ブラウザーで開く",
+      "opening": "{{app}} で開いています…",
+      "failed": "{{app}} はこのリンクを開けませんでした。",
+      "panel_label": "{{app}}: {{host}}",
+      "offer_copy": "コピー",
+      "offer_open": "{{host}} を開く",
+      "copy_failed": "コピーできませんでした。アプリ内のテキストを選択して自分でコピーしてください。",
+      "more_actions": "その他の操作"
     }
   },
   "hooks": {
@@ -10788,7 +10802,13 @@
       "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
       "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
       "grants_reconsent_message_actions": "メッセージアクション：チャットメッセージ上のアプリのメニュー項目が読み取れる内容。",
-      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
+      "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。",
+      "grants_reconsent_link_open_hosts": "開くリンク: チャットメッセージ内のこれらのサイトへのリンクをクリックしたとき、アプリがそのリンクを開けるようにします。",
+      "grants_reconsent_link_open_full_url": "開くリンクの完全なアドレス: アプリはリンクの ? や # 以降の部分も見ます。ここにはサインインコードが含まれることがあります。",
+      "link_open_remembered": "記憶したリンクの選択",
+      "link_open_choice_app": "{{name}} で開く",
+      "link_open_choice_browser": "ブラウザーで開く",
+      "link_open_forget": "削除"
     },
     "appPage": {
       "loading_app": "アプリを読み込み中…",

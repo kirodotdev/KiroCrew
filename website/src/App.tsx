@@ -43,6 +43,9 @@ const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
 // App-contributed message actions (`contributes.messageActions`): a More-menu row per
 // approved action; an app's module loads only when its row is clicked.
 const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLayer'))
+// App-contributed link opening (`contributes.linkOpen`): click detection only; an
+// app's module loads when the user chooses to open a link in it.
+const LinkOpenLayer = lazy(() => import('./linkOpen/LinkOpenLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
@@ -831,6 +834,7 @@ export default function App() {
           <Suspense fallback={null}><GuideLayer /></Suspense>
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
+          <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

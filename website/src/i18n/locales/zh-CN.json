@@ -10406,6 +10406,20 @@
       "grant_role_user": "{{title}}：你自己的消息，不只是回复",
       "grant_role_assistant": "{{title}}：助手回复",
       "grant_format_markdown": "{{title}}：消息的 Markdown 原文，含链接地址"
+    },
+    "linkOpen": {
+      "ask_title": "在 {{app}} 中打开 {{host}} 的链接？",
+      "ask_body": "{{app}} 只会收到下面显示的链接。",
+      "always": "以后 {{host}} 都这样处理",
+      "open_in_app": "在 {{app}} 中打开",
+      "open_in_browser": "在浏览器中打开",
+      "opening": "正在 {{app}} 中打开…",
+      "failed": "{{app}} 无法打开这个链接。",
+      "panel_label": "{{app}}：{{host}}",
+      "offer_copy": "复制",
+      "offer_open": "打开 {{host}}",
+      "copy_failed": "无法复制。请在应用中选中文字后自行复制。",
+      "more_actions": "更多操作"
     }
   },
   "hooks": {
@@ -10788,7 +10802,13 @@
       "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
       "grants_reconsent_message_actions": "消息操作：应用在聊天消息上的菜单项能读取哪些内容。",
-      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
+      "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。",
+      "grants_reconsent_link_open_hosts": "打开的链接：你在聊天消息中点击指向这些网站的链接时，允许应用打开它。",
+      "grants_reconsent_link_open_full_url": "所打开链接的完整地址：应用还会看到链接中 ? 或 # 之后的部分，其中可能含有登录码。",
+      "link_open_remembered": "记住的链接选择",
+      "link_open_choice_app": "在 {{name}} 中打开",
+      "link_open_choice_browser": "在浏览器中打开",
+      "link_open_forget": "忘记"
     },
     "appPage": {
       "loading_app": "加载应用…",

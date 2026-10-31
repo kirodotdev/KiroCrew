@@ -4846,7 +4846,13 @@
       "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
       "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
       "grants_reconsent_message_actions": "Message actions: what the app's menu items on chat messages can read.",
-      "grants_approved": "Approved: {{entries}}. The app can use them now."
+      "grants_approved": "Approved: {{entries}}. The app can use them now.",
+      "grants_reconsent_link_open_hosts": "Opened links: lets the app open links to these sites when you click one in a chat message.",
+      "grants_reconsent_link_open_full_url": "Whole addresses of opened links: the app also sees the part of a link after ? or #, which can hold a sign-in code.",
+      "link_open_remembered": "Remembered link choices",
+      "link_open_choice_app": "Opens in {{name}}",
+      "link_open_choice_browser": "Opens in your browser",
+      "link_open_forget": "Forget"
     },
     "appsPage": {
       "action_failed": "Failed to {{action}} {{name}}",
