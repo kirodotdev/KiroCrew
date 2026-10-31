@@ -153,3 +153,28 @@ def test_refresh_replaces_a_complete_install(tmp_path: Path) -> None:
     assert len(second.calls) == 1
     assert state.present is True
     assert damaged.read_bytes() != b"not a browser"
+
+
+@pytest.mark.parametrize("failure", ["offline", "no_binary"])
+def test_a_redownload_that_fails_keeps_the_working_copy(tmp_path: Path, failure: str) -> None:
+    """Redownload while offline, or of a bad archive: the installed browser still runs."""
+    chromium.download_chromium(
+        tmp_path, platform=_PLATFORM, opener=_opener_for(_archive(with_symlink=False))
+    )
+    exe = chromium.executable_path(tmp_path, _PLATFORM)
+    assert exe is not None
+    before = exe.read_bytes()
+    if failure == "offline":
+
+        def opener(url: str, timeout: float) -> _Response:
+            raise OSError("offline")
+
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("chrome-linux64/resources.pak", b"pak")
+        opener = _opener_for(buf.getvalue())
+    with pytest.raises(chromium.ChromiumDownloadError):
+        chromium.download_chromium(tmp_path, platform=_PLATFORM, opener=opener, refresh=True)
+    assert exe.read_bytes() == before
+    assert chromium.chromium_state(tmp_path, _PLATFORM).present is True

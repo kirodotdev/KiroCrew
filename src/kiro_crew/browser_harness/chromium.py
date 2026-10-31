@@ -173,9 +173,10 @@ def download_chromium(
     A complete install is left alone unless *refresh* is set (the owner pressed
     Redownload: the copy on disk is replaced even when its marker says it is
     whole, which is how a damaged executable is repaired). An incomplete
-    directory is replaced either way. The archive is streamed to a temp file
-    beside the target so a failed download never leaves a half-written version
-    directory behind, and the marker is written last.
+    directory is replaced either way. The archive is downloaded and extracted
+    into a temp directory beside the target, and the executable checked there,
+    before the installed copy is touched: a failed or stopped download leaves
+    the working browser in place. The marker is written last.
     """
     key = platform if platform is not None else cft_platform()
     if key is None:
@@ -186,8 +187,6 @@ def download_chromium(
     target = version_dir(prefix)
     root = chromium_root(prefix)
     root.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
     notify = progress or (lambda _stage, _detail: None)
     with tempfile.TemporaryDirectory(prefix="chromium-", dir=root) as tmp:
         archive = Path(tmp) / "chrome.zip"
@@ -208,6 +207,11 @@ def download_chromium(
         notify(STAGE_EXTRACTING, str(target))
         staging = Path(tmp) / "extract"
         _extract(archive, staging)
+        exe = executable_path(prefix, key)
+        if exe is None or not (staging / exe.relative_to(target)).is_file():
+            raise ChromiumDownloadError(f"archive did not contain {exe}")
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
         staging.rename(target)
     (target / INSTALLATION_MARKER).write_text(CHROMIUM_VERSION, encoding="utf-8")
     state = chromium_state(prefix, key)
