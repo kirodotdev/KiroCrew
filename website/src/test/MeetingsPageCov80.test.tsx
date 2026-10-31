@@ -31,17 +31,21 @@ vi.mock('../apps/meetings/api', async importOriginal => {
 })
 
 vi.mock('../apps/meetings/MeetingView', () => ({
-  default: ({ eventId, fallbackTitle, onBack, onOpenSettings }: {
+  default: ({ eventId, fallbackTitle, onBack, onOpenSettings, onOpenMeeting }: {
     eventId: string
     fallbackTitle?: string
     onBack: () => void
     onOpenSettings: () => void
+    onOpenMeeting?: (eventId: string, title: string) => void
   }) => (
     <div>
       <span data-testid="meeting-id">{eventId}</span>
       <span data-testid="meeting-title">{fallbackTitle ?? 'zzz-none'}</span>
       <button onClick={onBack}>zzz-back</button>
       <button onClick={onOpenSettings}>zzz-open-settings</button>
+      <button onClick={() => onOpenMeeting?.('zzz-blocker', 'zzz Blocker')}>
+        zzz-open-blocker
+      </button>
     </div>
   ),
 }))
@@ -237,6 +241,20 @@ describe('MeetingsPage routing', () => {
     await userEvent.click((await screen.findByText('zzz Retro')).closest('[role="button"]')!)
     await userEvent.click(screen.getByRole('button', { name: 'zzz-open-settings' }))
     expect(screen.getByTestId('settings')).toBeInTheDocument()
+  })
+
+  it('opens the meeting a refused start names', async () => {
+    const { queryClient } = renderPage()
+    await userEvent.click((await screen.findByText('zzz Retro')).closest('[role="button"]')!)
+    expect(screen.getByTestId('meeting-id')).toHaveTextContent('zzz-retro')
+
+    // A cached copy of the blocker must refetch on mount, or a meeting cached as
+    // idle would open without the review it now has.
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await userEvent.click(screen.getByRole('button', { name: 'zzz-open-blocker' }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['meetings', 'zzz-blocker'] })
+    expect(screen.getByTestId('meeting-id')).toHaveTextContent('zzz-blocker')
+    expect(screen.getByTestId('meeting-title')).toHaveTextContent('zzz Blocker')
   })
 
   it('starts an ad-hoc meeting with a slug id needing no calendar', async () => {

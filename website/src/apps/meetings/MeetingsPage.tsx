@@ -215,6 +215,9 @@ export default function MeetingsPage() {
   if (route.view === 'meeting') {
     return (
       <MeetingView
+        // Keyed by meeting, so opening the meeting a refused start names
+        // mounts a fresh view instead of reusing this one's session state.
+        key={route.eventId}
         eventId={route.eventId}
         fallbackTitle={route.title}
         config={configQuery.data?.config}
@@ -223,6 +226,12 @@ export default function MeetingsPage() {
           void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
         }}
         onOpenSettings={() => setRoute({ view: 'settings' })}
+        onOpenMeeting={(eventId, title) => {
+          // The shared client never refetches on mount, so a cached copy of this
+          // meeting (say, still idle) would hide the review it now has.
+          void queryClient.invalidateQueries({ queryKey: ['meetings', safeMeetingId(eventId)] })
+          setRoute({ view: 'meeting', eventId, title })
+        }}
         notify={notify}
       />
     )

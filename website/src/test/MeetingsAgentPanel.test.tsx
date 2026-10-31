@@ -340,6 +340,20 @@ describe('AgentPanel — editable minutes', () => {
       .toBe('# Submitted\n\nTyped while saving')
   })
 
+  it('reports a dirty draft to the parent, and clean again on unmount', () => {
+    const onDirtyChange = vi.fn()
+    const { openEditor, unmount } = mountEditable({ onDirtyChange })
+    const field = openEditor()
+    // Opening the editor seeds the draft; an untouched draft is not dirty.
+    expect(onDirtyChange).not.toHaveBeenCalled()
+
+    fireEvent.change(field, { target: { value: 'scratch' } })
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true)
+
+    unmount()
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false)
+  })
+
   it('cancelling a dirty draft asks first, then discards and never calls the server', async () => {
     const { openEditor, onSaveOutput } = mountEditable()
     fireEvent.change(openEditor(), { target: { value: 'scratch' } })

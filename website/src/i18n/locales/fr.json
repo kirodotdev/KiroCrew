@@ -3578,6 +3578,8 @@
         "anotherMeetingReviewing": "« {{title}} » est encore en revue. Ouvre-la dans Réunions et choisis d’abord « Clore la réunion ».",
         "sttStreamingDisabled": "La transcription en direct est désactivée. Dans Paramètres → Voix, vérifie que la saisie vocale est activée, que le fournisseur gère le streaming et que Streaming est activé.",
         "openVoiceSettings": "Ouvrir les paramètres vocaux",
+        "openBlockingMeeting": "Ouvrir la réunion",
+        "openBlockingReview": "Ouvrir la revue",
         "noteSaveFailed": "Impossible d'enregistrer ta note.",
         "noteImageFailed": "Impossible d'ajouter cette image. Colle un PNG, JPEG, GIF ou WebP.",
         "noteImageTooLarge": "Cette image est trop volumineuse pour une note."
