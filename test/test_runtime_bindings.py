@@ -229,6 +229,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
     "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
     "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "session_activity_at": ("function", False, "8912ecd7f5d6", "runtime_session_registry"),
     "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
     "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),

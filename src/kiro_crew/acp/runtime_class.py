@@ -144,6 +144,7 @@ class AcpRuntime:
     load_session = _rt_load.load_session
     _wait_managed_mcp = _rt_load._wait_managed_mcp
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
+    session_activity_at = _rt_registry.session_activity_at
     unregister_session = _rt_registry.unregister_session
     mark_turn_active = _rt_registry.mark_turn_active
     terminate_session = _rt_registry.terminate_session
@@ -683,6 +684,13 @@ class AcpRuntime:
         # load runs (``keep_record_on_teardown``).
         self._record_keeping_sessions: set[str] = set()
         self._dropped_frames_flushed_at: float = 0.0
+        # Monotonic time of the last attributable backend frame observed.
+        # The idle sweep reads it (``session_activity_at``) because a session's
+        # own clock moves only when a turn is dispatched, while its backend and
+        # the children it spawned keep emitting between turns. Per session, not
+        # ``_last_activity``: that one is process-wide, and on a shared runtime
+        # it would keep every tenant alive whenever any one of them worked.
+        self._session_activity_at: dict[str, float] = {}
 
     def _pool_lookup(self, agent: str | None) -> tuple[str | None, dict[str, Any] | None]:
         """The overlay name *agent*'s pooled stubs are found under, and its spec snapshot.
