@@ -111,7 +111,7 @@ def _oracle_segments(command: str, track: bool = True) -> "list[str]":
                 break
             if step.state == 2 and text.startswith("$(", step.offset):
                 body = text[step.offset + 2 :]
-                close, proven = _shell._matching_close_paren(body, 0)
+                close, proven = _shell._matching_close_paren(body)
                 out.extend(_oracle_segments(body[: close - 1 if proven else close], track))
                 seg.append(SUBST)
                 in_redirect = False

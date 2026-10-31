@@ -24,6 +24,9 @@ from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     MAX_SCANNABLE_SOURCE_BODY_CHARS,
     is_sensitive_bash_command,
+    shell_normalizer,
+    shell_normalizer_span,
+    shell_normalizer_walk,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -614,7 +617,32 @@ def _url_payload_command(n: int) -> str:
 #: hook runs under cmd.exe, and its verdict is cached once per command so a
 #: command of many segments is not re-read per segment. A regex alternative was
 #: tried first and lost twice to bash word splitting.
-_PACKAGE_LINE_BUDGET = 33_523
+#:
+#: Raised again, from 33,523, so the paren matcher skips a NESTED substitution
+#: and a ``${...}`` expansion (``_matching_close_brace``) as units, keeping their
+#: inner quotes and parens sealed inside them instead of closing an enclosing
+#: span early at a quoted ``")"`` and leaving a ``bash -c '<push main>'`` behind
+#: it unscanned. A ``$`` paired into ``$$`` opens nothing, a quoted ``<(`` is
+#: data, a backtick closes only on an unescaped backtick, and nesting past
+#: ``_MAX_SPAN_NESTING`` is read without unit skipping. Heredocs and arithmetic
+#: are not modelled: a span a heredoc body starts inside (any ``<<`` but a
+#: here-string, a shift included) is read the flat way ``main`` reads it
+#: (``_flat_close``) and is unproven, so the extractor scans its whole remainder.
+#: The rm floor and the self-kill raw walk take the unit-skipping close only
+#: when it proves the span, else ``main``'s. The extractor emits an unproven
+#: span's over-reads once and continues the structural walk, and the payload
+#: walk does not re-extract an over-read, so a run of such spans stays linear; a
+#: capped span is scanned in shallow segments (``_capped_tail_entries``), and
+#: a kill behind a capped span fails closed (its verb read as a frame token, so
+#: a parameter-default spelling counts). A backtick in the text leaves the flat
+#: quote reading untrusted. A capped span's body is also read whole, once per
+#: walk, whether it closes or not, and its post-newline over-read runs once per
+#: walk too. The capped kill check counts openers with line continuations folded.
+#: The span matcher and the
+#: substitution bodies moved to ``shell_normalizer_span``, keeping
+#: ``shell_normalizer_walk`` under the split line. The ``argv_floor`` facade
+#: manifest names the frame reader it forwards.
+_PACKAGE_LINE_BUDGET = 34_223
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
@@ -748,6 +776,43 @@ def _gate_seconds(command: str) -> float:
     return time.perf_counter() - started
 
 
+def _span_walk_steps(monkeypatch, command: str) -> int:
+    """Characters the shell quote machine steps through while ``is_denied``
+    reads an allowed *command*. The substitution span walk runs there, and
+    ``is_sensitive_bash_command`` never reaches it. A step count is the walk's
+    WORK, so a loaded CI worker cannot move it the way it moves wall time."""
+    real = shell_normalizer_walk._iter_shell_chars
+    steps = 0
+
+    def counting(*args, **kwargs):
+        nonlocal steps
+        for step in real(*args, **kwargs):
+            steps += 1
+            yield step
+
+    monkeypatch.setattr(shell_normalizer_walk, "_iter_shell_chars", counting)
+    monkeypatch.setattr(shell_normalizer_span, "_iter_shell_chars", counting)
+    assert security.is_denied(command) is None
+    monkeypatch.setattr(shell_normalizer_walk, "_iter_shell_chars", real)
+    monkeypatch.setattr(shell_normalizer_span, "_iter_shell_chars", real)
+    return steps
+
+
+#: On every span-walk shape below, this build and main both do at most
+#: quadratic work in the opener count: doubling the run multiplies the steps by
+#: about 3 to 4. Each super-quadratic regression the review found (a second walk
+#: per failed ``$((`` seed, a rescan from every opener) measured 6x or more per
+#: doubling, so the work may grow at most this much when the run doubles.
+_MAX_STEP_GROWTH = 4.5
+
+
+def _assert_walk_scales(monkeypatch, shape, n: int = 40) -> None:
+    """Doubling the run of *shape* grows the walk's work at most quadratically."""
+    small = _span_walk_steps(monkeypatch, shape(n))
+    large = _span_walk_steps(monkeypatch, shape(2 * n))
+    assert large <= _MAX_STEP_GROWTH * small, (small, large)
+
+
 def test_double_separator_10kb_is_fast() -> None:
     """The crash shape, at the crash size: 15 s on the shipped build."""
     cmd = _double_separator_command(160)
@@ -761,3 +826,171 @@ def test_url_payload_12kb_is_fast() -> None:
     assert 10_000 < len(cmd) <= MAX_SCANNABLE_COMMAND_CHARS
     assert is_sensitive_bash_command(cmd) is None
     assert _gate_seconds(cmd) < 2.0
+
+
+# A run of substitution OPENERS is the cost shape the nested-payload extractor
+# faces: each ``$(`` is a span the walk must delimit, and before the extractor
+# read one body per top-level opener (skipping proven and depth-capped spans
+# instead of re-walking from every inner opener) a 400-byte command of these
+# took tens of seconds. Each row pins NON-explosion as a bound on the walk's
+# growth through ``is_denied``, where the span walk runs; main meets it too.
+
+
+def test_a_run_of_substitution_openers_is_fast(monkeypatch) -> None:
+    """``echo $($($(...`` -- balanced openers, every span proven and skipped past."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$(" * n)
+
+
+def test_a_run_of_unbalanced_quoted_openers_is_fast(monkeypatch) -> None:
+    """``echo "" $( "" $( ...`` -- openers inside a double quote that never close."""
+    _assert_walk_scales(monkeypatch, lambda n: 'echo "' + '"$(' * n)
+
+
+def test_alternating_single_and_double_quoted_openers_is_fast(monkeypatch) -> None:
+    """``echo '$(' "$( '$(' "$( ...`` -- a single-quoted opener (data to bash,
+    stepped past) alternating with a live one, the shape the single-quote check
+    guards."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "'$(' \"$(" * n)
+
+
+def test_deeply_nested_substitutions_are_fast(monkeypatch) -> None:
+    """``echo $(echo $(echo ... )))`` -- past ``_MAX_SPAN_NESTING`` the outer span
+    is unproven only because of the cap, so the extractor takes the
+    whole-remainder body and lets the payload walk descend, rather than adding the
+    re-exploding last-``)`` and outer-context readings."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$(echo " * n + ")" * n)
+
+
+# A run of ``$((`` openers is the ARITHMETIC-seed cost shape. Each ``$((`` is a
+# subshell-or-arithmetic the span walk must settle, and before the adjacency was
+# decided inside that one walk a separate forward scan ran per opener and per
+# recursed body, so a few hundred bytes of these took tens of seconds. These
+# three are bolichen97's shapes; each pins NON-explosion, and main meets it too.
+
+
+def test_a_run_of_arithmetic_openers_is_fast(monkeypatch) -> None:
+    """``echo $(($(($((...`` -- bare ``$((`` openers that never close, the seed
+    cost shape where the old per-opener forward scan was super-linear."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$((" * n)
+
+
+def test_a_run_of_closing_arithmetic_openers_is_fast(monkeypatch) -> None:
+    """``echo $((x+$((x+...1))))...`` -- ``$((`` openers that DO close, each with
+    an adjacent ``))`` that confirms the optimistic seed."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$((x+" * n + "1" + "))" * n)
+
+
+def test_a_run_of_arithmetic_openers_with_bodies_is_fast(monkeypatch) -> None:
+    """``echo $((echo $((echo ...`` -- ``$((`` openers each carrying a word, the
+    heaviest of the three because every opener recurses a populated body."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$((echo " * n)
+
+
+# A ``$((`` seed that fails is settled in the SAME walk: the span is read with
+# and without the seed at once, so a nested span is walked once. A second walk
+# per failed seed re-walked every level under it again, so these two shapes,
+# each ``$((`` holding a ``<<`` and never closing on ``))``, grew about 6x per
+# doubling. Both are bolichen97's shapes, and main meets the bound too.
+
+
+def test_a_run_of_arithmetic_openers_holding_a_shift_is_fast(monkeypatch) -> None:
+    """``echo $((x<<$((x<<...`` -- every seed holds a ``<<`` and fails."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$((x<<" * n)
+
+
+def test_a_run_of_subshell_openers_holding_a_heredoc_is_fast(monkeypatch) -> None:
+    """``echo $((cat <<E $((cat <<E ...`` -- a heredoc under each failed seed."""
+    _assert_walk_scales(monkeypatch, lambda n: "echo " + "$((cat <<E " * n)
+
+
+# A run of SEQUENTIAL unproven heredoc spans -- ``echo "$(cat <<E\n) "`` x N --
+# is the one shape the other rows do not cover: every ``"$(cat <<E`` opens a
+# ``$(`` span left unproven by its heredoc, and before this fix the
+# whole-remainder glued-tail over-read was re-queued at every opener and the
+# payload walk re-exploded each near-full remainder into the next, so the work
+# grew about 2.5x to 2.8x per doubling -- super-linear, and a 20 KB command (the
+# scan cap) stalled the gate for minutes, an injection-reachable DoS. The fix
+# emits that over-read once, continues the structural walk past each span, and
+# does not re-extract the suffix over-read, so the work is now LINEAR: doubling
+# the run doubles the steps (about 2x). This bound is tighter than
+# ``_MAX_STEP_GROWTH`` on purpose -- it FAILS on the pre-fix tree and holds only
+# because the growth is linear, not merely sub-quadratic.
+_MAX_LINEAR_STEP_GROWTH = 2.3
+
+
+def test_a_run_of_sequential_heredoc_spans_is_linear(monkeypatch) -> None:
+    """``echo "$(cat <<E\\n) "`` x N -- the O(n^2) remainder-chain shape, now linear."""
+    shape = lambda n: "echo " + '"$(cat <<E\n) "' * n  # noqa: E731
+    small = _span_walk_steps(monkeypatch, shape(40))
+    large = _span_walk_steps(monkeypatch, shape(80))
+    assert large <= _MAX_LINEAR_STEP_GROWTH * small, (small, large)
+
+
+# A RUN of capped spans -- ``echo `` + N copies of a depth-33 ``$(echo ... x )``
+# nest joined by `` ; `` -- is the shape bolichen97's liveness finding named:
+# each nest reaches ``_MAX_SPAN_NESTING`` so the extractor read it unproven, and
+# before this fix it appended the whole remainder (an O(n) slice) and ran a fresh
+# ``find('\n')`` / ``rfind(')')`` (each O(n)) at EVERY opener, so the work grew
+# about 2.7x per doubling -- super-linear, and a 20 KB command (the scan cap)
+# held the gate for ~17 s. The fix drops the value-suppressed remainder slice and
+# bounds the heredoc glued-tail search to the span, so a clean capped run is now
+# LINEAR: doubling the run doubles the steps (about 2x). ``_MAX_LINEAR_STEP_GROWTH``
+# FAILS on the pre-fix tree (measured ~2.69x) and holds only because the growth
+# is linear; main meets it too.
+
+
+def test_a_run_of_capped_substitution_spans_is_linear(monkeypatch) -> None:
+    """``echo `` + N x (``$(echo `` x33 + ``x`` + ``)`` x33) joined by `` ; `` --
+    the capped-span run that re-sliced the whole remainder at every opener."""
+    nest = "$(echo " * 33 + "x" + ")" * 33
+    shape = lambda n: "echo " + " ; ".join(nest for _ in range(n))  # noqa: E731
+    small = _span_walk_steps(monkeypatch, shape(40))
+    large = _span_walk_steps(monkeypatch, shape(80))
+    assert large <= _MAX_LINEAR_STEP_GROWTH * small, (small, large)
+
+
+# A run of DOUBLY-nested unproven heredoc spans -- ``"$(echo "$(cat <<E\n<c>\nE
+# \n)")" `` x N, each inner ``$(cat <<E`` left unproven by its heredoc and
+# wrapped in a second ``$(echo ...)`` -- is the ``c104v_time.py`` shape. Each
+# top-level opener's span is unproven but CLOSES, and the payload walk does not
+# re-extract its near-full glued-tail OVER-READ (that text is scanned whole and
+# its real nested openers are emitted by the span walk), so doubling the run
+# doubles the steps (about 2x) rather than quadrupling. The body character ``c``
+# ranges over the opener family the body-line data rule covers; each stays
+# LINEAR, and ``_MAX_LINEAR_STEP_GROWTH`` fails on a quadratic walk.
+
+
+def test_a_run_of_doubly_nested_heredoc_spans_is_linear(monkeypatch) -> None:
+    """``"$(echo "$(cat <<E\\n<c>\\nE\\n)")" `` x N -- the c104v double-nest shape."""
+    for c in ("`", "(", "$(", "<("):
+        unit = f'"$(echo "$(cat <<E\n{c}\nE\n)")" '
+        shape = lambda n, _u=unit: "rm -rf " + _u * n + "/tmp/x"  # noqa: E731
+        small = _span_walk_steps(monkeypatch, shape(40))
+        large = _span_walk_steps(monkeypatch, shape(80))
+        assert large <= _MAX_LINEAR_STEP_GROWTH * small, (c, small, large)
+
+
+# A ``kill`` followed by a run of ``$(echo $((1<<2))`` + newline + ``)`` spans
+# (Opus): a self-kill raw walk that took the WHOLE remainder as the body of
+# every one of them tokenizes text that grows about 3x per doubling -- a 20 KB
+# command held the gate for ~30 s. The tokenized text must grow LINEARLY
+# (about 2x), as on main. The metric is the characters handed to
+# ``_self_tokens``, which the quote-machine step count above does not see.
+def test_a_kill_before_a_run_of_unclosed_shift_spans_is_linear(monkeypatch) -> None:
+    """``kill `` + N x ``$(echo $((1<<2))\\n) `` (and the ``<(`` twin)."""
+    real = shell_normalizer._self_tokens
+    chars = 0
+
+    def counting(text, *args, **kwargs):
+        nonlocal chars
+        chars += len(text)
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(shell_normalizer, "_self_tokens", counting)
+    for unit in ("$(echo $((1<<2))\n) ", "<(echo $((1<<2))\n) "):
+        sizes = []
+        for n in (40, 80):
+            chars = 0
+            assert security.is_denied("ki" + "ll " + unit * n) is None
+            sizes.append(chars)
+        assert sizes[1] <= _MAX_LINEAR_STEP_GROWTH * sizes[0], (unit, sizes)

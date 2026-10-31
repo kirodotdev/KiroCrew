@@ -172,6 +172,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
         _DEV_MODE_CONFIRM_FLAG,
+        _KILL_VERBS,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
@@ -180,6 +181,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
         _bare_kill_raw_bodies,
+        _frames_name_a_kill,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
         _is_kill_by_name_program,
@@ -282,6 +284,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _SHELL_WRAPPER_CHARS,
         _argv_programs,
         _backtick_closer,
+        _capped_span_possible,
         _cut_at_operator,
         _data_consumer_exempt,
         _debracket,
@@ -289,6 +292,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decode_shell_quoted_literals,
         _dequote_token,
         _ends_argv,
+        _fold_line_continuations,
         _glob_could_expand_to,
         _is_mint_verb,
         _is_self_program,
@@ -308,6 +312,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _split_shell_words,
         _strip_redirect,
         _substitution_bodies,
+        _substitution_body_entries,
         _substitution_depth_delta,
         _xargs_here_string_rebuild,
     )
