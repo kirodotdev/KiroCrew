@@ -912,6 +912,13 @@ class CancellationCoordinator(ManagerComponent):
                         "not started, so stopping it here would strand a registration",
                         agent_id,
                     )
+                    # The teardown mark that tells the claimer the parent ended lives in
+                    # memory. A ``parent_end`` tombstone on the run folder is the record
+                    # that outlives this process: the boot reconcile's artifact probe
+                    # reads it and cancels the row instead of requeueing an ``admitted``
+                    # row or recovering a ``starting`` one into a conversation that has
+                    # ended. Written off the loop: it is file I/O with an fsync.
+                    await self._record_parent_end(agent_id, parent_session_key, verb)
                 elif (late := self._manager._agents.get(agent_id)) is not None and not late.done:
                     # ``cancel`` only for a CONFIRMED live record. It reaches ``_unqueue``,
                     # whose store call is the SYNCHRONOUS one, and this method is a
@@ -942,6 +949,35 @@ class CancellationCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("Teardown: unqueueing subagent %s failed", agent_id, exc_info=True)
         return stopped
+
+    async def _record_parent_end(self, agent_id: str, parent_session_key: str, verb: str) -> None:
+        """Write a ``parent_end`` tombstone for a claimed row the teardown leaves behind.
+
+        The create is exclusive, so a tombstone the run writes for itself is never
+        replaced: it records how the run actually ended. A write that fails is logged
+        and skipped, leaving the in-memory mark as the only record, which is the
+        behaviour without this write. Only a persistent run has a durable row, so no
+        incognito or temporary run reaches this write.
+        """
+        import asyncio
+
+        from kiro_crew.subagent_persistence import write_tombstone_if_absent
+
+        try:
+            await asyncio.to_thread(
+                write_tombstone_if_absent,
+                agent_id,
+                cause="parent_end",
+                recovery_action="none",
+                parent_session=parent_session_key,
+                stop_origin=f"parent conversation ended ({verb or 'unnamed'})",
+            )
+        except Exception:
+            logger.warning(
+                "Teardown: recording the parent end of claimed row %s failed",
+                agent_id,
+                exc_info=True,
+            )
 
     async def cancel_for_parent_impl(self, parent_session_key: str) -> tuple[int, int]:
         """Stop one parent's running and queued agents.
