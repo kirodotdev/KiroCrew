@@ -109,6 +109,20 @@ participants read each other's files by design, the one exception to
 Independent above, and the ledger carries only a short summary and the path to
 the debate note.
 
+**Offer a debate; do not wait to be asked.** When a goal or an item is a
+design or implementation of real size, put "debate first" in your Round 0
+plan as one Assumption line: the question, the participants and their
+aspects, the rounds, a time estimate and the work items it uses. Real size
+means any of: about 150 lines or more, two or more modules, a security, data,
+approval or trust boundary, a contract others depend on, two or more
+plausible approaches, a prior failed attempt or a design block from a
+reviewer, or an RFC. Do not offer it for a small change with a clear fix, CI
+or rebase work, wording, an emergency, a design the owner already decided, or
+when fewer than half the goal's work items are left. "Skip the debate", "just
+do it" or any gate-skipping message drops it. A standing preference the owner
+stated ("always debate first", "stop suggesting debates") wins over these
+rules.
+
 ## The loop
 
 ### Round 0 — one plan, one gate
