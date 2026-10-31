@@ -161,6 +161,39 @@ class TerminalCoordinator(ManagerComponent):
             outcome = subagent_outcome(None)
         emit_counter(SUBAGENT_COMPLETED, {"outcome": outcome})
 
+    def _finish(self, info: SubagentInfo) -> None:
+        """Make *info*'s ending final, in the one order every terminal report uses.
+
+        The order is settle, record, flip. Usage still pending is settled first,
+        as the reap does before its tombstone, so the crew log closer, the
+        tombstone and the ``subagent_done`` frame all carry the same credits. The
+        crew log closer and the terminal metric are then written from the settled
+        record, and only after them is ``done`` flipped. The caller broadcasts
+        next, so the frame is built from the record this method made final.
+
+        Called once per run, from the exclusive terminal report past the finalize
+        claim.
+
+        Contains no ``await``: the steps cannot interleave with another task.
+        Every name is imported inside the body, like
+        :meth:`_record_crew_log_terminal`.
+        """
+        if info._credit_accounting is not None:
+            info._credit_accounting.settle()
+        self._record_crew_log_terminal(info)
+        self._record_terminal_metric(info)
+        # This flip matters on the paths that reach a terminal without the run
+        # loop. On the normal path the loop flipped ``done`` long ago, and the
+        # closer above is covered by the child's origin pin, which
+        # `_record_crew_log_terminal` holds until the closer reaches the writer.
+        info.done = True
+        # Arm the done-but-unreported hold in the same synchronous block as
+        # the flip, so the hold and the flip can never be observed apart: from
+        # this line until the completion consumer lands the member's
+        # contribution, ``batch_reports_in_flight`` holds the wave-close
+        # fallback open.
+        self._manager.arm_report_in_flight(info)
+
     def _claim_finalize_impl(self, info: SubagentInfo, *, supersede_recovery: bool = False) -> bool:
         """Claim the exclusive right to report ``info``'s terminal outcome.
 
@@ -303,30 +336,8 @@ class TerminalCoordinator(ManagerComponent):
         # are scheduled, with ``done=False`` as a batch-completion hold. The
         # exclusive report task owns the terminal transition; flipping here
         # means only the last sibling can observe the batch as fully settled.
-        #
-        # The crew log entry is handed over before this flip, but that order is
-        # NOT what protects the log, and reading it that way was wrong: on the
-        # normal completion path the run loop has already set `done` well before
-        # this method runs, so by here the flip is a no-op re-flip and the child
-        # left the manager's running set long ago. What covers that gap is the
-        # child's origin pin, which `_record_crew_log_terminal` holds until the
-        # closer is handed to the writer. This flip stays ahead of the event for
-        # the paths that reach a terminal without the run loop.
-        #
-        # Usage still pending here is settled before the closer reads
-        # `info.credits`, as the reap does before its tombstone, so the crew log,
-        # the tombstone and the WS frame all carry the same figure.
-        if info._credit_accounting is not None:
-            info._credit_accounting.settle()
-        self._record_crew_log_terminal(info)
-        self._record_terminal_metric(info)
-        info.done = True
-        # Arm the done-but-unreported hold in the same synchronous block as
-        # the flip, so the hold and the flip can never be observed apart: from
-        # this line until the completion consumer lands the member's
-        # contribution, ``batch_reports_in_flight`` holds the wave-close
-        # fallback open.
-        self._manager.arm_report_in_flight(info)
+        # ``_finish`` settles, records and flips; the broadcast below follows it.
+        self._finish(info)
         try:
             return await self._report_terminal_guarded_impl(
                 info,
@@ -399,6 +410,8 @@ class TerminalCoordinator(ManagerComponent):
                 "stop_reason": info.stop_reason,
                 "stop_class": info.stop_class,
                 "partial": info.partial,
+                # The fine-grained ending; ``outcome`` above is its coarse fold.
+                "child_outcome": info.child_outcome.value,
                 # A normal end whose final segment leaked a tool call as
                 # text: completed, but that last call never ran.
                 "leaked_tool_call": bool(getattr(info, "leaked_tool_call", False)),
@@ -1132,6 +1145,7 @@ class TerminalCoordinator(ManagerComponent):
                         # run that never read one. A config reload moves the
                         # default without moving this run's deadline.
                         info.error = f"Reaped after {int(elapsed)}s (exceeded {info.timeout_secs or self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    info._reaper_wrote_error = True
                 if kill_failed is not None:
                     # The caller's error text names what the fallback could not
                     # do, next to the reap that asked for it; ``outcome`` still

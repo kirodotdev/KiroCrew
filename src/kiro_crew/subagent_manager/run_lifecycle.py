@@ -302,6 +302,7 @@ def _record_reap_ending_impl(
         info.user_stopped = False
         if not info.error:
             info.error = f"{info._stop_origin or 'the reaper'} — {unfinished}"
+            info._reaper_wrote_error = True
     if not info.result and info.streaming_text:
         info.result = info.streaming_text
     info.done = True
