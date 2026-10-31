@@ -4,7 +4,8 @@
 app's MCP server, ``_run_app_mcp_server``) included. A lifecycle change goes through a
 running gateway when one answers (``_apply_through_gateway``); otherwise it is applied
 to the files alone, ``enable`` and ``disable`` say so (``_print_file_only_app_result``),
-and the backend, cron and hook follow-ups are applied or warned about here.
+and the backend, cron and hook follow-ups are applied or warned about here. ``update``
+is the exception: it only ever runs in the gateway, and refuses when none answers.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -66,6 +67,25 @@ def _run_app_action_through_gateway(
         app_name,
         lambda: app_lifecycle_client.toggle_app(app_name, action, payload=payload),
         hint="Toggle the app in the dashboard instead.",
+    )
+
+
+def _update_app_through_gateway(app_name: str, source: str | None) -> bool:
+    """Return true when a live gateway updated *app_name* in place.
+
+    The gateway resolves a source against its OWN working directory, which is not
+    this shell's, so a given path is made absolute here as ``install`` does. With
+    no path the request carries no body and the gateway updates from the source
+    it recorded at install.
+    """
+    payload: dict[str, object] | None = None
+    if source is not None:
+        payload = {"source": str(Path(source).expanduser().resolve())}
+    return _apply_through_gateway(
+        "update",
+        app_name,
+        lambda: app_lifecycle_client.toggle_app(app_name, "update", payload=payload),
+        hint="Use Sync on the app's page in the dashboard instead.",
     )
 
 
@@ -462,7 +482,7 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
 
 
 def _handle_app(args: argparse.Namespace) -> None:
-    """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
+    """Dispatch app subcommands: install, list, enable, disable, update, uninstall, info."""
     action = getattr(args, "app_action", None)
 
     if action == "mcp":
@@ -558,6 +578,32 @@ def _handle_app(args: argparse.Namespace) -> None:
         else:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
+
+    elif action == "update":
+        source = getattr(args, "source", None)
+        if source is not None and not source.strip():
+            # `--source "$DIR"` with the variable unset. Resolving "" would read
+            # the current directory, so it is refused rather than read as either
+            # a directory or "use the recorded source".
+            print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
+            sys.exit(1)
+        # Only the gateway can do what the dashboard's Sync does: stop the app's
+        # backend, swap the tree with data/ preserved, re-register the new manifest
+        # and start it again. Swapping the files from out here while a gateway
+        # serves the old tree is the half-updated state Sync exists to prevent, and
+        # on Windows the running backend's open files make the swap fail outright.
+        # So, unlike enable and disable, there is no file-only path: with no
+        # gateway reachable nothing changes and the command says so.
+        if _update_app_through_gateway(args.name, source):
+            return
+        print(
+            f"❌ no running gateway answered, so {args.name} was not updated. Start "
+            "the gateway and re-run, or use Sync on the app's page in the dashboard. "
+            "On Windows and in sandboxed shells the CLI cannot reach the gateway's "
+            "socket, so the dashboard is the way there.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     elif action == "uninstall":
         # Ask a running gateway first, exactly as enable and disable do above.

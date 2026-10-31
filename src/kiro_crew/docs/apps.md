@@ -178,9 +178,16 @@ kirocrew app info meetings             # one app's details
 kirocrew app enable meetings
 kirocrew app disable meetings
 kirocrew app install /path/to/my-app   # install a local app directory
+kirocrew app update my-app             # re-copy it from that directory, keeping its data
+kirocrew app update my-app --source /path/to/my-app-v2   # ...or from another directory
 kirocrew app uninstall my-app          # keeps app data
 kirocrew app uninstall my-app --purge-data   # deletes it permanently
 ```
+
+`update` is what the Sync button on an app's page does, from a terminal: the
+running gateway stops the app, replaces its files, keeps its data and whether it
+was enabled, and starts it again. It needs the gateway running; with none to
+reach it changes nothing and says so.
 
 Four more subcommands exist for people building apps rather than using them:
 `import` converts a manifest-declared plugin package into an app directory, `init`

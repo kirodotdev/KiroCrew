@@ -226,7 +226,8 @@ def install_app(
             ok=False,
             name=name,
             error=f"app {name!r} is already installed (v{existing.version}). "
-            f"Uninstall first or use the update endpoint.",
+            f"Update it in place instead (Sync on the app's page, or "
+            f"`kirocrew app update {name}`), or uninstall first.",
         )
 
     source_repository = _effective_source_repository(source_repository)
