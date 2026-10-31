@@ -578,9 +578,20 @@ class TerminalCoordinator(ManagerComponent):
             )
             # Kill the parent session's kiro-cli process so the next agent's
             # injection gets a clean provider instead of hitting "Prompt already
-            # in progress" on the stuck one.
+            # in progress" on the stuck one. The cancelled injection has released
+            # any lease it held by now, so a lease still held is the parent's own
+            # turn, which the injection was only waiting behind: that one is left
+            # running.
             try:
-                await self._manager._sessions.reset(info.parent_session_key)
+                if not await self._manager._sessions.reset(
+                    info.parent_session_key, skip_if_busy=True
+                ) and self._manager._sessions.is_busy(info.parent_session_key):
+                    logger.info(
+                        "%s: left parent %s running after the injection timeout: "
+                        "its own turn holds the session",
+                        source,
+                        info.parent_session_key,
+                    )
             except Exception:
                 logger.debug(
                     "Failed to reset parent session %s after injection timeout",
