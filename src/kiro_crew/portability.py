@@ -129,6 +129,7 @@ from kiro_crew.snapshot import (
     _refuse_corrupt_source_databases,
     _staging_is_pinned,
 )
+from kiro_crew.staging import staging_dir
 from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting, strip_utf8_bom
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
@@ -734,7 +735,15 @@ def apply_import_zip(
         "staging": staging_mode,
     }
 
-    with tempfile.TemporaryDirectory() as work_str:
+    # The extracted copy is the large transfer here (up to the uncompressed cap), so
+    # it stages under the data home's ``staging`` leaf -- same real disk as the install
+    # it becomes, off a tmpfs ``/tmp`` where it would be held in RAM.
+    # ``apply_import_zip`` is synchronous and runs off the event loop, so resolving
+    # ``staging_dir()`` here makes no on-loop filesystem call. The uploaded ``.zip``
+    # spool itself stays in the system temp dir, where ``part_stream`` creates it on
+    # the serving loop under a cancellation-safety invariant shared by three handlers;
+    # only this extraction and the snapshot/restore work stage under the data home.
+    with tempfile.TemporaryDirectory(dir=str(staging_dir())) as work_str:
         work = Path(work_str)
         platform_compat.restrict_dir_to_owner(work)
 
