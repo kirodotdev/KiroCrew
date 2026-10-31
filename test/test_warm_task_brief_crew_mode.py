@@ -49,7 +49,7 @@ def _crew_mode_chat(monkeypatch, *, user_ago: float | None, goal: bool = True):
             decision="",
             worker_session_key=f"chat-w{n}",
             status=status,
-            reason="",
+            reason="needs_human" if status == "question" else "",
             summary=summary,
             artifacts={},
             last_report_at="",
@@ -108,6 +108,9 @@ async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
     assert "Which layout?" in prompts[0]
     result = slot.rows[-1]["meta"]
     assert result["brief"]["progress"] == {"accepted": 1, "total": 2}
+    # The gateway lists what waits on the owner from the ledger, not the model.
+    assert result["brief"]["waiting"] == [{"title": "Add the panel", "ask": "Which layout?"}]
+    assert result["brief"]["waiting_total"] == 1
 
     # Leave and come back again with nothing changed: the claim holds, no spend.
     await _hide_for(state, 1, slot.key, 45 * 60)

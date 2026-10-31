@@ -5905,15 +5905,19 @@
       "asked": "Твой запрос",
       "done": "Сделано",
       "label": "Сводка",
+      "more_waiting": "Ещё {{count}}",
       "needs_you": "Нужно от тебя",
       "next": "Дальше",
+      "no_count": "Пока нечего считать",
       "progress": "Прогресс",
       "progress_count": "Готово {{accepted}} из {{total}}",
       "remaining": "Осталось",
+      "show_fewer": "Свернуть",
       "status_blocked": "Застряло",
       "status_done": "Готово",
       "status_needs_you": "Ждёт тебя",
-      "status_on_track": "По плану"
+      "status_on_track": "По плану",
+      "unlisted": "Ещё {{count}} не показано"
     },
     "voicePlaybackNotice": {
       "failed": "Не удалось выполнить «{{speak}}». Проверь настройки преобразования текста в речь и попробуй снова.",

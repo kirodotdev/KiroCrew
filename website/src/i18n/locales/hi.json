@@ -5699,15 +5699,19 @@
       "asked": "तुमने कहा था",
       "done": "हो चुका",
       "label": "सारांश",
+      "more_waiting": "{{count}} और",
       "needs_you": "तुमसे चाहिए",
       "next": "आगे",
+      "no_count": "अभी कोई गिनती नहीं",
       "progress": "प्रगति",
       "progress_count": "{{total}} में से {{accepted}} पूरे",
       "remaining": "बाकी",
+      "show_fewer": "कम दिखाएँ",
       "status_blocked": "अटका है",
       "status_done": "पूरा हुआ",
       "status_needs_you": "तुम्हारा इंतज़ार",
-      "status_on_track": "ठीक चल रहा है"
+      "status_on_track": "ठीक चल रहा है",
+      "unlisted": "{{count}} और सूची में नहीं"
     },
     "voicePlaybackNotice": {
       "failed": "“{{speak}}” नहीं चल सका। टेक्स्ट-टू-स्पीच सेटिंग जाँचो और फिर कोशिश करो।",

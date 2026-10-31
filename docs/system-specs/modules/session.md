@@ -193,9 +193,15 @@ worded to the user's `dashboard.verbosity` level. It returns one JSON object:
 240 characters), `asked` (160), `remaining` (160), `done` (at most four items
 of 120), `needs_you` and `next` (at most three items of 120 each), and `extra`
 (at most two `{title, items}` sections of three items, empty ones dropped).
-The prompt asks only for `status`, `headline`, `needs_you`, a free-form
-plain-text `body` (lines kept, 900 characters) and an optional `widget` (HTML,
-redacted, dropped whole over 6,000 characters); the other fields still parse.
+The prompt asks only for `status`, `headline`, `needs_you` and a free-form
+plain-text `body` (lines kept, 900 characters), words only: the model draws no
+HTML, and a `widget` it returns anyway is ignored. The other fields still parse.
+The gateway lists `waiting` itself: every open work item whose status is
+`blocked` or `question` with reason `approval` or `needs_human`, as
+`{title, ask}` (title and summary, cleaned like a model field), in ledger order,
+at most 50, with `waiting_total` counting them all; the prompt tells the model
+not to repeat them in `needs_you`, and a `done` or `on_track` status beside
+anything waiting reads as `needs_you`.
 `headline` is required; an older `now` or `{"message"}` reply is read as it,
 and a missing `asked` falls back to the quoted original request. `progress`
 is never the model's: the gateway stores `{accepted, total}` counted over the
@@ -209,10 +215,18 @@ into a live control, then the field is capped. The result is a second mate
 message: `meta.brief` holds the fields and `content` holds the same brief as
 labelled plain text. The transcript draws `meta.brief` as a fixed card
 (`WarmBriefCard`) that renders every field as a plain text node, in the order
-status and headline, Needs you, Progress (an `accepted of total` bar only when
-`progress` exists, plus `remaining`), What you asked, Done, Next, then the
-`extra` sections, with `body` after Progress and the `widget` last, in the
-sandboxed `WidgetFrame` chat widgets use. `content` never holds the widget.
+status and headline, the progress orb (`WarmBriefOrb`), What you asked, Done,
+Next, then the `extra` sections, with `body` after the orb. The orb is a fixed
+component: its liquid height and glow are `accepted / total`, sparkles show
+when the count is full, and a brief with no count draws a quiet seed orb
+captioned "No count yet". Above it float the `waiting` items, then the model's
+`needs_you`, as wrapping cards; the first three show and the rest fold behind one
+"N more" toggle that also counts items past the gateway's list. Every orb
+animation sits inside `prefers-reduced-motion: no-preference`, colours are
+theme variables with a tighter halo on light themes, and the orb reads as a
+`progressbar` labelled with the count. A brief stored before the orb keeps its
+`widget` HTML, drawn last in the sandboxed `WidgetFrame`; an older `now` brief
+with no status and no count keeps its plain Needs you list.
 An older `meta.brief` (`asked`, `now`, `needs_you`, `next`) draws with `now` as the headline and no status chip; a row without a
 valid `meta.brief` keeps the ordinary bubble. The card is the body of the
 ordinary assistant bubble, so the row keeps its timestamp and row actions, and

@@ -6,6 +6,7 @@ import WarmBriefCard, { warmBriefOf, type WarmBrief } from '../components/chat/W
 import type { ChatMessage } from '../types'
 import { fmtMessageTime } from '../pages/chat/messageTime'
 import { searchableText, searchableTextMemo } from '../utils/searchableText'
+import orbCss from '../components/chat/warmBriefOrb.css?raw'
 
 vi.mock('../utils/clipboard', async (orig) => ({
   ...(await orig<typeof import('../utils/clipboard')>()),
@@ -114,11 +115,13 @@ describe('warm task brief transcript rows', () => {
     const b = warmBriefOf(brief({ asked: 'Fix the test', now: 'PR is open.', needs_you: ['Approve'], next: ['Merge'] }))!
     expect(b).toEqual({
       status: null, headline: 'PR is open.', asked: 'Fix the test', progress: null, remaining: '',
-      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', widget: '',
+      done: [], needsYou: ['Approve'], next: ['Merge'], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
     })
     render(<WarmBriefCard brief={b} />)
     expect(screen.queryByTestId('warm-brief-status')).toBeNull()
-    expect(screen.queryByTestId('warm-brief-progress')).toBeNull()
+    // No status and no count: the plain Needs you box, no orb.
+    expect(screen.queryByTestId('warm-brief-orb')).toBeNull()
+    expect(screen.getByTestId('warm-brief-needs-you')).toHaveTextContent('Needs youApprove')
     expect(screen.getByTestId('warm-brief-headline')).toHaveTextContent('PR is open.')
   })
 })
@@ -132,18 +135,18 @@ const FULL = {
 
 const EMPTY: WarmBrief = {
   status: null, headline: 'PR is open.', asked: '', progress: null, remaining: '',
-  done: [], needsYou: [], next: [], extra: [], body: '', widget: '',
+  done: [], needsYou: [], next: [], extra: [], body: '', waiting: [], waitingTotal: 0, widget: '',
 }
 
 describe('WarmBriefCard', () => {
-  it('draws the sections in report order: status, needs you, progress, ask, done, next, extra', () => {
+  it('draws the sections in report order: status, orb with what needs you, ask, done, next, extra', () => {
     render(<WarmBriefCard brief={warmBriefOf(brief(FULL))!} />)
     const card = screen.getByTestId('warm-brief-card')
     const order = [...card.querySelectorAll('[data-testid^="warm-brief-"]')]
       .map(el => el.getAttribute('data-testid'))
-      .filter(id => id !== 'warm-brief-progress-count')
     expect(order).toEqual([
-      'warm-brief-status', 'warm-brief-headline', 'warm-brief-needs-you', 'warm-brief-progress',
+      'warm-brief-status', 'warm-brief-headline', 'warm-brief-progress', 'warm-brief-orb',
+      'warm-brief-needs-you', 'warm-brief-waiting-card', 'warm-brief-progress-count',
       'warm-brief-asked', 'warm-brief-done', 'warm-brief-next', 'warm-brief-extra',
     ])
     expect(screen.getByTestId('warm-brief-status')).toHaveTextContent('Waiting on you')
@@ -364,15 +367,15 @@ describe('a free-form brief', () => {
     widget: '<div style="color:var(--accent)">timeline</div>',
   }
 
-  it('draws the body with its lines after progress, then the widget in the sandboxed frame', () => {
+  it('draws the body after the orb, then a stored widget in the sandboxed frame', () => {
     render(<WarmBriefCard brief={warmBriefOf(brief(FREE))!} />)
     const card = screen.getByTestId('warm-brief-card')
     const order = [...card.querySelectorAll('[data-testid^="warm-brief-"]')]
       .map(el => el.getAttribute('data-testid'))
       .filter(id => id !== 'warm-brief-progress-count')
     expect(order).toEqual([
-      'warm-brief-status', 'warm-brief-headline', 'warm-brief-needs-you', 'warm-brief-progress',
-      'warm-brief-body', 'warm-brief-widget',
+      'warm-brief-status', 'warm-brief-headline', 'warm-brief-progress', 'warm-brief-orb',
+      'warm-brief-needs-you', 'warm-brief-waiting-card', 'warm-brief-body', 'warm-brief-widget',
     ])
     expect(screen.getByTestId('warm-brief-body').textContent).toBe(FREE.body)
     expect(screen.getByTestId('widget-frame')).toHaveAttribute('data-html', FREE.widget)
@@ -393,5 +396,120 @@ describe('a free-form brief', () => {
     const card = container.querySelector('[data-testid="warm-brief-card"]')!
     const shown = (card.textContent ?? '').toLowerCase().split(term).length - 1
     expect(searchableText(m).toLowerCase().split(term).length - 1).toBe(shown)
+  })
+})
+
+describe('the catch-up orb', () => {
+  const SHOT = [
+    { title: 'B1 #22110: Windows race', ask: 'Pick the 3-line fix or the full lock rewrite' },
+    { title: 'B5 #23387', ask: 'File the idle-spin report' },
+    { title: 'B4 #22564', ask: 'Sign off the preload RFC' },
+  ]
+  const orbOf = (fields: Record<string, unknown>) => warmBriefOf(brief({ headline: 'Back.', status: 'needs_you', ...fields }))!
+  const cardTexts = () => screen.queryAllByTestId('warm-brief-waiting-card').map(el => el.textContent)
+  const level = () => Number(screen.getByTestId('warm-brief-orb').querySelector('.wb-orb')!.getAttribute('data-level'))
+
+  it('all done: a full, sparkling orb and no cards', () => {
+    render(<WarmBriefCard brief={orbOf({ status: 'done', progress: { accepted: 44, total: 44 } })} />)
+    const orb = screen.getByRole('progressbar')
+    expect(orb).toHaveAttribute('aria-label', 'Progress: 44 of 44 done')
+    expect(orb).toHaveAttribute('aria-valuenow', '44')
+    expect(level()).toBe(1)
+    expect(screen.getAllByTestId('warm-brief-spark').length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('warm-brief-needs-you')).toBeNull()
+    expect(screen.getByTestId('warm-brief-progress-count')).toHaveTextContent('44 of 44 done')
+  })
+
+  it('40 of 44 with three waiting: every card shows, the numbers are the gateway\'s, no sparkles', () => {
+    render(<WarmBriefCard brief={orbOf({ progress: { accepted: 40, total: 44 }, waiting: SHOT, waiting_total: 3 })} />)
+    expect(cardTexts()).toEqual(SHOT.map(w => w.title + w.ask))
+    expect(level()).toBeCloseTo(40 / 44)
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '44')
+    expect(screen.queryByTestId('warm-brief-spark')).toBeNull()
+    expect(screen.queryByTestId('warm-brief-more')).toBeNull()
+  })
+
+  it('10 of 44 with eight waiting: three show, the rest fold and none is lost', () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({ title: `Item ${i + 1}`, ask: `Do ${i + 1}` }))
+    render(<WarmBriefCard brief={orbOf({ progress: { accepted: 10, total: 44 }, waiting: many, waiting_total: 8, needs_you: ['Also pick a name'] })} />)
+    expect(cardTexts()).toEqual(['Item 1Do 1', 'Item 2Do 2', 'Item 3Do 3'])
+    const more = screen.getByTestId('warm-brief-more')
+    expect(more).toHaveTextContent('6 more')
+    expect(more).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(more)
+    expect(cardTexts()).toEqual([...many.map(w => w.title + w.ask), 'Also pick a name'])
+    expect(more).toHaveTextContent('Show fewer')
+    fireEvent.click(more)
+    expect(cardTexts()).toHaveLength(3)
+  })
+
+  it('items the gateway counted past its list are still counted in the fold', () => {
+    const listed = Array.from({ length: 50 }, (_, i) => ({ title: `Item ${i}`, ask: '' }))
+    render(<WarmBriefCard brief={orbOf({ progress: { accepted: 1, total: 60 }, waiting: listed, waiting_total: 57 })} />)
+    expect(screen.getByTestId('warm-brief-more')).toHaveTextContent('54 more')
+    fireEvent.click(screen.getByTestId('warm-brief-more'))
+    expect(cardTexts()).toHaveLength(50)
+    expect(screen.getByTestId('warm-brief-unlisted')).toHaveTextContent('7 more not listed')
+  })
+
+  it('a new crewmate with no count: a quiet seed orb, no progress bar', () => {
+    render(<WarmBriefCard brief={orbOf({ status: 'on_track' })} />)
+    expect(screen.queryByRole('progressbar')).toBeNull()
+    expect(screen.getByRole('img', { name: 'No count yet' })).toBeInTheDocument()
+    expect(level()).toBe(0)
+    expect(screen.queryByTestId('warm-brief-needs-you')).toBeNull()
+    expect(screen.queryByTestId('warm-brief-spark')).toBeNull()
+  })
+
+  it('a long title keeps every character in a wrapping card', () => {
+    const long = 'A very very long waiting title '.repeat(4).trim()
+    render(<WarmBriefCard brief={orbOf({ progress: { accepted: 1, total: 2 }, waiting: [{ title: long, ask: 'x' }], waiting_total: 1 })} />)
+    const card = screen.getByTestId('warm-brief-waiting-card')
+    expect(card.textContent).toBe(long + 'x')
+    expect(card).toHaveClass('wb-orb-card')
+  })
+
+  it('malformed waiting entries are dropped and a bad total falls back to the list', () => {
+    const b = orbOf({ waiting: [{ title: 'ok', ask: 3 }, { ask: 'no title' }, 'text', null], waiting_total: '9' })
+    expect(b.waiting).toEqual([{ title: 'ok', ask: '' }])
+    expect(b.waitingTotal).toBe(1)
+  })
+
+  it.each(['b1 #22110', 'pick the 3-line', 'idle-spin', 'rfc', '40 of 44'])('search counts "%s" as the orb shows it', (term) => {
+    const m = brief({ headline: 'Back.', status: 'needs_you', progress: { accepted: 40, total: 44 }, waiting: SHOT, waiting_total: 3 })
+    const { container } = render(<WarmBriefCard brief={warmBriefOf(m)!} />)
+    const shown = (container.textContent ?? '').toLowerCase().split(term).length - 1
+    expect(shown).toBeGreaterThan(0)
+    expect(searchableText(m).toLowerCase().split(term).length - 1).toBe(shown)
+  })
+})
+
+describe('the orb stylesheet', () => {
+  const css = orbCss
+  const motionBlock = css.slice(css.indexOf('@media (prefers-reduced-motion: no-preference)'))
+  const outside = css.slice(0, css.indexOf('@media (prefers-reduced-motion: no-preference)'))
+
+  it('animates only inside prefers-reduced-motion: no-preference, so reduced motion is still', () => {
+    expect(motionBlock).toMatch(/animation:/)
+    expect(outside).not.toMatch(/animation\s*:/)
+    expect(outside).not.toMatch(/transition\s*:/)
+  })
+
+  it('stops moving: no animation loops forever, and the waiting cards never move', () => {
+    expect(css).not.toMatch(/infinite/)
+    expect(motionBlock).not.toMatch(/\.wb-orb-card/)
+  })
+
+  it('draws waiting cards as text, not as controls: no shadow and no box', () => {
+    const card = css.match(/\.wb-orb-card \{[^}]*\}/)![0]
+    expect(card).not.toMatch(/box-shadow|background|border-radius/)
+  })
+
+  it('colours only with theme variables and wraps card text', () => {
+    // No literal colour but the light theme's white highlight and the shading black.
+    const literals = css.replace(/\/\*[\s\S]*?\*\//g, '').match(/#[0-9a-f]{3,8}\b/gi) ?? []
+    expect(new Set(literals)).toEqual(new Set(['#000', '#fff']))
+    expect(css).toMatch(/\.wb-orb-card \{[^}]*overflow-wrap: anywhere/)
+    expect(css).toMatch(/\[data-mode="light"\] \.wb-orb \{/)
   })
 })

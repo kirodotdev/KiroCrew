@@ -5699,15 +5699,19 @@
       "asked": "Deine Anfrage",
       "done": "Erledigt",
       "label": "Zwischenstand",
+      "more_waiting": "{{count}} weitere",
       "needs_you": "Braucht dich",
       "next": "Als Nächstes",
+      "no_count": "Noch keine Zählung",
       "progress": "Fortschritt",
       "progress_count": "{{accepted}} von {{total}} erledigt",
       "remaining": "Offen",
+      "show_fewer": "Weniger anzeigen",
       "status_blocked": "Blockiert",
       "status_done": "Fertig",
       "status_needs_you": "Wartet auf dich",
-      "status_on_track": "Läuft nach Plan"
+      "status_on_track": "Läuft nach Plan",
+      "unlisted": "{{count}} weitere nicht aufgeführt"
     },
     "voicePlaybackNotice": {
       "failed": "„{{speak}}“ ist fehlgeschlagen. Prüfe die Text-zu-Sprache-Einstellungen und versuche es erneut.",

@@ -27,7 +27,8 @@ import time
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import crew_mode
 from kiro_crew import members as members_mod
@@ -52,6 +53,7 @@ from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_FAILURE_KIND as _
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_MESSAGE_KINDS as _MESSAGE_KINDS
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_PREPARING_KIND as _PREPARING_KIND
 from kiro_crew.warm_task_brief_contract import WARM_TASK_BRIEF_RESULT_KIND as _RESULT_KIND
+from kiro_crew.work_vocab import WORK_BLOCKED_REASONS, WORK_REASON_STATUSES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -84,9 +86,9 @@ _MAX_EXTRA_TITLE_CHARS = 60
 # The free-form catch-up text: kept line by line, capped as a whole.
 _MAX_BODY_CHARS = 900
 _MAX_BODY_LINES = 12
-# The optional widget is the HTML body of one sandboxed WidgetFrame. One over
-# the cap is dropped whole: cut HTML would draw broken.
-_MAX_WIDGET_CHARS = 6000
+# Work items waiting on the owner, read by the gateway from the ledger. The card
+# folds all but the first few; past this bound only the count rides along.
+_MAX_WAITING = 50
 # The status vocabulary the card colours. Anything else falls back by whether
 # something waits on the owner.
 _STATUSES = ("on_track", "needs_you", "blocked", "done")
@@ -203,28 +205,19 @@ Return exactly one JSON object:
 {{"status": "on_track" | "needs_you" | "blocked" | "done",
  "headline": "<your opening line, at most {headline_cap} characters>",
  "needs_you": ["<an action only the owner can take, and what it unblocks>", ...],
- "body": "<the rest of the catch-up, in your own words and layout>",
- "widget": "<an optional small HTML picture, or an empty string>"}}
+ "body": "<the rest of the catch-up, in your own words and layout>"}}
 
 "needs_you" holds at most {max_items} items of at most {item_cap} characters;
 it is [] when nothing waits on the owner. "body" is plain text of at most
 {body_cap} characters: short paragraphs or "- " lines, emoji welcome, no
-markdown, HTML or links. Pick the layout and tone that fit this task.
+markdown, HTML or links. Pick the layout and tone that fit this task. Return
+words only: no HTML, widget or picture of any kind.
 
-"widget" is for when a picture says it better than words (a before and after,
-a small sketch of how the parts connect); otherwise "". It is the HTML body of
-one dashboard widget, under {widget_cap} characters, drawn below the text in a
-sandboxed frame. Colour it only with the theme variables var(--text),
-var(--muted), var(--card), var(--border), var(--accent), var(--ok), var(--warn)
-and var(--danger). Paint no background of its own and set no font. It must fit
-a 320px-wide column. Put any animation inside
-@media (prefers-reduced-motion: no-preference). No scripts, no buttons, links,
-inputs or anything that looks clickable: no chips, pills or filled rounded
-labels. Do not draw steps as done or pending: the gateway shows progress. No
-images or fonts from the web.
-
-The gateway draws the snapshot's "progress" count itself: never repeat or draw
-it. Never invent numbers, in the text or the widget: no percentage, count,
+The gateway draws two things itself, from the snapshot: the "progress" count,
+and every open work item whose status is "blocked" or "question" with reason
+"approval" or "needs_human" (those wait on the owner). Never repeat or draw
+them: put in "needs_you" only owner actions that are not such a work item.
+Never invent numbers: no percentage, count,
 date, deadline, elapsed time or ETA the snapshot does not state. If a fact is
 missing, say you are not sure rather than guessing.
 
@@ -952,14 +945,13 @@ def _build_prompt(
         item_cap=_MAX_ITEM_CHARS,
         max_items=_MAX_ITEMS,
         body_cap=_MAX_BODY_CHARS,
-        widget_cap=_MAX_WIDGET_CHARS,
     )
 
 
 @dataclass(frozen=True)
 class Brief:
-    """One validated, redacted, capped brief. Every text field but ``widget``
-    is plain text; ``progress`` is the gateway's own count, never the model's."""
+    """One validated, redacted, capped brief. Every text field is plain text; ``progress`` and ``waiting`` are the gateway's own reads of
+    the ledger, never the model's."""
 
     status: str
     headline: str
@@ -972,8 +964,10 @@ class Brief:
     extra: tuple[tuple[str, tuple[str, ...]], ...]
     # Free-form plain text, kept line by line.
     body: str = ""
-    # HTML for one sandboxed widget; never part of the plain-text ``content``.
-    widget: str = ""
+    # Work items waiting on the owner as ``(title, ask)``, at most _MAX_WAITING.
+    waiting: tuple[tuple[str, str], ...] = ()
+    # How many items wait in all; above ``len(waiting)`` only past the bound.
+    waiting_total: int = 0
 
     def as_meta(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -990,8 +984,9 @@ class Brief:
             meta["progress"] = {"accepted": self.progress[0], "total": self.progress[1]}
         if self.body:
             meta["body"] = self.body
-        if self.widget:
-            meta["widget"] = self.widget
+        if self.waiting_total:
+            meta["waiting"] = [{"title": title, "ask": ask} for title, ask in self.waiting]
+            meta["waiting_total"] = self.waiting_total
         return meta
 
 
@@ -1086,23 +1081,51 @@ def _clean_body(value: object) -> str:
     return text[: _MAX_BODY_CHARS - 1].rstrip() + "…"
 
 
-_WIDGET_TAG_RE = re.compile(r"\A\s*<mcwidget\b[^>]*>(.*)</mcwidget>\s*\Z", re.I | re.S)
+def _answered(item: dict[str, Any]) -> bool:
+    """Whether the conductor's ``decide`` already answered *item*'s last report,
+    read through the dashboard's work-ledger seam."""
+    from kiro_crew.dashboard.handlers.work_ledger_board import work_item_answered
+
+    stamps = SimpleNamespace(
+        decided_at=item.get("decided_at") or "", last_report_at=item.get("last_report_at") or ""
+    )
+    # The rule reads only these two stamps off its WorkItem.
+    return work_item_answered(cast(Any, stamps))
 
 
-def _clean_widget(value: object) -> str:
-    """The widget's HTML body, redacted and defanged, or "" when over the cap."""
-    if not isinstance(value, str):
-        return ""
-    wrapped = _WIDGET_TAG_RE.match(value)
-    html = _defang_markers(_redact_whole(wrapped.group(1) if wrapped else value)).strip()
-    return html if len(html) <= _MAX_WIDGET_CHARS else ""
+def _waiting_on_owner(
+    items: tuple[dict[str, Any], ...],
+) -> tuple[tuple[tuple[str, str], ...], int]:
+    """``(title, ask)`` for every open work item only a person can move, and
+    how many there are. The gateway's read: a work item is untrusted text, so
+    each field is cleaned like a model field. Ledger order is kept."""
+    waiting: list[tuple[str, str]] = []
+    for item in items:
+        if work_item_is_terminal(item.get("state")):
+            continue
+        if item.get("status") not in WORK_REASON_STATUSES:
+            continue
+        # The ledger's own "only a person can move it" reasons.
+        if item.get("reason") not in WORK_BLOCKED_REASONS:
+            continue
+        if _answered(item):
+            continue
+        title = _clean(item.get("title"), _MAX_ITEM_CHARS)
+        ask = _clean(item.get("summary"), _MAX_ITEM_CHARS)
+        # An item with neither still waits: name it by its id so the count holds.
+        name = title or ask or _clean(item.get("item_id"), _MAX_ITEM_CHARS)
+        waiting.append((name, ask if title else ""))
+    return tuple(waiting[:_MAX_WAITING]), len(waiting)
 
 
 _HEADLINE_KEYS = ("headline", "now", "message")
 
 
 def _parse_result(
-    text: str, fallback_asked: str = "", progress: tuple[int, int] | None = None
+    text: str,
+    fallback_asked: str = "",
+    progress: tuple[int, int] | None = None,
+    work_items: tuple[dict[str, Any], ...] = (),
 ) -> Brief | None:
     """Validate the model's JSON into a :class:`Brief`, or ``None``.
 
@@ -1110,7 +1133,8 @@ def _parse_result(
     ``message`` shapes are read as it, so a model that ignores the new shape
     still yields a short card instead of a failure line. A missing ``asked``
     falls back to the original request the gateway quoted. *progress* is the
-    gateway's count; any number the model returns is ignored.
+    gateway's count and *work_items* the ledger the waiting list is read from;
+    any number, list or HTML picture the model returns for them is ignored.
     """
     raw = _extract_json_of_type(
         text,
@@ -1125,11 +1149,13 @@ def _parse_result(
     if not headline:
         return None
     needs_you = _clean_items(raw.get("needs_you"))
+    waiting, waiting_total = _waiting_on_owner(work_items)
     body = _clean_body(raw.get("body"))
     status = raw.get("status")
-    # A chip saying "on track" or "done" above a "Needs you" box contradicts itself.
-    if status not in _STATUSES or (needs_you and status in ("on_track", "done")):
-        status = "needs_you" if needs_you else "on_track"
+    owed = bool(needs_you or waiting_total)
+    # A chip saying "on track" or "done" above things that wait contradicts itself.
+    if status not in _STATUSES or (owed and status in ("on_track", "done")):
+        status = "needs_you" if owed else "on_track"
     return Brief(
         status=str(status),
         headline=headline,
@@ -1143,7 +1169,8 @@ def _parse_result(
         next=_clean_items(raw.get("next")),
         extra=_clean_extra(raw.get("extra")),
         body=body,
-        widget=_clean_widget(raw.get("widget")),
+        waiting=waiting,
+        waiting_total=waiting_total,
     )
 
 
@@ -1163,7 +1190,9 @@ def _brief_text(brief: Brief, language: str) -> str:
             lines.append(f"{label}:")
             lines.extend(f"{f'{i}.' if numbered else '-'} {x}" for i, x in enumerate(items, 1))
 
-    section(labels["needs"], brief.needs_you)
+    owed = tuple(f"{title}: {ask}" if ask else title for title, ask in brief.waiting)
+    unlisted = brief.waiting_total - len(brief.waiting)
+    section(labels["needs"], owed + ((f"+{unlisted}",) if unlisted > 0 else ()) + brief.needs_you)
     if brief.progress is not None:
         count = labels["count"].format(accepted=brief.progress[0], total=brief.progress[1])
         lines.append(f"{labels['progress']}: {count}")
@@ -1313,7 +1342,7 @@ async def _run_warm_task_brief(
     # A turn that started meanwhile defers publication until it ends.
     if await _settled(state, slot, snapshot, deadline, require_foreground=False) is None:
         return
-    brief = _parse_result(text, snapshot.original_request, snapshot.progress)
+    brief = _parse_result(text, snapshot.original_request, snapshot.progress, snapshot.work_items)
     if brief is None:
         _post_message(
             state,
