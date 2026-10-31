@@ -474,6 +474,9 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // the loop-waiting row could fire, so other rows skip the slot scan.
   const openedRunning = useAppSelector(st => (s.has_options && !s.running)
     ? openedSessionRunning(st.dashboard.slots, s.key) : false)
+  // A Crew Mode root whose own turn is idle is still working while one of its
+  // crew members runs; its Ultra Mode tag flows for either. Only crew roots scan.
+  const crewWorking = useAppSelector(st => crewRoot && (hasLiveSessionWork(s) || openedSessionRunning(st.dashboard.slots, s.key)))
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
   // {count, name, phase} of this slot's running workflow fan-out, or undefined.
@@ -1598,7 +1601,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  inline on this line rather than as a badge before the title, so the
                 *  title keeps the row's full width. */}
               {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />}
-              {crewRoot && <CrewEyebrow />}
+              {crewRoot && <CrewEyebrow active={crewWorking} />}
               {memberTitle === null && !crewRoot && (
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} className={`truncate shrink-0 ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
