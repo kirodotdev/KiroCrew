@@ -68,12 +68,59 @@ def read_dm_binding(slug: str) -> dict | None:
     function's write-side twin, :func:`write_dm_binding`, just atomically
     replaced) — off-loop only, matching this function's own calling contract.
     """
+    data = _read_canonical_binding(slug)
+    if data is None:
+        return None
+    # And the member must actually BELONG to this slug: a tampered dm.json in
+    # slug A's directory naming crew B (a real, registered crew whose slug
+    # differs) would otherwise pin A's thread — and A's restored transcript —
+    # to B's identity. Colliding names are fine: every name that slugifies to
+    # this slug passes; anything else reads as absent.
+    if data.get("member_id") == slug:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import member_config_for_id
+
+        try:
+            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
+        except ValueError:
+            return None
+        data["member"] = alias
+    elif slug_for_name(data["member"]) != slug:
+        return None
+    return data
+
+
+def dm_binding_depends_on_config(slot_key: str) -> bool:
+    """Whether *slot_key*'s binding is well formed on disk and names its crewmate by id.
+
+    Such a binding resolves only through the Crew config (the crewmate whose
+    ``member_id`` it names), so when :func:`read_dm_binding_for_slot` answers
+    ``None`` for it, the answer is the config's at that moment, not the
+    binding's: a config read that saw no such crewmate, or two. A restore that
+    gets that answer keeps the thread for a later attempt instead of dropping
+    it, since a config rewrite can bring the crewmate back. A binding that is
+    absent, malformed or of another generation is not this case. Total and
+    blocking file IO, like :func:`read_dm_binding`; reads no config.
+    """
+    slug = slug_from_dm_slot_key(slot_key)
+    if slug is None:
+        return False
+    data = _read_canonical_binding(slug)
+    return data is not None and data["slot_key"] == slot_key and data.get("member_id") == slug
+
+
+def _read_canonical_binding(slug: str) -> dict | None:
+    """The binding file's payload when it is well formed and canonical for *slug*.
+
+    Everything :func:`read_dm_binding` checks before it resolves the crewmate;
+    total in the same way.
+    """
     try:
         path = dm_binding_path(slug)
     except (MemberSlugError, OSError, RuntimeError):
         # member_dir resolves (and may mkdir) real filesystem paths, so an
-        # unreadable directory or a symlink loop surfaces here — the totality
-        # contract above says every such state reads as "not bound", and the
+        # unreadable directory or a symlink loop surfaces here — read_dm_binding's
+        # totality contract says every such state reads as "not bound", and the
         # restore paths rely on that to survive any on-disk state at boot.
         return None
     try:
@@ -111,22 +158,6 @@ def read_dm_binding(slug: str) -> dict | None:
     except ValueError:
         return None
     if data["slot_key"] != canonical:
-        return None
-    # And the member must actually BELONG to this slug: a tampered dm.json in
-    # slug A's directory naming crew B (a real, registered crew whose slug
-    # differs) would otherwise pin A's thread — and A's restored transcript —
-    # to B's identity. Colliding names are fine: every name that slugifies to
-    # this slug passes; anything else reads as absent.
-    if data.get("member_id") == slug:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.execution_context import member_config_for_id
-
-        try:
-            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
-        except ValueError:
-            return None
-        data["member"] = alias
-    elif slug_for_name(data["member"]) != slug:
         return None
     return data
 

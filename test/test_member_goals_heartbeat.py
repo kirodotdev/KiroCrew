@@ -518,3 +518,118 @@ def test_a_wake_that_cannot_move_anything_ends_at_once(_floor_monkeypatch) -> No
     )
     assert line in prompt
     assert prompt.index(line) < prompt.index("This is your heartbeat")
+
+
+# ── a wake into an unloaded thread ──
+
+
+def _unloaded(state: FakeState, _floor_monkeypatch, *, builds: bool) -> tuple[str, Any, list]:
+    """An armed crewmate whose thread no slot holds, as after a restart."""
+    from kiro_crew.dashboard import chat_persistence, slot_queue_repository
+
+    slug, slot = _armed(state)
+    state._slots.pop(slot.key)
+    loads: list[tuple[str, bool]] = []
+
+    async def rehydrate(st: Any, key: str, *, adopt_closed: bool = False, **_k: Any) -> Any:
+        loads.append((key, adopt_closed))
+        if not builds:
+            return None
+        st._slots[key] = slot
+        return slot
+
+    _floor_monkeypatch.setattr(chat_persistence, "rehydrate_slot_from_history_async", rehydrate)
+    _floor_monkeypatch.setattr(goal_reminder, "member_has_session_tools", lambda _m: False)
+
+    async def drain(st: Any) -> None:
+        loads.append(("drain", st is state))
+
+    _floor_monkeypatch.setattr(slot_queue_repository, "drain_restored_parked_sends", drain)
+    return slug, slot, loads
+
+
+def test_a_wake_loads_an_unloaded_thread_and_starts_one_turn(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, slot, loads = _unloaded(state, _floor_monkeypatch, builds=True)
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
+    # Loaded once, from its transcript, adopting a closed DM thread (the
+    # heartbeat switch stops a wake, not the tab), then the parked-send pass runs.
+    assert loads == [(slot.key, True), ("drain", True)]
+    ((args, kwargs),) = sent
+    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[2].startswith("[Heartbeat]")
+    # The next wake finds the thread loaded and loads nothing.
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
+    assert len(loads) == 2 and len(sent) == 2
+
+
+def test_a_wake_whose_thread_cannot_be_loaded_says_so(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, slot, loads = _unloaded(state, _floor_monkeypatch, builds=False)
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == goal_reminder.UNLOADABLE_SKIP
+    assert loads == [(slot.key, True)] and sent == []
+
+
+def test_a_loaded_thread_that_is_busy_still_skips(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, slot, _loads = _unloaded(state, _floor_monkeypatch, builds=True)
+    slot.task = DashboardTurn()  # type: ignore[assignment]
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "skipped: the mate is busy"
+    assert sent == []
+
+
+@pytest.mark.parametrize("closer", ["user", "idle-sweep"])
+def test_a_closed_mate_thread_is_reloaded_and_woken(_floor_monkeypatch, closer: str) -> None:
+    """A mate's heartbeat always wakes the mate: a ✕ or an idle sweep does not stop it."""
+    from kiro_crew.dashboard.channel_slots import note_slot_closed
+
+    state = FakeState()
+    slug, slot, loads = _unloaded(state, _floor_monkeypatch, builds=True)
+    # Both closers go through the same close path, which records this tombstone.
+    note_slot_closed(state, slot.key)  # type: ignore[arg-type]
+    sent: list[tuple] = []
+    _floor_monkeypatch.setattr(
+        mate_welcome, "dispatch_hidden_turn", lambda *a, **k: sent.append((a, k))
+    )
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == "started"
+    assert loads[0] == (slot.key, True)
+    ((args, _kwargs),) = sent
+    assert args[1] is slot
+
+
+def test_only_a_mate_dm_key_adopts_a_closed_thread(_floor_monkeypatch) -> None:
+    """Any other thread keeps the restore's close-stays-closed rule."""
+    from kiro_crew.dashboard import chat_persistence
+
+    state = FakeState()
+    seen: list[bool] = []
+
+    async def rehydrate(_st: Any, _key: str, *, adopt_closed: bool = False, **_k: Any) -> Any:
+        seen.append(adopt_closed)
+        return None
+
+    _floor_monkeypatch.setattr(chat_persistence, "rehydrate_slot_from_history_async", rehydrate)
+    assert asyncio.run(goal_reminder._load_thread(state, "chat-1-1")) == (
+        goal_reminder.UNLOADABLE_SKIP
+    )
+    assert seen == [False]
+
+
+def test_a_stopping_gateway_loads_no_thread(_floor_monkeypatch) -> None:
+    state = FakeState()
+    slug, _slot, loads = _unloaded(state, _floor_monkeypatch, builds=True)
+    _floor_monkeypatch.setattr(goal_reminder, "gateway_stopping", lambda: True)
+    assert asyncio.run(goal_reminder.fire(state, _Job(slug))) == goal_reminder.STOPPING_SKIP
+    assert loads == []
