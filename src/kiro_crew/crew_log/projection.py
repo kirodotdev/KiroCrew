@@ -313,6 +313,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         read_tree_projection,
         tree_fold_units,
         units_in_succession,
+        workstream_item_workers,
     )
     from kiro_crew.crew_log.projection_registry import (  # noqa: F401
         _FOLDS,
@@ -668,6 +669,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _workstreams_event,
         _workstreams_hour,
         _workstreams_item_state,
+        _workstreams_item_workers,
         _workstreams_merge,
         _workstreams_new_board,
         _workstreams_new_item,
