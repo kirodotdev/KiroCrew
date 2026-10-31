@@ -312,6 +312,9 @@ class AcpRuntime:
         # read by the reader loop: a credential callback is answered from the
         # vault only on a process that was spawned expecting it.
         self._kas_host_auth = False
+        # Whether THIS process is Crew's own KAS engine bundle (no kiro-cli),
+        # copied from the spawn plan. The turn gates read it for a live session.
+        self._kas_engine_bundle = False
         # Answers this process's ``_kiro/secret/*`` requests when its handshake
         # declared ``secretStorage`` (``agent.kas_persist_mcp_sign_in``); None
         # otherwise, and those requests then get -32601. Set at each handshake.

@@ -3080,6 +3080,9 @@ message, and no token or credential text is logged.
   fetch has already warmed. The widened worst case is one
   stale-`ready=True` usage spawn up to five minutes after an external logout,
   still caught sooner by the identity-change re-probe and by Refresh.
+  Both spawn sites call the gate with `harness_turn` left False: a Crew sign-in
+  never authorizes a `kiro-cli` spawn. Only the callers that merely start a turn
+  (`harness_turn=True`) accept that sign-in instead.
 - **`AcpAuthRequired` is the authoritative logout signal.** Readiness is probed
   at gateway start and on explicit user action only, so a mid-session sign-out is
   discovered when the ACP attempt fails, not by a poll. `AcpRuntime`/`AcpClient`

@@ -1998,6 +1998,32 @@ specified compatibility change.
   fails closed in all three. The usage routes skip the gate when the default
   harness is KAS and Crew's sign-in vault holds a usable identity: that read
   goes over the direct API with the vault credential and spawns no `kiro-cli`.
+  The destructive reruns and `/v1/chat/completions` pass `harness_turn=True`:
+  their only `kiro-cli` dependency is the turn they start, so they are also
+  authorized by `kas_crew_signin_ready(session_key, live_route)`. A caller
+  whose turn reuses the session's live provider (regenerate,
+  `/v1/chat/completions`) judges that process, because `get_or_create`
+  reuses it with no backend check and an `agent.acp_backend` change retires
+  only the background runtime: `live_turn_route` reads the spawn plan the
+  runtime recorded (`SpawnPlan.engine_bundle`, set only by the KAS harness's
+  bundle route, read through the `AcpProvider` wrapper's `client`), and any
+  live session not on the bundle, or whose route cannot be read, keeps the
+  `kiro-cli` gate. A retained provider whose process has exited is not
+  liveness-checked here (that would add a runtime pid reader the pid-reader
+  ratchet refuses); its recorded route still answers, and an ordinary send,
+  which is ungated, evicts it. A caller that discards the conversation before its turn
+  (edit-resend, rewind) passes `turn_reuses_session=False`: its turn
+  cold-starts, so the live process is not read. A cold start reads the
+  configuration: the session resolves to KAS through
+  `select_provider_backend` (a member thread runs on
+  `agent.member_acp_backend`, so the default backend alone does not decide)
+  and `agent.kas_bundle` is on (the flag the KAS harness reads to take the
+  bundle route) with an engine installed. Either way `KasAuthProvider.current()` must yield a credential
+  from Crew's sign-in (resolved and, when needed, refreshed; no identity or a
+  refused refresh is not ready). That turn spawns no `kiro-cli`. The `kiro-cli`
+  spawn sites leave `harness_turn` False. `turn_gate_target` names the session
+  from the target slot (`None` for a slot not created yet); a slot it cannot
+  read leaves `harness_turn` False, so the `kiro-cli` gate decides.
   **These callers authorize on a FRESH probe, not the latch**
   (`kiro_verified_ready` → `KiroPrerequisiteService.verified_ready`, re-probing
   when the latch is older than the caller's bound). The destructive reruns,
@@ -4915,6 +4941,13 @@ end it empty with the reply kept; it is gated the same way so the press answers
 the setup notice instead of a turn that cannot run. All three therefore call
 `reject_if_kiro_unverified` BEFORE any mutation, returning the shared
 `kiro_prerequisite_required` 503.
+When the slot's session runs on the KAS engine bundle and Crew's sign-in
+yields a credential, the gate passes without consulting `kiro-cli`
+(`harness_turn=True`, `kas_crew_signin_ready()`), because that turn runs and
+authenticates with no `kiro-cli` involved. Regenerate reuses the live session,
+so its gate judges that running process (`live_turn_route`); edit-resend and
+rewind discard the conversation before their turn, so theirs
+(`turn_reuses_session=False`) judges the configured cold-start route.
 (`switch-variant` is exempt — it swaps an already-stored variant and starts no
 turn.)
 

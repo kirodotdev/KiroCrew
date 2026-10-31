@@ -479,6 +479,7 @@ class KasHarness(MembershipHarness):
                 spawn_label=KAS_BUNDLE_SPAWN_LABEL,
                 stderr_label=KAS_BUNDLE_SPAWN_LABEL,
                 host_auth=True,
+                engine_bundle=True,
             )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
