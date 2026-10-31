@@ -21,6 +21,7 @@ import sys
 from pathlib import Path, PureWindowsPath
 
 import pytest
+import yaml
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
 # index of test/, scripts/ and src/ (rglob + read + two regexes per file, ~3s). Under
@@ -34,6 +35,7 @@ TEST_DIR = REPO_ROOT.joinpath("test")
 sys.path.insert(0, str(REPO_ROOT.joinpath("scripts")))
 
 import leaf_test_scope as mod  # noqa: E402  (path set immediately above)
+from ci_file_shards import file_shard  # noqa: E402
 
 
 def _resolved(paths: list[str], code: str = "M") -> object:
@@ -547,3 +549,116 @@ def test_the_coverage_jobs_know_about_leaf_runs() -> None:
         "coverage-gate does not mention leaf_tests, so it would demand a successful "
         "coverage-combine on a run that deliberately produced none"
     )
+
+
+def _backend_run_tests_body(shard: int) -> str:
+    """The `run:` body of backend-test's `Run tests` step, as shard ``shard`` sees it."""
+    workflow = yaml.safe_load(
+        REPO_ROOT.joinpath(".github", "workflows", "ci.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["backend-test"]["steps"]
+    body = next(s["run"] for s in steps if s.get("name", "").startswith("Run tests"))
+    body = body.replace("${{ matrix.group }}", str(shard))
+    assert "${{" not in body, "the step uses an expression this guard does not substitute"
+    return body
+
+
+def _run_leaf_shards(tmp_path: Path, gates: list[str], changed: str) -> dict[int, list[list[str]]]:
+    """Run the REAL leaf branch on every shard with a pytest stub; return each one's calls."""
+    bash = _posix_bash()
+    if bash is None:
+        pytest.skip("no POSIX bash on this host to run the workflow step body under")
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    log = tmp_path / "pytest.log"
+    (stubs / "pytest").write_text(
+        '#!/bin/sh\nfor arg in "$@"; do printf \'%s\\n\' "$arg"; done >> "$PYTEST_LOG"\n'
+        'echo "--" >> "$PYTEST_LOG"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    # The step's own `python -c` must be THIS interpreter, not whatever a PATH holds.
+    (stubs / "python").write_text(
+        f'#!/bin/sh\nexec "{Path(sys.executable).as_posix()}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    for stub in stubs.iterdir():
+        stub.chmod(0o755)
+    targets = tmp_path / "targets.txt"
+    targets.write_text("\n".join([changed, *gates]) + "\n", encoding="utf-8")
+    calls: dict[int, list[list[str]]] = {}
+    for shard in range(1, 9):
+        log.write_text("", encoding="utf-8")
+        proc = subprocess.run(
+            [
+                bash,
+                "--noprofile",
+                "--norc",
+                "-eo",
+                "pipefail",
+                "-c",
+                _backend_run_tests_body(shard),
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={
+                "PATH": stubs.as_posix() + os.pathsep + os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                "PYTHONPATH": str(REPO_ROOT),
+                "PYTEST_LOG": log.as_posix(),
+                "RUNNER_TEMP": tmp_path.as_posix(),
+                "SHARD_COUNT": "8",
+                "REDUCED": "true",
+                "LEAF": "true",
+                "LEAF_REPEAT": "3",
+                "LEAF_GATES": "\n".join(gates),
+                "TARGETS_FILE": targets.as_posix(),
+            },
+            check=False,
+        )
+        assert (
+            proc.returncode == 0
+        ), f"shard {shard} rc={proc.returncode}:\n{proc.stdout}\n{proc.stderr}"
+        runs = log.read_text(encoding="utf-8").split("--\n")
+        calls[shard] = [[a for a in run.splitlines() if a.endswith(".py")] for run in runs if run]
+    return calls
+
+
+def test_the_leaf_corpus_gates_run_once_across_the_matrix_not_once_per_job(
+    tmp_path: Path,
+) -> None:
+    """A gate set run whole on every job holds hosted runners past the 60-minute limit.
+
+    The union over the eight jobs must be exactly the gate list, each gate on the
+    shard `file_shard` owns it with, while the changed file still repeats on every job.
+    """
+    gates = [f"test/test_corpus_gate_{i}.py" for i in range(40)]
+    changed = "test/test_the_changed_leaf.py"
+    calls = _run_leaf_shards(tmp_path, gates, changed)
+    seen: list[str] = []
+    for shard, runs in calls.items():
+        repeats = [run for run in runs if run == [changed]]
+        assert len(repeats) == 3, f"shard {shard} did not repeat the changed file: {runs}"
+        gate_runs = [run for run in runs if run != [changed]]
+        assert len(gate_runs) <= 1, f"shard {shard} ran its gates more than once: {gate_runs}"
+        for path in (gate_runs[0] if gate_runs else []):
+            assert file_shard(REPO_ROOT / path, REPO_ROOT, 8) == shard
+            seen.append(path)
+    assert sorted(seen) == sorted(gates), "the shards' gate runs are not the gate list exactly once"
+
+
+def test_a_shard_that_owns_no_gate_skips_the_group_and_still_runs_its_repeats(
+    tmp_path: Path,
+) -> None:
+    gate = "test/test_the_only_corpus_gate.py"
+    changed = "test/test_the_changed_leaf.py"
+    calls = _run_leaf_shards(tmp_path, [gate], changed)
+    owner = file_shard(REPO_ROOT / gate, REPO_ROOT, 8)
+    for shard, runs in calls.items():
+        expected = ([[gate]] if shard == owner else []) + [[changed]] * 3
+        assert runs == expected, f"shard {shard} (owner {owner}) ran {runs}"

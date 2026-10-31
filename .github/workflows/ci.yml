@@ -1183,17 +1183,22 @@ jobs:
           if [ "$REDUCED" = "true" ]; then
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then TARGETS+=("$line"); fi; done < "$TARGETS_FILE"
           fi
-          # Leaf-test scope: run the whole narrow set on every matrix job, NOT
-          # split across shards -- 14 files do not shard usefully, and the point
-          # is repeats. Each shard job is then an independent roll on its own
+          # Leaf-test scope: run the changed files on every matrix job, NOT
+          # split across shards -- a handful of files do not shard usefully, and
+          # the point is repeats. Each shard job is then an independent roll on its own
           # runner, which is what a flake fix actually needs. Measured
           # on this checkout: one pass over the narrow set is ~38s (910 tests)
           # against ~29 minutes for the slowest full shard.
           if [ "$LEAF" = "true" ]; then
             # The corpus gates run ONCE: they are deterministic content assertions,
-            # so repeating them buys nothing and -- at ~3 minutes a pass over ~158
-            # files -- would dominate the run and undo the reduction. Only the
-            # CHANGED files repeat, because that is where a flake lives.
+            # so repeating them buys nothing. Only the CHANGED files repeat,
+            # because that is where a flake lives.
+            #
+            # "Once" means once across the matrix, not once per job: each shard
+            # runs only the gates `file_shard` assigns to it, the same owner the
+            # full suite uses. The gate set is ~700 files, a full shard's worth
+            # of tests, so every job running all of it holds a hosted runner past
+            # the 60-minute limit before it reaches the changed files (#23450).
             GATES=()
             while IFS= read -r line; do line=${line%$'\r'}; if [ -n "$line" ]; then GATES+=("$line"); fi; done <<< "$LEAF_GATES"
             CHANGED=()
@@ -1208,10 +1213,28 @@ jobs:
               echo "::error::leaf run resolved no changed files -- refusing to report green."
               exit 1
             fi
+            OWNED_GATES=()
             if [ "${#GATES[@]}" -gt 0 ]; then
-              echo "::group::leaf corpus gates (${#GATES[@]} file(s), once)"
-              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" ${GATES[@]+"${GATES[@]}"}
+              # Filtered here rather than with the plugin: a shard that owns no
+              # gate must skip the group, while pytest's exit 5 stays a failure
+              # for a shard that owns some and collects nothing.
+              owned="$(printf '%s\n' "${GATES[@]}" | python -c '
+          import sys
+          from pathlib import Path
+          from scripts.ci_file_shards import file_shard
+          root, count, index = Path.cwd(), int(sys.argv[1]), int(sys.argv[2])
+          for gate in sys.stdin.read().splitlines():
+              if gate and file_shard(root / gate, root, count) == index:
+                  print(gate)
+          ' "$SHARD_COUNT" "${{ matrix.group }}")"
+              while IFS= read -r line; do if [ -n "$line" ]; then OWNED_GATES+=("$line"); fi; done <<< "$owned"
+            fi
+            if [ "${#OWNED_GATES[@]}" -gt 0 ]; then
+              echo "::group::leaf corpus gates (${#OWNED_GATES[@]} of ${#GATES[@]} file(s), shard ${{ matrix.group }}/$SHARD_COUNT, once)"
+              pytest ${PROGRESS[@]+"${PROGRESS[@]}"} -q -n auto --timeout=120 --no-cov -m "not ipv6_required" "${OWNED_GATES[@]}"
               echo "::endgroup::"
+            elif [ "${#GATES[@]}" -gt 0 ]; then
+              echo "leaf corpus gates: none of ${#GATES[@]} file(s) is owned by shard ${{ matrix.group }}/$SHARD_COUNT."
             fi
             for pass in $(seq 1 "$LEAF_REPEAT"); do
               echo "::group::leaf changed files, pass $pass/$LEAF_REPEAT"
