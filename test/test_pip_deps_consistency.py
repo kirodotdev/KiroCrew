@@ -75,6 +75,9 @@ _EXCLUDED_SUBTREES: tuple[str, ...] = (
     # built from the lock beside them (torch, jevk5, laya, uvicorn); the gateway
     # never imports them, it executes them in that interpreter.
     "decisions/local_servers/",
+    # The Strands gate module runs inside the Strands project's own venv (strands,
+    # strands_harness), started by the Strands CLI; the gateway only hashes it.
+    "agent_sdk/gate_extensions/strands/",
 )
 
 

@@ -158,6 +158,9 @@ with no row here.
        function rather than a set because it is derived rather than vocabulary
    * - ``ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION``
      - driver-internal (which wire request switches the model)
+   * - ``ACP_BACKENDS_MODEL_AT_LAUNCH``
+     - driver-internal (whether the model is a launch argument, so the startup
+       apply sends nothing and a mid-session switch is refused)
    * - ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``
      - semantic question (``SessionCapabilities.effort_via_config_option``)
    * - ``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``
@@ -252,6 +255,10 @@ with no row here.
    * - ``ACP_BACKENDS_FORK_AT_MESSAGE``
      - driver-internal (whether ``session/fork`` honours a fork point, so a
        rewind keeps the retained native history)
+   * - ``ACP_BACKENDS_RELOAD_DISPOSED_SESSION``
+     - driver-internal (whether a session whose backend the harness disposed in a
+       live process is answered as cancelled or failed once, then reloaded in a
+       fresh process before the next prompt)
    * - ``ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY``
      - driver-internal (whether the session's project checkout scopes the broker
        overlay lookup, read only through :func:`overlay_project_scope` while
@@ -351,6 +358,16 @@ ACP_BACKEND_DEEPSEEK = "deepseek"
 # (``test/fixtures/acp_frames/copilot/``). Its ``allow_all`` option and its
 # ``session/request_permission`` per tool call are wire facts of that release.
 ACP_BACKEND_COPILOT = "copilot"
+# Strands: the official Strands CLI (``@strands-agents/cli``) serving a Strands Python
+# project over ACP (``strands --agent <project> --acp-server``). One component to
+# install, a Node floor (the CLI's own ``engines.node``) and a Python environment for
+# the project. In that mode the CLI sends ``session/request_permission`` only for a
+# Strands interrupt, so Crew loads the project through its own gate module, which
+# raises one for every tool call -- see :data:`Routing.VERIFIED_GATE_EXTENSION`.
+#
+# VERIFIED RANGE: @strands-agents/cli 0.2.3 over strands-harness 0.3.3 /
+# strands-agents 1.63.0 (``test/fixtures/acp_frames/strands/``).
+ACP_BACKEND_STRANDS = "strands"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -389,6 +406,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_STRANDS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
@@ -404,6 +422,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 # because its id is neither Kiro nor KAS.
 ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
     {
+        ACP_BACKEND_STRANDS,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
@@ -515,11 +534,24 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
 #:   ``off`` value is advertised and applies it before the first prompt, refusing
 #:   the session otherwise, so a user's own allow-all default cannot reach a Crew
 #:   session. See :data:`Routing.SESSION_CONFIG`.
+#:
+#: ``ACP_BACKEND_STRANDS`` is included on the same two conditions, met by pi's and
+#: deepseek's mechanism:
+#:
+#: * ``backend_install`` probes for the ``strands`` binary, its Node floor and the
+#:   Python environment the project runs in, and names whichever is absent.
+#: * its tool calls are ROUTED and the routing is VERIFIED. The CLI's Python-project
+#:   ACP mode asks only when a Strands interrupt is raised, so Crew starts it on its
+#:   own sealed gate module, which attaches an interrupt hook to every Strands
+#:   ``Agent`` the project builds, and a read-back boot proves the gate loaded from
+#:   Crew's file under this session's nonce before the session starts. See
+#:   :data:`Routing.VERIFIED_GATE_EXTENSION` and :data:`Readback.LOAD_MARKER`.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
+        ACP_BACKEND_STRANDS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
@@ -542,6 +574,7 @@ POLICY_ID_KIRO = "kiro"
 POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_KIRO: POLICY_ID_KIRO,
     ACP_BACKEND_KAS: ACP_BACKEND_KAS,
+    ACP_BACKEND_STRANDS: ACP_BACKEND_STRANDS,
     ACP_BACKEND_CLAUDE: ACP_BACKEND_CLAUDE,
     # Every known id needs an entry: a policy author has to be able to name — and so
     # to deny — any id this build can spell, and the mapping is what makes the id
@@ -1019,6 +1052,9 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_SELF_SERVED_ACP,
     COPILOT_VERIFIED_VERSION,
     NODE_ADAPTER_ENTRY_SEGMENTS,
+    STRANDS_NODE_FLOOR,
+    STRANDS_PYTHON_REQUIREMENT,
+    STRANDS_VERIFIED_VERSION,
     SelfServedLaunch,
     agent_process_markers,
     launch_for,
@@ -1055,6 +1091,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -1104,6 +1141,7 @@ from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-expo
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_LOAD_WITHOUT_MODES,
+    ACP_BACKENDS_RELOAD_DISPOSED_SESSION,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,

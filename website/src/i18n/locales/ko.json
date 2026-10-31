@@ -13670,7 +13670,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "실시간 스크롤 및 앵커 진단 정보를 채팅 위에 표시합니다",

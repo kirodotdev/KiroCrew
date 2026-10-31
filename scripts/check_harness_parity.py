@@ -426,6 +426,9 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": None,
     # Every member: kiro-cli and KAS credits, claude/opencode/goose prompt-result tokens.
     "ACP_BACKENDS_REPORT_USAGE": None,
+    # Strands CLI 0.2.3: the -32603 a disposed backend answers, then a load in a
+    # second process.
+    "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": None,
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -458,6 +461,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_LOAD_WITHOUT_MODES": "standard ACP: session/load result shape",
     "ACP_BACKENDS_SESSION_MCP_ARRAY": "standard ACP: session/new mcpServers array",
     "ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
+    "ACP_BACKENDS_MODEL_AT_LAUNCH": "off the wire: the model is a launch argument",
     "ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION": "standard ACP: session/set_config_option",
     "ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": "standard ACP: advertised model list",
@@ -493,6 +497,7 @@ EXPECTED_AGENT_NAMES: dict[str, frozenset[str]] = {
     "pi": frozenset({"pi-acp"}),
     "deepseek": frozenset({"deepseek-harness-acp"}),
     "copilot": frozenset({"Copilot"}),
+    "strands": frozenset({"@strands-agents/cli"}),
 }
 
 # kiro-cli and KAS are one binary speaking one ``_kiro`` dialect, and KAS's

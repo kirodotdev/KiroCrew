@@ -113,6 +113,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_kiro_backend": ("property", False, "a6632a57e602", "acp"),
     "is_opencode_backend": ("property", False, "a6632a57e602", "acp"),
     "is_pi_backend": ("property", False, "a6632a57e602", "acp"),
+    "is_strands_backend": ("property", False, "a6632a57e602", "acp"),
     "is_process_alive": ("function", False, "a6632a57e602", "acp"),
     "is_session_sharing_eligible": ("property", False, "a6632a57e602", "acp"),
     "kas_active_mode_id": ("property", False, "bb418bb7ece8", "acp"),

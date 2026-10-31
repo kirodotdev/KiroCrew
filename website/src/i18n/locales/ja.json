@@ -13670,7 +13670,8 @@
         "deepseek": "DeepSeek Harness",
         "goose": "goose",
         "opencode": "OpenCode",
-        "pi": "Pi"
+        "pi": "Pi",
+        "strands": "Strands"
       },
       "debugToolsTab": {
         "overlays_the_chat_with_live_scroll_and_anchor_dia": "チャットにスクロールとアンカーの診断情報をリアルタイムで重ねて表示します",

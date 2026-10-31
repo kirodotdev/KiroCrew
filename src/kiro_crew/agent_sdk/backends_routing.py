@@ -33,6 +33,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -397,6 +398,12 @@ ACP_BACKEND_ROUTING: dict = {
     # that switch as an ACP v1 session config option (``allow_all``) on every
     # session/new and session/load -- Codex's mechanism, applied the same way.
     ACP_BACKEND_COPILOT: Routing.SESSION_CONFIG,
+    # The Strands CLI's Python-project ACP mode forwards a Strands interrupt as
+    # ``session/request_permission`` and raises none for a tool call itself, so Crew
+    # loads the project through its own gate module, which raises one per call --
+    # pi's and deepseek's member. Live capture:
+    # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
+    ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
 }
 
 
@@ -465,6 +472,9 @@ ACP_BACKEND_GATE_PROBE_COMMAND: dict = {
     # composition has no command registry to register into -- see
     # ``ACP_BACKEND_GATE_READBACK`` below for which read-back looks for it.
     ACP_BACKEND_DEEPSEEK: "kiro-crew-tool-gate",
+    # The gate MODULE's own name: like deepseek's, a composition with no command
+    # registry, so the gate reports itself through a load marker.
+    ACP_BACKEND_STRANDS: "kiro-crew-strands-gate",
 }
 
 
@@ -510,6 +520,7 @@ class Readback(str, Enum):
 ACP_BACKEND_GATE_READBACK: dict = {
     ACP_BACKEND_PI: Readback.COMMAND_REGISTRY,
     ACP_BACKEND_DEEPSEEK: Readback.LOAD_MARKER,
+    ACP_BACKEND_STRANDS: Readback.LOAD_MARKER,
 }
 
 

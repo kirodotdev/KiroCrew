@@ -101,6 +101,7 @@ vocabulary.
 | `ACP_BACKENDS_HARNESS_OWNED_SESSIONS` | The harness owns persisted session records and can restore from a `sessionId` without a Crew-side transcript or `_kiro.dev/session_file`. |
 | `ACP_BACKENDS_LOAD_WITHOUT_MODES` | A successful restore response may omit `modes`; membership prevents that valid load from being mistaken for a failed restore and replaced by a fresh session. |
 | `ACP_BACKENDS_RESUME_WITHOUT_LOAD` | The harness restores with standard ACP `session/resume` and advertises `sessionCapabilities.resume`, rather than using `session/load`. Membership selects both the capability key and verb. |
+| `ACP_BACKENDS_RELOAD_DISPOSED_SESSION` | The harness can dispose one session's backend inside a live process and then answer every prompt on that id with one error. Membership needs a capture of that error and of a `session/load` in a second process; `acp/disposed_session.py` lists the exact texts. |
 | `ACP_BACKENDS_FORK_AT_MESSAGE` | The harness's `session/fork` copies a stored session only up to a given assistant message, so an edited message's rewind can keep the retained native history. Advertising `sessionCapabilities.fork` is not enough: a fork that ignores the point copies the edited-away suffix too. |
 | `ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION` | Model switching lands as a config option rather than a protocol call. |
 | `ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION` | Reasoning-effort push, same channel shape. |
@@ -964,3 +965,59 @@ back read-only to the one Copilot CLI child it is for (`extra_expose_files`). It
 removed as soon as `initialize` answers (measured safe: the harness reads it at boot),
 and on a failed handshake, a failed write or a refused spawn too. An existing masked
 directory whose purpose fits was the answer, not a new entry on a sandbox list.
+
+## Worked example: Strands
+
+The run to read for a harness whose ACP mode asks for nothing on its own, and for a
+harness that runs the OPERATOR's code as its agent. It is in `ACP_BACKENDS_KNOWN`
+and it IS selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_STRANDS`, `PROVIDER_LABEL_STRANDS`, policy name mapped, its own `strands` model namespace. |
+| 2 capability sets | Decided for every set against Strands CLI **0.2.3** (`@strands-agents/cli`) over `strands-harness` 0.3.3. In the session MCP array (none of it on the wire), the zero-tool ban, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_LOAD_WITHOUT_MODES` and `ACP_BACKENDS_LOCAL_CLEAR`; the one new set is `ACP_BACKENDS_MODEL_AT_LAUNCH` (the model is the CLI's `--model` launch argument, and project-mode ACP has no model channel). Not a compaction, steering, usage or advertised-model member: project-mode ACP sends no `usage_update`, no model list and no compaction status. Deliberately outside `ACP_BACKENDS_CONTEXT_RECYCLE` too: a full context is left to the project's own Strands context manager (strands-harness's `context_manager` defaults to `"auto"`), so Crew neither compacts nor recycles it and the gate logs the unclassified decline. That is a recorded gap, not a claim of harness-managed compaction: it closes when the CLI reports usage and offers `/compact` in project mode. |
+| native Windows | Refused, as for every enforced harness: `tool_gate.enforce_sandbox_floor` names that Crew has no OS sandbox backend there to apply the credential mask. No Strands-specific bypass exists, and `agent.sandbox_allow_no_isolation` does not unlock an enforced harness. The Windows launch pieces (the `strands.cmd` shim, `.venv\Scripts\python.exe`, the PowerShell `&` setup command) are in place for when a backend exists. |
+| 3 spawn path | Done — `strands --acp-server --agent <crew home>/pi-gate/strands/agent.py [--model <id>] [--mcp-config <file>]` off the shared self-served ladder (`acp/harness/strands.py`). The Node under it is checked against the CLI's `engines.node` (22) with the same choice pi's launch makes. |
+| 4 handshake | Done — integer `1`. The CLI answers `agentInfo.version` `0.0.1` (a constant in its source), so the verified release is read from its `package.json` instead. |
+| 5 auth declaration | Done — `host_vault`, no leaf: the CLI stores no credential, and `agent.strands_env` carries provider settings from Crew's vault. |
+| 6 install probe | Done — `_probe_strands`: the binary at the verified release, plus `strands-harness` in the project's `.venv`, each named with the command that installs it. |
+| 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
+| 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
+| verified range | Strands CLI **0.2.3** exactly (`STRANDS_VERIFIED_VERSION`). Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is a harness whose ACP mode never asks.** The CLI's default
+`--acp-server` profile sends no `session/request_permission` at all, and its
+Python-project mode forwards only a Strands interrupt. So the route is Crew's own code
+running AS the project: the CLI is pointed at a sealed copy of
+`agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py`, which patches
+`strands.Agent.__init__` before any project code runs, so every agent built in that
+process -- the bundled one, the operator's, a sub-agent -- raises one interrupt per
+tool call in Crew's gate envelope. A read-back boot of the same argv proves the module
+loaded from Crew's file under this session's nonce before the session's own process
+starts, and the completed-unasked tripwire watches the session itself.
+
+**The second is the operator's project.** `agent.strands_project` points the gate at
+the operator's own `agent.py`; the gate imports it with every `Agent` already gated,
+re-creates it per session through its `create_agent` (awaited when it is `async`) or
+its captured `create_harness(...)` call, and refuses to start a project whose agent it
+cannot gate or that sets its own sandbox. A plain `agent = Agent(...)` with neither is
+served as that worker's one agent, given the same `SnapshotSessionManager` the
+harness's factory builds, under Crew's state directory, so `session/load` restores
+it rather than answering success on an empty agent; such a project cannot take a
+launch model, so a configured or chat model refuses it by name. A script-style
+project that calls its agent at import has that call stopped at its first tool by the
+same interrupt, and the paused turn is dropped. A cancel that lands while an approval
+interrupt is open leaves the agent saved in interrupt state, after which Strands refuses
+every prompt and every reload of that session ("must resume from interrupt"); the gate
+wraps `Agent.stream_async` so that, before any prompt that is not itself the interrupt
+answers, each open interrupt is resumed with a DENY (fail closed: the hook cancels the
+call, the tool never runs), at most three passes, then the state is cleared
+(`test/test_strands_gate_module.py`).
+
+**The third is a wire that refuses Crew's MCP array.** Project mode rejects a non-empty
+`session/new` `mcpServers` array, so the whole projected array rides an owner-only
+`--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own
+discovery of other tools' MCP and skill files is switched off in the child's
+environment (`STRANDS_CLI_MCP_DISCOVERY=off`, `STRANDS_CLI_SKILL_DISCOVERY=off`).
