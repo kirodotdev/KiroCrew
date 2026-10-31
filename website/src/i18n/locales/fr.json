@@ -10627,6 +10627,14 @@
       "reason": "Je ne peux pas exécuter ceci, mais toi, tu peux.",
       "run_unanswered": "Le terminal n'a pas répondu, alors copie-la dans l'application Terminal de ton ordinateur.",
       "title": "À lancer toi-même"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Compétences intégrées supprimées",
+      "hint": "Les compétences intégrées que tu as supprimées. Elles restent supprimées après les redémarrages et les mises à jour, jusqu’à ce que tu les restaures.",
+      "load_failed": "Impossible de charger les compétences intégrées supprimées.",
+      "restore": "Restaurer",
+      "restoring": "Restauration…",
+      "restore_failed": "Impossible de restaurer cette compétence. Réessaie."
     }
   },
   "hooks": {

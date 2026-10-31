@@ -4571,6 +4571,14 @@
     },
     "sendToInstanceSubmenu": {
       "default_badge": "default"
+    },
+    "uninstalledBuiltinSkillsList": {
+      "title": "Deleted built-in skills",
+      "hint": "Built-in skills you deleted. They stay removed across restarts and updates until you restore them.",
+      "load_failed": "Could not load the deleted built-in skills.",
+      "restore": "Restore",
+      "restoring": "Restoring…",
+      "restore_failed": "Could not restore this skill. Try again."
     }
   },
   "hooks": {
