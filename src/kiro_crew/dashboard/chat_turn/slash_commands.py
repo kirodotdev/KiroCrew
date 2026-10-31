@@ -22,10 +22,8 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     parse_workflow_command,
 )
-from kiro_crew.dashboard.kas_local_commands import (
-    KAS_LOCAL_INSPECT_COMMANDS,
-    answer_kas_inspect_command,
-)
+from kiro_crew.dashboard.kas_local_commands import answer_kas_inspect_command
+from kiro_crew.dashboard.kas_local_commands import answers_locally as kas_answers_locally
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -115,14 +113,15 @@ async def _answer_slash_without_channel(
     refuses the discard (busy, sub-agents attached) keeps it queued for a later
     turn boundary.
 
-    ``/model``, ``/tools`` and ``/mcp`` are answered from the dashboard's own state
-    (``kas_local_commands``); *message* is the whole command line, for
-    ``/model <id>``.
+    ``/agent``, ``/context``, ``/help``, ``/mcp``, ``/model``, ``/tools`` and
+    ``/usage`` are answered from the dashboard's own state (``kas_local_commands``);
+    *message* is the whole command line, for ``/model <id>`` and for the arguments
+    ``answers_locally`` leaves to the notice.
 
     Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
     ``switched``, ``error``, ``no_session`` or ``unsupported_backend``.
     """
-    if command.lower() in KAS_LOCAL_INSPECT_COMMANDS:
+    if kas_answers_locally(message or command):
         text, outcome = await answer_kas_inspect_command(
             state, slot, session_key, message or command
         )
@@ -742,8 +741,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # model reads "/clear" as a request and the conversation stays. KAS also
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
-    # reset_conversation queues, /model, /tools and /mcp are read from the
-    # dashboard's own state, and every other command gets a notice rather than
+    # reset_conversation queues, /agent, /context, /help, /mcp, /model, /tools and
+    # /usage are read from the dashboard's own state (kas_local_commands), and every
+    # other command gets a notice rather than
     # reaching the model. /compact passes through: on KAS the session handle
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.

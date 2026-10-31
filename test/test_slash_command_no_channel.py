@@ -149,7 +149,9 @@ class TestKasClear:
 
 class TestKasOtherCommands:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("command", ["/help", "/context add x", "/usage"])
+    @pytest.mark.parametrize(
+        "command", ["/hooks", "/context add x", "/agent create x", "/changelog"]
+    )
     async def test_unrunnable_command_is_refused_not_prompted(self, tmp_path, command) -> None:
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
 
@@ -281,10 +283,10 @@ class TestKasMenuMatchesTheGate:
     async def test_every_command_left_out_of_the_menu_is_one_the_gate_refuses(
         self, tmp_path
     ) -> None:
-        """RED on main: the KAS menu listed /context, /help and the rest."""
+        """Every command the KAS menu leaves out (/hooks, /changelog, ...) gets the notice."""
         listed = await _menu_names(ACP_BACKEND_KAS)
         left_out = _SLASH_COMMANDS - _BLOCKED_SLASH_COMMANDS - listed
-        assert {"/context", "/help", "/usage"} <= left_out
+        assert {"/changelog", "/code", "/experiment", "/hooks", "/logdump"} <= left_out
 
         for command in sorted(left_out):
             state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
@@ -301,12 +303,15 @@ class TestKasMenuMatchesTheGate:
             "/agent",
             "/clear",
             "/compact",
+            "/context",
             "/goal",
+            "/help",
             "/mcp",
             "/model",
             "/prompts",
             "/side",
             "/tools",
+            "/usage",
             "/workflow",
         }
 
@@ -322,10 +327,10 @@ class TestKasMenuMatchesTheGate:
         )
         state, slot, dispatched = _live(tmp_path, ACP_BACKEND_CODEX)
 
-        await _run_chat(state, slot, "/help")
+        await _run_chat(state, slot, "/hooks")
 
         dispatched.assert_not_called()
-        assert any("`/help`" in t for t in _texts(slot)), _texts(slot)
+        assert any("`/hooks`" in t for t in _texts(slot)), _texts(slot)
 
     @pytest.mark.asyncio
     async def test_kiro_menu_is_unchanged(self) -> None:

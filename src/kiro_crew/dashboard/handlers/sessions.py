@@ -723,6 +723,25 @@ async def _cached_reading_is_foreign(payload: dict[str, object], payload_fp: str
     return await _vault_fingerprint() != payload_fp
 
 
+async def cached_usage_for_current_signin() -> dict[str, object]:
+    """The cached reading :func:`api_sessions_usage` would serve now, read only.
+
+    The same identity rules as that GET, and nothing it does besides: no refresh is
+    started, no marker is published, no kiro-cli gate is asked. A reading published
+    for another sign-in (:func:`_cached_reading_is_foreign`), or a vault reading
+    while the vault does not own usage, comes back as ``{"available": False}``.
+    """
+    vault_owned = await _vault_owns_usage()
+    # Payload and fingerprint in one step, as the GET takes them.
+    served, served_fp = _usage_cache, _usage_cache_vault_fp
+    if vault_owned:
+        if await _cached_reading_is_foreign(served, served_fp):
+            return {"available": False}
+    elif served.get("credits_plan") is not None and served_fp:
+        return {"available": False}
+    return dict(served)
+
+
 async def _refresh_from_vault() -> None:
     """Refresh the reading from Crew's own sign-in vault, never from kiro-cli.
 

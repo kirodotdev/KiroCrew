@@ -13,6 +13,18 @@ the dashboard already holds, never from the model, and costs no turn:
   of its ``permissions`` and the built-ins Crew answers itself.
 * ``/mcp`` reads the slot's MCP session report (``mcp_report_payload``), the same
   sanitized payload the dashboard's MCP panel draws.
+* ``/context`` reads the context meter's own reading (``_context_snapshot_fields``):
+  how full the window is, in percent and, when measured, in tokens.
+* ``/usage`` reads the credit reading the dashboard's credit counter shows, under
+  the counter's own identity rules (``cached_usage_for_current_signin``). It never
+  fetches one.
+* ``/help`` lists the commands this chat runs, as the ``/`` menu lists them here
+  (``_LOCAL_HARNESS_MENU_COMMANDS``), with their descriptions.
+* ``/agent`` and ``/agent list`` show the chat's agent and the agents a switch can
+  reach (``pickable_agent_names``, the list the channel ``/agent`` shows).
+
+``/context`` with an argument and the other ``/agent`` subcommands change state
+kiro-cli keeps; :func:`answers_locally` leaves them to the notice.
 
 Only names reach the transcript. A server's ``env``, ``headers``, ``command`` and
 ``args`` are never read, and the whole reply goes through :func:`redact` last.
@@ -22,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,8 +45,14 @@ from kiro_crew.security import redact
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
-#: The commands this module answers.
-KAS_LOCAL_INSPECT_COMMANDS = frozenset({"/mcp", "/model", "/tools"})
+#: The commands this module answers (see :func:`answers_locally` for their arguments).
+KAS_LOCAL_INSPECT_COMMANDS = frozenset(
+    {"/agent", "/context", "/help", "/mcp", "/model", "/tools", "/usage"}
+)
+
+# ``/agent`` words answered here: the bare command and ``list``. The rest
+# (``create``, ``set-default``, ...) edit agent files kiro-cli owns.
+_AGENT_SHOW_WORDS = frozenset({"", "list"})
 
 # Names listed per line, so one huge catalog or roster cannot flood the transcript.
 _INSPECT_LIST_CAP = 60
@@ -270,6 +289,139 @@ def _inspect_mcp_text(slot: _ChatSlot, declared: list[str] | None = None) -> tup
     return "\n".join(lines), "shown"
 
 
+def _amount(number: float) -> str:
+    """A credit or token figure: whole numbers bare, others to two decimals."""
+    if number.is_integer():
+        return f"{int(number):,}"
+    return f"{number:,.2f}"
+
+
+def _number(value: Any) -> float | None:
+    """*value* as a finite float, else ``None`` (a bool is not a number here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+async def _inspect_context_text(state: DashboardState, slot: _ChatSlot) -> tuple[str, str]:
+    """How full the context window is, from the reading the context meter draws."""
+    # Call-time import, through the facade that composes ``chat_api.slot_detail``
+    # (chat_handlers imports this package).
+    from kiro_crew.dashboard.chat_handlers import _context_snapshot_fields
+
+    fields = await _context_snapshot_fields(state, slot)
+    pct = _number(fields.get("context_pct"))
+    if pct is None:
+        return (
+            "📊 No context reading yet. Send a message first, then run `/context` again.",
+            "no_reading",
+        )
+    line = f"📊 Context: {round(pct, 1):g}% full"
+    used = _number(fields.get("context_used_tokens"))
+    window = _number(fields.get("context_window_tokens"))
+    if used and window:
+        line += f" ({_amount(used)} of {_amount(window)} tokens)"
+    elif window:
+        line += f" of a {_amount(window)}-token window"
+    lines = [line + "."]
+    if fields.get("context_stale"):
+        lines.append(
+            "This reading is from before the session stopped. Your next message updates it."
+        )
+    return "\n".join(lines), "shown"
+
+
+async def _inspect_usage_text() -> tuple[str, str]:
+    """The account's credits, from the reading the dashboard's credit counter shows.
+
+    Read through the counter's own identity rules
+    (``cached_usage_for_current_signin``), so a reading left from another sign-in
+    is never shown as this one's.
+    """
+    # Call-time import: the session handlers import the chat package.
+    from kiro_crew.dashboard.handlers.sessions import cached_usage_for_current_signin
+
+    usage = await cached_usage_for_current_signin()
+    used = _number(usage.get("credits_used"))
+    plan = _number(usage.get("credits_plan"))
+    if used is None or not plan:
+        if usage.get("reason") == "signin_required":
+            return "💳 No credit reading: sign in again to see your credits.", "signin_required"
+        return "💳 No credit reading yet. Try `/usage` again in a few minutes.", "no_reading"
+    line = f"💳 Credits: {_amount(used)} of {_amount(plan)} used"
+    pct = _number(usage.get("percentage"))
+    if pct is not None:
+        line += f" ({round(pct, 1):g}%)"
+    plan_name = usage.get("plan")
+    if isinstance(plan_name, str) and plan_name:
+        line += f" on {plan_name}"
+    lines = [line + "."]
+    overage = _number(usage.get("credits_overage"))
+    if overage is not None and overage > 0:
+        lines.append(f"- Overage: {_amount(overage)} credits")
+    resets = usage.get("resets")
+    if isinstance(resets, str) and resets:
+        lines.append(f"- Resets: {resets}")
+    if usage.get("stale"):
+        lines.append("This reading is from an earlier refresh; the latest one did not finish.")
+    return "\n".join(lines), "shown"
+
+
+def _inspect_help_text() -> tuple[str, str]:
+    """The commands this chat runs, as the ``/`` menu lists them here."""
+    from kiro_crew.dashboard.chat_utils import (
+        _LOCAL_HARNESS_MENU_COMMANDS,
+        SLASH_COMMAND_DESCRIPTIONS,
+    )
+
+    lines = ["❓ Commands in this chat:"]
+    for command in sorted(_LOCAL_HARNESS_MENU_COMMANDS):
+        description = SLASH_COMMAND_DESCRIPTIONS.get(command, "")
+        lines.append(f"- `{command}`: {description}" if description else f"- `{command}`")
+    lines.append("Type `/` in the message box to pick one.")
+    return "\n".join(lines), "shown"
+
+
+async def _inspect_agent_text(slot: _ChatSlot) -> tuple[str, str]:
+    """The chat's agent and the agents ``/agent <name>`` can switch to."""
+    from kiro_crew.agent_switch_command import pickable_agent_names
+
+    current = str(slot.agent or "")
+    try:
+        names = clean_names(await asyncio.to_thread(pickable_agent_names))
+    except Exception:  # noqa: BLE001 - an unreadable agent directory lists none
+        names = []
+    lines = [f"🤖 Agent: `{current}`" if current else "🤖 Agent: the default agent"]
+    for name in names[:_INSPECT_LIST_CAP]:
+        lines.append(f"- `{name}` (current)" if name == current else f"- `{name}`")
+    if len(names) > _INSPECT_LIST_CAP:
+        lines.append(f"- and {len(names) - _INSPECT_LIST_CAP} more")
+    if not names:
+        lines.append("No other agents are installed on this machine.")
+    lines.append("Switch with `/agent <name>`, or use the agent picker.")
+    return "\n".join(lines), "shown"
+
+
+def answers_locally(message: str) -> bool:
+    """Whether :func:`answer_kas_inspect_command` answers *message*.
+
+    ``/context`` only bare, ``/agent`` only bare or ``list``: with an argument both
+    edit state kiro-cli keeps (context rules, agent files), which KAS has no verb
+    for, so those keep the "doesn't work with KAS" notice.
+    """
+    parts = message.strip().split(maxsplit=1)
+    command = parts[0].lower() if parts else ""
+    rest = parts[1].strip().lower() if len(parts) > 1 else ""
+    if command not in KAS_LOCAL_INSPECT_COMMANDS:
+        return False
+    if command == "/context":
+        return not rest
+    if command == "/agent":
+        return rest in _AGENT_SHOW_WORDS
+    return True
+
+
 async def answer_kas_inspect_command(
     state: DashboardState, slot: _ChatSlot, session_key: str, message: str
 ) -> tuple[str, str]:
@@ -281,6 +433,14 @@ async def answer_kas_inspect_command(
         text, outcome = await _inspect_model_text(state, slot, session_key, rest.strip())
     elif command == "/tools":
         text, outcome = await _inspect_tools_text(state, session_key)
+    elif command == "/context":
+        text, outcome = await _inspect_context_text(state, slot)
+    elif command == "/usage":
+        text, outcome = await _inspect_usage_text()
+    elif command == "/help":
+        text, outcome = _inspect_help_text()
+    elif command == "/agent":
+        text, outcome = await _inspect_agent_text(slot)
     else:
         view = kas_tool_view(await _inspect_live_provider(state, session_key))
         entry = view.get("entry") if isinstance(view, dict) else None
