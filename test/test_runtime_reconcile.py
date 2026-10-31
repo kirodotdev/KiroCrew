@@ -22,6 +22,8 @@ it is removed, so a later reader can verify the guard still earns its place:
 * the spawn-marker condition -> ``test_a_process_without_our_marker_is_never_killed``
 * the two-pass confirmation -> ``test_one_pass_only_counts_an_unowned_process``
 * the age floor -> ``test_a_process_younger_than_the_floor_is_never_killed``
+* the live-owner spawn-instance condition ->
+  ``test_a_nested_run_of_a_live_owned_runtime_is_never_killed``
 * the last-moment gate -> ``test_the_gate_still_refuses_after_every_other_condition``
 * the kill budget -> ``test_one_pass_spends_a_bounded_number_of_kills``
 * the unreadable-registry refusal -> ``test_an_unreadable_registry_refuses_the_whole_pass``
@@ -140,6 +142,137 @@ def test_a_process_younger_than_the_floor_is_never_killed() -> None:
     reading = rec.run_once()
     assert reading.killed == 0 and killed == []
     assert ("younger than the age floor",) == _refusals(audited)
+
+
+# A live session's runtime (100), the shell its agent's tool started (150) and the
+# nested ``kiro-cli`` that shell launched (200). The nested run inherits the
+# runtime's spawn instance and is in no record of its own.
+_NESTED_TREE = {100: (1, 0), 150: (100, 0), 200: (150, 0)}
+_NESTED_INSTANCES = {100: "spawn-a", 150: "spawn-a", 200: "spawn-a"}
+_SHARES_LIVE = "its spawn instance belongs to a live recorded runtime"
+
+
+@pytest.mark.parametrize("holder", ["recorded", "leased"])
+def test_a_nested_run_of_a_live_owned_runtime_is_never_killed(holder: str) -> None:
+    """MUTATION TARGET: the live-owner spawn-instance condition.
+
+    Without it the nested run satisfies every other condition from the second
+    pass on, and is killed while the session that started it is waiting on it.
+    A lease or tenancy claim on the runtime anchors it exactly as a record does.
+    """
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    reads: list[int] = []
+
+    def counted(pid: int) -> str | None:
+        reads.append(pid)
+        return _NESTED_INSTANCES.get(pid)
+
+    rec = _reconciler(
+        kernel={100, 150, 200},
+        recorded={100} if holder == "recorded" else set(),
+        leased=None if holder == "recorded" else {100},
+        managed={100, 200},
+        killed=killed,
+        audited=audited,
+        spawn_instance_of=counted,
+        table=_NESTED_TREE,
+    )
+    for _ in range(6):
+        reading = rec.run_once()
+        assert reading.killed == 0
+    assert killed == []
+    assert [(pid, why) for pid, outcome, why in audited if why == _SHARES_LIVE] == [
+        (200, _SHARES_LIVE)
+    ], "reported once, under the new reason, and only for the harness"
+    # Passes two to six reach the condition, and each reads a pid at most once.
+    assert reads.count(200) == 5 and reads.count(100) == 5
+
+
+@pytest.mark.parametrize("runtime", ["dead", "absent"])
+def test_a_leaked_tree_whose_owned_runtime_is_gone_is_still_killed(runtime: str) -> None:
+    """The arm's purpose, kept: the shelter is a LIVE OWNED holder, never a member.
+
+    Once the recorded runtime is dead (its record still on file) or its record is
+    gone, the nested run and the leaked harness beside it (250) still share one
+    instance -- and must not shelter each other, or no leaked spawn of two
+    harnesses could ever be reclaimed.
+    """
+    killed: list[int] = []
+    tree = {**_NESTED_TREE, 250: (1, 0)}
+    rec = _reconciler(
+        kernel={150, 200, 250},
+        recorded={100} if runtime == "dead" else set(),
+        alive={150, 200, 250},
+        managed={200, 250},
+        killed=killed,
+        instances={**_NESTED_INSTANCES, 250: "spawn-a"},
+        table=tree,
+    )
+    rec.run_once()
+    reading = rec.run_once()
+    assert reading.killed == 2 and sorted(killed) == [200, 250]
+
+
+def test_a_candidate_with_no_readable_instance_is_not_withheld_by_it() -> None:
+    """An unreadable instance adds no refusal: the four earlier conditions decide.
+
+    The confirmed reclaim refuses such a runtime outright, so withholding it here
+    too would leave a stray that predates the stamp with nothing able to end it.
+    """
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+    rec = _reconciler(
+        kernel={100, 200},
+        recorded={100},
+        killed=killed,
+        audited=audited,
+        instances={100: "spawn-a"},
+        table=_NESTED_TREE,
+    )
+    rec.run_once()
+    reading = rec.run_once()
+    assert reading.killed == 1 and killed == [200]
+    assert _SHARES_LIVE not in _refusals(audited)
+
+
+def test_an_owned_holder_inside_the_candidates_own_tree_does_not_shelter_it() -> None:
+    """A holder BELOW the candidate describes the candidate, not a spawn above it.
+
+    The confirmed reclaim skips such a holder the same way.
+    """
+    killed: list[int] = []
+    rec = _reconciler(
+        kernel={200, 300},
+        recorded={300},
+        killed=killed,
+        instances={200: "spawn-a", 300: "spawn-a"},
+        table={200: (1, 0), 300: (200, 0)},
+    )
+    rec.run_once()
+    assert rec.run_once().killed == 1 and killed == [200]
+
+
+def test_an_unreadable_process_table_withholds_a_matched_candidate() -> None:
+    """Once an owned holder shares the instance only the tree question is open,
+    and doubt must not kill."""
+    killed: list[int] = []
+    audited: list[tuple[int, str, str]] = []
+
+    def broken() -> dict[int, tuple[int, int]]:
+        raise OSError("no /proc")
+
+    rec = _reconciler(
+        kernel={100, 200},
+        recorded={100},
+        killed=killed,
+        audited=audited,
+        instances=_NESTED_INSTANCES,
+        process_table=broken,
+    )
+    rec.run_once()
+    assert rec.run_once().killed == 0 and killed == []
+    assert _SHARES_LIVE in _refusals(audited)
 
 
 def test_the_gate_still_refuses_after_every_other_condition() -> None:

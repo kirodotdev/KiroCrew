@@ -39,7 +39,7 @@ processes owned by a stub connection, sandbox shim wrappers owned by the spawn
 in progress. Killing on first sight would take a user's live browser out from
 under them and call it a leak fixed.
 
-So a kill needs five independent things to line up, and any one of them missing
+So a kill needs six independent things to line up, and any one of them missing
 leaves the process alone and merely counted:
 
 1. the process carries this install's own spawn marker, so it is ours to end;
@@ -60,7 +60,19 @@ leaves the process alone and merely counted:
    only inside the seam, each one first collects an ownership-gate allow and the
    kill attribution that allow writes -- 3151 attribution lines for 181 pids
    against 4 real kills, measured over 6.5 hours on one host;
-5. :func:`~kiro_crew.runtime_ownership.authorize_runtime_kill` allows it, so a
+5. no LIVE process this pass found recorded, leased or claimed, outside the
+   candidate's own tree, carries the candidate's ``KIROCREW_SPAWN_INSTANCE``. The
+   stamp is inherited, so a ``kiro-cli`` an agent's shell tool starts carries its
+   parent runtime's instance and lands in that runtime's scope while appearing in no
+   record of its own: without this condition it reads as abandoned and is killed
+   while the session that started it is still waiting on it. The anchor is a
+   RECORDED holder, never merely a live one, so a leaked tree cannot shelter itself
+   with its own members, and a leaked runtime whose recorded root has died is still
+   reclaimed. A candidate whose instance cannot be read is not withheld by this
+   condition, because the confirmed reclaim already refuses such a runtime and
+   withholding here too would leave a stray that predates the stamp with nothing
+   that could ever end it;
+6. :func:`~kiro_crew.runtime_ownership.authorize_runtime_kill` allows it, so a
    pid that turns out to be leased after all is refused at the last moment and
    the refusal is logged.
 
@@ -71,7 +83,7 @@ Why the budget can be turned down to zero
 -----------------------------------------
 ``session.reconcile_max_kills`` bounds the kills one pass may perform, and its
 ceiling is :data:`DEFAULT_MAX_KILLS` -- so it can only ever lower the shipped
-budget, never raise it. At 0 the kill arm OBSERVES: the four local conditions are
+budget, never raise it. At 0 the kill arm OBSERVES: the five local conditions are
 still evaluated, a candidate that satisfies them all is audited as ``would_kill``,
 published in :attr:`ReconcileReading.would_kill`, and never signalled. Nothing
 above the budget check changes, so the leak reading an operator acts on is the
@@ -754,6 +766,18 @@ class RuntimeReconciler:
         #: recycled pid would otherwise inherit the previous process's "already
         #: recorded" state, and the replacement's first refusal would go unaudited.
         self._withheld_reason: dict[tuple[int, str | None], str] = {}
+        #: This pass's live owned pids: recorded and not found dead, plus every
+        #: slice pid a lease or tenancy claim holds. The only holders whose spawn
+        #: instance can shelter an unowned candidate, so membership decides it and
+        #: mere liveness never does. Rebuilt per pass.
+        self._live_owned: set[int] = set()
+        #: Spawn instance per pid, read at most once per pass and only once some
+        #: candidate has passed every cheaper condition.
+        self._instances: dict[int, str | None] = {}
+        #: The process table, read lazily once per pass and only when a candidate
+        #: shares its instance with a live owned pid. A failed read is not cached,
+        #: so each matched candidate retries it and is withheld if it fails again.
+        self._pass_table: dict[int, tuple[int, int]] | None = None
 
     def set_max_kills(self, budget: int) -> None:
         """Adopt *budget* as the per-pass kill ceiling for the passes that follow.
@@ -812,6 +836,8 @@ class RuntimeReconciler:
             return ReconcileReading(supported=False, reason=f"cannot read the registry: {exc}")
 
         owned_dead, forgotten = self._reconcile_dead(recorded)
+        self._instances = {}
+        self._pass_table = None
         unowned = self._unowned(kernel, recorded)
         # Identity captured at classification, for the re-check in the instant
         # before each signal. Rebuilt per pass so a pid that left the population
@@ -964,6 +990,7 @@ class RuntimeReconciler:
         dead = 0
         forgotten = 0
         failed = 0
+        live = set(recorded)
         for pid in sorted(recorded):
             try:
                 if self._is_alive(pid) and not self._is_stranger(pid):
@@ -974,6 +1001,7 @@ class RuntimeReconciler:
                 # runtime loses the only thing that can ever find it again.
                 continue
             dead += 1
+            live.discard(pid)
             try:
                 outcome = self._forget(pid)
                 if outcome == "retracted":
@@ -1015,6 +1043,9 @@ class RuntimeReconciler:
             except Exception:
                 logger.debug("runtime_reconcile: could not notify for pid=%s", pid, exc_info=True)
         self._prune_notified(recorded)
+        # A recycled pid is a stranger and an unreadable probe is kept, so this is
+        # exactly the recorded population the pass still believes is serving.
+        self._live_owned = live
         if dead:
             # WARNING only when this pass changed something or owed a change it
             # could not make. A dead count made entirely of "not-mine" records is
@@ -1113,11 +1144,13 @@ class RuntimeReconciler:
                 continue
             try:
                 if self._leases_on(pid) or self._claims_on(pid):
+                    self._live_owned.add(pid)
                     continue
             except Exception:
                 # Either table is authority enough to call a pid claimed, and an
                 # unreadable one means claimed: this list decides a kill, so the
                 # fail-closed answer is the only safe one.
+                self._live_owned.add(pid)
                 continue
             try:
                 if self._is_sandbox_tool(pid) and not self._is_managed(pid):
@@ -1356,6 +1389,52 @@ class RuntimeReconciler:
                 return "younger than the age floor"
         except Exception:
             return "younger than the age floor"
+        # Last, because it is the only condition that may read another process: the
+        # ones above withhold almost the whole population from one read of the
+        # candidate itself.
+        return self._instance_held_by_live_owner(pid)
+
+    def _instance_of(self, pid: int) -> str | None:
+        """*pid*'s spawn instance, read once per pass; an unreadable one is ``None``."""
+        if pid not in self._instances:
+            self._instances[pid] = self._safe(self._spawn_instance_of, pid)
+        return self._instances[pid]
+
+    def _instance_held_by_live_owner(self, pid: int) -> str:
+        """Why *pid* belongs to a live owned runtime's spawn, or empty when it does not.
+
+        The instance stamp is inherited by every descendant of the spawn that minted
+        it, so a live owned pid carrying the same instance means the spawn still has
+        a serving member and *pid* is most likely a process it started -- a nested
+        ``kiro-cli`` from an agent's shell tool is the common shape. A holder inside
+        *pid*'s own tree is skipped, as the confirmed reclaim skips one, since that
+        holder would describe *pid* and not the spawn above it.
+
+        An unreadable instance on the candidate withholds nothing, and one on an
+        owned pid matches nothing: the condition only ever adds a refusal on
+        evidence it could read. An unreadable process table, once a match exists,
+        withholds, because then only the tree question is open and doubt must not
+        kill.
+        """
+        instance = self._instance_of(pid)
+        if not instance:
+            return ""
+        holders = [
+            other
+            for other in sorted(self._live_owned)
+            if other != pid and self._instance_of(other) == instance
+        ]
+        if not holders:
+            return ""
+        if self._pass_table is None:
+            try:
+                self._pass_table = self._process_table()
+            except Exception:
+                logger.debug("runtime_reconcile: process table read failed", exc_info=True)
+                return "its spawn instance belongs to a live recorded runtime"
+        table = self._pass_table
+        if any(not _descends_from(other, pid, table) for other in holders):
+            return "its spawn instance belongs to a live recorded runtime"
         return ""
 
 
