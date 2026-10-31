@@ -308,14 +308,28 @@ class TestBoundedRecordReaders:
     def test_strict_reader_does_not_drain_the_hostile_tail(self, tmp_path):
         """Aborting must not first walk a multi-GB line to its end.
 
-        Proven by position: the handle stops within one read of the cap rather
-        than at EOF, so the reader never paid for the rest of the record.
+        Proven by position: the handle stops within one read-ahead chunk of the
+        cap rather than at EOF, so the reader never paid for the rest of the record.
         """
-        path = self._write(tmp_path, b"y" * 5000 + b"\n")
+        from kiro_crew.jsonl_util import _FRAME_CHUNK
+
+        path = self._write(tmp_path, b"y" * (4 * _FRAME_CHUNK) + b"\n")
         with open(path, "rb") as fh:
             with pytest.raises(OversizedRecord):
                 list(strict_records(fh, path, cap=200))
-            assert fh.tell() <= 201 * 2, f"drained to {fh.tell()} of {path.stat().st_size}"
+            limit = 201 * 2 + _FRAME_CHUNK
+            assert fh.tell() <= limit, f"drained to {fh.tell()} of {path.stat().st_size}"
+
+    def test_taking_one_record_reads_one_chunk_at_the_default_cap(self, tmp_path):
+        """A page read stops early; at the default 128 MiB cap the read-ahead must
+        still be one chunk, not the rest of the file."""
+        from kiro_crew.jsonl_util import _FRAME_CHUNK
+
+        path = self._write(tmp_path, *([b'{"a":1}\n'] * (4 * _FRAME_CHUNK // 8)))
+        with open(path, "rb") as fh:
+            first = next(iter(strict_raw_records(fh, path)))
+            assert first == b'{"a":1}\n'
+            assert fh.tell() <= 2 * _FRAME_CHUNK, f"read {fh.tell()} of {path.stat().st_size}"
 
     def test_raw_readers_yield_undecoded_bytes(self, tmp_path):
         """A byte no codec can decode survives the raw readers verbatim."""
