@@ -5,7 +5,7 @@ import {
   autoTriagePipelineApi,
   type CrewFabricItem, type RepoRef,
 } from '../api'
-import { repoScopeKey } from '../../lib/links'
+import { providerTerms, repoScopeKey } from '../../lib/links'
 import {
   SPINE_PHASES, foldItem, columnOccupancy, laneDwells, openDwellSeconds, formatDwell,
   queueSummary, laneTimelineRows, phaseHeader, phaseCaption,
@@ -290,6 +290,8 @@ function PipelineDashboard({ repo }: { repo: RepoRef }) {
             nowMs={nowMs}
             generatedAt={generatedAt}
             repoLabel={`${repo.owner}/${repo.repo}`}
+            sigil={providerTerms(repo).sigil}
+            changeRequestShort={providerTerms(repo).changeRequestShort}
             reduced={reduced}
             hovered={hovered}
             onHover={setHovered}
@@ -415,7 +417,7 @@ export const colVbX = (i: number, width: number) =>
   TRACK_PAD_L + colFrac(i) * (width - TRACK_PAD_L - TRACK_PAD_R)
 
 function LaneBoard({
-  lanes, occupancy, summary, nowMs, generatedAt, repoLabel, reduced, hovered, onHover,
+  lanes, occupancy, summary, nowMs, generatedAt, repoLabel, sigil, changeRequestShort, reduced, hovered, onHover,
 }: {
   lanes: FabricLane[]
   occupancy: Map<number, { total: number; editing: number }>
@@ -423,6 +425,8 @@ function LaneBoard({
   nowMs: number
   generatedAt: string | null
   repoLabel: string
+  sigil: string
+  changeRequestShort: string
   reduced: boolean
   hovered: number | null
   onHover: (n: number | null) => void
@@ -481,6 +485,7 @@ function LaneBoard({
             <LaneRow
               key={lane.number}
               lane={lane}
+              sigil={sigil}
               nowMs={nowMs}
               reduced={reduced}
               trackW={trackW}
@@ -497,7 +502,7 @@ function LaneBoard({
 
       {/* NOTES + legend — folded in right under the drawing they explain
           (defects #3/#18/#21) */}
-      <NotesPanel />
+      <NotesPanel sigil={sigil} changeRequest={changeRequestShort} />
     </Card>
   )
 }
@@ -612,9 +617,11 @@ function ColumnHeader({
 // ── one lane: a compact ID card + a fluid track ──
 
 function LaneRow({
-  lane, nowMs, reduced, trackW, narrow, dimmed, onMove, onLeave,
+  lane, sigil, nowMs, reduced, trackW, narrow, dimmed, onMove, onLeave,
 }: {
   lane: FabricLane
+  /** The forge's change-request sigil: `!` on GitLab, where `#N` is an unrelated issue. */
+  sigil: string
   nowMs: number
   reduced: boolean
   trackW: number
@@ -672,14 +679,14 @@ function LaneRow({
             {lane.title}
           </div>
         ) : null}
-        {/* chips row — Issue Radar's label-chip row. Carries the `#N` PR pill and
+        {/* chips row — Issue Radar's label-chip row. Carries the PR pill (`#N`, or `!N` on GitLab) and
             any reopen count as pill chips rather than a bare `▸ #` line; renders
             nothing when the lane has neither. */}
         {(lane.prNumber != null || lane.reopens > 0) && (
           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
             {lane.prNumber != null && (
               <span className="inline-flex items-center rounded-full font-medium px-1.5 py-0 text-[10px] bg-bg-hover text-muted tabular-nums">
-                {`#${lane.prNumber}`}
+                {`${sigil}${lane.prNumber}`}
               </span>
             )}
             {lane.reopens > 0 && (
@@ -940,10 +947,10 @@ function HoverCard({ lane, x, y, nowMs }: { lane: FabricLane; x: number; y: numb
 /** NOTES + the colour legend, folded into the board card right under the drawing
  * they explain (defects #3 rows render, #18 no blank band, #21 legend near the
  * drawing). */
-function NotesPanel() {
+function NotesPanel({ sigil, changeRequest }: { sigil: string; changeRequest: string }) {
   const notes = [
     i18nT('apps.autoTriagePipeline.pipeline.note_1'),
-    i18nT('apps.autoTriagePipeline.pipeline.note_2'),
+    i18nT('apps.autoTriagePipeline.pipeline.note_2', { sigil, changeRequest }),
     i18nT('apps.autoTriagePipeline.pipeline.note_3'),
     i18nT('apps.autoTriagePipeline.pipeline.note_4'),
     i18nT('apps.autoTriagePipeline.pipeline.note_5'),

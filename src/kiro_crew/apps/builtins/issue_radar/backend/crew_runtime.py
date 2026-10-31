@@ -55,7 +55,7 @@ from kiro_crew import _facade_mirror
 from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, read_json_or
 
-from . import crew_store, github_client, provider, store
+from . import crew_store, github_client, gitlab_queries, provider, store
 from .crew_runtime_session import is_live
 from .crew_runtime_supervision import wake_crew, watchdog_cycle
 
@@ -228,25 +228,22 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     """The sweep's deps source: cache read, refreshed in place when absent/expired.
 
     Runs in a worker thread (the caller wraps it in ``asyncio.to_thread``).
-    GitHub-only by design: the crew sweep acts on GitHub issues alone (the PR's
-    "crew signals GitHub-only" non-goal), so a non-GitHub provider returns None
-    here — an unknown reading that ``detect_unblocks`` can never turn into a
-    spurious unlock. The GitLab deps cache is written by the /deps route for the
-    Graph tab's DISPLAY only; the sweep must not read it, because that cache can
-    legitimately be edgeless (an idle blocked issue past the /links fetch cap, or
-    one whose single /links call failed) and an edgeless graph reads as zero open
-    blockers — which would fire a false 1→0 unlock on a still-blocked issue. A
-    refresh failure keeps whatever the cache held — stale beats wrong, equally
-    unable to fire the unlock (see ``detect_unblocks``).
+    GitHub and GitLab refresh, dispatching exactly as the /deps route does; any
+    other provider has no dependency fetch yet, and for it this stays a plain
+    cache read (normally None). A refresh failure of any kind keeps whatever the
+    cache held — stale beats wrong, and an unknown reading can never fire the
+    unlock (see ``detect_unblocks``). A GitLab graph can be edgeless for an issue
+    whose own ``/links`` were never read (fetch cap, or a failed call); the fetcher
+    either marks its node ``blockers_unknown`` or leaves it out of ``nodes``, and
+    ``_open_blocker_count`` reads both as unknown for GitLab, so that edgeless
+    shape never fires a false 1→0 unlock either.
     """
-    if key.provider != "github":
-        return None
     cached = store.read_deps_cache(key.owner, key.repo, scope)
     fresh_enough = (
         isinstance(cached, dict)
         and (time.time() - float(cached.get("fetched_at") or 0)) < store.DEPS_CACHE_TTL_SEC
     )
-    if fresh_enough:
+    if fresh_enough or key.provider not in (provider.GITHUB, provider.GITLAB):
         return cached
 
     # An ABSENT issues cache is unknown scope, not an empty repo: building the
@@ -263,8 +260,15 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     if open_issues is None:
         return cached
     try:
-        hints: dict[int, dict] = {}
-        edges, nodes = github_client.fetch_dependency_edges(key.owner, key.repo, open_issues, hints)
+        if key.provider == provider.GITLAB:
+            edges, nodes = gitlab_queries.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, host=key.host
+            )
+        else:
+            hints: dict[int, dict] = {}
+            edges, nodes = github_client.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, hints
+            )
         store.write_deps_cache(
             key.owner, key.repo, edges, nodes, root=scope, fetched_at=fetch_started
         )
@@ -279,7 +283,9 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
         return cached
 
 
-def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
+def _open_blocker_count(
+    deps: dict[str, Any] | None, number: Any, *, absent_is_unknown: bool = False
+) -> int | None:
     """How many of ``number``'s blockers are still open, from a deps-cache graph.
 
     ``deps`` is a ``store.read_deps_cache`` result (``{"edges", "nodes", ...}``) or
@@ -291,7 +297,18 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
       * the count of blockers whose node state is neither ``closed`` nor
         ``merged``.
     A blocker with no node entry is treated as still-open (conservative: better to
-    keep an item blocked than to fire a spurious unlock on a missing node).
+    keep an item blocked than to fire a spurious unlock on a missing node). An
+    item whose own node carries ``blockers_unknown`` (GitLab: its ``/links`` were
+    never read, so its edges may be missing) is unknown too — its edge count says
+    nothing about its real blockers.
+
+    ``absent_is_unknown`` makes an item with NO node of its own read as unknown.
+    The GitLab fetcher leaves an open issue out of ``nodes`` exactly when it never
+    read that issue's ``/links`` (past ``_MAX_LINKS_CALLS`` or ``_MAX_DEPS_NODES``
+    with no fetched issue linking to it, or a failed call no other edge touched),
+    so there an absent node is an unread one, not an unblocked one. The GitHub
+    fetcher seeds and walks every open issue in the snapshot, so it keeps the
+    default.
     """
     if not isinstance(deps, dict):
         return None
@@ -301,6 +318,11 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
     raw_nodes = deps.get("nodes")
     nodes: dict[str, Any] = raw_nodes if isinstance(raw_nodes, dict) else {}
     if not isinstance(edges, list):
+        return None
+    own = nodes.get(str(number))
+    if own is None and absent_is_unknown:
+        return None
+    if isinstance(own, dict) and own.get("blockers_unknown") is True:
         return None
     open_count = 0
     for edge in edges:
@@ -346,7 +368,21 @@ def fingerprint_item(
     # transition that falsely fires SIG_DEP_UNBLOCKED the moment someone closes
     # a nonterminal item. Out of scope must read UNKNOWN, not unblocked.
     item_state = str((issue or {}).get("state") or "").lower() if isinstance(issue, dict) else ""
-    fp["open_blockers"] = _open_blocker_count(deps, number) if item_state == "open" else None
+    open_blockers = (
+        _open_blocker_count(deps, number, absent_is_unknown=key.provider == provider.GITLAB)
+        if item_state == "open"
+        else None
+    )
+    # An unknown reading on a still-open item keeps the last known count. The
+    # sweep stores this fingerprint as next cycle's ``prev``, so writing None
+    # here would erase the count: a partial GitLab refresh between a blocker's
+    # 1 and its 0 turns 1 → 0 into 1 → None → 0, and the unlock never fires.
+    # The carried value equals ``prev``, so it cannot fire anything itself.
+    if open_blockers is None and item_state == "open" and prev is not None:
+        last = prev.get("open_blockers")
+        if isinstance(last, int) and not isinstance(last, bool):
+            open_blockers = last
+    fp["open_blockers"] = open_blockers
     if isinstance(issue, dict):
         fp["issue_comments"] = _as_int(issue.get("comments"))
         fp["issue_state"] = issue.get("state")
@@ -512,8 +548,10 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     # headless gateway would fingerprint the same stale blocker states forever
     # and a merged blocker would never wake its crew. So an absent or expired
     # cache is refreshed IN the sweep — one bounded batched fetch per repo per
-    # cycle (the same batched GraphQL walk the route uses, ~1 call per 100 open
-    # issues), gated on there being due items at all. A failed refresh keeps the
+    # cycle (the same fetch the /deps route uses: on GitHub a batched GraphQL
+    # walk, ~1 call per 100 open issues; on GitLab one bounded ``/links`` call
+    # per open issue, up to ``gitlab_queries._MAX_LINKS_CALLS``), gated on there
+    # being due items at all. A failed refresh keeps the
     # stale graph (or None), which per ``detect_unblocks`` never fires the
     # unlock — fail-closed, exactly like an unknown reading.
     deps = await asyncio.to_thread(partial(_read_or_refresh_deps, key, scope))
