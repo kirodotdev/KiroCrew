@@ -331,6 +331,10 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} 始终无法重启",
+      "restart_exhausted_message_other": "{{app}} 已连续 {{count}} 次重启失败，并将每隔几分钟继续重试。要立即重试，请先禁用 {{app}} 再重新启用。"
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "供组装此副本的人员参考的详细信息",
       "refused_page_handoff_note": "询问代理会打开一个已附带这些详细信息的对话。",

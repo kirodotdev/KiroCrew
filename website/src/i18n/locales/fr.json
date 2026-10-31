@@ -361,6 +361,12 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} n’arrive pas à redémarrer",
+      "restart_exhausted_message_one": "{{app}} n’a pas réussi à redémarrer {{count}} fois de suite et continuera d’essayer toutes les quelques minutes. Pour réessayer maintenant, désactive {{app}} puis réactive-la.",
+      "restart_exhausted_message_many": "{{app}} n’a pas réussi à redémarrer {{count}} fois de suite et continuera d’essayer toutes les quelques minutes. Pour réessayer maintenant, désactive {{app}} puis réactive-la.",
+      "restart_exhausted_message_other": "{{app}} n’a pas réussi à redémarrer {{count}} fois de suite et continuera d’essayer toutes les quelques minutes. Pour réessayer maintenant, désactive {{app}} puis réactive-la."
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "Détails destinés à la personne qui a assemblé cet exemplaire",
       "refused_page_handoff_note": "Demander à l'agent ouvre une conversation à laquelle ces détails sont déjà joints.",

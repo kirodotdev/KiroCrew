@@ -331,6 +331,10 @@
     }
   },
   "apps": {
+    "backend": {
+      "restart_exhausted_title": "{{app}} の再起動が繰り返し失敗しています",
+      "restart_exhausted_message_other": "{{app}} は {{count}} 回連続で再起動に失敗し、数分ごとに再試行を続けます。今すぐ再試行するには、{{app}} を無効にしてから再度有効にしてください。"
+    },
     "builtinAppRoute": {
       "refused_page_detail_label": "このコピーを組み立てた担当者向けの詳細",
       "refused_page_handoff_note": "エージェントに質問すると、これらの詳細が添付された状態でチャットが開きます。",

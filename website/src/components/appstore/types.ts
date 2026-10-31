@@ -1,4 +1,5 @@
 import { i18nT } from '../../i18n/t'
+import type { BackendStatus } from '../../utils/backendStatus'
 
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
@@ -99,6 +100,13 @@ export type InstalledApp = {
   migratedTo?: string
   orphaned?: boolean
   updateAvailable?: boolean
+  /**
+   * Live backend process status, present on a `GET /api/apps` row when the app
+   * runs a tracked backend. `restart_exhausted` is set when that backend is
+   * repeatedly failing to restart (see `backendStatus.ts`); the rest mirror the
+   * tracking record.
+   */
+  backend_status?: BackendStatus
   manifest: {
     name: string
     version: string
