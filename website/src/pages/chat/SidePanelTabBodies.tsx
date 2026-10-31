@@ -147,7 +147,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
   onDiskContent: (c: string, binary?: boolean, partial?: boolean) => void
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** The header path menu's "Show folder in side panel" target. */
   onFolderOpen?: (p: string) => void
   /** Right-click "Add to context" on a rail row. */
@@ -186,6 +186,7 @@ function FileTabBody({ tab, active, projectDir, scrollMemoryKey, onContentChange
       revealLine={tab.revealLine}
       onRevealConsumed={onRevealConsumed}
       onFolderOpen={onFolderOpen}
+      onFileOpen={onFileOpen ? (p, opts) => onFileOpen(p, opts?.line != null ? { line: opts.line, endLine: opts.endLine } : undefined) : undefined}
       railOpen={railUsable && railOpen}
       onRailToggle={railUsable ? () => setRailOpen(v => !v) : undefined}
       browserRail={railUsable ? (
@@ -313,7 +314,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
    *  so the strip label tracks where the user actually is. */
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
-  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; replaceId?: string; canReplace?: () => boolean }) => void
+  onFileOpen?: (p: string, opts?: { diffMode?: boolean; line?: number; endLine?: number; replaceId?: string; canReplace?: () => boolean }) => void
   /** Open a directory as a folder tab: the file tab header's "Show folder in
    *  side panel" row. */
   onFolderOpen?: (p: string) => void

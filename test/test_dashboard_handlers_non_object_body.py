@@ -184,3 +184,17 @@ async def test_an_object_body_passes_the_guard(
     assert req.parsed
     assert resp.status != 500, resp.text
     assert _code(resp) != "body_not_object"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["name", "content"])
+@pytest.mark.parametrize("value", [5, ["a"], {"a": 1}, True, None], ids=repr)
+async def test_skills_create_refuses_a_non_string_field(drive, field, value) -> None:
+    """A non-string ``name`` or ``content`` has no ``.strip()``, so each is a coded
+    400."""
+    body = {"name": "my-skill", "content": "# Skill\n", field: value}
+    _req, resp = await drive(
+        "kiro_crew.dashboard.handlers.prompts_skill_edits", "api_skills_create", "POST", {}, body
+    )
+    assert resp.status == 400, resp.text
+    assert _code(resp) == "invalid_field_type"

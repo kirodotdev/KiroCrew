@@ -1934,7 +1934,12 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"error": "invalid JSON", "code": "body_not_object"}, status=400)
-    title = body.get("title", "").strip()[:200]
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    title = body.get("title", "")
+    if (not_string := string_field_error("title", title)) is not None:
+        return not_string
+    title = title.strip()[:200]
     if not title:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
     # Best-effort save, as on main: the live slot stays authoritative and its

@@ -65,11 +65,16 @@ export const ContentRenderer = memo(function ContentRenderer({
   lang, lineNums, wordWrap, onChange, onSave,
   previewRef, displayContent, isMarkdown,
   markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged,
+  onFileOpen, onFolderOpen,
 }: {
   isRichType: boolean
   fileType: string
   /** Required for `image` / `pdf` (URL construction). Optional otherwise. */
   filePath?: string
+  /** Where a path chip in the markdown preview opens a file or folder. Absent, a
+   *  chip falls back to revealing the path on the host. */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  onFolderOpen?: (path: string) => void
   content: string
   editing: boolean
   lang: string
@@ -194,7 +199,7 @@ export const ContentRenderer = memo(function ContentRenderer({
       {!isRichType && !editing && isMarkdown && (
         <div ref={previewRef as React.RefObject<HTMLDivElement>} className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
           <BasePathCtx.Provider value={filePath || null}>
-            <MarkdownRenderer content={displayContent} sourcePos />
+            <MarkdownRenderer content={displayContent} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
           </BasePathCtx.Provider>
         </div>
       )}

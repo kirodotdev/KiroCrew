@@ -459,6 +459,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     cron_mode_refusal,
     cron_slot_creator,
     read_bounded_json,
+    string_field_error,
 )
 from kiro_crew.dashboard.handlers.agents_harness_effort import (  # noqa: F401
     harness_effort,

@@ -788,7 +788,11 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps(payload), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        # An import that landed nothing is a failure, so a script chaining it with
+        # `&&` must not read it as success.
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert f"still has no {db_path.name}" in out
         # The whole point: the loss signal survives, so a later read still refuses.
@@ -804,7 +808,8 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         capsys.readouterr()
         err = _refused(capsys, mem_action="export", output=None, store=_ACME)
         assert "refusing to create one on a read" in err
@@ -927,7 +932,8 @@ class TestCreationIsExclusivelyOwned:
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
         events = self._spy(monkeypatch)
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         capsys.readouterr()
 
         assert "lock-enter" in events, events
@@ -977,7 +983,9 @@ class TestAFailedRemovalIsReportedAsOne:
             return real_unlink(self, *a, **kw)
 
         monkeypatch.setattr(Path, "unlink", refuse_once)
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
 
         assert "could NOT be removed" in out
@@ -1006,7 +1014,8 @@ class TestCleanupTouchesOnlyWhatThisImportCreated:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         out = capsys.readouterr().out
 
         assert f"still has no {db_path.name}" in out
@@ -1316,3 +1325,47 @@ class TestARefusalIsOneLineNotATraceback:
         assert err.startswith("Error: ") and "Traceback" not in err
         # Reported, never repaired: the bytes the operator would recover from stay put.
         assert db_path.read_bytes().startswith(b"this is not a sqlite database")
+
+
+class TestAVerbThatDidNothingExitsOne:
+    """``backups --store`` and ``retired --restore`` exit 1 when nothing they were
+    asked for exists, like ``memory forget`` on an absent key. The found case stays
+    exit 0 with its old output, so a script that already works keeps working."""
+
+    def test_backups_for_an_unknown_store_exits_one(
+        self, seeded, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="backups", store="nosuch"))
+        assert exc.value.code == 1
+        assert capsys.readouterr().out == "nosuch: not a declared memory store\n"
+
+    def test_backups_for_a_declared_store_exits_zero(
+        self, seeded, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cc._memory_cmd(_ns(mem_action="backups", store=_ACME))
+        assert capsys.readouterr().out == f"{_ACME}:\n  (no backups yet)\n"
+
+    def test_restoring_a_missing_retired_id_exits_one(
+        self, seeded, stores, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stores.close_all()
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="retired", restore_id="no-such-id", limit=20))
+        assert exc.value.code == 1
+        assert capsys.readouterr().out == "Not found, or already active.\n"
+
+    def test_restoring_a_found_retired_id_exits_zero(
+        self, seeded, stores, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stores.close_all()
+        asked: list[str] = []
+
+        def found(self, mem_id: str, source: str = "user_explicit") -> bool:
+            asked.append(mem_id)
+            return True
+
+        monkeypatch.setattr(VectorMemoryStore, "restore_episodic", found)
+        cc._memory_cmd(_ns(mem_action="retired", restore_id="ep-1", limit=20))
+        assert asked == ["ep-1"]
+        assert capsys.readouterr().out == "Restored.\n"

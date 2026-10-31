@@ -60,6 +60,18 @@ class TestLogLevel:
         # A rejected level must not have been applied on the way to the refusal.
         assert logging.getLogger("kiro_crew").level == before
 
+    @pytest.mark.parametrize("level", [None, 10, ["DEBUG"]], ids=["null", "int", "list"])
+    @pytest.mark.asyncio
+    async def test_a_non_string_level_is_a_coded_400(self, level):
+        before = logging.getLogger("kiro_crew").level
+        resp = await updates.api_log_level(_request({"level": level}))
+        assert resp.status == 400
+        assert json.loads(resp.body.decode()) == {
+            "error": "level must be a string",
+            "code": "invalid_field_type",
+        }
+        assert logging.getLogger("kiro_crew").level == before
+
     @pytest.mark.asyncio
     async def test_applies_and_persists_a_valid_level_case_insensitively(self, monkeypatch):
         saved: list[str] = []

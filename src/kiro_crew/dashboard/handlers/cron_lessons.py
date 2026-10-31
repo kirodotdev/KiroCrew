@@ -640,7 +640,12 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    rule_sub = body.get("rule", "").strip()
+    from ._shared import string_field_error
+
+    rule_sub = body.get("rule", "")
+    if (not_string := string_field_error("rule", rule_sub)) is not None:
+        return not_string
+    rule_sub = rule_sub.strip()
     if not rule_sub:
         return web.json_response({"error": "rule substring required"}, status=400)
     scope = body.get("scope", "global")

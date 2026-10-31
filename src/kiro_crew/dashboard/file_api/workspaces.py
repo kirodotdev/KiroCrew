@@ -85,7 +85,12 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    name = body.get("name", "").strip()
+    from kiro_crew.dashboard.handlers._shared import string_field_error
+
+    name = body.get("name", "")
+    if (not_string := string_field_error("name", name)) is not None:
+        return not_string
+    name = name.strip()
     if not name:
         return web.json_response({"error": "Workspace name is required"}, status=400)
     if not WORKSPACE_NAME_RE.match(name):
@@ -96,7 +101,10 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     cfg = KiroCrewConfig.load()
     if name in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' already exists"}, status=409)
-    copy_from = body.get("copy_from", "").strip()
+    copy_from = body.get("copy_from", "")
+    if (not_string := string_field_error("copy_from", copy_from)) is not None:
+        return not_string
+    copy_from = copy_from.strip()
     # Set only once ALL validation has passed (staging is the LAST pre-persist
     # step): the staged tree awaiting install, and the destination it installs
     # into once the in-lock checks pass. copy_pending records that the branch

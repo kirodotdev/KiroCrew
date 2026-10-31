@@ -548,12 +548,16 @@ async def api_skills_create(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
-    from ._shared import body_not_object_error
+    from ._shared import body_not_object_error, string_field_error
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
-    name = body.get("name", "").strip()
-    content = body.get("content", "").strip()
+    name = body.get("name", "")
+    content = body.get("content", "")
+    for field, value in (("name", name), ("content", content)):
+        if (not_string := string_field_error(field, value)) is not None:
+            return not_string
+    name, content = name.strip(), content.strip()
     if not name:
         return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     if not content:

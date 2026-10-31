@@ -709,6 +709,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 resources=f"job_id={args.job_id} reason=not_found",
             )
             print(f"Job not found: {args.job_id}")
+            # Same exit as remove/pause/resume/trigger on a missing job, so a
+            # script that updates a stale id sees the failure.
+            sys.exit(1)
 
     elif action == "remove":
         job_id = getattr(args, "job_id", None)

@@ -657,6 +657,25 @@ class TestAFailedCopyIsCountedAndNotMistakenForASkip:
         result = mb.back_up_all_stores(keep=7)
         assert result == {"backed_up": 0, "skipped": 2, "pruned": 0, "failed": 0}
 
+    def test_the_cli_verb_exits_one_when_a_copy_failed(
+        self, live_store: VectorMemoryStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A store with no fresh backup must not read as success to a script.
+
+        The clean cases above (0 failed, any skipped) run the same verb and exit 0.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.cli_commands import _memory_backup_cmd
+
+        with mock.patch.object(mb, "backup_store", side_effect=mb.MemoryBackupFailed("disk full")):
+            with pytest.raises(SystemExit) as exc:
+                _memory_backup_cmd("backup", SimpleNamespace(keep=7))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert out.startswith("Backed up 0 store(s); removed 0 old; ")
+        assert " 0 failed;" not in out
+
 
 class TestRetentionIsBoundedAndCannotEmptyItself:
     def test_only_the_newest_keep_survive(self, live_store: VectorMemoryStore) -> None:

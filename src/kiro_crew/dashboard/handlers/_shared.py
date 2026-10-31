@@ -104,6 +104,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         bounded_json_error_code,
         read_bounded_json,
         read_capped_response,
+        string_field_error,
     )
     from kiro_crew.dashboard.handlers._shared_route_guards import (  # noqa: F401
         _CRON_SESSION_CONTROL_PATHS,

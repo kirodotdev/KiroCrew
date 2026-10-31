@@ -228,10 +228,12 @@ def _gate_upload_file(
                     None,
                 )
         except Exception as redact_err:
-            _audit_denial(f"redaction_failed: {redact_err}", outcome="error")
+            # A stable message: the raw exception text is neither returned nor
+            # logged, only its type (the handlers below show only redacted text).
+            _audit_denial(f"redaction_failed: {type(redact_err).__name__}", outcome="error")
             return (
                 web.json_response(
-                    {"error": f"Redaction failed: {redact_err}", "code": "redaction_failed"},
+                    {"error": "Redaction failed", "code": "redaction_failed"},
                     status=500,
                 ),
                 None,
