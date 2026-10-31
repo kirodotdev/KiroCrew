@@ -38,13 +38,13 @@ from kiro_crew.messaging.link import ChannelLink, binding_token
 #: rather than a parametrized suite that quietly stops driving anything.
 #:
 #: Membership tracks a capability declaration, not a policy: WeCom left when it
-#: gained a proactive path over its long connection, and Feishu arrived declaring
-#: ``supports_proactive_send=False`` because its v1 renderer only ever replies to
-#: an inbound ``message_id``. The rejection branch below is nonetheless driven by a
-#: SYNTHETIC capability rather than by whoever happens to be in this set: the set
-#: has been empty before and will be again, and a branch whose only coverage is a
-#: roster entry stops being covered the moment that entry graduates.
-NON_PROACTIVE_CHANNELS: set[str] = {"feishu"}
+#: gained a proactive path over its long connection, and Feishu left when it
+#: gained a free-standing ``im.v1.message.create`` push for unattended output.
+#: The rejection branch below is nonetheless driven by a SYNTHETIC capability
+#: rather than by whoever happens to be in this set: the set has been empty
+#: before and will be again, and a branch whose only coverage is a roster entry
+#: stops being covered the moment that entry graduates.
+NON_PROACTIVE_CHANNELS: set[str] = set()
 
 
 def _channels_declaring_proactive(supported: bool) -> list[str]:
