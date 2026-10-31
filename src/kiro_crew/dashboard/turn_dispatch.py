@@ -29,6 +29,7 @@ from contextvars import ContextVar
 from typing import Any, Literal
 
 from kiro_crew.acp.client import resolve_prompt_timeout
+from kiro_crew.config import load_memo
 from kiro_crew.config.loader import (
     APPROVAL_TURN_MARGIN_SECS,
     CHAT_TURN_TIMEOUT_MAX,
@@ -136,7 +137,15 @@ def chat_turn_timeout_secs() -> float:
     ignored.
     """
     try:
-        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+        # Read on the event loop at every turn dispatch: the config rebuild is
+        # skipped while the config files are unchanged (``config.load_memo``).
+        configured = float(
+            load_memo.memoized(
+                "agent.chat_turn_timeout_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.chat_turn_timeout_secs,
+            )
+        )
     except Exception:
         logger.debug("chat-turn ceiling config unavailable; using default", exc_info=True)
         return CHAT_TURN_TIMEOUT
@@ -194,7 +203,13 @@ def resolve_turn_limit(slot: Any = None) -> tuple[float, str]:
 def native_cancel_ack_timeout_secs() -> float:
     """Resolve the bounded wait for a native turn-cancellation acknowledgement."""
     try:
-        configured = float(KiroCrewConfig.load().agent.soft_stop_budget_secs)
+        configured = float(
+            load_memo.memoized(
+                "agent.soft_stop_budget_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.soft_stop_budget_secs,
+            )
+        )
     except Exception:
         logger.debug(
             "native cancel acknowledgement config unavailable; using default", exc_info=True

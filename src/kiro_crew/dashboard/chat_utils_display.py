@@ -386,7 +386,8 @@ def _display_redaction_cache_key(
 def _clear_display_redaction_cache() -> None:
     """Reset the process-local caches for deterministic tests."""
     global _display_redaction_cache_bytes, _display_clean_young, _display_clean_old
-    global _display_preview_cache_bytes
+    global _display_preview_cache_bytes, _display_preview_by_object_chars
+    global _display_preview_by_object_context
     with _display_redaction_cache_lock:
         _display_redaction_cache.clear()
         _display_redaction_cache_bytes = 0
@@ -395,6 +396,8 @@ def _clear_display_redaction_cache() -> None:
         _display_preview_cache.clear()
         _display_preview_cache_bytes = 0
         _display_preview_by_object.clear()
+        _display_preview_by_object_chars = 0
+        _display_preview_by_object_context = None
 
 
 # Entries keyed under the per-process salt are unreachable once the
@@ -577,12 +580,30 @@ _DISPLAY_PREVIEW_CACHE_MAX_BYTES = 2 * 1024 * 1024
 _DisplayPreviewKey = tuple[bytes, int, int]
 _display_preview_cache: OrderedDict[_DisplayPreviewKey, tuple[str, int]] = OrderedDict()
 _display_preview_cache_bytes = 0
-#: ``id(text) -> (text, (limit, hosts, prefixes, verdict base), preview)``: the
-#: previous answer for the same string object, so an unchanged tab's preview costs
-#: no digest. Holding ``text`` keeps its id from being reused while the entry
-#: lives. Bounded by count; past it the map is emptied, not trimmed.
+#: ``id(text) -> (text, limit, preview)``: the previous answer for the same string
+#: object, so an unchanged tab's preview costs no digest. Holding ``text`` keeps
+#: its id from being reused while the entry lives, and keeps the whole raw string
+#: alive, so the map is bounded by entries AND by the characters of the texts it
+#: holds; past either it is emptied, not trimmed. A text longer than the character
+#: bound is never held here (it goes through the digest-keyed cache only). The
+#: preview is cut to ``limit``. Every entry answers for ONE redaction context
+#: (exempt hosts, token-parameter prefixes, verdict base), held once in
+#: ``_display_preview_by_object_context``; a different context empties the map, so
+#: the host set is retained once however many entries there are.
 _DISPLAY_PREVIEW_BY_OBJECT_MAX = 4_096
-_display_preview_by_object: dict[int, tuple[str, tuple, str]] = {}
+_DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS = 4 * 1024 * 1024
+_display_preview_by_object: dict[int, tuple[str, int, str]] = {}
+_display_preview_by_object_chars = 0
+_display_preview_by_object_context: tuple | None = None
+
+
+def _same_preview_context(held: tuple | None, context: tuple) -> bool:
+    return (
+        held is not None
+        and held[0] == context[0]
+        and held[1] == context[1]
+        and held[2] is context[2]
+    )
 
 
 def _cut_preview(text: str, limit: int) -> str:
@@ -606,19 +627,16 @@ def _redacted_preview(text: str, limit: int) -> str:
     # object comes back until that message changes. Matching on the object and on
     # the inputs the key folds in (exempt hosts, token-parameter prefixes, verdict
     # base) answers it without hashing the whole text on the event loop again.
-    hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
-    context = (limit, hosts, _token_param_exempt_prefixes(), _display_verdicts.mac_base())
+    context = (
+        _exempt_exact_hosts() | current_scoped_exempt_hosts(),
+        _token_param_exempt_prefixes(),
+        _display_verdicts.mac_base(),
+    )
     with _display_redaction_cache_lock:
-        seen = _display_preview_by_object.get(id(text))
-        if (
-            seen is not None
-            and seen[0] is text
-            and seen[1][0] == context[0]
-            and seen[1][1] == context[1]
-            and seen[1][2] == context[2]
-            and seen[1][3] is context[3]
-        ):
-            return seen[2]
+        if _same_preview_context(_display_preview_by_object_context, context):
+            seen = _display_preview_by_object.get(id(text))
+            if seen is not None and seen[0] is text and seen[1] == limit:
+                return seen[2]
     preview = _redacted_preview_by_digest(text, limit)
     after = (
         _exempt_exact_hosts() | current_scoped_exempt_hosts(),
@@ -627,12 +645,30 @@ def _redacted_preview(text: str, limit: int) -> str:
     )
     # Remembered only when the inputs did not move while it was computed, the
     # same rule the digest-keyed cache applies before it files an entry.
-    if after[0] == context[1] and after[1] == context[2] and after[2] is context[3]:
-        with _display_redaction_cache_lock:
-            if len(_display_preview_by_object) >= _DISPLAY_PREVIEW_BY_OBJECT_MAX:
-                _display_preview_by_object.clear()
-            _display_preview_by_object[id(text)] = (text, context, preview)
+    if _same_preview_context(after, context) and len(text) <= _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS:
+        _remember_preview_by_object(text, limit, context, preview)
     return preview
+
+
+def _remember_preview_by_object(text: str, limit: int, context: tuple, preview: str) -> None:
+    """File *preview* for the string object *text*, inside both bounds and one context."""
+    global _display_preview_by_object_chars, _display_preview_by_object_context
+    with _display_redaction_cache_lock:
+        if not _same_preview_context(_display_preview_by_object_context, context):
+            _display_preview_by_object.clear()
+            _display_preview_by_object_chars = 0
+            _display_preview_by_object_context = context
+        replaced = _display_preview_by_object.pop(id(text), None)
+        if replaced is not None:
+            _display_preview_by_object_chars -= len(replaced[0])
+        if (
+            len(_display_preview_by_object) >= _DISPLAY_PREVIEW_BY_OBJECT_MAX
+            or _display_preview_by_object_chars + len(text) > _DISPLAY_PREVIEW_BY_OBJECT_MAX_CHARS
+        ):
+            _display_preview_by_object.clear()
+            _display_preview_by_object_chars = 0
+        _display_preview_by_object[id(text)] = (text, limit, preview)
+        _display_preview_by_object_chars += len(text)
 
 
 def _redacted_preview_by_digest(text: str, limit: int) -> str:

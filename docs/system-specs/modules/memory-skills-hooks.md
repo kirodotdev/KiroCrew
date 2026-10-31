@@ -4199,14 +4199,18 @@ fail closed to disabled. A present `config.json` or `config.local.json` that can
 read, parsed, or interpreted as an object also disables project skills: an unreadable
 source may contain the operator's hard-off switch and cannot be treated as absent.
 Every catalog read asks the switch (through `_catalog_scope_key` → `is_key_trusted`),
-several times per turn, so `skill_trust._project_skills_enabled` reuses its last answer
-while the config files' stat fingerprint, the config cache's invalidation generation and
-the `KiroCrewConfig.load` binding are all unchanged, rather than rebuilding the whole
-config each time. A failed read is never remembered, so it fails closed again on the
-next ask. In the same spirit `catalog._iter_visible` keeps its disabled-app filtering
+several times per turn, so `skill_trust._project_skills_enabled` reads it through
+`config.load_memo` (see config.md, "Derived-value memo"): the last answer is reused
+while the config files are unchanged rather than rebuilding the whole config each
+time. A failed read is never remembered, so it fails closed again on the next ask. In the same spirit `catalog._iter_visible` keeps its disabled-app filtering
 against the catalog list `_iter` served (the same object until a rebuild) and the
 disabled set: `_owning_app` resolves real paths per skill, and the memo is dropped by
-`_invalidate_iter_cache` with the rest of the catalog state.
+`_invalidate_iter_cache` with the rest of the catalog state. It keeps only lists `_iter`
+still serves (a superseded generation is dropped on the next store), at most 16 of
+them and `_VISIBLE_MEMO_MAX_ROWS` (32,768) catalog rows in total; a larger catalog is
+filtered per read, uncached and never truncated. An out-of-band edit of a
+flat skill's `app:` frontmatter line is therefore seen at the next catalog
+revalidation (a new list object), not on the very next read.
 
 **Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
 `/api/skills/{name}` catch-all. All three require the configured dashboard owner: the

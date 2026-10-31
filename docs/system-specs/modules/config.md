@@ -1638,6 +1638,22 @@ a file happened to change. A file whose bytes read fine but would not parse is a
 stable fact about those bytes and is still cached. Pinned by
 `test_config_overlay.py::TestConfigOverlayLoad::test_a_transient_base_read_failure_is_not_cached`.
 
+**Derived-value memo** (`config/load_memo.py`). The cache above skips the read and
+validation, but every `load()` still rebuilds each section dataclass with the GIL
+held. A hot path that needs a field or two goes through `load_memo.memoized(name,
+load, derive)`, passing the `KiroCrewConfig.load` its own module binds, which reuses
+`derive(load())` while the config files' fingerprint and the cache's invalidation
+generation are unchanged, and computes afresh whenever that loader is not the
+class's own classmethod (a test double on the class or on the caller's binding). A derive that raises is not remembered, and neither is a value from a load
+with no content digest: a present file that did not read whole falls back to
+defaults under an unchanged fingerprint, so that answer must not outlive the fault
+(the document cache declines it for the same reason). Only values derived from the
+config files belong there. Users: the turn ceiling and the cancel-ack budget in
+`dashboard.turn_dispatch` (read on the event loop at every turn dispatch), the
+transport's prompt-timeout inputs in `acp.client_timeouts.resolve_prompt_timeout`
+(the turn's own limit stays live), and `skills.project_skills_enabled` in
+`skill_trust`. Pinned by `test_turn_path_memos.py`.
+
 **Content provenance on the cache entry.** Beside the `data` dict and its sidecar, each
 cache entry carries a third fact: the digest of the bytes that data was parsed from.
 `load_config_with_content_stamp()` returns a config together with that digest, and

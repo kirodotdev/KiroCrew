@@ -1723,8 +1723,10 @@ The owners, lowest layer first:
   (`_last_message_preview`: markdown strip, display redaction, cut to 80
   characters) is memoized by `chat_utils_display._redacted_preview` under the
   display cache's keyed digest of the raw text, holding only the redacted preview,
-  and in front of that by the string OBJECT (`_display_preview_by_object`, 4,096
-  entries): the same message string keeps coming back until the message changes,
+  and in front of that by the string OBJECT (`_display_preview_by_object`, at most
+  4,096 entries and 4 Mi characters of held text, emptied past either; a longer
+  text skips it; the whole map answers for one redaction context, held once, and a
+  different context empties it): the same message string keeps coming back until the message changes,
   so a tab whose last message did not move costs no digest of its whole text on
   the loop. That entry also names the limit, the exempt-host set, the
   token-parameter prefixes and the verdict MAC base, and a change to any of them
