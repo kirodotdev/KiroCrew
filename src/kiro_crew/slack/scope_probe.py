@@ -308,7 +308,7 @@ def capability_notifier(notify: Callable[..., None] | None) -> Callable[[str, st
     reasons = {
         "feature_disabled": "Slack has not enabled this feature for your workspace",
         "missing_scope": "your Slack app is missing a permission it needs; update the "
-        "app's manifest from Settings → Slack and reinstall it",
+        "app's manifest from Settings → Messaging Channels → Slack and reinstall it",
         "not_allowed_token_type": "Slack refused the bot token for this feature",
     }
 
