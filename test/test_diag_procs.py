@@ -72,7 +72,7 @@ MARKER = {session_pid.KIROCREW_SPAWNED_ENV: session_pid.KIROCREW_SPAWNED_VALUE}
 
 GATEWAY_ARGV = nul_argv(b"/v/bin/python3", b"-m", b"kiro_crew.cli", b"gateway")
 CHAT_ARGV = nul_argv(b"/usr/local/bin/kiro-cli-chat", b"--acp")
-BROWSER_ARGV = nul_argv(b"node", b"/n/playwright-core/lib/entry/cliDaemon.js", b"kc-abc")
+BROWSER_ARGV = nul_argv(b"/opt/chrome/chrome", b"--headless=new", b"--remote-debugging-port=0")
 RENDERER_ARGV = nul_argv(b"/opt/chrome/chrome-headless", b"--type=renderer")
 RUNNER_ARGV = nul_argv(b"/v/bin/pytest", b"-q", b"test/test_diag_procs.py")
 STRANGER_ARGV = nul_argv(b"/usr/sbin/sshd", b"-D")
@@ -228,7 +228,7 @@ def family(tmp_path: Path) -> FakeProcTable:
     table.add(CHAT, GATEWAY, comm="kiro-cli-chat", cmdline=CHAT_ARGV, env=dict(MARKER))
     # A descendant that CLEARED its environment: admitted by descent, and the
     # marker read comes back False rather than None.
-    table.add(BROWSER, CHAT, comm="node", cmdline=BROWSER_ARGV, env={"PATH": "/usr/bin"})
+    table.add(BROWSER, CHAT, comm="chrome", cmdline=BROWSER_ARGV, env={"PATH": "/usr/bin"})
     # Reparented to init: this is the orphan the reaper hunts.
     table.add(ORPHAN, 1, comm="kiro-cli-chat", cmdline=CHAT_ARGV, env=dict(MARKER))
     # No marker of its own and NOT a gateway descendant: only the ppid chain to
@@ -873,7 +873,7 @@ def test_tree_nests_children_under_their_parent(family: FakeProcTable) -> None:
 
 
 def test_a_filter_keeps_the_ancestor_chain_of_a_match(family: FakeProcTable) -> None:
-    # Two members classify as browsers: the playwright daemon under the chat
+    # Two members classify as browsers: the headless browser under the chat
     # runtime, and the renderer under the orphan. Both sit two levels below a
     # root, so both exercise the ancestor rule.
     view = procs.tree(family.scan(), "tree", kind="browser")

@@ -396,6 +396,122 @@ class FeedbackTrackerProvider(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class BrowserCredentialTarget:
+    """The browser :meth:`BrowserCredentialProvider.cookies` is filling.
+
+    ``kind`` is always ``"kiro_chromium"`` when the provider is called (the core
+    never asks for the person's own Chrome or Edge); ``headless`` says whether it
+    has a window; ``reason`` is ``"start"`` (a launch or relaunch) or
+    ``"source_changed"`` (an agent navigation found
+    :meth:`BrowserCredentialProvider.fingerprint` or ``browser.credentials``
+    changed since the last apply).
+    """
+
+    kind: str
+    headless: bool
+    reason: str
+
+
+class BrowserCredentialProvider(Protocol):
+    """Session cookies for Kiro's own Chromium.
+
+    Kiro's Chromium starts with an empty profile, so a site behind a sign-in the
+    agent cannot perform is a login wall. An edition that already holds the user's
+    session for its own sites supplies it here. WIRED:
+    ``browser_harness.supervisor.HarnessSupervisor`` (the gateway, outside every
+    sandbox) calls it at each start of Kiro's Chromium and before an agent
+    navigation when :meth:`fingerprint` or the settings changed, then writes the
+    cookies with CDP ``Storage.setCookies`` on the gateway's own connection to the
+    browser -- never through the agent's ``browser`` tool -- before the daemon (and
+    so any agent op) is up. Never called for the person's own Chrome or Edge.
+
+    OPT-IN: nothing but :meth:`name`, :meth:`default_settings` and
+    :meth:`fingerprint` is called while ``browser.credentials.enabled`` is off, and
+    a cookie is set only when its domain is in BOTH :meth:`domains` and
+    ``browser.credentials.domains``. A provider that reads a file should use
+    ``browser_harness.credential_files`` (``read_source_file``,
+    ``source_fingerprint``) and raise its ``CredentialSourceError``: a missing or
+    refused file then reads as a status, not a failure.
+
+    :meth:`domains`, :meth:`cookies` and :meth:`status` run in a worker thread,
+    bounded at 15 s each
+    (``browser_harness.credentials.PROVIDER_TIMEOUT_SECS``); blocking I/O is fine
+    there. :meth:`fingerprint` runs in a worker thread bounded at 2 s.
+    :meth:`name` and :meth:`default_settings` may be read on the gateway's event
+    loop (an apply and a navigation's re-pull check ask for
+    them), so they must answer from memory: return constants, never do I/O.
+    A raise or a timeout is reduced to a fixed reason code and the browser starts
+    without the cookies: never put a secret in an exception message, and never
+    log a value yourself.
+
+    The agent must not be able to read whatever this provider reads from. The
+    provider runs in the gateway, so its own files need no sandbox access; the
+    edition keeps them HIDDEN with its own ``SandboxPolicy`` / ``SecurityOverlay``
+    paths. The core never widens a sandbox scope for it.
+    """
+
+    def name(self) -> Optional[str]:
+        """A short display name ("Company sign-in"), or ``None`` for no provider.
+
+        ``None`` (the public Default) disables every other method: they are not
+        called. Shown as ``credentials.provider`` in ``GET /api/browser/status``.
+        """
+        ...
+
+    def domains(self) -> Sequence[str]:
+        """The host names this provider serves (``"example.com"``).
+
+        Each covers itself and its subdomains. A cookie whose domain is not one of
+        these, or under one, is dropped. A single label, an IP literal,
+        a wildcard or a host with a port is ignored as a declaration.
+        """
+        ...
+
+    def cookies(self, target: BrowserCredentialTarget) -> Sequence[Dict[str, Any]]:
+        """The cookies to set, in CDP ``Network.CookieParam`` shape.
+
+        Each needs string ``name``, ``value`` and an explicit ``domain``; ``path``
+        (default ``/``), boolean ``secure`` and ``httpOnly``, and ``sameSite``
+        (``Strict|Lax|None``) are optional. A cookie whose ``expires`` (unix
+        seconds) has passed, or with a control character or a non-boolean flag, is
+        dropped, not the batch. Each is set as a SESSION cookie (``expires``
+        removed, so nothing reaches the profile on disk and it is gone when the
+        browser closes). Raise
+        ``browser_harness.credential_files.CredentialSourceError`` for a missing or
+        refused source: it becomes the status code, ``needs_refresh`` for a
+        missing one.
+        """
+        ...
+
+    def fingerprint(self) -> Optional[str]:
+        """A short string that changes whenever the source changes, or ``None``.
+
+        Called before every agent navigation, bounded at 2 s, so it must be cheap:
+        a file's ``stat`` (``credential_files.source_fingerprint``), never a read.
+        A changed value re-pulls :meth:`cookies` into the live browser before the
+        page loads; ``None`` means "cannot tell" and nothing is re-pulled.
+        """
+        ...
+
+    def status(self) -> Optional[Dict[str, Any]]:
+        """The source's own state for Settings, read after each apply. Never a value.
+
+        ``needs_refresh`` (bool: the person should re-run the sign-in) and
+        ``message`` (edition-authored, shown as-is, at most 200 printable
+        characters). Other keys are ignored. ``None`` for none.
+        """
+        ...
+
+    def default_settings(self) -> Dict[str, Any]:
+        """Edition defaults for an UNSET ``browser.credentials`` key.
+
+        ``{"enabled": bool, "domains": [...]}``; either may be omitted. A value the
+        owner set always wins. ``{}`` leaves the core default: off, no domains.
+        """
+        ...
+
+
 #: The one :class:`ProviderAction` kind: the user must sign in before the
 #: provider can run. The dashboard renders it as a button with ``label``.
 PROVIDER_ACTION_LOGIN = "login"

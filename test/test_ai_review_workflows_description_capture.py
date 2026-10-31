@@ -800,7 +800,7 @@ class TestCaptureDigestNamesTheModelsInput:
         into the hash. The `shasum` fallback lets a reader on a Mac reproduce the
         stamp by hand, which the verdict explicitly invites -- macOS ships no
         `sha256sum`, and this repository already picks between the two the same
-        way in `cli.sh`, `playwright-cli.sh` and `ensure-node.sh`.
+        way in `cli.sh` and `ensure-node.sh`.
 
         The property is per-SITE, not a count. The script takes more than one
         digest -- the captured description, and the manifest that folds in a

@@ -374,54 +374,6 @@ class TestRunChatAutoApproveRungs:
         assert _card_outcomes(slot) == ["rejected"]
 
     @pytest.mark.asyncio
-    async def test_browser_cli_presence_does_not_skip_shell_approval(self, tmp_path, monkeypatch):
-        from kiro_crew.browser_cli import install
-
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-        _set_stream(
-            client,
-            [
-                _permission(
-                    title="Running: playwright-cli snapshot",
-                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
-                ),
-                _complete(),
-            ],
-        )
-        # Pin the capability as present without consulting or touching the host.
-        monkeypatch.setattr(install, "cli_path", lambda: "/agent-writable/playwright-cli")
-
-        with patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0):
-            await _drive(state, slot)
-
-        client.approve_tool.assert_not_awaited()
-        client.reject_tool.assert_awaited_once_with("req-cov-1")
-        assert _card_outcomes(slot) == ["rejected"]
-
-    @pytest.mark.asyncio
-    async def test_browser_cli_explicit_trusted_pattern_still_auto_approves(self, tmp_path):
-        state, client = _runner_state(tmp_path)
-        slot = _slot()
-        slot._trusted_patterns = {"playwright-cli*"}
-        _set_stream(
-            client,
-            [
-                _permission(
-                    title="Running: playwright-cli snapshot",
-                    tool_input=json.dumps({"command": "playwright-cli snapshot"}),
-                ),
-                _complete(),
-            ],
-        )
-
-        await _drive(state, slot)
-
-        client.approve_tool.assert_awaited_once_with("req-cov-1")
-        assert _card_outcomes(slot) == []
-        assert _tool_rows(slot) == ["🔧 Running: playwright-cli snapshot"]
-
-    @pytest.mark.asyncio
     async def test_trusted_pattern_auto_approves_a_matching_command(self, tmp_path):
         state, client = _runner_state(tmp_path)
         slot = _slot()

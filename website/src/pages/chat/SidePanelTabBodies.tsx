@@ -17,7 +17,7 @@ import MarkdownPanel, { type MarkdownPanelHandle } from '../../components/Markdo
 import ArtifactPanel from '../../components/ArtifactPanel'
 import FolderPanel from './FolderPanel'
 import FileBrowserRail from './FileBrowserRail'
-import WebPreviewPanel from '../../components/WebPreviewPanel'
+import PreviewTabBody from '../../components/PreviewTabBody'
 import CliPanel from '../../components/CliPanel'
 import { countLines } from '../../components/FileChangeChips'
 import { useQueryClient } from '@tanstack/react-query'
@@ -332,7 +332,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   const terminalsPending = usePanelTerminalsPending()
   // A restored shell may be gone: connecting before the ruling would spawn a new one.
   if (tab.kind === 'terminal') return terminalsPending ? null : <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} remoteSlot={tab.remoteSlot} chatSlot={slot || undefined} visible={active} onSendToChat={onTerminalSendToChat} />
-  if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
+  // The Preview tab: the local dev-server preview, or the agent's browser big.
+  if (tab.kind === 'browser') return <PreviewTabBody sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
   // Cross-remount scroll identity for document bodies. Same slot+id key shape
   // as the app-frame list: the tab id is unique within a slot and stable in

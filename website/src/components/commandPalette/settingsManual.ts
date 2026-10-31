@@ -294,15 +294,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
-    // Playwright attach token: a credential field with Save/Clear semantics the
-    // SettingsInput primitive has no shape for.
-    id: 'browser.attach-token',
-    labelKey: 'pages.settings.browserPanel.token_label',
-    tab: 'browser',
-    type: 'input',
-    occurrence: 1,
-  },
-  {
     // Color-dot swatch row — circular color buttons don't fit
     // SettingsButtonGroup's text-button pattern (comment at the render site).
     id: 'display.default-for-new-sessions',

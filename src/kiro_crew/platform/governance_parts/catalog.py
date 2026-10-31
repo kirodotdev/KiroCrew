@@ -191,13 +191,15 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
         CAPABILITY, capability_default=True, scope_matchers={"agents": "identifier"}
     ),
     "capabilities.memory_writes": ScopeSpec(CAPABILITY, capability_default=True),
-    # Web browsing (the ``browser`` MCP tool driving the native panel, and the
-    # playwright-cli fallback it points at) is a governable egress surface: an
-    # enterprise policy that denies it must stop the agent browsing on the
-    # native path too, not only the shell ``commands`` path playwright-cli sits
-    # behind. Default True (on) — like memory_writes, an ordinary capability
+    # Web browsing (the ``browser`` MCP tool driving the agent's browser) is a
+    # governable egress surface: an enterprise policy that denies it must stop
+    # the agent browsing through the tool, not only through the shell
+    # ``commands`` path. Default True (on) — like memory_writes, an ordinary capability
     # that is available unless a policy explicitly sets
-    # ``{"capabilities": {"browse": {"enabled": false}}}``.
+    # ``{"capabilities": {"browse": {"enabled": false}}}``. One deny turns the whole
+    # browser off: the gateway asks this row again at every browser route and in the
+    # engine itself (``browser_harness/governance.py``), and
+    # ``GET /api/dashboard/config`` reports it as ``browse_enabled``.
     "capabilities.browse": ScopeSpec(CAPABILITY, capability_default=True),
     # Inner ``events`` ruleset (``identifier`` matcher): which hook trigger events
     # may fire a script hook once the capability is on, by event name --

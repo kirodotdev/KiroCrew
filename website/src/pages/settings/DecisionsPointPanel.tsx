@@ -48,6 +48,9 @@ export interface DecisionsPointPanelProps {
   scopeOffered: boolean
   scopeDisabled: boolean
   onScopeChange: (value: boolean) => void
+  /** `browser.step`'s second scope: screenshots of the agent's tab, off until granted. */
+  browserImages: boolean
+  onBrowserImagesChange: (value: boolean) => void
   /** `model.route`'s tier map, the advertised models, and the labels for both. */
   modelRoute: Record<string, string>
   modelNames: string[]
@@ -82,6 +85,8 @@ export function DecisionsPointPanel({
   scopeOffered,
   scopeDisabled,
   onScopeChange,
+  browserImages,
+  onBrowserImagesChange,
   modelRoute,
   modelNames,
   tierLabel,
@@ -136,6 +141,18 @@ export function DecisionsPointPanel({
           description={scopeDescription}
           checked={scopeGranted}
           onChange={onScopeChange}
+          disabled={scopeDisabled}
+        />
+      )}
+      {/* `browser.step` carries a second, narrower egress switch of its own: images
+          cannot be scrubbed the way the outline is, so screenshots need their own yes.
+          Drawn on the terms the first switch is (consent stands, outlines on). */}
+      {row.id === 'browser.step' && scopeOffered && scopeGranted && (
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images')}
+          description={i18nT('pages.developer.featurePreviewsTab.decisions_browser_images_desc')}
+          checked={browserImages}
+          onChange={onBrowserImagesChange}
           disabled={scopeDisabled}
         />
       )}

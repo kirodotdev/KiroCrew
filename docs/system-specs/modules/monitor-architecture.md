@@ -1270,8 +1270,7 @@ It is read in `mcp_tools/control_parts/schemas.py::schemas()`, which is the only
 read, and read afresh on every build: `mcp_tools.build_tool_list` rebuilds
 descriptors per call rather than caching them, so a Settings write needs no
 gateway restart. It does not reach a session already open, because kiro-cli
-caches a session's tool list for that session's life -- the same limitation
-`mcp_tools/browser.py` records for `dashboard.use_builtin_browser`. A config read
+caches a session's tool list for that session's life. A config read
 that raises resolves to the off position, since off is what ships.
 
 The key deliberately does not make `monitor_start` REFUSE a target the structured

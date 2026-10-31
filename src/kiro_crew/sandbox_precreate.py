@@ -33,7 +33,7 @@ from kiro_crew.sandbox_leaves import (
 #:    * ``memory_stores`` — an empty root declares or provisions no store. The
 #:      gateway can later create named stores inside the directory bind; no
 #:      database, member configuration or Global V1 path is created here;
-#:    * ``playwright-cli`` — an empty dir means the launcher is absent,
+#:    * ``browser-harness`` — an empty dir means the engine is not installed,
 #:      exactly as a missing dir does; its directory bind shows a later gateway
 #:      install while withholding every agent-side write;
 #:    * ``computer_use.json`` — ``computer_use.enable_state.load_state`` reads ``{}``
@@ -102,8 +102,13 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # read-only listing above exists to deny, so without this entry that listing
     # protects only hosts that happen to have the directory already.
     "panel-templates",
-    "playwright-cli",
-    # The KAS engine bundle root, for the ``playwright-cli`` reason: on an install
+    # The Browser Harness prefix: until the owner presses Install in Settings the
+    # directory is absent, the seal is skipped, and the name is one an agent could
+    # create and fill with an interpreter the gateway later executes. An empty
+    # directory reads as "not installed" to ``browser_harness.install.install_state``
+    # exactly as an absent one does.
+    "browser-harness",
+    # The KAS engine bundle root, for the ``browser-harness`` reason: on an install
     # that has never run ``kirocrew kas install`` the directory is absent, and an
     # absent target is a seal skipped and a name the agent may create.
     "engines",
@@ -165,7 +170,7 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 #: half of a control, so none may be satisfied by a link the governed party planted.
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "app-agent-launch",
-    "playwright-cli",
+    "browser-harness",
     "engines",
     "subagents",
     "member-memory-bindings",
@@ -204,9 +209,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "the agent could choose the container image a Fargate launch runs, and the task's "
         "execution role delivers the model credential into it",
     ),
-    "playwright-cli": (
-        "sealed browser runtime",
-        "the agent could replace the browser executable the gateway runs",
+    "browser-harness": (
+        "sealed browser engine",
+        "the agent could replace the Browser Harness interpreter or the Chromium the "
+        "gateway runs against the user's own browser",
     ),
     "engines": (
         "sealed agent engine",
@@ -414,6 +420,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Browser Harness's runtime directory and Kiro's Chromium profile. Both are
+    # created on the FIRST connect (``browser_harness.supervisor``), so a sandbox
+    # spawned before the owner's first browse finds them absent, the
+    # ``sensitive_dirs`` loop skips them, and the socket, the Windows IPC token and
+    # the profile's cookies then appear INSIDE that running sandbox. Materialised
+    # empty at 0700 so the bind has a target from the first spawn.
+    "browser-harness-ipc",
+    "browser-profile",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned

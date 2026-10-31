@@ -198,7 +198,6 @@ DASHBOARD_SETTINGS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "chat.pr-and-issue-chips-on-session-cards": ("session_card_source_links", _BOOL_VALUES),
     "chat.folder-suggestions": ("folder_suggestions_enabled", _BOOL_VALUES),
     "chat.default-memory-mode": ("default_memory_mode", ()),
-    "browser.use-the-built-in-browser": ("use_builtin_browser", _BOOL_VALUES),
 }
 #: Body keys of ``PUT /api/dashboard/config`` a card may write, by key.
 DASHBOARD_KEYS = {key: values for key, values in DASHBOARD_SETTINGS.values()}

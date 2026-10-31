@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import functools
+import importlib
 import logging
 import os
 import socket
@@ -43,11 +44,21 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import BaseTestServer, TestClient, TestServer
 
-from kiro_crew.browser_cli import launch as browser_cli_launch
-from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
-from kiro_crew.browser_cli import token as browser_cli_token
+from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.dashboard import server as srv
 from kiro_crew.testing.wait import async_wait_until
+
+# ``start_dashboard`` imports every built-in app package on its first call, and some
+# of them bind ``config_dir`` by name at import time. The tests below patch
+# ``loader.config_dir`` with a lambda; a package first imported under that patch keeps
+# the lambda after teardown and points later tests in the worker at a dead tmp dir.
+# Import them here, before any patch, so they bind the real function.
+for _builtin_name in BUILTIN_NAMES:
+    try:
+        importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
+    except ModuleNotFoundError as exc:
+        if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
+            raise
 
 requires_unix_socket = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
@@ -314,19 +325,14 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     )
     monkeypatch.setattr(srv.web, "SockSite", _FakeSockSite)
     spies = _neutralise_outside_process_work(monkeypatch)
-    # start_dashboard mutates os.environ directly (browser_cli_snapshots /
-    # browser_cli_token / browser_cli_launch cli_env_overrides()) so descendant
-    # `playwright-cli` invocations inherit them -- real, deliberate production
-    # behavior, not a bug. monkeypatch has no visibility into a raw
-    # os.environ.update(), so snapshot+restore the concrete keys it can touch
-    # here instead. `delenv(raising=False)` on an ABSENT key registers no undo,
+    # start_dashboard mutates os.environ directly (the bound-port evidence
+    # below) -- real, deliberate production behavior, not a bug. monkeypatch has
+    # no visibility into a raw os.environ.update(), so snapshot+restore the
+    # concrete keys it can touch here instead. `delenv(raising=False)` on an ABSENT key registers no undo,
     # so a value production writes afterwards would survive teardown; setenv
     # to "" first records the absence and restores it, and start_dashboard
     # overwrites the placeholder before anything reads it.
     for _leak_key in (
-        browser_cli_snapshots.OUTPUT_DIR_ENV,
-        browser_cli_token.TOKEN_ENV,
-        browser_cli_launch.CONFIG_ENV,
         # The port-reservation boot path exports the reserved socket's name as
         # bound-port evidence before the app-backend pass -- same raw
         # os.environ write, same snapshot+restore need.
@@ -798,9 +804,6 @@ class TestStartDashboardWiring:
             [],
         )[1]
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -868,9 +871,6 @@ class TestStartDashboardWiring:
             [],
         )[1]
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -924,9 +924,6 @@ class TestStartDashboardWiring:
         monkeypatch.setattr(srv, "_start_unix_site", AsyncMock(return_value=None))
         spies = _neutralise_outside_process_work(monkeypatch)
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -981,9 +978,6 @@ class TestStartDashboardWiring:
         if backend_start_side_effect is not None:
             spies["start_enabled_app_backends"].side_effect = backend_start_side_effect
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):
@@ -1102,9 +1096,6 @@ class TestStartDashboardWiring:
         spies = _neutralise_outside_process_work(monkeypatch)
         states = _record_states(monkeypatch)
         for _leak_key in (
-            browser_cli_snapshots.OUTPUT_DIR_ENV,
-            browser_cli_token.TOKEN_ENV,
-            browser_cli_launch.CONFIG_ENV,
             "KIROCREW_BOUND_PORT",
             "KIROCREW_BOUND_HOST",
         ):

@@ -122,10 +122,10 @@ honestly:
   would mean a partial, platform-asymmetric installer for a tool the user can get
   in one command. `/deps` therefore returns a per-OS `hints` command and the user
   runs it. macOS and Windows each name their one conventional manager. On Linux the
-  command is built from what the host has, by the rule the browser installer uses
-  (`browser_cli/os_deps.py`, [browser](browser.md)): the apt family by os-release
+  command is built from what the host has, by the shared host read
+  (`os_release.py`): the apt family by os-release
   lineage, the Fedora/RHEL family with the first of `dnf`, `yum` and `microdnf` that
-  `os_deps.rpm_package_manager` finds on `PATH`. Every other host gets no command
+  `os_release.rpm_package_manager` finds on `PATH`. Every other host gets no command
   rather than a guessed one: Amazon Linux (it packages no LibreOffice), SUSE (its
   manager is `zypper`, even when `dnf` or `yum` is installed there), an unrecognized
   distribution, and an rpm host with none of the three managers on `PATH`. The UI

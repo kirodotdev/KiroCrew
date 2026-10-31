@@ -106,6 +106,14 @@ const INLINE_ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: 
       + 'by data-theme-maxh. It paints ACROSS the top strip, so insetting it would leave an unpainted '
       + 'gap beside the notch, and being click-through it buries no control.',
   },
+  {
+    file: 'src/pages/chat/BrowserLiveCardCanvas.tsx',
+    contains: "position: 'fixed', left: 0, top: 0, width: 1, height: 1",
+    reason:
+      'The takeover typing proxy: a 1x1, opacity-0, pointer-events:none textarea the phone keyboard '
+      + 'types into. It draws nothing and takes no tap, and each tap moves its top to the tap point, '
+      + 'so no safe-area inset applies to it.',
+  },
 ]
 
 /** `.tsx` for components, `.ts` for style modules — a fixed surface styled from

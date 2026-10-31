@@ -1103,11 +1103,12 @@ def test_the_declared_child_reachable_set_is_not_empty() -> None:
 @pytest.mark.parametrize(
     "leaf",
     (
-        # The browser launcher an agent browser command must exec. The governance,
+        # The KAS engine bundle a sandboxed KAS process must exec. The governance,
         # policy and consent documents are NOT here: each is an input to an
         # authorization decision, so they are withheld and the withheld-leaf test
-        # pins them instead.
-        "playwright-cli",
+        # pins them instead. (The browser engine is not here either: the gateway
+        # runs it, no sandboxed child does.)
+        "engines",
     ),
 )
 def test_named_child_reachable_leaves_stay_out_of_every_enforced_mask(backend, leaf) -> None:
