@@ -471,6 +471,9 @@ def test_cli_with_a_failed_policy_exits_before_the_gateway(
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "boot_platform", failed_policy)
+    # Signed in, so the failure is the rules, not the sign-in: it exits as before
+    # (the signed-out start is test_enterprise_signin_gateway.py).
+    monkeypatch.setattr("kiro_crew.enterprise_signin_gateway.signed_in", lambda: True)
     monkeypatch.setattr(cli, "maybe_reexec", lambda _argv: None)
     # Process-wide side effects of a real gateway start that this test skips.
     monkeypatch.setattr(

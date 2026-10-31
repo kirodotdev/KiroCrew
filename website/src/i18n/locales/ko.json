@@ -7349,6 +7349,8 @@
       "enterprise_start_url_label": "조직의 시작 URL",
       "enterprise_start_url_hint": "먼저 입력하세요. 아래 명령에 채워지고 나면 복사할 수 있습니다. AWS 액세스 포털 주소이며 IT 팀이 알고 있습니다.",
       "enterprise_sign_in_aside": "이 게이트웨이를 조직 계정으로 한 번 로그인하면 나머지는 {{productName}}이(가) 처리합니다.",
+      "enterprise_signed_in_restart": "로그인했습니다. {{productName}}을(를) 다시 시작하세요.",
+      "enterprise_start_command_hint": "터미널에서 이것을 실행해 {{productName}}을(를) 시작한 다음 표시되는 링크를 여세요.",
       "relock_ask_owner": "{{productName}} 소유자에게 이 게이트웨이에서 다시 로그인하도록 요청하세요. 로그인하면 이 알림은 자동으로 사라집니다.",
       "relock_enterprise_new_window": "다시 로그인하려면 새 창이나 탭에서 대시보드를 여세요. 로그인 화면에 복사 버튼과 함께 명령이 표시됩니다. 이 창의 작업은 그대로 유지됩니다.",
       "relock_exact_command_hint": "이 게이트웨이는 자체 Kiro CLI 사본을 사용합니다. 다시 로그인하려면 새 창이나 탭에서 대시보드를 여세요. 그 로그인 화면에 정확한 명령이 복사 버튼과 함께 표시됩니다. 이 창의 작업은 그대로 유지됩니다.",

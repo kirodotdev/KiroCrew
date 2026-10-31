@@ -2786,6 +2786,8 @@
       "enterprise_start_url_label": "Your organization's start URL",
       "enterprise_start_url_hint": "Enter it first: the command below fills it in, then you can copy it. It is your AWS access portal address; your IT team has it.",
       "enterprise_sign_in_aside": "Sign this gateway in to your organization's account once, and {{productName}} will take it from here.",
+      "enterprise_signed_in_restart": "Signed in. Start {{productName}} again.",
+      "enterprise_start_command_hint": "Run this in a terminal to start {{productName}}, then open the link it prints.",
       "relock_ask_owner": "Ask the {{productName}} owner to sign this gateway in again. This notice clears once they do.",
       "relock_enterprise_new_window": "To sign in again, open the dashboard in a new window or tab. Its sign-in screen shows the command with a copy button. This window keeps your work.",
       "relock_exact_command_hint": "This gateway uses its own copy of Kiro CLI. To sign in again, open the dashboard in a new window or tab: its sign-in screen shows the exact command with a copy button. This window keeps your work.",

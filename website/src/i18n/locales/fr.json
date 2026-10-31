@@ -7609,6 +7609,8 @@
       "enterprise_start_url_label": "URL de démarrage de ton organisation",
       "enterprise_start_url_hint": "Saisis-la d'abord : la commande ci-dessous la reprend, puis tu peux la copier. C'est l'adresse de ton portail d'accès AWS. Ton équipe informatique l'a.",
       "enterprise_sign_in_aside": "Connecte une fois cette passerelle au compte de ton organisation, et {{productName}} s'occupe du reste.",
+      "enterprise_signed_in_restart": "Connecté. Relance {{productName}}.",
+      "enterprise_start_command_hint": "Exécute ceci dans un terminal pour démarrer {{productName}}, puis ouvre le lien qu'il affiche.",
       "relock_ask_owner": "Demande au propriétaire de {{productName}} de se reconnecter sur cette passerelle. Ce message disparaît dès que c'est fait.",
       "relock_enterprise_new_window": "Pour te reconnecter, ouvre le tableau de bord dans une nouvelle fenêtre ou un nouvel onglet. Son écran de connexion affiche la commande avec un bouton de copie. Cette fenêtre garde ton travail.",
       "relock_exact_command_hint": "Cette passerelle utilise sa propre copie de Kiro CLI. Pour te reconnecter, ouvre le tableau de bord dans une nouvelle fenêtre ou un nouvel onglet : son écran de connexion affiche la commande exacte avec un bouton pour la copier. Cette fenêtre garde ton travail.",

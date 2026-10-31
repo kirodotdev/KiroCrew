@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Download,
   ExternalLink,
+  Loader2,
   Package,
   RefreshCw,
   ShieldCheck,
@@ -23,6 +24,7 @@ import { clearCachedModels } from '../providers/adapters/acp'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import KasLoginGate from './KasLoginGate'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
@@ -1447,6 +1449,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // The enterprise login gate refuses both reads below, and the sign-in screen
   // needs neither, so they wait until it opens.
   const enterpriseLocked = statusQuery.data?.enterprise_login_required === true
+  const signInOnly = statusQuery.data?.enterprise_sign_in_only === true
   const kiroNotReady = !!statusQuery.data && !statusQuery.data.ready && !enterpriseLocked
   const configQuery = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: CONFIG_QUERY_KEY,
@@ -1582,6 +1585,51 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     && statusQuery.error.status === 404
   ) {
     return app()
+  }
+  // Enterprise build, nobody signed in: the gateway is a sign-in-only app that
+  // serves Crew's own sign-in and nothing else. Once a sign-in lands it says so
+  // (`enterprise_signed_in_restart`) and exits; the user starts Kiro Crew again.
+  if (signInOnly) {
+    const starting = i18nT('components.kiroPrerequisiteGate.your_crew_is_almost_ready')
+    const aside = i18nT('components.kiroPrerequisiteGate.enterprise_sign_in_aside')
+    // Shown outside KasLoginGate, whatever it last read, so a sign-in made
+    // elsewhere (the CLI) still reaches it; the cached status keeps it on screen
+    // after the sign-in app has exited.
+    if (prerequisite?.enterprise_signed_in_restart === true) {
+      const done = i18nT('components.kiroPrerequisiteGate.enterprise_signed_in_restart')
+      return (
+        <SetupShell asideHeadline={starting} asideBody={aside}>
+          <div role="status" data-testid="enterprise-signed-in-restart">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent-subtle text-accent">
+              <ShieldCheck className="lucide-inline" />
+            </div>
+            <h1 className="mt-6 text-3xl font-bold tracking-tight text-text-strong">{done}</h1>
+            {prerequisite.enterprise_start_command ? (
+              <>
+                <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+                  {i18nT('components.kiroPrerequisiteGate.enterprise_start_command_hint')}
+                </p>
+                {/* The gateway's own command, a code value, never a catalog string. */}
+                <div className="mt-3" data-testid="enterprise-start-command">
+                  <CopyCommand>
+                    <code>{prerequisite.enterprise_start_command}</code>
+                  </CopyCommand>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </SetupShell>
+      )
+    }
+    return (
+      <KasLoginGate organisationOnly>
+        <SetupShell asideHeadline={starting} asideBody={aside}>
+          <div role="status" aria-label={starting} className="flex justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted" aria-hidden="true" />
+          </div>
+        </SetupShell>
+      </KasLoginGate>
+    )
   }
   // No usable status: either a live gateway error or an unusable body. Both are
   // "we cannot tell". A RETURNING user keeps their dashboard, fully usable —

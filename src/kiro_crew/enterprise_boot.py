@@ -4,7 +4,9 @@ Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
 "Enterprise gate" and D4. In an enterprise build (``edition.is_enterprise()``) the
 gateway checks both before its HTTP server binds, and exits non-zero with a message
 naming what failed and how to fix it. It never serves a locked gateway for a failed
-boot. An ``oss`` build does nothing here.
+boot. The one exception is a ``gateway`` start with nobody signed in: it first
+serves a sign-in-only app (``kiro_crew.enterprise_signin_gateway``), then boots
+again and exits here on any failure. An ``oss`` build does nothing here.
 
 * One sign-in (D4): :func:`kiro_crew.enterprise_sign_in.resolve`, Crew's own vault
   sign-in. The rules fetch reads it first, so the sign-in check and

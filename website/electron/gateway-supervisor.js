@@ -816,6 +816,10 @@ function createGatewaySupervisor({
         KIROCREW_PROJECT_DIR: IS_WIN
           ? resolveProjectDir()
           : path.resolve(dirname, ".."),
+        // Tells a signed-out enterprise gateway to exit with its refusal instead
+        // of serving the browser sign-in screen, which this window cannot open
+        // yet (enterprise_signin_gateway.DESKTOP_GATEWAY_ENV).
+        KIROCREW_DESKTOP_GATEWAY: "1",
         // The kiro-cli staged into the app's resources at build time; spread
         // only when it shipped AND runs on this machine, so an unbundled build,
         // or a bundled copy this host cannot execute, keeps the user's own

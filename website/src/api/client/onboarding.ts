@@ -42,6 +42,15 @@ export interface KiroPrerequisiteStatus {
   /** True when the command ends at `--start-url`: the gateway has no start URL to fill in. */
   enterprise_sign_in_needs_start_url?: boolean
   /**
+   * Enterprise build with nobody signed in: the gateway is a sign-in-only app
+   * that serves Crew's own sign-in and nothing else until a sign-in lands.
+   */
+  enterprise_sign_in_only?: boolean
+  /** Set with `enterprise_sign_in_only` once a sign-in landed: start Kiro Crew again. */
+  enterprise_signed_in_restart?: boolean
+  /** Set with `enterprise_signed_in_restart`: the command that starts Kiro Crew again. */
+  enterprise_start_command?: string
+  /**
    * True when the CLI binary is present and executable but could not be
    * VERIFIED because this host cannot build a sandbox (verification runs the
    * binary inside it). A categorically different condition from a missing
