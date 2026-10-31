@@ -670,6 +670,7 @@ class TestPoolEffortPostClaim:
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         provider, is_new, resumed = await mgr.get_or_create(
             "slot-1",
@@ -709,6 +710,7 @@ class TestPoolEffortPostClaim:
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         with caplog.at_level(logging.WARNING):
             provider, is_new, resumed = await mgr.get_or_create(
@@ -753,6 +755,7 @@ class TestPoolEffortPostClaim:
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
         mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
 
         with caplog.at_level(logging.WARNING):
             provider, is_new, resumed = await mgr.get_or_create(

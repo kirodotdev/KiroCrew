@@ -41,7 +41,7 @@ import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import artifacts as art_mod
-from kiro_crew import security
+from kiro_crew import pinned_fs, security
 from kiro_crew.artifacts import ArtifactError, ArtifactStore
 from kiro_crew.atomic_write import on_event_loop
 from kiro_crew.dashboard.handlers import artifacts as art_handlers
@@ -62,6 +62,12 @@ def linked_root(tmp_path: Path) -> tuple[Path, Path]:
     return real, alias
 
 
+@pytest.fixture(params=[False, True], ids=["native", "unpinned"])
+def write_backend(request, monkeypatch) -> None:
+    if request.param:
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+
+
 def _recorder(monkeypatch) -> list[str]:
     seen: list[str] = []
     real_gate = security.paths.is_sensitive_resolved_path
@@ -78,7 +84,7 @@ class TestHelpersHandTheGateCanonicalPaths:
     """The precondition of ``is_sensitive_resolved_path``, pinned per helper."""
 
     def test_each_helper_asks_about_the_realpath_not_the_spelling(
-        self, tmp_path: Path, linked_root, monkeypatch
+        self, tmp_path: Path, linked_root, monkeypatch, write_backend
     ) -> None:
         real, alias = linked_root
         (real / "sub").mkdir()
@@ -222,7 +228,7 @@ class TestTheDecisionMovedGatesNotVerdicts:
             store._write_bytes(fenced, b"overwritten")
         # Refused means untouched: the payload was not written, not even as a temp.
         assert fenced.read_text(encoding="utf-8") == "secret"
-        assert not (fenced.parent / (fenced.name + ".tmp")).exists()
+        assert not [p for p in fenced.parent.iterdir() if p.name.endswith(".tmp")]
 
         # Conditional, not a blanket break: the sibling still reads and writes.
         assert store._read_text(benign) == "public"
@@ -260,7 +266,7 @@ class TestTheFenceFollowsTheThread:
 
     @pytest.mark.asyncio
     async def test_on_the_event_loop_the_bounded_gate_answers(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, write_backend
     ) -> None:
         # A helper called synchronously from a coroutine runs ON the loop: the
         # pre-resolved gate would resolve its anchors inline there, so the
@@ -283,7 +289,7 @@ class TestTheFenceFollowsTheThread:
 
     @pytest.mark.asyncio
     async def test_off_the_event_loop_the_pre_resolved_gate_answers(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, write_backend
     ) -> None:
         # The same helpers on a worker thread (to_thread / run_in_executor) earn
         # the off-pool gate; the bounded gate is not reached.

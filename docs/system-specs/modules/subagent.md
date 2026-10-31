@@ -4509,7 +4509,8 @@ The mechanism is one extra window plus one env value, applied at three seams:
   `$KIROCREW_SCRATCH` — the one it inherited when it joined a tree, else its
   own allocation. `session_allocation.parent_work_scratch_dir(owner, parent_key)`
   reads the capability off the parent's live provider, never probes a client
-  attribute (`None` when the parent has none).
+  attribute (`None` when the parent has none); session scratch recording uses
+  the same helper.
 - **How a spawn takes it.** `AcpRuntime(shared_scratch=…)` and
   `AcpClient(shared_scratch=…)`, threaded through `AcpProvider` and the `_acp`
   provider factory. `AcpProvider` keeps the value itself, because on the kiro
@@ -4565,6 +4566,66 @@ The mechanism is one extra window plus one env value, applied at three seams:
   spawns with the replacement's own directory — the sessions lose their staged
   files to the tampering, the tree stays on disk unowned for a human, and the
   `_bg` slot is never locked out of a runtime.
+- **A resumed conversation rejoins its tree.** A key whose process ended (a
+  gateway restart, a transient backend exit) used to resume on a fresh
+  allocation, and its old tree, now ownerless, was swept an hour later with the
+  work in it. `get_or_create` awaits `agent_scratch.record_tree` off-loop and
+  attempts best-effort persistence before publishing the session's SID. A failed
+  write logs a warning and the session starts; it may get a fresh tree after a
+  gateway restart, as it did before scratch bindings were persisted. A provider
+  exposing no work tree must durably retire the key's prior binding with
+  `abandon_tree` before publishing its SID.
+  Fresh no-tree starts, including pooled claims and reset successors, skip the
+  retirement write when neither memory nor the persisted index has a binding
+  for the key. The guard checks disk-only bindings after a gateway restart,
+  including reset successors whose resume SID has already been cleared.
+  Retirement screens the managed root from its existing `lstat` result, including
+  Windows name-surrogate tags, instead of probing the name again.
+  The retirement is read back; a failed or missing write rolls allocation back,
+  so a reset followed by a no-tree provider cannot resume the discarded tree
+  after gateway restart. The old directory itself is left on disk.
+  A linked or absent managed root makes retirement a successful no-op: no index
+  is read or written through it. An unreadable real root is not treated as absent.
+  Registration, no-tree retirement and failed-join retirement drain their executor
+  work under the existing allocation registry lock before propagating cancellation,
+  including repeated cancellation. A replacement waits until the old write has
+  finished: a late retirement cannot remove its binding, and a late registration
+  cannot restore a binding it retires. Retirement issues no registration ticket
+  and does not advance the ticket floor beyond the binding it removes.
+  Shutdown and end-of-session fences are
+  checked again after the write attempt. If retirement cannot be persisted, allocation
+  fails closed and names the resolved index path for operator repair or removal. A resume
+  (`resume_sid` set, persistent memory only) reads the binding with `agent_scratch.recorded_tree` as
+  `shared_scratch`; the in-process cache is optional for restart durability.
+  A fresh conversation on a reused key, including a provider switch, starts its own tree. The
+  index is `.trees.json` in the managed root, not `session_map.json`: the root is
+  masked from every sandboxed process, while the session map is agent-writable,
+  and a tree name an agent could rewrite would let it mount another session's
+  directory on its next resume. The sweep removes directories only, so it never
+  touches the index, rows whose tree is gone are dropped on each write, and an
+  update exceeding the 1 MiB read limit leaves the existing index untouched.
+  Live bindings, registration tickets and persistence guards share admission capped at 4096 keys,
+  with keys at most 1024 characters, directory names at most 255, and retained
+  full paths at most 32768. A cached path from a different data home is retired,
+  never remapped by basename under the current root.
+  Admission retires reclaimed bindings and their tickets. A scalar retired-ticket
+  floor refuses delayed writers for unretained keys; retained keys keep their
+  own ticket ordering, including after a failed persistence attempt. A verified
+  matching disk row clears the persistence guard, so retiring a successfully
+  persisted binding preserves other disk-only resumes. Retiring an unresolved
+  guard or refusing admission captures one disk snapshot, bounded by the same
+  1 MiB read limit, with one warning on that transition. The snapshot excludes
+  all live bindings and the affected key; subsequent admissions and refusals
+  remove only their own key. It only shrinks, so rejected keys cannot grow an
+  unbounded tombstone set. Unrelated disk-only resumes keep their trees, while
+  an affected key starts fresh rather than resurrect a persisted predecessor.
+  The snapshot is bound to its original root and never refreshed until gateway
+  restart; a failed snapshot read leaves no disk fallback and logs a warning.
+  Retained bindings still resume normally, and a newer registration can use capacity freed by
+  reclamation. A failed binding write or full admission cap logs a warning and
+  skips persistence without refusing session starts; an in-memory binding alone
+  does not establish restart durability.
+  The artifact store refuses the index on both its read and its write side.
 - **Every process seam is enumerated.** A seam that starts a kiro-cli process
   and forgets `shared_scratch` reproduces the bug with no red test, so
   `test_subagent_shared_scratch.py::TestEveryProcessSpawnSeamIsAccountedFor`

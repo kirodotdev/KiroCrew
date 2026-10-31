@@ -142,6 +142,24 @@ def _path_in_home_dirs(
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
         sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
+        from kiro_crew.config.paths import scratch_root_override_path_hint
+
+        scratch_override = scratch_root_override_path_hint()
+        if scratch_override is not None:
+            from kiro_crew.agent_scratch import TREE_INDEX_FILENAME
+
+            scratch_targets = (
+                {os.path.realpath(os.path.expanduser(scratch_override))}
+                if pre_resolved
+                else _candidate_forms(str(scratch_override))
+            )
+            scratch_parents = {target.casefold() for target in scratch_targets}
+            for cand in candidates:
+                cand_cf = cand.casefold()
+                if (
+                    os.path.basename(cand_cf) == TREE_INDEX_FILENAME or cand_cf.endswith(".tmp")
+                ) and os.path.dirname(cand_cf) in scratch_parents:
+                    return True
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a

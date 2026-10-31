@@ -18,6 +18,39 @@ from kiro_crew.security import is_sensitive_path
 class TestIsSensitivePath:
     """Tests for is_sensitive_path()."""
 
+    @pytest.mark.parametrize("prefix", ["~/.kiro/crew", "~/.kirocrew"])
+    @pytest.mark.parametrize("leaf", [".trees.json", ".TREES.JSON", ".trees.json.tmp"])
+    def test_scratch_index_is_sensitive(self, prefix: str, leaf: str) -> None:
+        assert is_sensitive_path(f"{prefix}/scratch/{leaf}")
+
+    def test_scratch_index_in_relocated_home(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        assert is_sensitive_path(str(tmp_path / "scratch" / ".trees.json"))
+        assert not is_sensitive_path(str(tmp_path / "scratch" / "work" / "notes.txt"))
+
+    @pytest.mark.parametrize("leaf", [".trees.json", "tmpabcdefgh.tmp", ".0123456789abcdef.tmp"])
+    def test_scratch_index_in_windows_relocated_root(self, tmp_path, monkeypatch, leaf) -> None:
+        from kiro_crew import agent_scratch
+        from kiro_crew.config import paths
+
+        home = tmp_path / "home"
+        root = tmp_path / "relocated-scratch"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("KIROCREW_HOME", str(home / "crew"))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", root.name)
+        monkeypatch.setattr(paths.sys, "platform", "win32")
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        assert agent_scratch.scratch_root() == root.resolve()
+        moved_cwd = tmp_path / "other-cwd"
+        moved_cwd.mkdir()
+        monkeypatch.chdir(moved_cwd)
+        assert is_sensitive_path(str(root / leaf))
+        assert not is_sensitive_path(str(root / "work" / leaf))
+        assert not is_sensitive_path(str(root / "notes.txt"))
+        assert not is_sensitive_path(str(root / (agent_scratch.TREE_INDEX_FILENAME + ".other")))
+
     def test_aws_credentials(self) -> None:
         assert is_sensitive_path("~/.aws/credentials") is True
 

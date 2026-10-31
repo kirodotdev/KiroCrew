@@ -160,8 +160,8 @@ _SENSITIVE_HOME_DIRS: list[str] = [
 # one leaf list means a new secret is added once and covered in both locations.
 _CREW_HOME_PREFIXES: tuple[str, ...] = (".kiro/crew", ".kirocrew")
 
-
 _CREW_SECRET_LEAVES: list[str] = [
+    "scratch/.trees.json",  # Reads expose other trees; writes remap resumes.
     # Gateway diagnostics, for the reason the sandbox mask gives: the rows carry
     # frame labels, folded stacks and process detail, and the owner-gated read
     # routes redact them on the way out while the files themselves do not. A file

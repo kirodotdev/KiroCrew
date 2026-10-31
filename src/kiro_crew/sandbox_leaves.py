@@ -211,6 +211,7 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # as a second such window, so ``$KIROCREW_SCRATCH`` names one place for the
     # whole tree. Siblings from other trees stay hidden either way.
     "scratch",
+    "scratch/.trees.json",
     # The cross-process work root (``work_root``): ``<home>/work/<key>``, for
     # state that must OUTLIVE the process that created it. Masked as a whole and
     # given NO window, which is the difference from ``scratch`` above: the only

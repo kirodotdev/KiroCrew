@@ -1621,6 +1621,30 @@ to this kind would store content no reader can parse.
   match but raised with the producer's own "could not be verified" wording.
   The file-backed `source_path` pointers stay on the bounded
   `security.is_sensitive_path()` and fall back to the snapshot silently.
+- **Scratch tree index** — `agent_scratch`'s `.trees.json` maps session keys to
+  their scratch work trees, so a read would expose every tree name and a write
+  would remap the next resume onto another conversation's directory. It is
+  refused on both sides of this store's boundary through the existing sensitive-path
+  mechanism: `security/paths_lists.py` declares `scratch/.trees.json` as a crew-home
+  sensitive leaf, including relocated homes, links, case aliases and publish temps.
+  Both the path and descriptor gates use this shared declaration through
+  `_fence_refuses` as well as `_fence_refusal`, which is what covers the
+  descriptor: `pinned_fs.open_fenced_for_read` asks that predicate about the
+  kernel's path for the inode it actually opened, so an ancestor swapped between
+  the judged name and the open is refused on the inode reached rather than on the
+  name judged. Snapshot writes pin the judged parent once (`pinned_fs.pin_parent`)
+  and stage into a fresh, unpredictable temp name created `O_CREAT|O_EXCL`
+  relative to that descriptor, then rename it, so neither the same swap nor a
+  link planted at a staging name can redirect a publish onto the index; an
+  exclusive create never opens an existing entry, so this holds on Windows too.
+  The Windows fallback holds `platform_compat.pinned_directory` through staging
+  and replacement, reporting a link or non-directory refusal as `ArtifactError`.
+  It rechecks the canonical destination against the fence only when the pinned
+  parent's real path differs from the judged one. Its non-share-delete handle
+  prevents parent swaps.
+  Live source reads and writes also refuse the index at the hooks
+  canonical-path gate and on the opened descriptor, so re-resolution cannot
+  bypass the fence.
 - **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
   points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable
@@ -1644,6 +1668,8 @@ to this kind would store content no reader can parse.
   loaded companion's extra credential/cookie regexes apply to the audit trail.
 - **Atomic writes** — `_write_text()` writes to a `.tmp` sibling and renames,
   so a crash mid-write cannot corrupt `current.html` or `meta.json`.
+  Cleanup of a leftover legacy staging file is best-effort: an `OSError` is logged
+  at debug level and does not fail a save whose replacement already published.
 - **Tolerant load** — `ArtifactStore._read_meta_file()` hands the parsed file to
   `decode_meta` in `kiro_crew.artifact_store.records`, which ignores unknown keys
   and supplies defaults for missing keys, so future schema additions don't break

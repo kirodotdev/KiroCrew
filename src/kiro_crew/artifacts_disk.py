@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
@@ -198,16 +199,20 @@ def _open_pinned_for_read(resolved: Path) -> int:
     )
 
 
-def _owner_only_tmp_opener(path: str, flags: int) -> int:
-    """:func:`_owner_only_opener` for a fixed-name ``.tmp`` that a crash can leave behind.
+def _owner_only_tmp_opener(path: str, flags: int, *, dir_fd: int | None = None) -> int:
+    """:func:`_owner_only_opener` for a write's staging ``.tmp``, narrowed to ``0600``.
 
-    ``os.open`` applies the mode only when it creates the file, so a ``.tmp`` an
-    earlier version left at ``0644`` would be truncated, reused and then
-    published at that mode by the rename. The descriptor belongs to this write
-    alone (no lock is ever taken on a ``.tmp``), so it is narrowed here before
-    any byte is written.
+    The staging name is fresh and created ``O_EXCL`` (:func:`_write_tmp_then_publish`),
+    so the mode applies at creation; the narrowing below still holds the
+    ``0600`` promise should an opener ever be handed an existing file. The
+    descriptor belongs to this write alone (no lock is ever taken on a ``.tmp``),
+    so it is narrowed before any byte is written. *dir_fd* anchors the open to
+    the writer's pinned parent.
     """
-    fd = _owner_only_opener(path, flags)
+    if dir_fd is None:
+        fd = _owner_only_opener(path, flags)
+    else:
+        fd = os.open(path, flags, 0o600, dir_fd=dir_fd)
     if not platform_compat.IS_POSIX:
         return fd
     try:
@@ -271,38 +276,137 @@ def _sync_before_publish(fh: Any) -> None:
 
 
 def _write_tmp_then_publish(
-    tmp: Path,
     resolved: Path,
     write_body: Callable[[Any], None],
     mode: str,
     **open_kwargs: Any,
 ) -> None:
-    """Write *tmp*, sync it to the device, then rename it onto *resolved*.
+    """Write a fresh staging file, sync it to the device, then rename it onto *resolved*.
 
     The temp file is the write's alone; nothing publishes it until the rename, so
     a failure before the rename must not leave it behind. A writeback error
     reported at ``fsync`` (:func:`_sync_before_publish`) is exactly such a
     failure: on a full disk the sync raises, the rename is skipped, and the
-    half-written ``meta.json.tmp`` would otherwise sit on a disk that is already
+    half-written temp file would otherwise sit on a disk that is already
     out of room. Unlink it on any error before the rename, best-effort -- the
     original error is what the caller must see, so a failure to clean up is
     swallowed.
+
+    Where the platform can pin (:func:`pinned_fs.supports_pinned_walk`), the
+    parent the caller judged is pinned ONCE, and the temp file's creation and the
+    rename both run relative to that descriptor. Addressing them by name re-walked
+    every ancestor twice after the fence and the root check had answered, so an
+    agent that swapped a directory inside its artifact for a link to the scratch
+    root between the two published the write over the tree index. The kernel's
+    own path for the pinned parent is asked of :func:`_fence_refuses` whenever it
+    differs from the judged one, as the read side does.
+
+    The staging name is unpredictable (``atomic_write_at``'s ``.<name>.<random>.tmp``
+    shape) and created ``O_CREAT|O_EXCL`` on every platform. A fixed
+    ``<name>.tmp`` in an agent-writable directory let a link planted there be
+    followed and truncated -- onto the tree index -- and ``O_NOFOLLOW`` only
+    refused that where the platform has it, which Windows does not. An exclusive
+    create never opens an existing entry, link or reparse point included, so it
+    holds on every platform; a planted name fails the write instead.
+    """
+    opener = open_kwargs.pop("opener", None)
+    exclusive = os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    tmp_name = f".{resolved.name}.{os.urandom(8).hex()}.tmp"
+    legacy_tmp = f"{resolved.name}.tmp"
+    if not pinned_fs.supports_pinned_walk():
+        try:
+            parent_pin = platform_compat.pinned_directory(resolved.parent)
+        except OSError as exc:
+            if exc.errno not in (_errno.ELOOP, _errno.ENOTDIR):
+                raise
+            raise ArtifactError(
+                f"refusing to write the artifact store file: the directory {resolved.parent!s} "
+                "is a link or not a directory"
+            ) from exc
+        with parent_pin:
+            pinned_parent = resolved.parent.resolve(strict=True)
+            if os.path.normcase(str(pinned_parent)) != os.path.normcase(str(resolved.parent)):
+                if _fence_refuses(pinned_parent / resolved.name):
+                    raise ArtifactError(f"refusing to write sensitive path: {pinned_parent}")
+            tmp = resolved.parent / tmp_name
+            by_name = opener or (lambda path, flags: os.open(path, flags, 0o666))
+            try:
+                with open(
+                    tmp, mode, opener=lambda p, f: by_name(p, f | exclusive), **open_kwargs
+                ) as fh:
+                    write_body(fh)
+                    _sync_before_publish(fh)
+                tmp.replace(resolved)
+                legacy = resolved.parent / legacy_tmp
+                _drop_legacy_tmp(legacy.lstat, legacy.unlink)
+            except FileExistsError:
+                raise  # the name is not ours: never unlink what this write did not create
+            except BaseException:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                raise
+        return
+
+    dir_fd = pinned_fs.pin_parent(
+        str(resolved.parent), what="artifact store file", refusal=ArtifactError
+    )
+    try:
+        pinned_real = pinned_fs.fd_real_path(dir_fd)
+        if pinned_real is None:
+            raise ArtifactError(f"refusing to write an unverifiable directory: {resolved.parent}")
+        if os.path.normcase(pinned_real) != os.path.normcase(str(resolved.parent)):
+            if _fence_refuses(Path(pinned_real) / resolved.name):
+                raise ArtifactError(f"refusing to write sensitive path: {pinned_real}")
+
+        def at_parent(path: str, flags: int) -> int:
+            if opener is None:
+                return os.open(path, flags | exclusive, 0o666, dir_fd=dir_fd)
+            return opener(path, flags | exclusive, dir_fd=dir_fd)
+
+        try:
+            with open(tmp_name, mode, opener=at_parent, **open_kwargs) as fh:
+                write_body(fh)
+                _sync_before_publish(fh)
+            os.replace(tmp_name, resolved.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except FileExistsError:
+            raise  # the name is not ours: never unlink what this write did not create
+        except BaseException:
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except OSError:
+                pass
+            raise
+        _drop_legacy_tmp(
+            lambda: os.stat(legacy_tmp, dir_fd=dir_fd, follow_symlinks=False),
+            lambda: os.unlink(legacy_tmp, dir_fd=dir_fd),
+        )
+    finally:
+        os.close(dir_fd)
+
+
+def _drop_legacy_tmp(lstat: Callable[[], os.stat_result], unlink: Callable[[], None]) -> None:
+    """Remove a regular ``<name>.tmp`` an earlier version staged through.
+
+    A crash there could leave earlier content at the umask's mode, and the
+    random staging name above never opens it again. Only a regular file is
+    that leftover; a link planted at the name is not this store's and is left
+    alone. Neither call follows a link, so a swap between them is harmless.
     """
     try:
-        with open(tmp, mode, opener=open_kwargs.pop("opener", None), **open_kwargs) as fh:
-            write_body(fh)
-            _sync_before_publish(fh)
-    except BaseException:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-    tmp.replace(resolved)
+        if stat.S_ISREG(lstat().st_mode):
+            unlink()
+    except OSError:
+        logger.debug("artifacts: could not remove a legacy staging file", exc_info=True)
 
 
-def _prepare_store_write(resolved: Path, *, owner_only: bool) -> Callable[[str, int], int] | None:
-    """Create *resolved*'s parent and return the opener for its tmp file."""
+def _prepare_store_write(resolved: Path, *, owner_only: bool) -> Callable[..., int] | None:
+    """Create *resolved*'s parent and return the opener for its tmp file.
+
+    The opener takes ``(path, flags, *, dir_fd=None)``: the pinned publish in
+    :func:`_write_tmp_then_publish` anchors it to the parent it pinned.
+    """
     if owner_only:
         _mkdirs_owner_only(resolved.parent)
         return _owner_only_tmp_opener
@@ -513,12 +617,11 @@ def _write_text(self: ArtifactStore, path: Path, text: str) -> None:
         raise ArtifactError(reason)
     self._refuse_write_outside_root(path, resolved)
     # Atomic write: tmp file + rename. Inside the data home the tmp is 0600
-    # before the first byte is written (created so, or narrowed when a crash
-    # left one behind), so the published file is never readable by others.
+    # before the first byte is written (created so, exclusively, under a fresh
+    # name), so the published file is never readable by others.
     opener = _prepare_store_write(resolved, owner_only=self._owner_only)
-    tmp = resolved.with_suffix(resolved.suffix + ".tmp")
     _write_tmp_then_publish(
-        tmp, resolved, lambda fh: fh.write(text), "w", encoding="utf-8", opener=opener
+        resolved, lambda fh: fh.write(text), "w", encoding="utf-8", opener=opener
     )
 
 
@@ -613,8 +716,7 @@ def _write_bytes(self: ArtifactStore, path: Path, data: bytes) -> None:
         raise ArtifactError(reason)
     self._refuse_write_outside_root(path, resolved)
     opener = _prepare_store_write(resolved, owner_only=self._owner_only)
-    tmp = resolved.with_suffix(resolved.suffix + ".tmp")
-    _write_tmp_then_publish(tmp, resolved, lambda fh: fh.write(data), "wb", opener=opener)
+    _write_tmp_then_publish(resolved, lambda fh: fh.write(data), "wb", opener=opener)
 
 
 def _prune_versions(self: ArtifactStore, slug: str) -> None:
