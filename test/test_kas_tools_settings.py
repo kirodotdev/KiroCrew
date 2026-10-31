@@ -97,6 +97,20 @@ class TestTranslation:
             "execute_bash.deniedCommands"
         ]
 
+    @pytest.mark.parametrize("regex", [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*"])
+    def test_a_deny_aimed_at_a_redirect_travels_but_is_named(self, regex):
+        # KAS matches a shell glob against the command's words, never a redirect
+        # or its target, so the deny cannot stop `echo x > f`: it still travels
+        # (it stops the character inside a word) and is named as not carried.
+        settings = {"execute_bash": {"deniedCommands": [regex]}}
+        assert _rules(settings) == [
+            {"capability": "shell", "match": [_regex_to_glob(regex)], "effect": "deny"}
+        ]
+        assert _lost(settings) == ["execute_bash.deniedCommands"]
+
+    def test_a_deny_without_a_redirect_is_not_named(self):
+        assert _lost({"shell": {"deniedCommands": ["git push .*", "rm -rf .*"]}}) == []
+
     def test_a_bare_path_also_denies_its_subtree(self):
         # KAS globs match a path exactly, so a bare directory gets a `/**` twin.
         assert _rules({"read": {"deniedPaths": ["~/.ssh", "~/.aws/", "~/k/*"]}}) == [

@@ -320,7 +320,7 @@ export function libraryView<
 }
 
 /** name → new version for every registry row with an update available. */
-function buildUpdateMap(
+export function buildUpdateMap(
   registry: readonly UpdatableRegistryRow[],
 ): Map<string, string> {
   return new Map(registry.filter(r => r.updateAvailable).map(r => [r.name, r.version]))

@@ -208,7 +208,11 @@ export function useSessionChoices({
     const n = store.getState().notifications.items.find(x => x.approval_id === aid)
     if (n) dispatch(removeNotificationByTs(n.ts))
   }, [activeSlot, dispatch])
-  const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template') => {
+  // Resolves `true` once the switch landed (or was held as the pending pick of a
+  // chat not created yet), `false` when it was refused: the refusal is already
+  // shown as the shared notice, so a caller only needs the answer to know
+  // whether to finish what it started.
+  const switchAgent = useCallback(async (agentName: string, kind?: 'member' | 'template'): Promise<boolean> => {
     if (!activeSlot) {
       setPendingAgent(agentName, kind)
       // Clear any explicit pick made for the PREVIOUS agent rather than
@@ -216,7 +220,7 @@ export function useSessionChoices({
       // `model`, which lets the backend resolve the new agent's own chain at
       // create time. Seeding the resolved id here pinned it instead (#2035).
       setPendingModel('')
-      return
+      return true
     }
     dispatch(setAgentSwitchNotice(null))
     try {
@@ -227,11 +231,13 @@ export function useSessionChoices({
       // The cold effort answer was judged on the previous crew's model; without
       // this it holds until the next poll, up to 30 s once the poll backs off.
       void queryClient.invalidateQueries({ queryKey: ['slot-selection-capabilities', activeSlot] })
+      return true
     } catch (error) {
       // Closing the picker is the call sites' job and already happens
       // synchronously alongside this call, so a failure surfaces as the shared
       // notice rather than by holding the dropdown open.
       dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agentName)))
+      return false
     }
     // The setPending* setters are useState setters, so they are stable and cost
     // nothing to list, as is `queryClient`. `installedAgents` and `provider` are

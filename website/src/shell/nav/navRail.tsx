@@ -1,5 +1,6 @@
 import { surfaceLabel } from '../../surfaces/registry'
 import { SortableAppNavRow, NavToggle } from './appRail'
+import { AppRailMenu } from './appRailMenu'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { FOCUS_INSET } from '../../hooks/useFocusMode'
 import { Coins, Compass, LayoutGrid, SquareTerminal, Smartphone, Search as SearchIcon } from 'lucide-react'
@@ -230,15 +231,23 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               const sortableRows = overflowing ? visible.slice(0, APPS_NAV_LIMIT) : visible
               const pulledInRows = overflowing ? visible.slice(APPS_NAV_LIMIT) : []
               const activeApp = activeAppDragId ? fullList.find(n => n.id === activeAppDragId) : null
+              const dragActive = activeAppDragId !== null
               return (<>
               <DndContext sensors={appDndSensors} collisionDetection={closestCenter} onDragStart={handleAppDragStart} onDragEnd={handleAppDragEnd} onDragCancel={handleAppDragCancel}>
                 <SortableContext items={sortableRows.map(n => n.id)} strategy={verticalListSortingStrategy}>
                   {sortableRows.map(n => (
-                    <SortableAppNavRow key={n.id} id={n.id}>{renderNavRow(n)}</SortableAppNavRow>
+                    <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
+                      <div role="presentation"><SortableAppNavRow id={n.id}>{renderNavRow(n)}</SortableAppNavRow></div>
+                    </AppRailMenu>
                   ))}
                 </SortableContext>
                 {/* Pulled-in active overflow row(s): static, non-draggable. */}
-                {pulledInRows.map(n => <div key={n.id} role="presentation">{renderNavRow(n)}</div>)}
+                {pulledInRows.map(n => (
+                  <AppRailMenu key={n.id} row={n} dragActive={dragActive}>
+                    <div role="presentation">{renderNavRow(n)}</div>
+                  </AppRailMenu>
+                ))}
+                {/* The ghost has no menu because it is a second rendering of the dragged row. */}
                 <DragOverlay>{activeApp ? renderNavRow(activeApp) : null}</DragOverlay>
               </DndContext>
               {/* Show the toggle whenever the list is collapsible, NOT only when

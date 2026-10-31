@@ -12,22 +12,25 @@ import { setCrewModeCatalog } from '../../../lib/crewMode'
 import type { ChatSlot } from '../../../types'
 import { useCrewModeSwitch } from './crewModeSwitch'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
+import { dropPanelViews, type ViewKind } from '../../../hooks/usePanelTabs'
+import { closeActivityPanel } from '../../../store/chatSlice'
 
 const mobile = vi.hoisted(() => ({ value: false }))
 vi.mock('../../../hooks/useIsMobile', () => ({ useIsMobile: () => mobile.value }))
+vi.mock('../../../hooks/usePanelTabs', async importOriginal => ({ ...await importOriginal<object>(), dropPanelViews: vi.fn() }))
 
 const plain = (key: string, agent = 'default'): ChatSlot => ({ key, agent, agent_kind: 'template', memory_mode: 'persistent', origin: 'user' } as unknown as ChatSlot)
 
-function setup() {
-  const pending: Array<{ resolve: () => void }> = []
-  const switchAgent = vi.fn((_agent: string) => new Promise<void>(resolve => { pending.push({ resolve }) }))
+function setup(openView: (kind: ViewKind) => void = () => {}) {
+  const pending: Array<{ resolve: (ok?: boolean) => void }> = []
+  const switchAgent = vi.fn((_agent: string) => new Promise<boolean>(resolve => { pending.push({ resolve: (ok = true) => resolve(ok) }) }))
   const store = createTestStore()
   const wrapper = ({ children }: { children: ReactNode }) => <Provider store={store}>{children}</Provider>
   const hook = renderHook(
-    ({ slot }: { slot: ChatSlot }) => useCrewModeSwitch({ currentSlot: slot, defaultAgent: 'default', hasUserMessage: false, switchAgent, openView: () => {} }),
+    ({ slot }: { slot: ChatSlot }) => useCrewModeSwitch({ currentSlot: slot, defaultAgent: 'default', hasUserMessage: false, switchAgent, openView }),
     { wrapper, initialProps: { slot: plain('a') } },
   )
-  return { hook, pending, switchAgent }
+  return { hook, pending, switchAgent, store }
 }
 
 describe('useCrewModeSwitch pending switches', () => {
@@ -66,6 +69,74 @@ describe('useCrewModeSwitch pending switches', () => {
     expect(hook.result.current.crewModeSwitching).toBe('off')
     await act(async () => { pending[0].resolve() })
     expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+})
+
+describe('useCrewModeSwitch turning Ultra Mode off', () => {
+  beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
+  afterEach(() => setCrewModeCatalog(undefined, undefined))
+
+  // Ultra Mode turned on in a closed panel, so turning it off again closes the panel.
+  const turnedOn = async () => {
+    const s = setup(vi.fn<(kind: ViewKind) => void>())
+    act(() => { s.hook.result.current.turnOnCrewMode() })
+    await act(async () => { s.pending[0].resolve() })
+    s.hook.rerender({ slot: plain('a', 'kirocrew-conductor') })
+    expect(s.store.getState().chat.activityOpen).toBe(true)
+    return s
+  }
+
+  it('keeps the Crew and Dashboard tabs and the panel when the switch back fails', async () => {
+    const { hook, pending, store } = await turnedOn()
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    await act(async () => { pending[1].resolve(false) })
+    expect(dropPanelViews).not.toHaveBeenCalled()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    expect(hook.result.current.crewModeSwitching).toBeNull()
+  })
+
+  it('drops both tabs and closes the panel once the switch back lands', async () => {
+    const { hook, pending, store } = await turnedOn()
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    // Not before the switch has landed.
+    expect(dropPanelViews).not.toHaveBeenCalled()
+    expect(store.getState().chat.activityOpen).toBe(true)
+    await act(async () => { pending[1].resolve(true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('leaves the panel open when the person moved to another chat before the switch landed', async () => {
+    const { hook, pending, store } = await turnedOn()
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    hook.rerender({ slot: plain('b') })
+    await act(async () => { pending[1].resolve(true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it('leaves the panel open when the page unmounted before the switch landed', async () => {
+    const { hook, pending, store } = await turnedOn()
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    hook.unmount()
+    await act(async () => { pending[1].resolve(true) })
+    expect(dropPanelViews).toHaveBeenCalledWith('a', ['workers', 'command-center'])
+    expect(store.getState().chat.activityOpen).toBe(true)
+  })
+
+  it("keeps chat B's closed panel to restore when chat A's switch back lands meanwhile", async () => {
+    const { hook, pending, store } = await turnedOn()
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    // On chat B, with its panel closed, turn Ultra Mode on before A's switch lands.
+    hook.rerender({ slot: plain('b') })
+    act(() => { store.dispatch(closeActivityPanel()) })
+    act(() => { hook.result.current.turnOnCrewMode() })
+    await act(async () => { pending[1].resolve(true) })
+    await act(async () => { pending[2].resolve(true) })
+    hook.rerender({ slot: plain('b', 'kirocrew-conductor') })
+    act(() => { hook.result.current.turnOffCrewMode?.() })
+    await act(async () => { pending[3].resolve(true) })
+    expect(store.getState().chat.activityOpen).toBe(false)
   })
 })
 

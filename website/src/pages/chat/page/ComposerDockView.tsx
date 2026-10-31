@@ -195,7 +195,7 @@ interface ComposerDockViewProps {
   send: ReturnType<typeof useComposerSend>['send']
   pickModel: (modelName: string) => void
   setProject: (path: string) => Promise<void>
-  switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
+  switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<boolean>
   currentSlot: ChatSlot | undefined
   activeFolderName: string
   anchorSessionControl: (rect: DOMRect, trigger?: HTMLElement | null) => void

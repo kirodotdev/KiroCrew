@@ -21,6 +21,10 @@ logger = logging.getLogger("kiro_crew.config.loader")
 #: keeps its own allowance above it, so a build never outwaits the embed it joined.
 STARTUP_RECALL_TIMEOUT_MAX_SECS = 10.0
 
+#: Floor of ``memory.history_idle_hours`` on load: the same 0.5 hours the dashboard's
+#: settings write clamps to, so a hand-edited file cannot go lower.
+HISTORY_IDLE_HOURS_MIN = 0.5
+
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 

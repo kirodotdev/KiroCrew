@@ -38,7 +38,8 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   defaultAgent: string
   /** The chat's transcript has a user message: Crew Mode can no longer be turned off. */
   hasUserMessage: boolean
-  switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<void>
+  /** Resolves `false` when the switch was refused (it shows its own notice). */
+  switchAgent: (agentName: string, kind?: 'member' | 'template') => Promise<boolean>
   /** The side panel's view opener (`usePanelTabs().openView`). */
   openView: (kind: ViewKind) => void
 }) {
@@ -76,7 +77,16 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
   // notice) the chat never turned on and its chips come back.
   const [turningOn, setTurningOn] = useState<ReadonlySet<string>>(EMPTY)
   const activityOpen = useAppSelector(s => s.chat.activityOpen)
-  const panelWasClosed = useRef(false)
+  // The chats whose turn-on found the panel closed, by slot key: a switch that
+  // lands for one chat must not clear another chat's flag.
+  const panelWasClosed = useRef<Set<string>>(new Set())
+  // The chat on screen now, read when a switch settles after the person may have moved on.
+  const shownKey = useRef<string | undefined>(currentSlot?.key)
+  // Cleared on unmount: a switch that lands after the page has gone shows no chat.
+  useEffect(() => {
+    shownKey.current = currentSlot?.key
+    return () => { shownKey.current = undefined }
+  }, [currentSlot?.key])
   // entering an Ultra Mode root (new or existing) opens the side
   // panel on the Crew tab, once per visit. Not on a phone: there the panel is
   // a sheet over the chat, and a phone always lands on the chat.
@@ -104,7 +114,8 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     // (SidePanel pins it first). Remember whether it was closed, so turning
     // Ultra Mode off again before the first message puts it back.
     if (taskBoardOffered) {
-      panelWasClosed.current = !activityOpen
+      if (activityOpen) panelWasClosed.current.delete(currentSlot.key)
+      else panelWasClosed.current.add(currentSlot.key)
       dispatch(openActivityPanel())
       // The Dashboard tab still opens as before; Crew (pinned first) is in front.
       openView('command-center')
@@ -131,9 +142,15 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     if (!crewModeCancellable || !currentSlot) return
     const key = currentSlot.key
     setTurningOff(set => withKey(set, key))
-    if (panelWasClosed.current) { dispatch(closeActivityPanel()); panelWasClosed.current = false }
-    dropPanelViews(key, ['workers', 'command-center'])
-    void switchAgent(defaultAgent || 'kirocrew', 'template').finally(() => setTurningOff(set => withoutKey(set, key)))
+    // The Crew and Dashboard tabs go only once the switch has landed: a refused
+    // switch (shown as its own notice) leaves the chat in Ultra Mode, and it
+    // keeps its tabs. The panel closes only if this chat is still the one on
+    // screen, since the panel is shared by every chat.
+    void switchAgent(defaultAgent || 'kirocrew', 'template').then(ok => {
+      if (!ok) return
+      if (panelWasClosed.current.delete(key) && shownKey.current === key) dispatch(closeActivityPanel())
+      dropPanelViews(key, ['workers', 'command-center'])
+    }).finally(() => setTurningOff(set => withoutKey(set, key)))
   }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
   return {
     crewModeEligible, crewModeOn, crewModeChosen, crewModeLeaving, crewModeSwitching, turnOnCrewMode,
