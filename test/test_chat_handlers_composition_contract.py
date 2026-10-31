@@ -851,7 +851,7 @@ turn_stop | api_chat_slot_stop | async function | (request: 'web.Request') -> 'w
 turn_stop | api_chat_slot_interrupt | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | api_chat_slot_continue | async function | (request: 'web.Request') -> 'web.Response'
 continue_turn | SlotContinueRefusal | class
-continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
+continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, allow_restored_queue: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
 continue_turn | session_start_failure_streak | function | (messages: 'list[dict]') -> 'int'
 continue_turn | _is_stop_event | function | (m: 'dict') -> 'bool'
 continue_turn | _is_interrupted | function | (slot: '_ChatSlot') -> 'bool'

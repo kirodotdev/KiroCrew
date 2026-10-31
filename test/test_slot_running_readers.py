@@ -150,6 +150,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
+                # "Run this next" starts the chosen restored card itself only on
+                # an unreserved slot; a reserved one drains it at the turn's end.
+                ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
                 # The model route's transaction; the in-turn /model <id> on KAS shares it.
                 ("chat_api/slot_model.py", "switch_slot_model"),
                 ("chat_api/slot_note.py", "api_chat_slot_note"),

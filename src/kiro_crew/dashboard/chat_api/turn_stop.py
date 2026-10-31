@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     import time
 
     from kiro_crew.dashboard.chat_handlers import (
+        RESTORED_QUEUE_KEY,
+        RESTORED_SEND_CHOSEN_KEY,
         DashboardState,
         _app_cancel_denied,
         _ChatSlot,
@@ -864,6 +866,60 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     )
 
 
+async def _start_chosen_restored_card(
+    state: DashboardState,
+    slot: _ChatSlot,
+    name: str,
+    request: web.Request,
+    queue_id: str,
+    claim_generation: int,
+) -> bool:
+    """Start the restored card this "run this next" chose, when nothing else will.
+
+    The turn's own end drain holds every restored card the user has not sent.
+    When that turn finishes while this handler is still reading the request
+    body, its drain has already run past the card before the card was marked
+    chosen, and the stop then finds nothing to stop. Without this, the click
+    answers 200 and the chosen card waits forever.
+
+    Starts only the exact card named, only while it is still at the front and
+    marked chosen, and only when the slot is idle, unreplaced and no later stop
+    has moved the stop generation. Re-authorizes the session under the dispatch
+    lock like the idle-interrupt path.
+    """
+
+    def _still_ours() -> bool:
+        queue = getattr(slot, "_queue", None) or []
+        head = queue[0] if queue else None
+        return (
+            slot._stop_generation == claim_generation
+            and not slot.running
+            and slot._stop_state == "idle"
+            and isinstance(head, dict)
+            and head.get("id") == queue_id
+            and bool(head.get(RESTORED_SEND_CHOSEN_KEY))
+        )
+
+    # A turn still running drains the chosen card itself when it ends.
+    if not _still_ours():
+        return False
+    async with slot._lock:
+        if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_interrupt"):
+            return False
+        if not _still_ours() or slot._turn_admission_reserved or slot.is_closing:
+            return False
+        if _app_cancel_denied(request, slot, "chat_interrupt", effective_session_key(slot)):
+            return False
+        slot._turn_admission_reserved = True
+        try:
+            started = await _start_next_queued_turn(state, slot, required_queue_id=queue_id)
+        finally:
+            slot._turn_admission_reserved = False
+    if started:
+        state.push_slots_update()
+    return started
+
+
 async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/interrupt — run a selected queued message.
 
@@ -1007,7 +1063,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             outcome="noop",
             metadata={"slot": name, "reason": "stop already in progress"},
         )
-        return web.json_response({"ok": True, "info": "stop already in progress"})
+        # The body is never read, so no card is promoted: ``queue_selected``
+        # tells the client to release the card it latched for this press.
+        return web.json_response(
+            {"ok": True, "info": "stop already in progress", "queue_selected": False}
+        )
     if not slot._queue:
         return web.json_response({"error": "queue empty, use /stop instead"}, status=400)
 
@@ -1032,7 +1092,9 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             outcome="compacting",
             metadata={"slot": name, "stop_id": stop_id},
         )
-        return web.json_response({"ok": True, "outcome": "compacting", "compacting": True})
+        return web.json_response(
+            {"ok": True, "outcome": "compacting", "compacting": True, "queue_selected": False}
+        )
 
     # Claim the stop slot synchronously BEFORE the await below: the
     # idempotency guard above is check-then-act, and a concurrent /interrupt
@@ -1075,6 +1137,8 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     queue_id = body.get("queue_id")
+    chosen_restored = False
+    promoted = False
     if queue_id and slot._stop_generation == claim_generation:
         # Wire-side field is `queue_id`; stored items carry `id` (the key
         # queue_append/queue_insert write and every *_by_id helper matches).
@@ -1091,7 +1155,14 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         # own /interrupt may have promoted ITS selection, and a stale write
         # here would overwrite it. Escalation keeps the same generation and a
         # cleared queue, so promotion there is a harmless no-op.
-        slot.queue_promote_by_id(queue_id)
+        #
+        # The turn's end drains with no card named, and that drain holds every
+        # restored entry for the user. This click IS the user sending the card,
+        # so mark it chosen; it keeps its restored provenance otherwise.
+        promoted = slot.queue_promote_by_id(queue_id)
+        if promoted and slot._queue[0].get(RESTORED_QUEUE_KEY):
+            slot._queue[0][RESTORED_SEND_CHOSEN_KEY] = True
+            chosen_restored = True
 
     # A concurrent /stop can supersede our claim during the body await:
     # escalate it (soft_pending → killing), or escalate-settle-and-be-followed
@@ -1116,7 +1187,17 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             outcome="noop",
             metadata={"slot": name, "reason": "stop claim superseded during body read"},
         )
-        return web.json_response({"ok": True, "info": "stop already in progress"})
+        # The running turn may have ended during the body read, its drain
+        # skipping the card before it was marked chosen.
+        if chosen_restored:
+            await _start_chosen_restored_card(
+                state, slot, name, request, queue_id, claim_generation
+            )
+        # A later stop that moved the generation leaves the card unpromoted;
+        # the client releases it rather than wait for a row that stays queued.
+        return web.json_response(
+            {"ok": True, "info": "stop already in progress", "queue_selected": promoted}
+        )
 
     # The probe again, AFTER the body await and with no await between here and
     # the pending-wait rejection below. A compaction that committed during the
@@ -1138,7 +1219,11 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
             outcome="compacting",
             metadata={"slot": name, "stop_id": stop_id, "reason": "committed during body read"},
         )
-        return web.json_response({"ok": True, "outcome": "compacting", "compacting": True})
+        # A card promoted above stays at the front and the compacting turn's
+        # end drains it; an unpromoted one stays where it was.
+        return web.json_response(
+            {"ok": True, "outcome": "compacting", "compacting": True, "queue_selected": promoted}
+        )
 
     # Stop current turn but preserve the queue so dequeue loop fires
     # (soft_pending already claimed above, before the request-body await)
@@ -1169,6 +1254,9 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
         state.push_slots_update()
+    # Nothing was running to stop, so no turn end will drain the chosen card.
+    if outcome == "idle" and chosen_restored:
+        await _start_chosen_restored_card(state, slot, name, request, queue_id, claim_generation)
     elif outcome == "compacting":
         # The window the two probes above cannot close: a compaction commits
         # between the second probe and ``stop_turn`` taking the registry lock,
