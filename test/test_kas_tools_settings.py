@@ -139,11 +139,16 @@ class TestTranslation:
         assert _rules(settings) == []
         assert _lost(settings) == []
 
-    def test_write_fallback_deny_is_reported_not_translated(self):
+    def test_write_fallback_deny_is_carried_as_no_rule(self):
+        """Crew's gate enforces it (``spec_write_allowlist``), so the notice does not
+        name it; the engine still gets no rule for it, and ``allowedPaths`` stays
+        named because a covered write still prompts on KAS."""
         settings = {"fs_write": {"allowedPaths": ["./out/**"], "fallbackAction": "deny"}}
         assert _rules(settings) == []
-        assert _lost(settings) == ["fs_write.allowedPaths", "fs_write.fallbackAction"]
+        assert _lost(settings) == ["fs_write.allowedPaths"]
         assert _lost({"fs_write": {"fallbackAction": "interactive"}}) == []
+        # A value the gate does not read as deny is still named.
+        assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
 
     def test_web_fetch_blocked_matches_the_host_only(self):
         settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", r"https://evil\.com/.*"]}}

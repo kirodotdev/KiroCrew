@@ -98,6 +98,7 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
     _command_matches_any,
+    _is_spec_write_call,
     _operator_confirms,
     _rule_exfil,
     _rule_sensitive_bash,
@@ -114,9 +115,11 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _tier_search_target,
     _tier_spec_builtin_grant,
     _tier_spec_shell_allowlist,
+    _tier_spec_write_allowlist,
     _tier_targets,
     _tier_unverifiable_shell,
     _tier_write_protected,
+    _write_target_uncovered,
     gate_tier_problems,
     grant_spec_builtin,
     shell_rules,
@@ -212,6 +215,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_host_search_builtin_call,
     _normalize_tool_name,
     _note_title_only_grant_pattern,
+    _plain_str,
     _search_root_anchored,
     _tool_matches,
     event_is_spawn_run,
@@ -763,6 +767,8 @@ class HookManager:
         spec_granted_builtins: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
         spec_shell_allowlist: tuple[str, ...] | None = None,
+        spec_write_allowlist: tuple[str, ...] | None = None,
+        spec_write_cwd: str = "",
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -803,6 +809,10 @@ class HookManager:
                 spec_shell_allowlist=(
                     None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
                 ),
+                spec_write_allowlist=(
+                    None if spec_write_allowlist is None else tuple(spec_write_allowlist)
+                ),
+                spec_write_cwd=spec_write_cwd,
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -1812,6 +1822,7 @@ GATE_TIERS: tuple[GateTier, ...] = (
     GateTier("search-target", "deny", _tier_search_target),
     GateTier("governance", "deny_policy", _tier_governance),
     GateTier("spec-shell-allowlist", "deny_policy", _tier_spec_shell_allowlist),
+    GateTier("spec-write-allowlist", "deny_policy", _tier_spec_write_allowlist),
     GateTier("app-own-server", "grant", _tier_app_own_server),
     GateTier("operator-grants", "grant", _tier_operator_grants),
     GateTier("spec-builtin-grant", "grant", _tier_spec_builtin_grant),

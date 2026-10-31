@@ -1079,6 +1079,12 @@ async def _answer_permission(
             mcp_tool_name=event.tool_name,
             mcp_identity_trusted=event.mcp_identity_trusted,
             spawn_target=event.spawn_target,
+            # The KAS spec's own deny-all-but restrictions. Only refusals, so
+            # they travel here although the spec's grants do not: dropping them
+            # would let an answered prompt run what the spec refuses.
+            spec_shell_allowlist=getattr(event, "spec_shell_allowlist", None),
+            spec_write_allowlist=getattr(event, "spec_write_allowlist", None),
+            spec_write_cwd=getattr(event, "spec_write_cwd", "") or "",
         )
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
