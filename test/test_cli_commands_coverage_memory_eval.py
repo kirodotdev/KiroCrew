@@ -567,6 +567,29 @@ class TestArtifactCli:
         out = capsys.readouterr().out
         assert "s1" in out and "[a]" in out and "s2" in out
 
+    def test_list_prints_each_row_on_one_line(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        payload = {
+            "artifacts": [
+                {
+                    "slug": "s1\nx",
+                    "version": 3,
+                    "kind": "wid\nget",
+                    "tags": ["a\nb"],
+                    "name": "One\x07\nTwo",
+                },
+            ]
+        }
+        with _ArtifactHarness([_FakeResponse(payload)]):
+            cc._artifact(_ns(artifact_action="list", tag=None, kind=None, q=None))
+        lines = capsys.readouterr().out.splitlines()
+        # One line for the artifact: the newlines did not split the row.
+        assert len(lines) == 1
+        assert lines[0].startswith("s1\\x0ax ")
+        assert "wid\\x0aget" in lines[0]
+        assert "[a\\x0ab]" in lines[0]
+        assert lines[0].endswith("One\\x0aTwo")
+
     def test_list_empty(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _ArtifactHarness([_FakeResponse({"artifacts": []})]):
             cc._artifact(_ns(artifact_action="list", tag=None, kind=None, q=None))

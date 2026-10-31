@@ -251,11 +251,19 @@ def _handle_workspace(args: argparse.Namespace) -> None:
     cfg = KiroCrewConfig.load()
 
     if action == "list":
+        # Read here, not at module level: the facade's import inventory is frozen.
+        from kiro_crew.terminal_safe import safe_terminal_line
+
         default = cfg.default_workspace
         print(f"{'NAME':<20} {'DIR':<40}")
         for name, ws in cfg.workspaces.items():
             marker = " *" if name == default else ""
-            print(f"{name + marker:<20} {ws.dir:<40}")
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
+            print(
+                f"{safe_terminal_line(str(name)) + marker:<20} "
+                f"{safe_terminal_line(str(ws.dir)):<40}"
+            )
 
     elif action == "create":
         if not WORKSPACE_NAME_RE.match(args.name):
