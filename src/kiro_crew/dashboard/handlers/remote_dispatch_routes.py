@@ -110,6 +110,19 @@ class CrewCallError(Exception):
         self.message = message
 
 
+#: A peer's typed refusal of a work-item create that it has no room for (wave 3).
+CREW_BUSY = "crew_busy"
+
+
+class CrewBusyError(CrewCallError):
+    """The peer answered ``crew_busy``: nothing was created there (RFC §2b)."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        short = payload.get("short")
+        short = short if short in ("memory", "cpu", "disk") else "a resource"
+        super().__init__(503, CREW_BUSY, f"that crew has no room: it is short on {short}")
+
+
 def _response(exc: CrewCallError) -> web.Response:
     """The JSON refusal for *exc*, its status from a closed set (else 400)."""
     if exc.status == 403:
@@ -147,6 +160,14 @@ def has_crew(body: dict[str, Any]) -> bool:
     as one, never read as "no crew" and run locally.
     """
     return "crew" in body
+
+
+async def placement_enabled() -> bool:
+    """Whether a create with ``work_item`` and no ``crew`` goes to hub placement.
+
+    Read per call. Off, such a create stays on the local path exactly as before.
+    """
+    return await asyncio.to_thread(remote_dispatch_enabled)
 
 
 async def refuse_if_disabled(caller: str, verb: str) -> web.Response | None:
@@ -774,6 +795,16 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
     slot, limit, name = "", 20, ""
     try:
         caller = await authorize_remote_dispatch(request, verb)
+        if verb == "create" and not has_crew(body):
+            # Wave 5: a work item with no crew is placed by the hub (RFC §2b).
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            board = session_ledger.ledger_key(declared)
+            result, name = await remote_placement.place(
+                state, _manager(state), caller, body, board=board
+            )
+            _audit(declared, verb, "success", crew=result["crew"])
+            return web.json_response({**result, "crew_name": name, "placed": True})
         instance_id, name = await resolve_crew(state, body.get("crew"))
         mgr = _manager(state)
         if verb == "read":
@@ -790,7 +821,13 @@ async def handle_crew_call(request: web.Request, verb: str, body: dict[str, Any]
                 state, caller, board, instance_id, body.get("target")
             )
         await check_version(mgr, instance_id)
-        if verb == "create":
+        if verb == "create" and body.get("work_item") is not None:
+            # Counted in flight so a placement running meanwhile sees it (wave 5).
+            from kiro_crew.dashboard.handlers import remote_placement
+
+            async with remote_placement.holding(state, instance_id):
+                result = await _create(state, mgr, caller, instance_id, body, board=board)
+        elif verb == "create":
             result = await _create(state, mgr, caller, instance_id, body, board=board)
         elif verb == "send":
             result = await _send(mgr, instance_id, slot, body)

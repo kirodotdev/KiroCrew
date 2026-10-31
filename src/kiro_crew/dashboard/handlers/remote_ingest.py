@@ -151,13 +151,7 @@ async def create_bound(
     if refusal is not None or unit is None:
         code = _response_code(refusal) if refusal is not None else ""
         raise err(409, code or "crew_log_off", "this conductor has no crew log unit to record into")
-    item = await settled_item(board, item_id.strip())
-    if item is None:
-        raise err(404, work_ledger.CODE_UNKNOWN_ITEM, "no such item on this conductor's ledger")
-    if item.is_terminal:
-        raise err(409, work_ledger.CODE_ITEM_CLOSED, f"item {item.item_id} is {item.state}")
-    if item.worker_session_key:
-        raise err(409, "already_bound", f"item {item.item_id} is already bound")
+    item = await open_unbound_item(board, item_id)
     body = dict(create)
     body["work_item"] = {
         "conductor_key": board,
@@ -169,6 +163,8 @@ async def create_bound(
         "decision": routes._outbound(item.decision),
     }
     status, payload = await routes.peer_call(mgr, instance_id, "POST", "api/chat/slots", body=body)
+    if status == 503 and isinstance(payload, dict) and payload.get("code") == routes.CREW_BUSY:
+        raise routes.CrewBusyError(payload)
     if not 200 <= status < 300:
         raise routes._peer_error(status, payload, "could not create the crew session")
     slot = payload.get("key") if isinstance(payload, dict) else None
@@ -219,6 +215,19 @@ async def create_bound(
     return slot, payload, bound or item
 
 
+async def open_unbound_item(board: str, item_id: str) -> work_ledger.WorkItem:
+    """*board*'s item *item_id* when it is open and unbound, else raise the typed refusal."""
+    err = _routes().CrewCallError
+    item = await settled_item(board, item_id.strip())
+    if item is None:
+        raise err(404, work_ledger.CODE_UNKNOWN_ITEM, "no such item on this conductor's ledger")
+    if item.is_terminal:
+        raise err(409, work_ledger.CODE_ITEM_CLOSED, f"item {item.item_id} is {item.state}")
+    if item.worker_session_key:
+        raise err(409, "already_bound", f"item {item.item_id} is already bound")
+    return item
+
+
 def _response_code(resp: web.Response) -> str:
     import json
 
@@ -259,6 +268,15 @@ async def holds_peer_slot(board: str, instance_id: str, slot: str) -> bool:
         and not item.is_terminal
         for item in items
     )
+
+
+def open_remote_bindings() -> dict[str, int]:
+    """Open remote bindings per crew across every ledger here: wave 5's reservations.
+
+    The store seam for :mod:`remote_placement`, which does not import the store.
+    BLOCKING.
+    """
+    return work_ledger.open_remote_bindings()
 
 
 # ── ingest on read ────────────────────────────────────────────────────────

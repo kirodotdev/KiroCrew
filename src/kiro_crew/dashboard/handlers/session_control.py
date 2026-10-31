@@ -338,6 +338,9 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         body = await _body(request)
         if crew_routes.has_crew(body):
             return await crew_routes.handle_crew_call(request, "create", body)
+        if "work_item" in body and await crew_routes.placement_enabled():
+            # Wave 5: a work item with no crew is placed on one by the hub.
+            return await crew_routes.handle_crew_call(request, "create", body)
         # Strictly typed, never truthiness: the string "false" is truthy, and a
         # caller asking for a real create must never get a silent preview.
         dry_run = body.get("dry_run", False)

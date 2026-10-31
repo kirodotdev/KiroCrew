@@ -1119,6 +1119,7 @@ from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
     apply_remote_bind,
     apply_remote_report,
     item_liveness,
+    open_remote_bindings,
     read_remote_state,
     remote_dir,
     remote_liveness,

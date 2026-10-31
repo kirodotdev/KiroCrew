@@ -43,10 +43,12 @@ _CREW_PROPERTY: dict[str, Any] = {
 _WORK_ITEM_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
-        "Preview, with crew only. One of YOUR open, unbound work items (it_<8 hex>): "
-        "the crew session is created already bound to it, so skip "
-        "work_ledger_record bind. Its reports reach your next work_ledger_read, and a "
-        "decide reaches the worker."
+        "Preview. One of YOUR open, unbound work items (it_<8 hex>): the crew "
+        "session is created already bound to it, so skip work_ledger_record bind. "
+        "Omit crew and the hub picks the connected crew with the most headroom; when "
+        "none has room the item stays unbound, and only a turn the owner sends can "
+        "retry. Its reports reach your next work_ledger_read, and a decide reaches "
+        "the worker."
     ),
 }
 
@@ -90,6 +92,13 @@ def run_crew_create(args: dict[str, Any], ctx: ToolContext) -> str:
         note += (
             f" Your latest decision did not reach it ({resp['decision_error']}); "
             "record the decide again."
+        )
+    if resp.get("placed"):
+        # Names can repeat across crews and an exact id wins over a name, so the
+        # follow-up must carry the id the hub chose, not the name shown above.
+        note += (
+            f" The hub picked this crew by headroom; pass crew=`{resp.get('crew')}` "
+            "(its id) on every follow-up call."
         )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}`{title} {_on(resp)}{agent}. It is empty "

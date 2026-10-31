@@ -349,7 +349,14 @@ def _create_session(args: dict[str, Any], ctx: ToolContext, *, keep_walk: bool =
 
 def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     if args.get("work_item") and "crew" not in args:
-        return "Error: work_item is taken only with crew; bind a local session with work_ledger_record."
+        from kiro_crew.remote_dispatch import remote_dispatch_enabled
+
+        if not remote_dispatch_enabled():
+            return "Error: work_item is taken only with crew; bind a local session with work_ledger_record."
+        # Wave 5: no crew named, so the hub places the item on one.
+        from kiro_crew.mcp_session_crew import run_crew_create
+
+        return run_crew_create(args, ctx)
     if "crew" in args:
         from kiro_crew.mcp_session_crew import run_crew_create
 

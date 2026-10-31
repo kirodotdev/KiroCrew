@@ -49,7 +49,9 @@ from kiro_crew.work_ledger_rules import (
     parse_stamp,
 )
 from kiro_crew.work_ledger_store import (
+    _ITEMS_DIR,
     _REMOTE_DIR,
+    RESERVED_ROOT_DIRS,
     _commit_item_locked,
     _read_json_record,
     _require_item_id,
@@ -215,6 +217,38 @@ def remote_liveness_map(board: str, items: Any) -> dict[str, tuple[bool, bool]]:
         if answer is not None:
             out[item.item_id] = answer
     return out
+
+
+def open_remote_bindings() -> dict[str, int]:
+    """``{crew instance id: open remote bindings}`` across every ledger here. BLOCKING.
+
+    The hub's reservations (RFC §2b, wave 5): each open item bound to a worker on
+    a crew reserves one estimate there, a ``done`` worker the conductor keeps open
+    included. Derived from the item files, never stored. An unreadable file or
+    directory counts nothing: the peer gate, not this count, admits a create.
+    """
+    counts: dict[str, int] = {}
+    try:
+        boards = [d for d in _work_ledger_root().iterdir() if d.name not in RESERVED_ROOT_DIRS]
+    except OSError:
+        return counts
+    for board in boards:
+        try:
+            entries = sorted((board / _ITEMS_DIR).glob("it_*.json"))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                raw = _read_json_record(entry)
+            except Exception:  # noqa: BLE001 - one torn file must not hide the rest
+                raw = None
+            if not isinstance(raw, dict):
+                continue
+            item = WorkItem.from_dict(raw)
+            crew = item.worker_instance_id
+            if crew and item.worker_session_key and not item.is_terminal:
+                counts[crew] = counts.get(crew, 0) + 1
+    return counts
 
 
 def _require_peer_text(value: Any, cap: int, name: str) -> str:

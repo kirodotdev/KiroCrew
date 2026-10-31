@@ -314,6 +314,10 @@ def test_a_create_with_work_item_is_born_bound_on_the_callers_ledger(env, monkey
     seen: dict = {}
 
     async def _bound(state, mgr, board, instance_id, item_id, create):
+        from kiro_crew.dashboard.handlers import remote_placement
+
+        # The explicit create is counted in flight while it runs (wave 5).
+        assert remote_placement._INFLIGHT[state] == {instance_id: 1}
         seen.update(board=board, instance=instance_id, item=item_id, create=create)
         return "chat-77", {"key": "chat-77"}, SimpleNamespace(item_id=item_id, title="item one")
 
@@ -662,3 +666,42 @@ def test_every_crew_send_is_marked_agent_origin(env, steer):
         fields["steer"] = True
     assert _call(env, "send", **fields)[0] == 200
     assert send_is_agent_origin(env.peer.calls[-1]["body"])
+
+
+# ── wave 5: a work item with no crew ─────────────────────────────────────────
+
+
+def test_switch_off_a_work_item_create_without_crew_stays_local(env, monkeypatch):
+    """Off, the create route never enters the crew path for ``work_item`` alone."""
+    from kiro_crew.dashboard.handlers import remote_placement
+
+    async def _boom(*a, **k):
+        raise AssertionError("placement reached with the switch off")
+
+    monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: False)
+    monkeypatch.setattr(crew, "handle_crew_call", _boom)
+    monkeypatch.setattr(remote_placement, "place", _boom)
+    off = _call(env, "create", work_item="it_0000abcd", dry_run=True)
+    # The local verb's own dry-run answer, as on main for the same body.
+    assert off == (200, {"dry_run": True}), off
+    assert env.peer.calls == []
+
+
+def test_switch_on_a_work_item_create_without_crew_is_placed(env, monkeypatch):
+    from kiro_crew.dashboard.handlers import remote_placement
+
+    seen: dict = {}
+
+    async def _place(state, mgr, caller, body, *, board):
+        seen.update(caller=caller, body=body, board=board)
+        return {
+            "target": "chat-9",
+            "crew": INSTANCE,
+            "work_item_id": body["work_item"],
+        }, "lab"
+
+    monkeypatch.setattr(remote_placement, "place", _place)
+    status, body = _call(env, "create", work_item="it_0000abcd")
+    assert status == 200, body
+    assert (body["crew"], body["crew_name"], body["placed"]) == (INSTANCE, "lab", True)
+    assert seen["body"] == {"work_item": "it_0000abcd"}
