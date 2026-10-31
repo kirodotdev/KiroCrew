@@ -259,6 +259,40 @@ describe('crew editor — reasoning effort pin', () => {
     ).toBeInTheDocument()
   })
 
+  it('says nothing extra about a model chosen for this mate', async () => {
+    const sheet = await openModelPane({})
+    await waitFor(() => within(sheet).getByText(/Thinking at Max/))
+    expect(within(sheet).queryByTestId('next-model-default-line')).not.toBeInTheDocument()
+  })
+
+  it('names the default model when none is chosen for this mate', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: 'claude-opus-5',
+      pinned: false,
+      kiro_agent: 'reviewer-agent',
+      reasoning_effort: '',
+      effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+    expect(await within(sheet).findByTestId('next-model-default-line')).toHaveTextContent(
+      'Uses your default: claude-opus-5.',
+    )
+  })
+
+  it('says the model is picked automatically when no default is set either', async () => {
+    mockApi.agentResolvedModel.mockResolvedValue({
+      model: '',
+      pinned: false,
+      kiro_agent: 'reviewer-agent',
+      reasoning_effort: '',
+      effort_pinned: false,
+    })
+    const sheet = await openModelPane({ model: '', reasoning_effort: '' })
+    const line = await within(sheet).findByTestId('next-model-default-line')
+    expect(line).toHaveTextContent('Uses your default: picked automatically.')
+    expect(line).not.toHaveTextContent('Inherited')
+  })
+
   it('explains that a model must be chosen before an effort can be', async () => {
     // The common shape of a fresh crew: it pins no model, and nothing else pins
     // one either, so the backend chooses and no level can be applied. Silently
@@ -277,7 +311,7 @@ describe('crew editor — reasoning effort pin', () => {
       within(sheet).queryByRole('combobox', { name: 'Edit reasoning effort' }),
     ).not.toBeInTheDocument()
     expect(
-      within(sheet).getByText(/No reasoning effort until a model is chosen/),
+      within(sheet).getByText('Pick a model to set a reasoning effort.'),
     ).toBeInTheDocument()
   })
 

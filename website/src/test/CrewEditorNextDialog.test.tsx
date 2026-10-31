@@ -886,10 +886,10 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
       models_backend: 'codex', pin_served_as: '',
     })
     const dialog = await openNew()
-    const readout = await within(dialog).findByText(/Using openai\.gpt-5\.6-terra/)
+    const readout = await within(dialog).findByTestId('next-model-runs-instead')
     expect(within(dialog).queryByTestId('next-model-pin-unserved')).toBeNull()
-    expect(readout.parentElement).toHaveTextContent('taken from the custom agent it is built from.')
-    expect(readout.parentElement).not.toHaveTextContent('chosen for this mate.')
+    expect(readout).toHaveTextContent('Runs on openai.gpt-5.6-terra instead.')
+    expect(within(dialog).queryByTestId('next-model-default-line')).toBeNull()
   })
 
   it('does not claim a stored pin is in use when its harness serves it under no id', async () => {
@@ -904,7 +904,7 @@ describe('CrewEditorNextDialog — Behavior / Approvals', () => {
     const readout = await within(dialog).findByTestId('next-model-pin-unserved')
     // The session leaves the pin unsent and stays on the harness's default model.
     expect(readout.textContent).toMatch(/doesn't offer claude-opus-5\.5, so this mate's sessions run on .+'s default model instead/)
-    expect(within(dialog).queryByText(/Using claude-opus-5\.5/)).toBeNull()
+    expect(within(dialog).queryByTestId('next-model-runs-instead')).toBeNull()
   })
 })
 
