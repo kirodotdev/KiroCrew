@@ -17039,6 +17039,10 @@
         "backfill_folder_gone_nothing_filed": "Le dossier {{folder}} a été supprimé pendant l'exécution, donc rien n'a été classé. Enregistrez d'abord ces paramètres pour le recréer."
       },
       "browserPanel": {
+        "public_registry_refused_message": "Le registre npm public ({{url}}) a lui aussi refusé la requête (npm {{code}}). Un proxy ou une règle réseau de cette machine la bloque peut-être. Reconnecte-toi à ton propre registre npm, puis réinstalle.",
+        "registry_auth_message": "npm n'a pas pu se connecter à ton registre npm configuré ({{registry}}, npm {{code}}). La connexion a probablement expiré. Reconnecte-toi à ce registre puis réinstalle, ou installe une fois depuis le registre npm public ({{url}}). Tes paramètres npm ne changent pas : seule cette installation utilise le registre public.",
+        "registry_auth_message_unknown": "npm n'a pas pu se connecter à ton registre npm configuré (npm {{code}}). La connexion a probablement expiré. Reconnecte-toi à ce registre puis réinstalle, ou installe une fois depuis le registre npm public ({{url}}). Tes paramètres npm ne changent pas : seule cette installation utilise le registre public.",
+        "retry_public_registry": "Installer depuis le registre npm public",
         "use_builtin_label": "Utiliser le navigateur intégré",
         "use_builtin_desc": "Ouvre les pages dans le panneau intégré de {{productName}}. Désactivez pour naviguer avec playwright-cli à la place.",
         "browsing": "Navigation",

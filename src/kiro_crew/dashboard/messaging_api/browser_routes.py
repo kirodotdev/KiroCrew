@@ -425,10 +425,12 @@ def _start_browser_install_job(
             )
             return
         status, code, detail = browser_install_job.outcome_of(result, default_step)
+        params = browser_install_job.error_params_of(result)
         if scope.terminated and status != browser_install_job.STATUS_INTERRUPTED:
             status = browser_install_job.STATUS_INTERRUPTED
             code = browser_install_job.ERROR_INTERRUPTED
-        job.finish(job.id, status, code, detail)
+            params = None
+        job.finish(job.id, status, code, detail, params)
 
     state._browser_install_task = asyncio.create_task(_run())
 
@@ -499,10 +501,34 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
     work, and npm is not safe to run twice over the same target at once. A click
     while an ENGINE download runs is refused with 409 naming that job, because
     folding it would answer "CLI setup accepted" for work that is not happening.
+
+    Body (optional): ``{"registry": "public"}`` is the operator's opt-in retry
+    after their own npm registry refused the request; that one install then uses
+    the public npm registry. Without it npm uses the operator's configuration,
+    as it always has. A body that cannot be read is the default install, because
+    clients before this option sent no meaningful body.
     """
     denied = _deny_non_owner_browser_request(request, "browser_cli_install")
     if denied is not None:
         return denied
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - no readable body means the default install
+        body = None
+    registry = body.get("registry") if isinstance(body, dict) else None
+    if registry not in (None, "public"):
+        return web.json_response(
+            {"error": "unknown registry", "code": "unknown_registry"}, status=400
+        )
+    public_registry = registry == "public"
+
+    def work(on_stage: browser_cli_install.StageCallback) -> dict[str, Any]:
+        # The keyword is passed only when asked for, so the default install calls
+        # the installer exactly as it always has.
+        if public_registry:
+            return browser_cli_install.install(on_stage=on_stage, public_registry=True)
+        return browser_cli_install.install(on_stage=on_stage)
+
     state: DashboardState = request.app["state"]
     if _browser_install_active(state):
         job = _browser_install_job(state)
@@ -513,7 +539,7 @@ async def api_browser_install_start(request: web.Request) -> web.Response:
             state,
             browser_install_job.KIND_CLI_SETUP,
             None,
-            lambda on_stage: browser_cli_install.install(on_stage=on_stage),
+            work,
             "install",
         )
     return await api_browser_install_get(request)

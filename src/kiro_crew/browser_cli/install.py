@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import github_runner, platform_compat
-from kiro_crew.browser_cli import os_deps
+from kiro_crew.browser_cli import npm_registry_auth, os_deps
 from kiro_crew.browser_cli.install_browsers import (
     _DEFAULT_BROWSER_ENGINE,
     BROWSER_ENGINES,
@@ -267,6 +267,7 @@ def _step(
     hint: str = "",
     failure_signal: Callable[[str], bool] | None = None,
     hint_requires_signal: bool = False,
+    npm_auth: bool = False,
 ) -> dict[str, Any]:
     """Run one install step and describe its outcome.
 
@@ -293,6 +294,10 @@ def _step(
     about the host (the engine cannot run here): the missing-library report is
     its only evidence, and a download that failed for another reason must keep
     its own error rather than be dressed as a platform limit.
+
+    With *npm_auth*, an ordinary failure is also checked for npm's registry
+    refusal (``code E401`` / ``code E403``) on the FULL output, before the cap
+    can cut it, and the code is returned as ``npm_auth_code``.
     """
     rc, out, err = _run(argv, timeout)
     # Both streams: the diagnostic is on stderr today, and a step that starts
@@ -318,13 +323,47 @@ def _step(
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
         if step_hint:
             detail = f"{detail}\n\n{step_hint}" if detail else step_hint
-    return {
+    result: dict[str, Any] = {
         "name": name,
         "ok": ok,
         "returncode": rc,
         "stderr": detail,
         "hint": step_hint,
     }
+    if npm_auth and ordinary_failure:
+        result["npm_auth_code"] = npm_registry_auth.auth_failure_code(f"{err}\n{out}")
+    return result
+
+
+def _explain_registry_refusal(step: dict[str, Any], npm: str, *, prefix: str, public: bool) -> None:
+    """Replace npm's raw refusal text on *step* with a plain message, in place.
+
+    npm's own advice for E401 (``npm login``) is wrong for many registries, and
+    its text does not say the refusal came from the operator's registry setting.
+    The raw output is already in the log (:func:`_step` logged it), so the step
+    carries only the explanation, plus the error code and parameters the
+    dashboard renders its translated message from.
+    """
+    # Removed whether or not it is set, so any other failure's step keeps the
+    # exact shape it always had.
+    code = step.pop("npm_auth_code", None)
+    if not code:
+        return
+    registry = (
+        npm_registry_auth.PUBLIC_NPM_REGISTRY
+        if public
+        else npm_registry_auth.configured_registry(npm, _run, prefix=prefix)
+    )
+    step["stderr"] = redact_install_output(
+        npm_registry_auth.auth_failure_message(code, registry, public=public)
+    )
+    step["hint"] = ""
+    step["error_code"] = (
+        npm_registry_auth.ERROR_PUBLIC_REGISTRY_REFUSED
+        if public
+        else npm_registry_auth.ERROR_REGISTRY_AUTH
+    )
+    step["error_params"] = {"registry": registry, "npm_code": code}
 
 
 #: Stage names reported through ``on_stage``, in the order :func:`install` runs
@@ -425,7 +464,9 @@ def _log_bootstrap_tools(npm: str | None, node: str | None) -> None:
         )
 
 
-def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
+def install(
+    on_stage: StageCallback | None = None, *, public_registry: bool = False
+) -> dict[str, Any]:
     """Install the CLI, a browser, and the skills reference.
 
     Steps run in order and stop at the first failure, because each one depends
@@ -435,6 +476,11 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
 
     *on_stage* is called with each :data:`STAGE_INSTALLING_CLI` ..
     :data:`STAGE_FINISHING` transition as it happens, on the calling thread.
+
+    npm installs from the operator's own configured registry. *public_registry*
+    is the operator's opt-in retry after that registry refused the request: this
+    one npm call then installs from :data:`npm_registry_auth.PUBLIC_NPM_REGISTRY`,
+    and the operator's npm configuration is not changed.
     """
     steps: list[dict[str, Any]] = []
     _emit_stage(on_stage, STAGE_INSTALLING_CLI)
@@ -470,8 +516,21 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
 
+    # `--registry` alone is not enough for a scoped package: a configured
+    # `@playwright:registry` would still win for the CLI itself.
+    registry_args = (
+        [
+            "--registry",
+            npm_registry_auth.PUBLIC_NPM_REGISTRY,
+            f"--@playwright:registry={npm_registry_auth.PUBLIC_NPM_REGISTRY}",
+        ]
+        if public_registry
+        else []
+    )
+    install_prefix = ""
     try:
         with _pinned_managed_cli_root() as managed_root:
+            install_prefix = str(managed_root)
             steps.append(
                 _step(
                     "npm-install-global",
@@ -480,10 +539,12 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
                         "install",
                         "-g",
                         "--prefix",
-                        str(managed_root),
+                        install_prefix,
+                        *registry_args,
                         NPM_SPEC,
                     ],
                     _NPM_INSTALL_TIMEOUT_S,
+                    npm_auth=True,
                 )
             )
     except OSError as exc:
@@ -497,6 +558,7 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
         )
         return {"ok": False, "steps": steps}
     if not steps[-1]["ok"]:
+        _explain_registry_refusal(steps[-1], npm, prefix=install_prefix, public=public_registry)
         return {"ok": False, "steps": steps}
 
     try:
