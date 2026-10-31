@@ -29,6 +29,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
     requires_posix_pod_lifecycle,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import unit as unit_mod
@@ -787,8 +788,11 @@ class TestPortAllocation:
         because descriptor exhaustion is a real state, so a scan leaking one
         per peer would be feeding the very failure it sits in front of.
 
-        Asserted by spying on `os.open`/`os.close` and pairing what THIS scan
-        acquired under the pods directory, rather than by a `/proc/self/fd`
+        Asserted by spying on the scan's open seam
+        (`platform_compat.open_file_no_reparse`, which on Windows acquires its
+        descriptor through `msvcrt.open_osfhandle` rather than `os.open`) and on
+        `os.close`, pairing what THIS scan acquired under the pods directory,
+        rather than by a `/proc/self/fd`
         census: that census measures the whole xdist worker at two instants, so
         two descriptors merely open at the second sample -- a pool thread holding
         a file and a socket, a log rotation, a metrics export -- fail a pod-port
@@ -802,7 +806,7 @@ class TestPortAllocation:
 
         opened: list[int] = []
         closed: list[int] = []
-        real_open, real_close = os.open, os.close
+        real_open, real_close = platform_compat.open_file_no_reparse, os.close
 
         def tracking_open(target, *args, **kwargs):
             fd = real_open(target, *args, **kwargs)
@@ -818,7 +822,7 @@ class TestPortAllocation:
         # the one `_plane` pins this plane's env vars through, and undoing it here
         # would take the plane down with the spies.
         with pytest.MonkeyPatch.context() as patched:
-            patched.setattr(os, "open", tracking_open)
+            patched.setattr(platform_compat, "open_file_no_reparse", tracking_open)
             patched.setattr(os, "close", tracking_close)
             assert rt._ports_claimed_by_other_pods(c, "mine") == {7877: "real"}
 
@@ -836,9 +840,7 @@ class TestPortAllocation:
         if os.name != "nt":
             assert len(opened) == 2, f"expected one open per peer entry, got {opened}"
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX, reason="symlink creation needs elevation on Windows"
-    )
+    @requires_symlinks
     def test_the_claim_scan_refuses_to_follow_a_symlinked_peer_env(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -846,8 +848,10 @@ class TestPortAllocation:
 
         It also runs in the trusted CLI, outside the hooks gate that governs an
         agent's own reads -- so a symlink planted in the pods directory would make a
-        privileged process read its target. The open is O_NOFOLLOW, so the link is
-        skipped rather than followed, and allocation continues.
+        privileged process read its target. The open refuses a link at the name
+        (`O_NOFOLLOW` on POSIX, an open of the reparse point itself on Windows,
+        where `O_NOFOLLOW` does not exist), so the link is skipped rather than
+        followed, and allocation continues.
         """
         c = self._plane(tmp_path, monkeypatch)
         c.pods_dir.mkdir(parents=True, exist_ok=True)
