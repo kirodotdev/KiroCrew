@@ -1,6 +1,6 @@
 ---
 title: Milestones for new-user feature discovery — one milestone table, quiet surfaces
-status: draft
+status: accepted
 author: zejiangg
 created: 2026-10-29
 last-audited: 2026-10-30
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Milestones for New-User Feature Discovery
 
-- **Status:** Draft. Nothing built; this document changes no code. Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1). Acceptance is requested from a maintainer; the status flips to `accepted` when one records it here.
+- **Status:** Accepted. The product owner merged this RFC and started the build of Ship 1. Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1).
 - **Verified at:** `95f78562f1`. Every code reference below was read at that commit.
 - **Tracks:** [#26327](https://github.com/kirodotdev/KiroCrew/issues/26327).
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.
@@ -564,10 +564,9 @@ Success criteria (read 4 weeks after Ship 1):
 
 | Batch | Contents | Exit criteria |
 |---|---|---|
-| Prerequisite | Compute the baseline from existing data: share of new installs that used ≥3 features within 7 days (D7 / former Q6). First confirm the existing telemetry can tell new installs apart | Ship 1 is blocked until the baseline number is written into an appendix of this RFC |
 | Ship 1 | `milestones.py` + local state file + event hooks for the 7 new-feature rows, sessions, messages and the streak (3.4) + one-time backfill with the new probes (`channel_connected:slack`, `mate_thread_has_user_turn`) + `GET /api/milestones` and `event` / `mark-done` / `mark-all-done` / `skip-all` + config keys (default `true`) + top-bar indicator + Milestones panel + empty state + quiet notices + i18n + metrics. On for everyone with the release (D3) | Backend: each hook counts once per successful event and nothing for a refused or failed one; a counter never goes down, and deleting an artifact, task or chat undoes nothing; the streak counts one per local day, resets current after a missed day, never lowers best, and handles the user's midnight and a restart; a hook error never breaks its caller; backfill runs once, credits with `source: backfill` and shows no notice; `mark-done` and `mark-all-done` write `source: manual`, refuse non-feature ids, and take no client time; only feature rows can enter `recommended`; `send` defaults to `prefill` and an off-list `send` row is dropped; the file is 0600 and holds no content. Frontend: nothing shows before load; direct send happens only for `widgets` and `parallel-chats`; skipped rows stay open in the panel; once everything is handled the empty state returns to today's page and the indicator stays; each notice shows once; no streak-loss text anywhere |
 | Ship 2 | "Running at once" (peak counter) + Mate walkthrough + one line in the Mate's first welcome + daily task (D2) + passive notification | The peak only grows, survives restart, and writes the file only on a new high; the walkthrough hidden turn fires once and not while the Mate is busy; the daily task sends once per day across multiple tabs, reloads and restarts; nothing is sent before the first welcome finishes; frequency drops after 3 ignored days in a row; nothing is sent with `milestones_daily_nudge` off |
-| Later | Knowledge base and voice feature rows (voice is not in v1, D7 / former Q8); relationship to Feature Tips (Q7); cross-machine sync, if ever wanted, using the merge seam in 4.4; after 4 weeks of data, review the rows, thresholds (including `turns`), ordering, low-cost list and defaults | Against the success criteria in 4.11 |
+| Later | The baseline, computed after launch from retained data: share of new installs that used ≥3 features within 7 days (D7 / former Q6), after first confirming the existing telemetry can tell new installs apart; the number goes into an appendix of this RFC. It no longer blocks Ship 1. Knowledge base and voice feature rows (voice is not in v1, D7 / former Q8); relationship to Feature Tips (Q7); cross-machine sync, if ever wanted, using the merge seam in 4.4; after 4 weeks of data, review the rows, thresholds (including `turns`), ordering, low-cost list and defaults | Against the success criteria in 4.11 |
 
 ## 7. Decisions and open questions
 
