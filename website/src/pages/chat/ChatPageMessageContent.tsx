@@ -491,7 +491,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // inline-widget seam; a folder-referencing prompt with block markdown is
   // the uncommon combination.
   if (!parsedFiles.length && !dirKeys.length) {
-    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
+    return <MarkdownRenderer content={content} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} />
   }
 
   // Pass the ORIGINAL ordered list (images included) so [attached_file N] token
@@ -524,7 +524,7 @@ function renderFileSegment(opts: FileSegmentOpts) {
   // then the cards.
   if (!mentionMap.size && !dirKeys.length) {
     const caption = display.trim()
-    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
+    return <>{caption ? <MarkdownRenderer key={`${keyBase}-cap`} content={caption} softBreaks compactImages linkPreviews={linkPreviews} textPreviews onSessionOpen={onSessionOpen} sessions={sessions} activeSession={activeSession} messageTs={messageTs} /> : null}{cards}</>
   }
 
   // Inline-mention path: the caption keeps files inline, so render it as a

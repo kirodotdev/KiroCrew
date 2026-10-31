@@ -4045,7 +4045,12 @@ The boundary:
 
 - **Where it listens.** Only links and spans inside a chat message's root
   (`data-link-preview-scope`, set by `MarkdownRenderer` with `textPreviews`); a link
-  elsewhere (Connections, an OAuth approval, Settings) never reaches an app.
+  elsewhere (Connections, an OAuth approval, Settings) never reaches an app. The
+  sanitizer reserves the attribute (by normalized key), so authored HTML on another
+  surface cannot mint a scope. While a reply streams (`textPreviewsPaused`) the
+  scope stays but no text is scanned, so the bounded scan cache holds final text
+  only. Keys reach a card only when nothing editable has focus, shadow roots
+  included (`utils/editableTarget.ts`).
 - **What the frame gets.** Only `postMessage` traffic: the hovered URL or text, the
   anchor rect, the theme, the modifier keys, and plain key presses while a card
   shows (`linkPreviewProtocol.ts`). Never the chat DOM, a cookie (its requests are
@@ -4074,17 +4079,64 @@ The boundary:
   `dock` move it. An overlay-mode frame (`regions`) covers the viewport and is
   clipped with `clip-path`, which also clips hit-testing, so the page outside the
   provider's windows stays clickable.
+- **Grant.** A provider's hosts and text patterns are two staged grant families,
+  `linkPreviewHosts` and `linkPreviewTextPatterns`, in the app's
+  `approved-grants.json` beside `api` and `events` (`apps/link_preview_grants.py`).
+  Hosts are stored normalized (lowercase, IDNA, no trailing dot) and a public suffix
+  or bare TLD is refused at manifest validation; a pattern's entry is
+  `<id>:<flags without g>:<source>`, so any change to it is a widening. An update
+  that widens either family is held back until the owner approves it on the App
+  Detail page; narrowing applies at once. A third family, `linkPreviewFullUrl`
+  (`["fullUrl"]` or empty), makes turning whole URLs on a widening too, and the
+  dashboard sends a query and fragment only when the row's `linkPreviewGrant.fullUrl`
+  is true. The frame, mint and fetch routes all
+  resolve the provider through the grant (`_provider_entry`), so a provider with
+  nothing approved gets no frame, no capability renewal and no fetch. The dashboard
+  draws only what the row's `linkPreviewGrant` approves.
+- **Frame hardening.** The iframe is `credentialless`; the CSP is `sandbox
+  allow-scripts` plus `default-src 'none'` with explicit `script-src`, `style-src`,
+  `img-src`, `font-src`, `connect-src`, `base-uri`, `form-action` and
+  `frame-ancestors`; the document is `Referrer-Policy: no-referrer`. The iframe is
+  attached only after its `src` is set, so a second `load` is a self-navigation and
+  removes the frame. The fetch route forwards only `GET`, `POST`, `PUT`, `PATCH`
+  and `DELETE` (other methods `405`).
+- **Protocol bounds.** Every `show` carries an `invocation`. The bootstrap hands the
+  provider that show's own frozen `link.card` controls, each fixed to that
+  invocation (there are no card controls on `ctx`), so a late completion for an
+  earlier hover names the earlier show and the dashboard drops it. Dismissal
+  (leave, scroll, Escape) retires the current invocation too, and a ready card
+  that was not yet visible is still sent `hide`, so a late `open` never shows a
+  dismissed card. An unnamed text pattern is named by its declaration index before
+  the grant filter runs, so a pattern waiting for approval never renames a later
+  one or its off switch.
+- **Updates.** A frame keeps the module it loaded. Each resolved provider carries
+  a revision (entry, version, install and update time); when an app-list refresh shows a new
+  revision for a key, its frames are disposed, so the next hover loads the current
+  entry (app UI files are `no-cache` with an ETag, so the new frame gets the new
+  bytes).
+- **Embedded instances.** The frame request carries no cookie (credentialless,
+  auth bypass), so it cannot read the embedding parent's port the way a dashboard
+  page does. The mint, on the person's session, reads the validated
+  `embed_parent_port` claim and binds it into the frame token
+  (`<port>-<signed token>`, `0` when not embedded); the frame document adds that
+  parent's loopback origins to `frame-ancestors`. An edited port voids the token. A message over
+  `MAX_MESSAGE_BYTES` (8 KB) or past the per-frame token bucket (120, refilled at
+  60/s) is dropped unread. Hover sends the URL without query and fragment unless
+  the provider sets `fullUrl: true`.
 - **Mount.** Behind a reverse proxy at a sub-path the gateway never sees the mount,
   so the frame derives it from its own URL and prefixes the module and fetch paths.
 - **Text patterns** stay in core (`textPatterns.ts`): matched in a Web Worker with a
-  250 ms budget per batch (counted from the batch's first pattern, so a cold worker
-  start is not a pattern's time), a pattern that overruns or matches the empty
-  string turned off for the session, and a 2,000-character cap per text node. The
+  250 ms budget per pattern (re-armed on each `pattern-start` the worker posts, so
+  an overrun is charged to the pattern that used up its own time, and a cold
+  worker start is no pattern's time), a pattern that overruns or matches the empty
+  string turned off for the session (an overrun also drops every cached answer and
+  span owner, so drawn text is rescanned with the patterns left), and a 2,000-character cap per text node. The
   dashboard thread only compiles a pattern, which runs nothing. No static regex
   check is made: shape analysis cannot be complete, so the runtime budget is the
   guarantee.
 
-Writers: `apps/link_preview_frame.py`, `apps/routes_static.py` (the UI file CORS
+Writers: `apps/link_preview_frame.py`, `apps/link_preview_grants.py`,
+`apps/manager_records.py` (the staged families), `apps/routes_static.py` (the UI file CORS
 answer), `apps/routes_proxy.py` (strips the capability), `dashboard/token_auth_paths.py`
 (bypass, SPA exclusion, CSRF exemption), `website/src/linkPreview/*`.
 

@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.apps.link_preview_grants import host_refusal, normalize_host
+
 #: Hard cap on session controls per app. A control here renders inside the
 #: composer, on the path of every turn — an app must not be able to crowd the
 #: bar out. Apps needing more configuration have a page for it.
@@ -696,6 +698,11 @@ class LinkPreviewConfig:
     #: ``textPatterns`` present but not a list, or an entry that was not an object
     #: of two strings. Not serialized.
     bad_text_patterns: bool = False
+    # Optional: hand the module the hovered URL whole. By default the host strips
+    # the query and fragment, which can carry signed tokens or other secrets.
+    fullUrl: bool = False  # noqa: N815
+    #: ``fullUrl`` present but not a boolean. Not serialized.
+    bad_full_url: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -709,6 +716,8 @@ class LinkPreviewConfig:
             # Serialized, so it is part of the signing payload: a pattern decides
             # which text in a transcript the app's module is shown.
             d["textPatterns"] = [dict(p) for p in self.textPatterns]
+        if self.fullUrl:
+            d["fullUrl"] = True
         return d
 
     @classmethod
@@ -731,10 +740,19 @@ class LinkPreviewConfig:
         return cls(
             id=str(data.get("id", "")),
             entry=str(data.get("entry", "")),
-            hosts=[str(h).lower() for h in raw_hosts] if isinstance(raw_hosts, list) else [],
+            # Normalized (lowercase, no trailing dot, IDNA), so what is matched, signed
+            # and granted is one form. A value that does not normalize is kept
+            # lowercased for ``validate`` to refuse by name.
+            hosts=(
+                [normalize_host(h) or str(h).lower() for h in raw_hosts]
+                if isinstance(raw_hosts, list)
+                else []
+            ),
             bad_hosts="hosts" in data and not isinstance(raw_hosts, list),
             textPatterns=patterns,
             bad_text_patterns=bad_patterns,
+            fullUrl=data.get("fullUrl") is True,
+            bad_full_url="fullUrl" in data and not isinstance(data.get("fullUrl"), bool),
         )
 
     def validate(self) -> list[str]:
@@ -761,6 +779,12 @@ class LinkPreviewConfig:
             # leading-dot public suffix (".com") is refused by requiring two labels.
             if not _HOST_RE.fullmatch(host):
                 errors.append(f"{where}: hosts entry is not a hostname ({host!r})")
+            elif refusal := host_refusal(host):
+                # A public suffix (``.co.uk``, ``github.io``) would reach every site
+                # under it.
+                errors.append(f"{where}: hosts entry is {refusal} ({host!r})")
+        if self.bad_full_url:
+            errors.append(f"{where}: fullUrl must be true or false")
         if len(set(self.hosts)) != len(self.hosts):
             errors.append(f"{where}: hosts repeats an entry")
         if self.bad_text_patterns:

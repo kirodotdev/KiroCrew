@@ -31,6 +31,7 @@ from kiro_crew.apps.hooks_integration import on_app_enable
 
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
+from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES
 from kiro_crew.apps.manager import (
     app_enabled_state,
     app_lifecycle_lock,
@@ -297,14 +298,14 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # same "no body" path as malformed JSON, not a 500.
             pass
     session_approval_consent = body.get("sessionApprovalConsent") is True
-    # The entries the owner was shown, as {"api": [...], "events": [...]}.
+    # The entries the owner was shown, as {"api": [...], "events": [...], ...}.
     # Anything else approves nothing: a bare flag cannot say what was seen.
     raw_grants = body.get("grantsConsent")
     grants_consent: dict[str, list[str]] | None = None
     if isinstance(raw_grants, dict):
         grants_consent = {
             family: [e for e in raw_grants.get(family) or [] if isinstance(e, str)]
-            for family in ("api", "events")
+            for family in ("api", "events", *LINK_PREVIEW_GRANT_FAMILIES)
             if isinstance(raw_grants.get(family) or [], list)
         }
     if session_approval_consent or grants_consent is not None:

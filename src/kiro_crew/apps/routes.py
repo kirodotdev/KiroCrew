@@ -69,6 +69,7 @@ from kiro_crew.apps.hooks_integration import (
 
 # Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
+from kiro_crew.apps.link_preview_grants import LINK_PREVIEW_GRANT_FAMILIES  # noqa: F401
 from kiro_crew.apps.manager import (
     _credential_free_source_metadata,
     app_enabled_state,

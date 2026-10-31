@@ -53,8 +53,10 @@ async def _client(
     registry = _Registry()
     monkeypatch.setattr(lp, "_provider_entry", lambda name: entry if name == APP else None)
     monkeypatch.setattr("kiro_crew.apps.hooks_integration.get_route_registry", lambda: registry)
+    # The mint request's validated embed-parent claim; a test sets it on the caller.
     monkeypatch.setattr(
-        "kiro_crew.dashboard.server._extra_frame_ancestors", lambda request, app: ()
+        "kiro_crew.dashboard.server._embed_parent_port",
+        lambda request, app: request.get("embed_parent_port_for_test"),
     )
     caller = {"is_dashboard_user": True} if session is None else session
 
@@ -100,7 +102,25 @@ async def test_the_frame_is_an_opaque_origin_sandbox(monkeypatch: pytest.MonkeyP
         for flag in ("allow-top-navigation", "allow-popups", "allow-forms"):
             assert flag not in csp
         assert "connect-src 'self'" in directives
+        # Everything not named is refused, and each kind the card may need is named.
+        for d in (
+            "default-src 'none'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' https: data: blob:",
+            "font-src 'self' data:",
+            "media-src 'none'",
+            "worker-src 'none'",
+            "frame-src 'none'",
+            "child-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "form-action 'none'",
+        ):
+            assert d in directives, d
+        assert any(d.startswith("frame-ancestors ") for d in directives)
+        assert resp.headers["Referrer-Policy"] == "no-referrer"
         html = await resp.text()
+        assert '<meta name="referrer" content="no-referrer">' in html
         # The module comes from the app's own UI directory, named by the manifest.
         assert f'"entry": "/apps/{APP}/ui/dist/lp.mjs"' in html
         nonce = (
@@ -128,6 +148,85 @@ def test_the_bootstrap_keeps_a_sub_path_mount() -> None:
     assert boot.index("CFG.entry = MOUNT") < boot.index("import(CFG.entry)")
 
 
+#: Runs the real bootstrap under node with a stub window and a provider that
+#: answers every show late. Prints what the frame posted to the dashboard.
+_BOOTSTRAP_HARNESS = r"""
+const posted = [];
+const listeners = {};
+const parent = { postMessage: (m) => posted.push(m) };
+globalThis.window = { parent, addEventListener: (t, f) => { (listeners[t] ||= []).push(f); } };
+globalThis.location = { pathname: '/link-preview-frame/a/f/t', href: 'http://gw/link-preview-frame/a/f/t' };
+const lateProvider = 'export function activate(ctx) { return { show(link) { globalThis.shows.push(link); } }; }';
+globalThis.shows = [];
+globalThis.document = {
+  activeElement: null,
+  body: {},
+  getElementById: () => ({ textContent: JSON.stringify({
+    app: 'a', entry: 'data:text/javascript,' + encodeURIComponent(lateProvider),
+    fetchBase: '/link-preview-fetch/a/', theme: 'light',
+  }) }),
+};
+"""
+_BOOTSTRAP_DRIVER = r"""
+const deliver = (data) => (listeners.message || []).forEach((f) => f({ source: parent, data: { 'kirocrew-link-preview': 1, ...data } }));
+const done = (async () => {
+  deliver({ type: 'init', capability: 'c' });
+  for (let i = 0; i < 50 && !posted.some((m) => m.type === 'ready'); i++) await new Promise((r) => setTimeout(r, 10));
+  const rect = { left: 0, top: 0, width: 1, height: 1 };
+  deliver({ type: 'show', invocation: 1, url: 'https://a.example.com/1', rect, theme: 'light' });
+  deliver({ type: 'show', invocation: 2, url: 'https://a.example.com/2', rect, theme: 'light' });
+  deliver({ type: 'show', url: 'https://a.example.com/3', rect, theme: 'light' });
+  // The first hover's fetch finishes after the second hover began.
+  shows[0].card.open();
+  shows[0].card.resize({ width: 10, height: 10 });
+  shows[1].card.open();
+  console.log(JSON.stringify({
+    shows: shows.length,
+    frozen: Object.isFrozen(shows[0].card),
+    card: posted.filter((m) => ['open', 'resize'].includes(m.type)).map((m) => [m.type, m.invocation]),
+  }));
+})();
+await done;
+"""
+
+
+def test_card_controls_keep_the_invocation_of_their_own_show() -> None:
+    """A slow completion for an earlier hover names that hover, not the newest one.
+
+    The dashboard drops a card message whose invocation is not the frame's latest
+    (``linkPreviewFrames.ts``). That only works if the frame stamps each control with
+    the show it was handed to, so the controls are per show, not on ``ctx``.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    out = subprocess.run(
+        [
+            node,
+            "--input-type=module",
+            "-e",
+            _BOOTSTRAP_HARNESS + lp._BOOTSTRAP + _BOOTSTRAP_DRIVER,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=True,
+    )
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    # A show without an invocation is not delivered: it could not be answered.
+    assert result["shows"] == 2
+    assert result["frozen"] is True
+    assert result["card"] == [["open", 1], ["resize", 1], ["open", 2]]
+    # The controls exist only per show.
+    for name in ("open", "close", "resize", "pin", "dragBy", "dock"):
+        assert f"\n  {name}: " not in lp._BOOTSTRAP.split("const ctx = {", 1)[1].split("};", 1)[0]
+
+
 def test_the_frame_embeds_the_installed_name_not_the_request_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -138,12 +237,85 @@ def test_the_frame_embeds_the_installed_name_not_the_request_path(
         name="other-app",
         contributes=SimpleNamespace(linkPreviews=[SimpleNamespace(entry="dist/lp.mjs")]),
         backend=SimpleNamespace(entryPoint=""),
+        mcpServers={},
     )
     monkeypatch.setattr(lp, "is_app_enabled", lambda name: True)
     monkeypatch.setattr(lp, "get_app_manifest", lambda name: manifest)
+    monkeypatch.setattr(
+        lp,
+        "link_preview_grant_row",
+        lambda name, m: {"linkPreviewGrant": {"hosts": ["a.example.com"]}},
+    )
     assert lp._provider_entry(APP) is None
     manifest.name = APP
     assert lp._provider_entry(APP) == ("dist/lp.mjs", False, APP)
+
+
+def test_a_self_managed_http_backend_goes_through_the_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An app whose backend is only an ``mcpServers`` loopback URL is proxied too.
+
+    The proxy resolves that backend (``resolve_mcp_backend_url``) and the app secret
+    is issued for it, so ``ctx.fetch`` must take the proxy, not the route registry.
+    """
+    from types import SimpleNamespace
+
+    manifest = SimpleNamespace(
+        name=APP,
+        contributes=SimpleNamespace(linkPreviews=[SimpleNamespace(entry="dist/lp.mjs")]),
+        backend=SimpleNamespace(entryPoint=""),
+        mcpServers={"srv": {"url": "http://127.0.0.1:7778/mcp"}},
+    )
+    monkeypatch.setattr(lp, "is_app_enabled", lambda name: True)
+    monkeypatch.setattr(lp, "get_app_manifest", lambda name: manifest)
+    monkeypatch.setattr(
+        lp,
+        "link_preview_grant_row",
+        lambda name, m: {"linkPreviewGrant": {"hosts": ["a.example.com"]}},
+    )
+    assert lp._provider_entry(APP) == ("dist/lp.mjs", True, APP)
+    manifest.mcpServers = {}
+    assert lp._provider_entry(APP) == ("dist/lp.mjs", False, APP)
+
+
+@pytest.mark.asyncio
+async def test_an_embedded_dashboard_frame_admits_its_parent_from_the_signed_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In an Instances embed the frame's grandparent is another loopback dashboard.
+
+    The frame request is credentialless and on the auth bypass, so it carries no
+    cookie a parent port could be read from. The mint, on the person's session, reads
+    the validated claim and binds the port into the frame token; the frame trusts
+    only that signed value, and a port edited into the URL voids the token.
+    """
+    session = {"is_dashboard_user": True, "embed_parent_port_for_test": 7001}
+    async with _client(monkeypatch, session=session) as (client, _):
+        minted = await _mint(client)
+        frame_id, token = minted["frame"].rsplit("/", 2)[1:]
+        assert token.startswith("7001-")
+        resp = await client.get(minted["frame"])  # no cookie, no dashboard token
+        assert resp.status == 200
+        ancestors = next(
+            d
+            for d in resp.headers["Content-Security-Policy"].split("; ")
+            if d.startswith("frame-ancestors ")
+        )
+        assert "'self'" in ancestors
+        assert "http://127.0.0.1:7001" in ancestors
+        forged = f"{lp.FRAME_PREFIX}{APP}/{frame_id}/7002-{token.split('-', 1)[1]}"
+        assert (await client.get(forged)).status == 404
+    async with _client(monkeypatch) as (client, _):
+        minted = await _mint(client)
+        assert minted["frame"].rsplit("/", 1)[1].startswith("0-")
+        resp = await client.get(minted["frame"])
+        ancestors = next(
+            d
+            for d in resp.headers["Content-Security-Policy"].split("; ")
+            if d.startswith("frame-ancestors ")
+        )
+        assert ancestors == "frame-ancestors 'self'"
 
 
 @pytest.mark.asyncio
@@ -356,3 +528,51 @@ def test_the_routes_are_bypassed_excluded_from_the_shell_and_csrf_exempt() -> No
     assert not is_csrf_exempt(f"{lp.FRAME_PREFIX}{APP}/t", "POST")
     assert not is_csrf_exempt(f"/api/apps/{APP}/link-preview", "POST")
     assert not is_csrf_exempt(f"/apps/{APP}/api/kv", "POST")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["TRACE", "PROPFIND"])
+async def test_fetch_refuses_other_methods(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    async with _client(monkeypatch) as (client, registry):
+        cap = (await _mint(client))["capability"]
+        resp = await client.request(
+            method, f"{lp.FETCH_PREFIX}{APP}/status", headers={lp.CAPABILITY_HEADER: cap}
+        )
+        assert resp.status == 405
+        assert registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_reaches_only_a_registered_method_and_path() -> None:
+    """The real route table: an app route answers its own method and path, nothing else."""
+    from kiro_crew.apps.route_registry import RouteRegistry, _RegisteredRoute
+
+    async def status(request: web.Request, ctx: Any) -> web.Response:
+        return web.json_response({"ok": True})
+
+    app = web.Application()
+    registry = RouteRegistry(app)
+    registry._routes[APP] = [
+        _RegisteredRoute(method="GET", path="/status", handler=status, has_params=False)
+    ]
+    registry._contexts[APP] = object()  # type: ignore[assignment]
+    lp.register_link_preview_routes(app)
+    fid = "f" * 16
+    import kiro_crew.apps.hooks_integration as hooks
+
+    old = hooks.get_route_registry
+    old_entry = lp._provider_entry
+    hooks.get_route_registry = lambda: registry  # type: ignore[assignment]
+    lp._provider_entry = lambda name: ("dist/lp.mjs", False, APP)  # type: ignore[assignment]
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        cap = f"{fid}~{lp._signer('fetch').mint(APP, '127.0.0.1', fid)}"
+        h = {lp.CAPABILITY_HEADER: cap}
+        assert (await client.get(f"{lp.FETCH_PREFIX}{APP}/status", headers=h)).status == 200
+        assert (await client.post(f"{lp.FETCH_PREFIX}{APP}/status", headers=h)).status == 404
+        assert (await client.get(f"{lp.FETCH_PREFIX}{APP}/other", headers=h)).status == 404
+    finally:
+        await client.close()
+        hooks.get_route_registry = old  # type: ignore[assignment]
+        lp._provider_entry = old_entry  # type: ignore[assignment]

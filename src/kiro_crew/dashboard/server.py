@@ -360,10 +360,12 @@ from kiro_crew.dashboard.server_runtime.safety_grants import (  # noqa: F401
 from kiro_crew.dashboard.server_runtime.security_headers import (  # noqa: F401
     _apply_security_headers,
     _asset_cache_control,
+    _embed_parent_port,
     _extra_frame_ancestors,
     _finalize_asset_cache_control,
     _install_asset_cache_control_finalizer,
     _vendor_preflight_handler,
+    parent_port_frame_ancestors,
 )
 from kiro_crew.dashboard.server_runtime.security_middleware import (  # noqa: F401
     _audit_denied,

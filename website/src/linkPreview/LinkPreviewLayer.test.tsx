@@ -2,8 +2,9 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { render, waitFor, act, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { LINK_PREVIEW_TAG, readFrameMessage } from './linkPreviewProtocol'
+import { BURST_CAPACITY, LINK_PREVIEW_TAG, MAX_MESSAGE_BYTES, readFrameMessage } from './linkPreviewProtocol'
 import { FRAME_SANDBOX, MAX_PINNED, READY_TIMEOUT_MS } from './linkPreviewFrames'
+import { resolveLinkPreviews } from './linkPreviewRegistry'
 import { fromFrame, installFrameWindows, postFrom, sentTo, type Sent } from '../test/LinkPreviewFramesTestUtils'
 
 const listApps = vi.fn()
@@ -55,7 +56,6 @@ async function hoverReady(a: HTMLElement) {
   await act(async () => { await vi.advanceTimersByTimeAsync(0) })
   const el = theFrame()
   const sent = watch(el)
-  el.dispatchEvent(new Event('load'))
   fromFrame(el, 'ready')
   await act(async () => { await vi.advanceTimersByTimeAsync(400) })
   return { el, sent }
@@ -103,7 +103,6 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     const el = theFrame()
     const sent = watch(el)
-    el.dispatchEvent(new Event('load'))
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
     expect(types(sent)).toEqual(['init'])
     fromFrame(el, 'ready')
@@ -124,7 +123,6 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(0) })
       const el = theFrame()
       const sent = watch(el)
-      el.dispatchEvent(new Event('load'))
       await act(async () => { await vi.advanceTimersByTimeAsync(400) }) // the delay passes; the frame is still loading
       dismiss(a, other)
       fromFrame(el, 'ready')
@@ -210,6 +208,19 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     document.body.append(box)
     box.focus()
     fireEvent.keyDown(box, { key: 'p' })
+    expect(sent.length).toBe(n)
+    box.remove()
+    // The code editor's editable node sits in a shadow root: document.activeElement
+    // is only its host, so the guard has to look inside.
+    const host = document.createElement('div')
+    document.body.append(host)
+    const inner = document.createElement('div')
+    inner.contentEditable = 'true'
+    inner.tabIndex = 0
+    host.attachShadow({ mode: 'open' }).append(inner)
+    inner.focus()
+    fireEvent.keyDown(inner, { key: 'p', composed: true })
+    fireEvent.keyDown(document, { key: 'p' })
     expect(sent.length).toBe(n)
   })
 
@@ -331,12 +342,118 @@ describe('LinkPreviewLayer: the card runs in a sandboxed frame', () => {
     expect(sent.slice(-2)).toMatchObject([{ type: 'hide', reason: 'disabled' }, { type: 'dispose' }])
   })
 
+  it('an app update replaces its frame, so the next hover loads the new module', async () => {
+    const { qc } = await mount()
+    const first = await hoverReady(link())
+    fromFrame(first.el, 'open')
+    // Same provider id and host, a new install of the app.
+    listApps.mockResolvedValue([{ ...APP, version: '2.0.0', installedAt: '2026-10-31T13:00:00Z' }])
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['apps'] }) })
+    await waitFor(() => expect(first.el.isConnected).toBe(false))
+    expect(first.sent.slice(-2)).toMatchObject([{ type: 'hide', reason: 'disabled' }, { type: 'dispose' }])
+    const second = await hoverReady(link('https://tickets.example.com/t/TK-2'))
+    expect(second.el).not.toBe(first.el)
+    expect(mint).toHaveBeenCalledTimes(2)
+    // An unrelated refresh with the same install keeps the frame.
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['apps'] }) })
+    expect(second.el.isConnected).toBe(true)
+    // A same-version Sync replaces the files: only updatedAt moves.
+    listApps.mockResolvedValue([{ ...APP, version: '2.0.0', installedAt: '2026-10-31T13:00:00Z', updatedAt: '2026-10-31T14:00:00Z' }])
+    await act(async () => { await qc.invalidateQueries({ queryKey: ['apps'] }) })
+    await waitFor(() => expect(second.el.isConnected).toBe(false))
+  })
+
   it('a capabilityExpired message is answered with a fresh capability', async () => {
     await mount()
     const { el, sent } = await hoverReady(link())
     mint.mockResolvedValueOnce({ frame: '/link-preview-frame/cards-app/tok2', capability: 'cap-2', ttl: 3600 })
     fromFrame(el, 'capabilityExpired')
     await waitFor(() => expect(sent.at(-1)).toMatchObject({ type: 'capability', capability: 'cap-2' }))
+  })
+})
+
+describe('LinkPreviewLayer: dismissal retires the show', () => {
+  it('a card that was shown but not yet opened is told to hide, and its late open is dropped', async () => {
+    await mount()
+    const { el, sent } = await hoverReady(link())
+    const show = sent.filter((m) => m.type === 'show').at(-1)!
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(sent.at(-1)).toMatchObject({ type: 'hide', reason: 'escape' })
+    // The provider's fetch finishes after the dismissal and opens that show's card.
+    fromFrame(el, 'open', { invocation: show.invocation })
+    fromFrame(el, 'resize', { invocation: show.invocation, width: 200, height: 100 })
+    expect(el.style.visibility).toBe('hidden')
+  })
+})
+
+describe('LinkPreviewLayer: the protocol is bounded', () => {
+  it('every show is numbered, and a card message for an older show is dropped', async () => {
+    await mount()
+    const a = link()
+    const { el, sent } = await hoverReady(a)
+    expect(sent.filter((m) => m.type === 'show').map((m) => m.invocation)).toEqual([1])
+    // A second show for another link of the same app.
+    const other = document.createElement('div')
+    document.body.append(other)
+    fireEvent.pointerOut(a, { relatedTarget: other })
+    const b = link('https://tickets.example.com/t/TK-2')
+    fireEvent.pointerOver(b)
+    await act(async () => { await vi.advanceTimersByTimeAsync(400) })
+    expect(sent.filter((m) => m.type === 'show').map((m) => m.invocation)).toEqual([1, 2])
+    fromFrame(el, 'open', { invocation: 1 }) // answers the first show: stale
+    expect(el.style.visibility).toBe('hidden')
+    fromFrame(el, 'open', { invocation: 2 })
+    expect(el.style.visibility).toBe('visible')
+    fromFrame(el, 'resize', { invocation: 1, width: 500, height: 500 })
+    expect(el.style.width).not.toBe('500px')
+  })
+
+  it('a message over the byte limit is dropped unread', async () => {
+    await mount()
+    const { el } = await hoverReady(link())
+    fromFrame(el, 'open', { pad: 'x'.repeat(MAX_MESSAGE_BYTES) })
+    expect(el.style.visibility).toBe('hidden')
+    fromFrame(el, 'open')
+    expect(el.style.visibility).toBe('visible')
+  })
+
+  it('a burst past the allowance is dropped until it refills', async () => {
+    await mount()
+    const { el } = await hoverReady(link())
+    for (let i = 0; i < BURST_CAPACITY + 10; i++) fromFrame(el, 'resize', { width: 300, height: 120 })
+    fromFrame(el, 'open') // past the allowance: dropped
+    expect(el.style.visibility).toBe('hidden')
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    fromFrame(el, 'open')
+    expect(el.style.visibility).toBe('visible')
+  })
+
+  it('a frame that navigates itself away is closed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await mount()
+    const { el } = await hoverReady(link())
+    el.dispatchEvent(new Event('load')) // a second load: no longer the card document
+    expect(el.isConnected).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('the hovered URL goes without its query and fragment unless the app opts in with fullUrl', async () => {
+    await mount()
+    const { sent } = await hoverReady(link('https://tickets.example.com/t/TK-1?sig=secret#frag'))
+    expect(sent.find((m) => m.type === 'show')).toMatchObject({ url: 'https://tickets.example.com/t/TK-1' })
+  })
+
+  it('with fullUrl the module gets the whole URL, once the owner approved it', async () => {
+    const manifest = { contributes: { linkPreviews: [{ ...APP.manifest.contributes.linkPreviews[0], fullUrl: true }] } }
+    // Asked for but still waiting on the App Detail page: stripped.
+    const waiting = resolveLinkPreviews([{ ...APP, manifest, linkPreviewGrant: { hosts: ['tickets.example.com'], textPatterns: [], fullUrl: false } }])
+    expect(waiting[0].fullUrl).toBe(false)
+    expect(resolveLinkPreviews([{ ...APP, manifest }])[0].fullUrl).toBe(false)
+    listApps.mockResolvedValue([{ ...APP, manifest, linkPreviewGrant: { hosts: ['tickets.example.com'], textPatterns: [], fullUrl: true } }])
+    await mount()
+    const { sent } = await hoverReady(link('https://tickets.example.com/t/TK-1?sig=secret#frag'))
+    expect(sent.find((m) => m.type === 'show')).toMatchObject({ url: 'https://tickets.example.com/t/TK-1?sig=secret#frag' })
   })
 })
 
@@ -365,9 +482,9 @@ describe('LinkPreviewLayer: overlay mode (a provider with windows of its own)', 
 describe('linkPreviewProtocol', () => {
   it('reads only the messages it defines, with their fields coerced', () => {
     const t = { [LINK_PREVIEW_TAG]: 1 }
-    expect(readFrameMessage({ ...t, type: 'resize', width: '9', height: 5 })).toEqual({ type: 'resize', width: 0, height: 5 })
-    expect(readFrameMessage({ ...t, type: 'dock', edge: 'top' })).toEqual({ type: 'dock', edge: null })
-    expect(readFrameMessage({ ...t, type: 'pin', pinned: 'yes' })).toEqual({ type: 'pin', pinned: false })
+    expect(readFrameMessage({ ...t, type: 'resize', invocation: 2, width: '9', height: 5 })).toEqual({ type: 'resize', invocation: 2, width: 0, height: 5 })
+    expect(readFrameMessage({ ...t, type: 'dock', edge: 'top' })).toEqual({ type: 'dock', invocation: -1, edge: null })
+    expect(readFrameMessage({ ...t, type: 'pin', invocation: 1.5, pinned: 'yes' })).toEqual({ type: 'pin', invocation: -1, pinned: false })
     expect(readFrameMessage({ ...t, type: 'textPatternsOff', ids: ['a', 1, 'b'] })).toEqual({ type: 'textPatternsOff', ids: ['a', 'b'] })
     expect(readFrameMessage({ ...t, type: 'navigate', url: 'https://x' })).toBeNull()
     expect(readFrameMessage({ type: 'open' })).toBeNull()

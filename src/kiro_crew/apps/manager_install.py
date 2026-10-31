@@ -22,6 +22,7 @@ from typing import Iterator
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
+from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -416,7 +417,7 @@ def install_app(
     )
     # Installing is the consent moment for everything the manifest declares.
     # Written before the record, so no record ever sits beside a missing set.
-    _write_approved_grants(name, _declared_grant_entries(manifest.permissions))
+    _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
     _write_installed(name, meta)
 
     # Create data directory
@@ -547,10 +548,10 @@ def update_app(
     existing_approved = _effective_approved_grants(name, existing)
     approved_grants = _approved_grants_after_manifest_change(
         existing_approved=existing_approved,
-        old_permissions=old_manifest.permissions if old_manifest else None,
-        new_permissions=manifest.permissions,
+        old_permissions=grant_source(old_manifest),
+        new_permissions=grant_source(manifest),
     )
-    widened_grants = any(_held_back_entries(approved_grants, manifest.permissions).values())
+    widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
 
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction

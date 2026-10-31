@@ -38,9 +38,17 @@ export function postFrom(data: unknown, source: unknown): void {
   window.dispatchEvent(event)
 }
 
-/** A protocol message from `el` (or from some other window, to test that it is ignored). */
+const CARD_MESSAGES = new Set(['open', 'close', 'resize', 'pin', 'drag', 'dock'])
+
+/** A protocol message from `el` (or from some other window, to test that it is ignored).
+ *  A card message answers the latest show the frame was sent, unless `data` names one. */
 export function fromFrame(el: HTMLIFrameElement | Window | null, type: string, data: Record<string, unknown> = {}): void {
-  postFrom({ [LINK_PREVIEW_TAG]: 1, type, ...data }, el instanceof HTMLIFrameElement ? el.contentWindow : el)
+  const extra: Record<string, unknown> = {}
+  if (el instanceof HTMLIFrameElement && CARD_MESSAGES.has(type) && !('invocation' in data)) {
+    const shows = windowOf(el).sent.filter((m) => m.type === 'show')
+    extra.invocation = shows.length ? shows[shows.length - 1].invocation : 0
+  }
+  postFrom({ [LINK_PREVIEW_TAG]: 1, type, ...extra, ...data }, el instanceof HTMLIFrameElement ? el.contentWindow : el)
 }
 
 export function framesIn(doc: Document = document): HTMLIFrameElement[] {

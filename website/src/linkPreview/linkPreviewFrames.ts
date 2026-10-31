@@ -11,7 +11,18 @@
  * @module linkPreview/linkPreviewFrames
  */
 import { withBase } from '../lib/basePath'
-import { readFrameMessage, toFrame, type AnchorRect, type FromFrame, type Modifiers, type ToFrame } from './linkPreviewProtocol'
+import {
+  BURST_CAPACITY,
+  BURST_PER_SECOND,
+  MAX_MESSAGE_BYTES,
+  messageBytes,
+  readFrameMessage,
+  toFrame,
+  type AnchorRect,
+  type FromFrame,
+  type Modifiers,
+  type ToFrame,
+} from './linkPreviewProtocol'
 
 /** The only sandbox grant. Never `allow-same-origin`: with `allow-scripts` it would
  *  let the frame remove its own sandbox. */
@@ -54,6 +65,11 @@ export interface PreviewFrame {
   /** Overlay mode (`regions`): the frame covers the viewport, clipped to `regions`. */
   overlay: boolean
   regions: AnchorRect[]
+  /** The latest show's number; a card message for an older one is dropped. */
+  invocation: number
+  /** Burst allowance left, and when it was last refilled (`performance.now()`). */
+  tokens: number
+  refilledAt: number
 }
 
 export interface FrameHostOptions {
@@ -148,7 +164,8 @@ export class FrameHost {
       frame.dock = null
       this.place(frame)
     }
-    this.post(frame, { type: 'show', ...link, rect: anchor, theme: this.opts.theme(), ...(modifiers ? { modifiers } : {}) })
+    frame.invocation += 1
+    this.post(frame, { type: 'show', invocation: frame.invocation, ...link, rect: anchor, theme: this.opts.theme(), ...(modifiers ? { modifiers } : {}) })
     return true
   }
 
@@ -176,9 +193,11 @@ export class FrameHost {
         if (frame.state === 'ready') this.post(frame, { type: 'hide', reason })
         continue
       }
-      if (!frame.visible) continue
-      this.setVisible(frame, false)
-      this.post(frame, { type: 'hide', reason })
+      // Dismissal retires the show it answered, visible yet or not: a late `open`
+      // (or `resize`) for it is stale from here on.
+      frame.invocation += 1
+      if (frame.visible) this.setVisible(frame, false)
+      if (frame.state === 'ready') this.post(frame, { type: 'hide', reason })
     }
     for (const frame of [...this.detached]) {
       if (frame.pinned) continue
@@ -217,6 +236,8 @@ export class FrameHost {
   private create(key: string, appName: string): PreviewFrame {
     const el = document.createElement('iframe')
     el.setAttribute('sandbox', FRAME_SANDBOX)
+    // No cookies or other credentials on the frame's own requests, where supported.
+    el.setAttribute('credentialless', '')
     el.setAttribute('referrerpolicy', 'no-referrer')
     el.setAttribute('allow', '')
     el.setAttribute('title', appName)
@@ -238,7 +259,7 @@ export class FrameHost {
     const frame: PreviewFrame = {
       key, appName, el, state: 'loading', ready, visible: false, pinned: false, moved: false, dock: null,
       left: 0, top: 0, width: DEFAULT_SIZE.width, height: DEFAULT_SIZE.height, anchor: null,
-      overlay: false, regions: [],
+      overlay: false, regions: [], invocation: 0, tokens: BURST_CAPACITY, refilledAt: performance.now(),
     }
     const fail = (why: string) => {
       if (frame.state !== 'loading') return
@@ -261,18 +282,29 @@ export class FrameHost {
       },
       cancel: () => window.clearTimeout(timer),
     })
-    this.root.appendChild(el)
     this.opts.mint(appName).then(
       (minted) => {
-        if (!el.isConnected) return
+        if (!this.frames().includes(frame)) return
         frame.frameId = minted.frameId
+        let loads = 0
         el.addEventListener('load', () => {
-          this.post(frame, { type: 'init', capability: minted.capability, theme: this.opts.theme() })
-        }, { once: true })
+          loads += 1
+          if (loads === 1) {
+            this.post(frame, { type: 'init', capability: minted.capability, theme: this.opts.theme() })
+            return
+          }
+          // The frame navigated itself away from the card document: its contents
+          // are no longer the gateway's, so the frame goes.
+          // eslint-disable-next-line no-console -- an app's frame navigating away is otherwise silent
+          console.warn(`[link-preview] ${frame.key}: the card frame navigated away and was closed`)
+          this.destroy(frame)
+        })
         // The URL is the gateway's own: mintFrame accepts only a same-origin
         // `/link-preview-frame/` path, and the frame is sandboxed to an opaque origin.
         // nosemgrep: semgrep.kirocrew.frontend-external-script-inject
         el.src = withBase(minted.frame)
+        // In the document only once it has its real URL, so its first load is the card's.
+        this.root.appendChild(el)
         // Renew the capability well before it lapses, while the frame lives.
         const every = Math.max(60, Math.floor(minted.ttl / 2)) * 1000
         this.renewals.set(frame, window.setInterval(() => { void this.renew(frame) }, every))
@@ -391,6 +423,13 @@ export class FrameHost {
     if (!e.source) return
     const frame = this.frames().find((f) => f.el.contentWindow === e.source)
     if (!frame) return
+    // Bounded: an oversized message, or one past the burst allowance, is dropped unread.
+    const now = performance.now()
+    frame.tokens = Math.min(BURST_CAPACITY, frame.tokens + (Math.max(0, now - frame.refilledAt) / 1000) * BURST_PER_SECOND)
+    frame.refilledAt = now
+    if (frame.tokens < 1) return
+    frame.tokens -= 1
+    if (messageBytes(e.data) > MAX_MESSAGE_BYTES) return
     const msg = readFrameMessage(e.data)
     if (msg) this.handle(frame, msg)
   }
@@ -413,6 +452,8 @@ export class FrameHost {
     }
     // An overlay provider moves its own windows; card messages do not apply.
     if (frame.overlay) return
+    // A card message answers one show; one for an older show is stale.
+    if ('invocation' in msg && msg.invocation !== frame.invocation) return
     switch (msg.type) {
       case 'open':
         this.place(frame)

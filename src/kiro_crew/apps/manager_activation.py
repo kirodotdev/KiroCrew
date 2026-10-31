@@ -15,6 +15,7 @@ import logging
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
+from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
     SESSION_APPROVAL_PENDING_KEY,
@@ -200,11 +201,12 @@ def enable_app(
                 error="the app manifest cannot be read right now; try approving again",
                 error_code="grants_manifest_unreadable",
             )
-        declared = _declared_grant_entries(live.permissions)
+        declared = _declared_grant_entries(grant_source(live))
         approved: dict[str, list[str]] = {}
         for family in STAGED_GRANT_FAMILIES:
             shown = {e for e in grants_consent.get(family, ()) if isinstance(e, str)}
-            kept = list(current_grants.get(family, ()))
+            # A family the stored set predates approves what is declared.
+            kept = list(current_grants[family] if family in current_grants else declared[family])
             kept += [e for e in declared[family] if e in shown and e not in kept]
             approved[family] = kept
             still_staged = still_staged or any(e not in kept for e in declared[family])

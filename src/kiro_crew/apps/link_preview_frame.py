@@ -45,7 +45,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.link_preview_grants import link_preview_grant_row
+from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, resolve_mcp_backend_url
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -114,12 +115,48 @@ def _provider_entry(name: str) -> tuple[str, bool, str] | None:
         return None
     if manifest.name != name:
         return None
-    return entry, bool(manifest.backend.entryPoint), manifest.name
+    # Revoked or never approved: no host and no text pattern the owner approved.
+    grant = link_preview_grant_row(name, manifest).get("linkPreviewGrant") or {}
+    if not grant.get("hosts") and not grant.get("textPatterns"):
+        return None
+    # Proxied when the gateway proxy can reach a backend for it: a spawned
+    # ``backend.entryPoint`` or a self-managed loopback ``mcpServers`` URL, the same
+    # two shapes the proxy resolves and the app secret is issued for.
+    process_backed = bool(manifest.backend.entryPoint) or (
+        resolve_mcp_backend_url(manifest.mcpServers) is not None
+    )
+    return entry, process_backed, manifest.name
 
 
 # ---------------------------------------------------------------------------
 # Mint
 # ---------------------------------------------------------------------------
+
+
+def _mint_frame_token(request: web.Request, name: str, client: str, frame_id: str) -> str:
+    """``<parent port>-<signed token>``: the frame's path credential.
+
+    The frame document is fetched without a cookie (the iframe is credentialless
+    and the route is on the auth bypass), so it cannot find the embedding parent
+    dashboard the way a dashboard page does. The mint can: it runs on the person's
+    session, whose validated ``embed_parent_port`` claim names that parent. The
+    port is bound into the signature, so the frame request can trust it; ``0`` means
+    the dashboard is not embedded.
+    """
+    from kiro_crew.dashboard.server import _embed_parent_port
+
+    port = _embed_parent_port(request, request.app) or 0
+    return f"{port}-{_signer('frame').mint(name, client, frame_id, str(port))}"
+
+
+def _frame_token_parent(token: str, name: str, client: str, frame_id: str) -> int | None:
+    """The parent port a valid frame token was minted with (``0``: none), else ``None``."""
+    port_s, sep, signed = token.partition("-")
+    if not sep or not port_s.isdigit() or len(port_s) > 5:
+        return None
+    if not _signer("frame").verify(signed, name, client, frame_id, port_s):
+        return None
+    return int(port_s)
 
 
 async def handle_link_preview_mint(request: web.Request) -> web.Response:
@@ -152,7 +189,7 @@ async def handle_link_preview_mint(request: web.Request) -> web.Response:
     _audit("link_preview_mint", "granted", name)
     return web.json_response(
         {
-            "frame": f"{FRAME_PREFIX}{name}/{frame_id}/{_signer('frame').mint(name, client, frame_id)}",
+            "frame": f"{FRAME_PREFIX}{name}/{frame_id}/{_mint_frame_token(request, name, client, frame_id)}",
             "frameId": frame_id,
             "capability": f"{frame_id}~{_signer('fetch').mint(name, client, frame_id)}",
             "ttl": _CAPABILITY_TTL_SECS,
@@ -213,17 +250,24 @@ async function capFetch(path, init) {
   return go();
 }
 const clampNum = (n) => (Number.isFinite(n) ? n : 0);
+// Card controls belong to one show: each carries that show's invocation, fixed
+// when it is made, so a slow completion for an earlier hover names the earlier
+// show and the dashboard drops it.
+function cardControls(invocation) {
+  return Object.freeze({
+    open: () => send('open', { invocation }),
+    close: () => send('close', { invocation }),
+    resize: (size) => send('resize', { invocation, width: clampNum(size && size.width), height: clampNum(size && size.height) }),
+    pin: (pinned) => send('pin', { invocation, pinned: pinned === true }),
+    dragBy: (dx, dy) => send('drag', { invocation, dx: clampNum(dx), dy: clampNum(dy) }),
+    dock: (edge) => send('dock', { invocation, edge: edge === 'left' || edge === 'right' ? edge : null }),
+  });
+}
 const ctx = {
   appName: CFG.app,
   theme: () => CFG.theme,
   fetch: capFetch,
   setTextPatternsOff: (ids) => send('textPatternsOff', { ids: Array.isArray(ids) ? ids.map(String).slice(0, 64) : [] }),
-  open: () => send('open'),
-  close: () => send('close'),
-  resize: (size) => send('resize', { width: clampNum(size && size.width), height: clampNum(size && size.height) }),
-  pin: (pinned) => send('pin', { pinned: pinned === true }),
-  dragBy: (dx, dy) => send('drag', { dx: clampNum(dx), dy: clampNum(dy) }),
-  dock: (edge) => send('dock', { edge: edge === 'left' || edge === 'right' ? edge : null }),
   // Overlay mode: the frame covers the viewport, clipped to these rects.
   setRegions: (rects) => send('regions', {
     rects: (Array.isArray(rects) ? rects : []).slice(0, 32).map((r) => ({
@@ -266,7 +310,8 @@ window.addEventListener('message', (e) => {
       renewWaiters.splice(0).forEach((done) => done());
       return;
     case 'show': {
-      const link = { rect: m.rect, theme: m.theme === 'dark' ? 'dark' : 'light' };
+      if (!Number.isInteger(m.invocation)) return;
+      const link = { rect: m.rect, theme: m.theme === 'dark' ? 'dark' : 'light', card: cardControls(m.invocation) };
       if (typeof m.url === 'string') link.url = m.url;
       if (typeof m.text === 'string') link.text = m.text;
       if (m.modifiers && typeof m.modifiers === 'object') {
@@ -358,7 +403,8 @@ def frame_csp(nonce: str, frame_ancestors: str) -> str:
         "img-src 'self' https: data: blob:; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
-        "object-src 'none'; base-uri 'none'; form-action 'none'; "
+        "media-src 'none'; worker-src 'none'; frame-src 'none'; child-src 'none'; "
+        "manifest-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; "
         f"frame-ancestors {frame_ancestors}"
     )
 
@@ -368,9 +414,12 @@ async def handle_link_preview_frame(request: web.Request) -> web.Response:
     name = request.match_info.get("name", "")
     frame_id = request.match_info.get("frame_id", "")
     token = request.match_info.get("token", "")
-    if not _FRAME_ID_RE.fullmatch(frame_id) or not _signer("frame").verify(
-        token, name, request.remote or "", frame_id
-    ):
+    parent = (
+        _frame_token_parent(token, name, request.remote or "", frame_id)
+        if _FRAME_ID_RE.fullmatch(frame_id)
+        else None
+    )
+    if parent is None:
         _audit("link_preview_frame", "denied", name, "bad frame token")
         raise web.HTTPNotFound()
     found = await asyncio.to_thread(_provider_entry, name)
@@ -379,14 +428,16 @@ async def handle_link_preview_frame(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     _audit("link_preview_frame", "granted", name)
     from kiro_crew.dashboard.origin import frame_ancestors_value
-    from kiro_crew.dashboard.server import _extra_frame_ancestors
+    from kiro_crew.dashboard.server import parent_port_frame_ancestors
 
     nonce = _secrets.token_urlsafe(18)
     resp = web.Response(
         text=_frame_html(found[2], found[0], nonce), content_type="text/html", charset="utf-8"
     )
+    # The embedding parent (an Instances embed) comes from the signed token, not
+    # from a cookie this credentialless request never carries.
     resp.headers["Content-Security-Policy"] = frame_csp(
-        nonce, frame_ancestors_value(_extra_frame_ancestors(request, request.app))
+        nonce, frame_ancestors_value(parent_port_frame_ancestors(parent) if parent else [])
     )
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Cache-Control"] = "no-store"
@@ -400,7 +451,8 @@ async def handle_link_preview_frame(request: web.Request) -> web.Response:
 
 #: Request headers the frame may send. ``content-type`` covers JSON bodies.
 _CORS_ALLOW_HEADERS = f"content-type, {CAPABILITY_HEADER.lower()}"
-_CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE"
+_FETCH_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_CORS_ALLOW_METHODS = ", ".join(sorted(_FETCH_METHODS))
 #: Marks a request whose response carries the frame's CORS headers: a preflight,
 #: or a request whose capability verified. A refusal carries none.
 _CORS_KEY = "link_preview_cors"
@@ -455,6 +507,10 @@ async def handle_link_preview_fetch(request: web.Request) -> web.StreamResponse:
         request[_CORS_KEY] = True
         # A preflight carries no credential by design; it grants nothing by itself.
         return web.Response(status=204)
+    if request.method not in _FETCH_METHODS:
+        return web.json_response(
+            {"code": "method_not_allowed", "error": "method not allowed"}, status=405
+        )
     if ".." in path or path.startswith("/") or "\\" in path:
         return web.json_response({"code": "invalid_path", "error": "invalid path"}, status=400)
     capability = request.headers.get(CAPABILITY_HEADER, "")
