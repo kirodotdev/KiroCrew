@@ -145,11 +145,18 @@ def _lookup_schema_node(schema: dict, dot_path: str) -> dict | None:
 
 
 def _is_sensitive_path(schema: dict, dot_path: str) -> bool:
-    """Return True if the field at *dot_path* is marked sensitive."""
-    node = _lookup_schema_node(schema, dot_path)
-    if node is None:
-        return False
-    return node.get("x-meta", {}).get("sensitive", False)
+    """Return True if the field at *dot_path*, or any field holding it, is sensitive.
+
+    A value inside a sensitive container (an entry of ``telemetry.otlp_endpoints``)
+    is as secret as the container, though its generated ``items`` schema carries
+    no ``x-meta`` of its own.
+    """
+    parts = dot_path.split(".")
+    for end in range(len(parts), 0, -1):
+        node = _lookup_schema_node(schema, ".".join(parts[:end]))
+        if node is not None and node.get("x-meta", {}).get("sensitive", False):
+            return True
+    return False
 
 
 def _is_deprecated_path(schema: dict, dot_path: str) -> bool:

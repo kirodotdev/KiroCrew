@@ -382,11 +382,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # to expose where beacon_endpoint is not: turning this on writes JSONL under
     # ~/.kiro/crew/metrics. It is NOT unconditionally local, though —
     # `_build_recorder` attaches an OTLP reader for every destination the active
-    # telemetry provider supplies (the default provider supplies one when
-    # `telemetry.otlp_endpoint` is set) — so the PATCH route's gate refuses the ENABLE on a
-    # host where egress would start, which is what keeps the switch's local-only
-    # promise true for every state it can reach. The endpoint itself stays
-    # config-file-only, so a
+    # telemetry provider supplies (the default provider supplies one for
+    # `telemetry.otlp_endpoint` and one per `telemetry.otlp_endpoints` entry, and
+    # an edition may return its own), so the PATCH route's
+    # gate refuses the ENABLE on a host where egress would start, which is what
+    # keeps the switch's local-only promise true for every state it can reach.
+    # Both endpoint keys stay config-file-only (deliberately absent from this
+    # table, so a PATCH to either is refused "field not editable"), so a
     # dashboard caller can neither choose a destination nor start sending to one.
     "telemetry.enabled": {"type": "bool"},
     # SSO login flags for an edition that supplies a real sso_login_handler.

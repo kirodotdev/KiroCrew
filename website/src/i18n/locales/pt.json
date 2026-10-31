@@ -17951,10 +17951,14 @@
         "recordMetricsSaveFailed": "Não foi possível alterar esta configuração. Tente novamente.",
         "recordMetricsEnvPinned": "A variável de ambiente {{envVar}} está fixando esta configuração — remova-a do ambiente para alterá-la aqui.",
         "recordMetricsOverlayPinned": "Uma entrada em config.local.json está fixando esta configuração — remova-a para alterá-la aqui.",
-        "recordMetricsDescriptionExporting": "Coletar métricas de desempenho e enviá-las ao coletor configurado em config.json.",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint está definido, então registrar também enviaria métricas para fora desta máquina. Ative o registro em config.json se for isso que você quer.",
-        "recordMetricsEgressOn": "As métricas estão sendo enviadas para fora desta máquina, ao coletor em telemetry.otlp_endpoint.",
-        "recordMetricsSaveRefusedEgress": "O registro não foi ativado: telemetry.otlp_endpoint está definido, então ativá-lo aqui começaria a enviar métricas para fora desta máquina. Ative-o em config.json.",
+        "recordMetricsDescriptionExporting": "Coletar métricas de desempenho e enviá-las aos coletores configurados.",
+        "recordMetricsEgressOff": "Há coletores configurados, então registrar também enviaria métricas para fora desta máquina. Ative o registro em config.json se for isso que você quer.",
+        "recordMetricsEgressOn": "As métricas estão sendo enviadas para fora desta máquina, aos coletores listados abaixo.",
+        "recordMetricsEgressDestinations": "Coletores: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (incluído nesta versão; desativar “Registrar métricas” também o interrompe)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (incluído nesta versão)",
+        "recordMetricsEgressLegacyName": "Seu coletor (config.json)",
+        "recordMetricsSaveRefusedEgress": "O registro não foi ativado: há coletores configurados, então ativá-lo aqui começaria a enviar métricas para fora desta máquina. Ative-o em config.json.",
         "recordMetricsStatusUnavailable": "Não foi possível carregar a configuração de gravação de métricas. O interruptor fica bloqueado até carregar."
       },
       "postureDisclosure": {

@@ -16,6 +16,7 @@ collection, then egress.
 |---|---|---|
 | `telemetry.enabled` | `false` | Nothing is recorded. Metric call sites are cheap no-ops. |
 | `telemetry.otlp_endpoint` | `""` (empty) | Nothing leaves the machine. Local JSONL sink only. |
+| `telemetry.otlp_endpoints` | `[]` (empty) | Same: no extra collectors. See [Several collectors](#several-collectors-otlp_endpoints). |
 | OTLP exporter package | not installed | The OTLP exporter is not importable until installed separately. |
 
 Collection and egress are deliberately separate switches. Enabling collection
@@ -88,6 +89,85 @@ telemetry OTLP export active; metrics leave this machine (telemetry.otlp_endpoin
 The second line is the one to look for. The endpoint value is never logged — only
 the destination name — so a credential embedded in the URL does not end up in the
 journal.
+
+### Several collectors: `otlp_endpoints`
+
+`telemetry.otlp_endpoints` is a list. Each entry is its own destination with its
+own exporter, so two collectors can receive different things. When
+`otlp_endpoint` is also set, it is the first destination and keeps working exactly
+as above; the list adds to it.
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlp_endpoints": [
+      {
+        "name": "ops",
+        "endpoint": "https://collector.example.com/v1/metrics",
+        "headers_env": {"Authorization": "OPS_OTLP_AUTH"}
+      },
+      {
+        "name": "product",
+        "endpoint": "https://metrics.example.org/v1/metrics",
+        "temporality": "delta",
+        "allow": "PRODUCT_METRICS",
+        "point_attributes": {"ClientType": "desktop"},
+        "resource_allow": ["service.name", "service.version"]
+      }
+    ]
+  }
+}
+```
+
+| Key | Required | What it does |
+|---|---|---|
+| `endpoint` | yes | Full `http://` or `https://` signal URL, `/v1/metrics` included. |
+| `name` | no | Shown in logs and in Settings -> Privacy instead of the URL. Letters, digits, `.`, `_`, `-`; at most 64 characters. Defaults to `otlp_endpoints.<index>`. |
+| `enabled` | no | `false` turns the entry off. A disabled entry is not checked. |
+| `headers_env` | no | Header name -> environment variable name. The value is read from the gateway's environment when the exporter is built, so a secret is never in `config.json`. If the variable is unset or blank, that entry sends nothing and a warning names the variable. There is no key for a literal header value: an entry with a `headers` key is skipped with a warning that points here. |
+| `temporality` | no | `""` (the default described in [Temporality](#temporality-the-setting-that-decides-whether-your-backend-accepts-the-data)), `"cumulative"` or `"delta"`. A value here pins every instrument kind for this entry only, and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` no longer moves it. `"delta"` is the OpenTelemetry delta preset: counters and histograms delta, up-down counters cumulative. |
+| `allow` | no | A list of full metric names, or the preset name `"PRODUCT_METRICS"` (the reviewed list in `src/kiro_crew/metrics/product_metrics.py`). Without it the entry gets every metric. An unknown preset name refuses the entry rather than sending everything. |
+| `point_attributes` | no | Fixed labels added to every data point of this entry. Keys come from a reviewed set (`ClientType` today); values are short constants (letters, digits, `.`, `_`, `-`). |
+| `resource_allow` | no | Keep only these resource keys on this entry's batches. |
+
+An entry sends only the headers it names in `headers_env`. The process-wide
+`OTEL_EXPORTER_OTLP_METRICS_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` variables, and
+the OpenTelemetry credential-provider variable, apply to `otlp_endpoint` only, as
+they did before the list existed. A list entry with no `headers_env` sends no
+authentication at all, so a credential you set for one collector never reaches a
+second host you add later. To send the same credential to a list entry, name its
+variable in that entry's `headers_env`.
+
+A malformed entry is skipped with one warning that names the entry and the field,
+never a value, and the other entries keep working. At most 16 entries are read;
+the bound only stops a pasted list from starting hundreds of export threads.
+
+Every entry goes through the same gates as `otlp_endpoint`: nothing is sent while
+collection is off (`telemetry.enabled`, `KIROCREW_TELEMETRY`), a policy's
+`capabilities.telemetry` `otlp_hosts` list decides which hosts may receive
+metrics, and Settings -> Privacy lists every entry by name as a place metrics go.
+An entry counts there even while it sends nothing for a reason that can clear on
+its own, such as an unset `headers_env` variable. The list, like `otlp_endpoint`,
+can only be set in `config.json`, not from the dashboard.
+
+#### Collectors a build ships
+
+A build of Kiro Crew can ship a collector of its own. It does so in code, through
+its telemetry provider (`TelemetryProvider.otlp_destinations`), not as an entry in
+your `config.json`; the public build ships none. What that means for you:
+
+- Your own entries still work next to it, as long as the build keeps them (the
+  public provider's list is `otlp_endpoints.config_destinations(cfg)`, which a
+  build's provider is expected to return first).
+- Config cannot remove or turn it off, and an entry of yours cannot repoint it.
+  Settings -> Privacy lists it as included by the build.
+- It never bypasses the gates above. Turning collection off stops it, and a
+  policy can refuse its host.
+
+An enterprise build ignores `otlp_endpoint` and `otlp_endpoints` from local
+config, as it ignores `otlp_endpoint` today; collectors the build ships still
+apply, under the policy.
 
 ### Other settings worth knowing
 
@@ -314,6 +394,38 @@ your queries, so you can move that line without a Kiro Crew change.
 
 Resource attributes identify the sending process and are attached to every
 series, so they are what you group by. `service.name` is always `kirocrew`.
+
+### A destination can receive less than everything
+
+The paragraph above describes the destination you configure: `otlp_endpoint`
+sends your own collector every instrument the process records, under the full
+resource, with no attribute Kiro Crew added on its way out. That is unchanged and
+is what this guide is about.
+
+A destination is also allowed to receive only PART of that. `OtlpDestination`
+carries three optional fields. An `otlp_endpoints` entry sets them with the keys
+of the same names, and a build that assembles its own destination can set them
+too:
+
+- `allow` -- only metrics whose name is in this set are sent. Unset means
+  everything, which is what your endpoint gets.
+- `point_attributes` -- fixed key/value pairs added to every data point of that
+  destination. The one reviewed key today is `ClientType`.
+- `resource_allow` -- that destination's batches carry a resource reduced to these
+  keys, so a destination that may see only `service.name` and `service.version`
+  does not receive `service.instance.id`.
+
+Three things to take from this if you operate a collector:
+
+- **Your destination is not affected by another one.** Each destination's
+  narrowing is applied to its own exporter, so nothing another destination
+  declares can add an attribute to, or remove a metric from, what reaches yours.
+- **The local JSONL sink is never narrowed.** It records everything the process
+  collected, under the full resource, which is what makes it the place to check
+  what was actually measured on a machine.
+- **A narrowing can only reduce.** None of the three fields can add a metric, relax
+  the consent gate, or bypass the attribute sanitiser; a destination that sets
+  none of them behaves exactly as this guide describes.
 
 ### Before you build a per-host dashboard
 

@@ -153,8 +153,9 @@ to `0` (cap disabled) rather than being interpreted as "prune everything".
 `telemetry.enabled` defaults `false`, so every metric call site is a cheap no-op
 and no file is written — including the session-lifetime breadcrumb, which is
 gated on the same consent and fails closed. Even once local collection is
-enabled, `otlp_endpoint` defaults empty, so **no data ever leaves the machine
-unless the operator explicitly sets an OTLP endpoint.**
+enabled, `otlp_endpoint` defaults empty and `otlp_endpoints` defaults to an
+empty list, so **no data ever leaves the machine unless the operator explicitly
+sets an OTLP endpoint** (or the build ships a collector of its own).
 
 **Easy opt-in (four equivalent ways):**
 - **Config flag:** set `"telemetry": {"enabled": true}` in `~/.kiro/crew/config.json`.
@@ -162,7 +163,8 @@ unless the operator explicitly sets an OTLP endpoint.**
 - **Dashboard:** the recording switch in Settings → Privacy, which writes the same
   key through `PATCH /api/config/kirocrew` (`telemetry.enabled` is in
   `_EDITABLE_CONFIG`). That route refuses `true` with **HTTP 409** when
-  `telemetry.otlp_endpoint` is set: `_build_recorder` attaches an OTLP reader
+  any OTLP destination resolves (`telemetry.otlp_endpoint`, a
+  `telemetry.otlp_endpoints` entry, or one the build ships): `_build_recorder` attaches an OTLP reader
   whenever the active telemetry provider supplies a destination — which the public
   default does for any non-empty endpoint — so enabling from a switch offered as
   local-only would start network egress. The endpoint is chosen in the config
@@ -188,8 +190,13 @@ recheck or at their next start.
 `provider.watch_config()` registers one applier on the `telemetry` section, and its
 callback calls `shutdown()` — the next `get_recorder()` then builds a fresh
 recorder from the new config. That covers the settings the 30s consent recheck
-cannot see, because it only re-reads `enabled`: the OTLP endpoint, the export
-cadence, and every other value `_build_recorder` reads once. Registration is
+cannot see: the export cadence and every other value `_build_recorder` reads
+once. The recheck itself compares three things against the live recorder:
+`enabled`, the `agent` pair the harness label comes from (`_agent_key`), and a
+sha256 of `telemetry.otlp_endpoint` plus `telemetry.otlp_endpoints`
+(`_endpoints_key`). So a process with no config watcher (the MCP gateway
+daemon, through `recheck_consent`) still drops the reader of a list entry that
+was turned off or removed, within one window. Registration is
 idempotent per process, so a re-entered boot path cannot stack appliers that each
 rebuild. The rebuild is lazy by design — `shutdown()` only drops the memo, so the
 ~57ms of SDK import is paid on the next metric call rather than on the config
@@ -230,8 +237,8 @@ re-evaluates `Session.auth` per request, so a credential that rotates during
 process lifetime (an OIDC/SSO id_token, STS credentials) is re-read on every
 export, where `OTEL_EXPORTER_OTLP_HEADERS` — the only injection point before this
 seam — freezes into the exporter's session at construction and starts returning
-401 once it rotates. Static per-destination headers ride on `Session.headers` and
-need no field of their own.
+401 once it rotates. A destination built in code carries static headers on
+`Session.headers`; one declared as data names them in `headers_env` (below).
 
 The method must be cheap and side-effect-free per call: it is read once per
 recorder build AND on every egress-posture read (the Privacy panel's status, and
@@ -474,6 +481,191 @@ Process-level metrics (gateway boot, HTTP requests, MCP pool, crew log health,
 inventory gauges) have no session, so they carry only the resource attribute.
 
 Tests: `test/metrics/test_harness_label.py`.
+
+### Per-destination narrowing: the export allowlist, point attributes, resource
+
+The table above is the resource EVERY sink gets, and the roster below is the
+instrument set every sink gets. That is the right answer for the local JSONL sink
+and for an operator's own collector: both are the operator's own machine talking
+to the operator's own backend. It is the wrong answer for a destination that may
+receive only part of it -- a product destination reporting how Kiro Crew is used,
+whose exported set is a reviewed list rather than everything the process happens
+to record.
+
+So `OtlpDestination` carries three optional NARROWING fields. Each can only
+reduce or label what THAT destination receives; none of them can widen anything,
+reach the local sink, or touch another destination. All three default to today's
+behaviour, so an existing destination's payload is byte-identical.
+
+| Field | Default | What it does |
+|-------|---------|--------------|
+| `allow: frozenset[str] \| None` | `None` | A metric whose name is not in the set is dropped before encoding. `None` sends every metric collected. Full instrument names, `kirocrew.` prefix included. |
+| `point_attributes: Mapping[str, str]` | empty | Fixed pairs added to every exported data point of this destination. |
+| `resource_allow: frozenset[str] \| None` | `None` | This destination's batches carry a `Resource` reduced to these keys. A key the shared resource does not set is simply absent. |
+
+`metrics/destination_filter.py` enforces all three as an exporter WRAPPER that
+`_build_otlp_reader` puts around that destination's own exporter. The descriptor
+declares the narrowing; the core performs it. Four properties follow from where
+the wrapper sits:
+
+- **Containment is structural.** A wrapper only ever sees batches handed to its
+  own exporter. The local sink and every other destination read their own, and a
+  destination that narrows nothing is handed the unwrapped exporter object -- there
+  is no wrapper in its path to differ by.
+- **Nothing shared is mutated.** A collected batch arrives as SDK dataclasses
+  whose nested objects a sibling exporter may also hold, so every narrowed level
+  is rebuilt with `dataclasses.replace` rather than assigned in place. That also
+  keeps it correct as the SDK adds fields (`NumberDataPoint.exemplars` arrived
+  that way).
+- **It fails closed.** If the narrowing itself raises, the batch is DROPPED and
+  the first occurrence logs one WARNING (the rest are debug, because a per-minute
+  reader would otherwise write a line per interval forever). Forwarding the
+  unnarrowed batch is the one outcome that would turn a bug here into an egress
+  of data the destination was never allowed.
+- **Temporality stays a core decision.** The wrapper mirrors the wrapped
+  exporter's `_preferred_temporality` and `_preferred_aggregation`, which
+  `PeriodicExportingMetricReader` reads at construction -- answering `None` there
+  would silently put that destination back on the SDK's CUMULATIVE default while
+  the local sink stayed on DELTA.
+
+**A point-attribute key is refused, not dropped.** Keys are checked at
+construction against `destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS`
+(`ClientType` only today), and an unreviewed key raises. `_build_otlp_reader`
+turns that into "this destination gets no reader", so the cost is one
+destination's egress and local collection continues. Dropping the label instead
+would publish a series the receiving side cannot route, with only a debug line to
+say why. Keys are a reviewed non-secret set and are named in that log; attribute
+VALUES are never logged, least of all beside an endpoint that may carry a
+credential. On a key collision the destination's fixed value WINS over one
+already on the point: the value is a constant fixed at construction and a
+receiving side routes on it, so a call site must not be able to steer it.
+
+`PRODUCT_METRICS` in `metrics/product_metrics.py` is the reviewed set a product
+destination exports under. Names are spelled as literals there because
+`metrics.turns` imports `metrics.provider` at module scope and the recorder reads
+the set, so importing the declaring modules would close a cycle;
+`test/metrics/test_product_metrics.py` resolves every name against its declaring
+constant instead, and fails on a name with no instrument or on one that is a
+histogram or an up/down counter. Counters and gauges only: a fixed-bucket
+histogram's boundaries may not survive a receiving backend, so a distribution is
+exported as a bucket-labelled counter.
+
+Being a real counter is not sufficient. Every attribute value on an exported
+series has to come from a closed enum, which the kind check cannot see, so a
+metric carrying an open value is held out by name with its reason:
+`kirocrew.turn.tokens` is wanted and its instrument exists, but its `model` value
+is the configured model id, drawn from no set this repo controls -- on a non-Kiro
+backend it can be a provider resource id, so its range is whatever that provider
+names and whatever the person pointed the backend at. `provider` is configured
+the same way. It waits for a bucketed or enumerated stand-in for those two. A negative test asserts each holdout stays
+absent and that its name resolves to a real instrument, so the guard cannot pass
+on a typo and putting a name back means deleting a line that states why it was
+out.
+
+Tests: `test/metrics/test_destination_filter.py` (one provider with the real local
+sink plus narrowed and un-narrowed destinations attached at once: the allowed
+metric only, the fixed attribute on every point, the reduced resource, both other
+sinks untouched; then the nearby inputs -- an empty allowlist, an allowlist naming
+an unknown metric, observable gauges, existing attributes preserved, a collision
+on the fixed key, two destinations with different allowlists, a resource key the
+build does not set, a refused key, and a raise inside the narrowing),
+`test/metrics/test_product_metrics.py` (allowlist membership, instrument kind, the
+open-attribute holdouts, and selftests that drive each rejection those checks rely
+on).
+
+### OTLP endpoint entries: `telemetry.otlp_endpoints`
+
+Every OTLP destination built from config is an entry, parsed by
+`metrics/otlp_endpoints.py` into one `OtlpDestination` each, in this order:
+
+1. `telemetry.otlp_endpoint`, when non-empty: the first entry, named
+   `telemetry.otlp_endpoint`, not validated and carrying no narrowing, so the
+   descriptor is byte-identical to the one the default provider returned before
+   the list existed.
+2. `telemetry.otlp_endpoints`: the operator's list. The loader keeps only the
+   shape (a list of objects); each entry is checked when destinations resolve.
+
+`DefaultTelemetryProvider.otlp_destinations` returns
+`otlp_endpoints.config_destinations(cfg)`. A build that ships its own collector
+returns it from its provider's `otlp_destinations`, after
+`config_destinations(cfg)` so the operator's entries stay. That is the whole lock
+mechanism: a destination code returns is not config, so no config value removes
+or disables it, and no new seam is needed. `otlp_endpoints.label_sources` marks
+each resolved destination `otlp_endpoint`, `otlp_endpoints` (equal to the
+descriptor an operator entry produces, each entry matched once) or `provider`
+(anything else, reported `locked`). Matching is by the whole descriptor, not the
+name, so an operator entry that reuses a build collector's name cannot relabel it.
+
+Entry keys: `name`, `endpoint` (required, `http(s)://` with a host, at most
+`MAX_ENDPOINT_LEN` characters), `enabled` (a boolean; any other value refuses the
+entry, so a mistyped opt-out never exports), `headers_env` (at most
+`MAX_HEADERS` pairs), `temporality` (`""` / `cumulative` / `delta`), `allow`
+(a list of names, or a preset name from `otlp_endpoints.ALLOW_PRESETS`:
+`PRODUCT_METRICS`), `point_attributes`, `resource_allow`. A malformed entry,
+including a shape no check anticipated, is skipped with one WARNING per process
+naming the entry and the field, never a value; it never stops collection. The
+warn-once memory keeps a 16-byte digest per warning, at most `MAX_WARNED` (256),
+and clears when full, so config revisions that are later discarded do not
+accumulate in a long-lived gateway. An
+unknown `allow` preset refuses the entry: an allowlist must not fail open into
+"send everything". At most `MAX_ENTRIES` (16) are read. These bounds are
+arbitrary safety bounds on threads and retained memory, not tuned values.
+There is no key for a literal header value: an entry carrying `headers` is
+refused with a warning that points at `headers_env`, so no credential has to be
+written into `config.json`, where the dashboard and the agent's settings
+diagnosis can read the config.
+
+Three fields on `OtlpDestination` carry what an entry needs at reader build:
+
+- `headers_env` -- header name -> environment variable name, read by
+  `_build_otlp_reader` when it builds the exporter. An unset or blank variable
+  refuses that destination (no reader, one warning naming the variable), so a
+  secret never sits on the descriptor or in `config.json`.
+- `temporality` -- `""` keeps `temporality.otlp_preference()`; `delta`
+  (`otel_delta_preset`) and `cumulative` (`cumulative_preset`) pin every
+  instrument kind for that reader only, so the OTel variable cannot move it.
+- `process_env_credentials` -- `True` (the default, and the legacy
+  `otlp_endpoint` entry) leaves the exporter's fallbacks in place: with no headers
+  of its own it sends `OTEL_EXPORTER_OTLP_METRICS_HEADERS` /
+  `OTEL_EXPORTER_OTLP_HEADERS`, and with no `session` it may load the OTel
+  credential-provider session. Every `otlp_endpoints` entry is `False`:
+  `_build_otlp_reader` passes a header map that stays truthy when empty
+  (`_OwnHeadersOnly`, because the exporter reads `headers or <env>`) and a plain
+  `requests.Session`, so the entry sends only its `headers_env` headers. Those
+  variables were set for one collector; without this, adding a second entry with
+  no headers would send the first collector's credential to the second host.
+
+Gates are unchanged and apply to every entry because every entry is a
+destination: the consent gate in `_build_recorder` runs before any is resolved,
+`otlp_governance.governed_destinations` applies the `otlp_hosts` check, and
+`gate_exporter` re-checks each export. An enterprise build blanks both local keys
+in `_edition_locked_view` (`CONFIG_PATH_LOCKS` names both).
+
+The config view masks the whole `telemetry.otlp_endpoints` value
+(`core_config_view._masked_config_dict` masks every string under a container
+marked sensitive), because entries can carry endpoint userinfo. The agent's
+settings diagnosis (`change_cards_settings.non_default_settings`, behind
+`diagnose_settings`) reports any path the schema marks sensitive, or that sits
+inside a sensitive field, only as `{set: bool}` (`_schema_sensitive`, through
+`config.validation._is_sensitive_path`), whatever its key names look like.
+
+Disclosure: `otlp_egress_listing(cfg)` returns the labelled set before the policy
+check, and `otlp_egress_active` is `bool()` of it. A configured entry is listed
+even when its reader would be refused for a reason that can lift with no change by
+the person (an unset `headers_env` variable, a host the policy refuses today).
+`GET /api/telemetry/collection` returns it as `otlp_destinations: [{name, source,
+locked}]` -- names only, never an endpoint or host -- and Settings -> Privacy lists
+those names under its egress note.
+
+Tests: `test/metrics/test_otlp_endpoint_list.py` (the legacy string unchanged,
+parsing, refusals and bounds, a build-shipped destination next to operator
+entries, the gates on it, reader headers and temporality, the disclosure listing,
+and loopback wire tests: two destinations where the second is narrowed and
+authenticated from the environment, and the OTel header variable reaching the
+legacy entry but not a list entry), `test/test_change_cards_settings.py`
+(the diagnosis withholds schema-sensitive fields), `test/test_config_patch_otlp_endpoints.py`
+(a list entry and a build-shipped destination each refuse the enable; the list is
+not PATCH-writable; the config view masks it).
 
 ## Instrumented signals
 

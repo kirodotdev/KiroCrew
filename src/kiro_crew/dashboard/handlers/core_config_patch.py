@@ -486,8 +486,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     # that promise has to hold for every state this route can reach. It would not:
     # `_build_recorder` attaches an OTLP reader for every destination the active
     # telemetry provider supplies (see metrics/provider.py), so on a host where
-    # egress is configured — through `telemetry.otlp_endpoint` for the default
-    # provider, or an edition's own collector — enabling collection from the
+    # egress is configured (through `telemetry.otlp_endpoint` or any
+    # `telemetry.otlp_endpoints` entry for the default provider, or an edition's
+    # own collector), enabling
+    # collection from the
     # dashboard would start network egress
     # under a switch that says it does not. Refuse the ENABLE there and let the
     # config file — which is where the endpoint was chosen — be where that decision
@@ -499,8 +501,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # state, but a full read plus schema validation (~14ms) when the file
             # changed — and this handler runs on the event loop.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            # Resolved posture, not the raw endpoint string: the DEFAULT provider
-            # derives its one destination from telemetry.otlp_endpoint, but an
+            # Resolved posture, not the raw endpoint strings: the DEFAULT provider
+            # derives its destinations from telemetry.otlp_endpoint(s), but an
             # edition may supply its own collector with that key empty. Asking the
             # same resolver _build_recorder uses is what keeps this refusal and
             # the actual egress from disagreeing. It RAISES when posture cannot be

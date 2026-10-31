@@ -689,6 +689,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_paths_need_restart,
         _hot_apply_after_write,
         _mask_agent_free_text,
+        _mask_strings,
         _masked_config_dict,
         api_kirocrew_config,
     )

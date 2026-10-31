@@ -17652,13 +17652,17 @@
       "privacyPanel": {
         "recordMetricsLabel": "মেট্রিক রেকর্ড করো",
         "recordMetricsDescription": "এই মেশিনে পারফরম্যান্স মেট্রিক সংগ্রহ করো।",
-        "recordMetricsDescriptionExporting": "পারফরম্যান্স মেট্রিক সংগ্রহ করো আর config.json-এ ঠিক করা কলেক্টরে সেগুলো পাঠাও।",
+        "recordMetricsDescriptionExporting": "পারফরম্যান্স মেট্রিক সংগ্রহ করো আর কনফিগার করা কলেক্টরগুলোতে সেগুলো পাঠাও।",
         "recordMetricsSaveFailed": "এই সেটিং বদলানো যায়নি। আবার চেষ্টা করো।",
         "recordMetricsEnvPinned": "{{envVar}} এনভায়রনমেন্ট ভেরিয়েবল এই সেটিং আটকে রেখেছে — এখানে বদলাতে চাইলে সেটি এনভায়রনমেন্ট থেকে সরিয়ে দাও।",
         "recordMetricsOverlayPinned": "config.local.json-এর একটি এন্ট্রি এই সেটিং আটকে রেখেছে — এখানে বদলাতে চাইলে সেটি সরিয়ে দাও।",
-        "recordMetricsEgressOff": "telemetry.otlp_endpoint সেট করা আছে, তাই রেকর্ড করলে মেট্রিক এই মেশিনের বাইরেও পাঠানো হবে। এটাই যদি চাও, তাহলে config.json ফাইলে গিয়ে এটি চালু করো।",
-        "recordMetricsEgressOn": "মেট্রিক এই মেশিনের বাইরে, telemetry.otlp_endpoint-এ থাকা কলেক্টরে পাঠানো হচ্ছে।",
-        "recordMetricsSaveRefusedEgress": "রেকর্ডিং চালু করা হয়নি: telemetry.otlp_endpoint সেট করা আছে, তাই এখান থেকে চালু করলে মেট্রিক এই মেশিনের বাইরে পাঠানো শুরু হবে। বদলে config.json ফাইলে গিয়ে এটি চালু করো।",
+        "recordMetricsEgressOff": "কলেক্টর কনফিগার করা আছে, তাই রেকর্ড করলে মেট্রিক এই মেশিনের বাইরেও পাঠানো হবে। এটাই যদি চাও, তাহলে config.json ফাইলে গিয়ে এটি চালু করো।",
+        "recordMetricsEgressOn": "মেট্রিক এই মেশিনের বাইরে, নিচে তালিকাভুক্ত কলেক্টরগুলোতে পাঠানো হচ্ছে।",
+        "recordMetricsEgressDestinations": "কলেক্টর: {{names}}",
+        "recordMetricsEgressLockedName": "{{name}} (এই বিল্ডে যুক্ত; «মেট্রিক রেকর্ড করো» বন্ধ করলে এটিও থেমে যায়)",
+        "recordMetricsEgressLockedNameOff": "{{name}} (এই বিল্ডে যুক্ত)",
+        "recordMetricsEgressLegacyName": "তোমার কলেক্টর (config.json)",
+        "recordMetricsSaveRefusedEgress": "রেকর্ডিং চালু করা হয়নি: কলেক্টর কনফিগার করা আছে, তাই এখান থেকে চালু করলে মেট্রিক এই মেশিনের বাইরে পাঠানো শুরু হবে। বদলে config.json ফাইলে গিয়ে এটি চালু করো।",
         "recordMetricsStatusUnavailable": "মেট্রিক রেকর্ডিং সেটিং লোড করা যায়নি। লোড না হওয়া পর্যন্ত সুইচটি লক থাকবে।"
       },
       "postureDisclosure": {

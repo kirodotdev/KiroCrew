@@ -19,9 +19,39 @@ interface CollectionStatus {
   env_var?: string
   /** A `config.local.json` entry would make a successful write snap back. */
   overlay_override?: boolean
-  /** `telemetry.otlp_endpoint` is set, so enabling here would also export. */
+  /** An OTLP destination is configured, so enabling here would also export. */
   otlp_configured?: boolean
+  /** Each of those destinations by name (never its URL), in export order. */
+  otlp_destinations?: OtlpDestinationRow[]
   metrics_dir?: string
+}
+
+/** One row of `otlp_destinations`. `locked`: the build ships it and config cannot turn it off. */
+interface OtlpDestinationRow {
+  name: string
+  source?: string
+  locked?: boolean
+}
+
+/**
+ * One destination's label. The legacy single-endpoint setting has no name of its
+ * own (the server reports its config key), so it reads as the person's collector.
+ * A locked one says the switch stops it only while recording is on: while it is
+ * off, nothing is being sent to stop.
+ */
+function destinationLabel(row: OtlpDestinationRow, recording: boolean): string {
+  const name = row.source === 'otlp_endpoint'
+    ? i18nT('pages.settings.privacyPanel.recordMetricsEgressLegacyName')
+    : row.name
+  if (!row.locked) return name
+  return recording
+    ? i18nT('pages.settings.privacyPanel.recordMetricsEgressLockedName', { name })
+    : i18nT('pages.settings.privacyPanel.recordMetricsEgressLockedNameOff', { name })
+}
+
+/** The destination names as one line. */
+function destinationNames(rows: OtlpDestinationRow[], recording: boolean): string {
+  return rows.map(row => destinationLabel(row, recording)).join(', ')
 }
 
 /**
@@ -56,6 +86,7 @@ function MetricRecordingToggle() {
   const envPinned = !!statusQ.data?.env_pinned
   const overlayPinned = !!statusQ.data?.overlay_override
   const otlpConfigured = !!statusQ.data?.otlp_configured
+  const destinations = statusQ.data?.otlp_destinations ?? []
   // A configured egress endpoint pins the ENABLE direction only. Turning recording
   // OFF is exactly what a user on such a host most needs — the config route allows
   // it for that reason — so disabling the whole control here would strand them with
@@ -145,6 +176,15 @@ function MetricRecordingToggle() {
           {enabled
             ? i18nT('pages.settings.privacyPanel.recordMetricsEgressOn')
             : i18nT('pages.settings.privacyPanel.recordMetricsEgressOff')}
+          {/* Every destination by name, so a build's own collector is named next
+              to the operator's: the egress fact is incomplete without where. */}
+          {destinations.length > 0 && (
+            <span className="block mt-1">
+              {i18nT('pages.settings.privacyPanel.recordMetricsEgressDestinations', {
+                names: destinationNames(destinations, enabled),
+              })}
+            </span>
+          )}
         </p>
       )}
       {/* The pin reason, strongest-first: the env var is resolved inside the

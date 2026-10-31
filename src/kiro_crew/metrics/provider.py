@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import importlib.util
+import json
 import logging
 import os
 import platform
@@ -46,8 +48,9 @@ from urllib.parse import urlsplit
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
+from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_governance
+from kiro_crew.metrics import otlp_endpoints, otlp_governance
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -602,6 +605,11 @@ _consent_checked_at = 0.0
 # The consent worker compares it too, so a process that registers no config
 # watcher (the MCP gateway daemon) still relabels after a harness switch.
 _built_agent_key: object = None
+# Fingerprint of the endpoint settings the live recorder's OTLP readers were built
+# from (see ``_endpoints_key``). Compared by the consent worker next to
+# ``_built_agent_key``, so a process with no config watcher drops the reader of
+# an entry that was disabled or removed.
+_built_endpoints_key: object = None
 # Bumped whenever the live recorder is dropped. An off-thread rebuild captures it
 # and refuses to install if it moved, so a disable that lands mid-build cannot be
 # undone by the build finishing afterwards.
@@ -823,6 +831,7 @@ class _Build(NamedTuple):
     provider: Optional["_MeterProviderT"]
     consent: Optional[bool]
     agent_key: object = None
+    endpoints_key: object = None
 
 
 def _agent_key(cfg: object) -> object:
@@ -837,6 +846,22 @@ def _agent_key(cfg: object) -> object:
         if agent is None:
             return None
         return (getattr(agent, "acp_backend", None), getattr(agent, "provider", None))
+    except Exception:
+        return None
+
+
+def _endpoints_key(tel: object) -> object:
+    """A fingerprint of the endpoint settings the OTLP readers are built from.
+
+    A sha256 over ``telemetry.otlp_endpoint`` and ``telemetry.otlp_endpoints``,
+    so module state keeps no second copy of a header value. Compared as-is by the
+    consent worker: a changed fingerprint means a reader may point at an entry
+    that is gone or turned off. ``None`` when the values cannot be read.
+    """
+    try:
+        raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
+        blob = json.dumps(raw, sort_keys=True, default=repr)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
     except Exception:
         return None
 
@@ -862,20 +887,21 @@ def _build_recorder() -> _Build:
 
     consent = _consent_enabled(cfg)
     agent_key = _agent_key(full_cfg)
+    endpoints_key = _endpoints_key(cfg)
     if not consent:
-        return _Build(MetricsRecorder(None), None, consent, agent_key)
+        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
     if not _OTEL_AVAILABLE:
         # opentelemetry missing from the env closure. Degrade to the
         # no-op recorder instead of ever reaching this point via a crash.
         logger.warning("opentelemetry not installed; telemetry disabled")
-        return _Build(MetricsRecorder(None), None, consent, agent_key)
+        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
     # Consent granted — now pay for the SDK import (deferred from module scope
     # so the default-off path never does).
     if not _load_otel():
         logger.warning("opentelemetry not importable; telemetry disabled")
-        return _Build(MetricsRecorder(None), None, consent, agent_key)
+        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
     # Resolve egress destinations BEFORE any reader is started. Two reasons:
     # the seam belongs to the edition and a PlatformCompositionError from it must
@@ -1034,7 +1060,7 @@ def _build_recorder() -> _Build:
             register_mcp_gateway_gauges(meter)
         except Exception:
             logger.warning("mcp gateway gauges unavailable", exc_info=True)
-        return _Build(MetricsRecorder(meter), provider, consent, agent_key)
+        return _Build(MetricsRecorder(meter), provider, consent, agent_key, endpoints_key)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
         # Reap EVERY reader already started, not just the first: an egress
@@ -1044,7 +1070,7 @@ def _build_recorder() -> _Build:
         # Off this thread, because a reader shutdown performs a final export and
         # joins its ticker with the SDK's 30s default.
         _reap_readers_detached(started_readers)
-        return _Build(MetricsRecorder(None), None, consent, agent_key)
+        return _Build(MetricsRecorder(None), None, consent, agent_key, endpoints_key)
 
 
 def _egress_degraded() -> tuple:
@@ -1093,32 +1119,56 @@ def otlp_egress_active(cfg: "TelemetryConfig") -> bool:
     raised INSIDE an implementation still propagates: only an absent attribute is
     read as no-destinations.
     """
+    return bool(otlp_egress_listing(cfg))
+
+
+def otlp_egress_listing(cfg: "TelemetryConfig") -> "tuple[otlp_endpoints.Resolved, ...]":
+    """Every destination enabling collection under *cfg* would send to, in order.
+
+    The disclosure read behind :func:`otlp_egress_active`, and what the Privacy
+    panel lists, each labelled with where it came from
+    (:func:`otlp_endpoints.label_sources`). Same resolution as
+    ``_otlp_destinations`` minus the policy host check, for the reason
+    ``_otlp_destinations`` gives. A configured entry is listed even while
+    something would refuse it at build time (an unset ``headers_env`` variable, a
+    host the policy refuses today): that is a temporary "no" that can lift with no
+    change by the person, so it must not read as "nothing leaves". Raises, like
+    :func:`otlp_egress_active`, when posture cannot be established.
+    """
     provider = _telemetry_provider()
     resolve = getattr(provider, "otlp_destinations", None)
     if resolve is None:
-        return False
+        return ()
     locked_cfg = _edition_locked_view(cfg)
     if locked_cfg is None:
-        return False
-    return bool(_filter_metric_destinations(resolve(locked_cfg)))
+        return ()
+    return otlp_endpoints.label_sources(
+        _filter_metric_destinations(resolve(locked_cfg)), locked_cfg
+    )
+
+
+#: The local values an enterprise build ignores, with the value each reads as.
+_LOCAL_EGRESS_BLANK: "tuple[tuple[str, Any], ...]" = (("otlp_endpoint", ""), ("otlp_endpoints", []))
 
 
 def _edition_locked_view(cfg: "TelemetryConfig") -> "Optional[TelemetryConfig]":
     """*cfg* as a provider may read it in this build, or ``None`` for no egress at all.
 
-    An enterprise build blanks ``otlp_endpoint`` (:mod:`kiro_crew.edition_locks`,
-    RFC D3): no governance key names an OTLP host yet, so no remote rule allowed the
-    local value. Done here, before any provider sees it, so an edition's own
-    provider cannot read the local endpoint either; destinations it declares itself
-    stay. A config this cannot copy answers ``None`` rather than pass the value on.
+    An enterprise build blanks ``otlp_endpoint`` and ``otlp_endpoints``
+    (:mod:`kiro_crew.edition_locks`, RFC D3): no governance key names an OTLP host
+    yet, so no remote rule allowed the local values. Done here, before any provider
+    sees it, so an edition's own provider cannot read the local values either;
+    destinations it declares itself stay.
+    A config this cannot copy answers ``None`` rather than pass the values on.
     """
     from kiro_crew.edition_locks import local_enable_locked
 
-    if not getattr(cfg, "otlp_endpoint", "") or not local_enable_locked("telemetry.otlp_hosts"):
+    local_egress = {key: blank for key, blank in _LOCAL_EGRESS_BLANK if getattr(cfg, key, None)}
+    if not local_egress or not local_enable_locked("telemetry.otlp_hosts"):
         return cfg
     if not dataclasses.is_dataclass(cfg) or isinstance(cfg, type):
         return None
-    return dataclasses.replace(cfg, otlp_endpoint="")
+    return dataclasses.replace(cfg, **local_egress)
 
 
 #: A process that does not install a platform context names where its telemetry
@@ -1301,6 +1351,33 @@ def _foreign_signal_route(endpoint: str) -> Optional[str]:
     return None
 
 
+class _OwnHeadersOnly(dict):
+    """A header map the OTLP exporter uses as given, even when it is empty.
+
+    ``OTLPMetricExporter`` reads ``headers or <the OTEL_EXPORTER_OTLP_*HEADERS
+    variables>``, so an empty dict would fall back to the process-wide value. This
+    one is always truthy, which keeps a destination that declared no headers from
+    being sent another collector's credential. Pinned on the wire by
+    ``test_a_list_entry_never_sends_the_process_wide_otel_headers``.
+    """
+
+    def __bool__(self) -> bool:
+        return True
+
+
+def _destination_headers(dest: "OtlpDestination") -> "tuple[dict[str, str], list[str]]":
+    """*dest*'s export headers, and the ``headers_env`` variables that are unset."""
+    headers: "dict[str, str]" = {}
+    missing: "list[str]" = []
+    for header, var in (getattr(dest, "headers_env", None) or {}).items():
+        value = os.environ.get(str(var), "")
+        if value.strip():
+            headers[str(header)] = value
+        else:
+            missing.append(str(var))
+    return headers, sorted(missing)
+
+
 def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_ReaderT"]:
     """Build one OTLP/HTTP metric reader for *dest*, or None when unavailable.
 
@@ -1322,7 +1399,10 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     how often to send. TEMPORALITY is a core decision for the same reason: both
     of this provider's readers describe the same instruments, so they must encode
     them the same way unless the operator says otherwise
-    (:func:`kiro_crew.metrics.temporality.otlp_preference`).
+    (:func:`kiro_crew.metrics.temporality.otlp_preference`). The exception is a
+    destination whose ``temporality`` names ``"delta"`` or ``"cumulative"``: its
+    receiving side asked for that encoding, so that reader alone is built on it
+    (:func:`kiro_crew.metrics.temporality.preference_for`).
     """
     endpoint = dest.endpoint
     # This core emits the metrics signal only. An endpoint whose path is another
@@ -1340,6 +1420,37 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             foreign,
             foreign,
         )
+    # A destination asking for an unreviewed point-attribute key is REFUSED here,
+    # before an exporter exists: it gets no reader, and local collection plus
+    # every other destination continue untouched. Checked separately from the
+    # build below so the log names the real cause instead of reading as a
+    # constructor failure. Keys are a reviewed non-secret set and safe to name;
+    # the VALUES are constants and are never logged, least of all beside an
+    # endpoint that may carry a credential.
+    try:
+        destination_filter.validate_point_attributes(getattr(dest, "point_attributes", None))
+    except ValueError as exc:
+        logger.warning(
+            "OTLP destination %r declares an unsupported point attribute; "
+            "egress disabled for it (local-only): %s",
+            dest.name,
+            exc,
+        )
+        return None
+    # Header values named by environment variable are read NOW, once per build,
+    # so a secret never sits on the descriptor. An unset or blank variable
+    # refuses this destination only: sending without the header it names would
+    # be a request the collector was never meant to accept. The log names the
+    # variable, never a value.
+    headers, missing = _destination_headers(dest)
+    if missing:
+        logger.warning(
+            "OTLP destination %r reads header value(s) from unset environment "
+            "variable(s) %s; egress disabled for it (local-only)",
+            dest.name,
+            missing,
+        )
+        return None
     # Callable directly (not only via _build_recorder), so make sure the lazily
     # imported SDK symbols this needs are bound.
     if not _load_otel():
@@ -1372,24 +1483,48 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         # exporter applies an explicit dict ON TOP of whichever base that
         # variable chose, so passing it unconditionally would override an
         # operator who asked for CUMULATIVE. See metrics.temporality.
-        preference = temporality.otlp_preference()
+        # A destination that names a temporality gets it with every kind pinned,
+        # whatever the variable says: the variable is the operator's lever for
+        # the destinations that did not choose.
+        preference = temporality.preference_for(getattr(dest, "temporality", "") or "")
         if preference is not None:
             kwargs["preferred_temporality"] = preference
+        own_only = not getattr(dest, "process_env_credentials", True)
+        if own_only:
+            # A telemetry.otlp_endpoints entry: the process-wide OTel header
+            # variables were set for the legacy collector, not for this host, so
+            # the exporter must not fall back to them (see _OwnHeadersOnly).
+            kwargs["headers"] = _OwnHeadersOnly(headers)
+        elif headers:
+            kwargs["headers"] = headers
         # Passed only when supplied so the exporter keeps its own defaults (and
         # its env-var fallbacks) for everything an edition did not set.
         if dest.session is not None:
             # An authenticated transport. requests re-evaluates Session.auth per
             # request, which is what lets a credential that rotates mid-process
-            # keep working where a header frozen at construction would 401. Static
-            # per-destination headers ride on Session.headers, so they need no
-            # separate field on the descriptor.
+            # keep working where a header frozen at construction would 401. A
+            # destination built in code carries its static headers on
+            # Session.headers.
             kwargs["session"] = dest.session
+        elif own_only:
+            # A plain session of our own, so the exporter does not load the OTel
+            # credential-provider session either: that variable is process-wide
+            # in the same way the header variables are.
+            import requests
+
+            kwargs["session"] = requests.Session()
         exporter = OTLPMetricExporter(**kwargs)
         # Every later export is held to the policy in force THEN, so a runtime
         # policy install stops a running reader without waiting for a rebuild.
         otlp_governance.gate_exporter(
             exporter, endpoint, _policy_ceiling, redact=_policy_redactor()
         )
+        # Narrowing, when this destination declared any: a metric allowlist, fixed
+        # point attributes, a reduced Resource. Applied as a WRAPPER around this
+        # destination's own exporter, so the local sink and every other
+        # destination are untouched by construction, and a destination that
+        # declared none is handed back the exporter object itself.
+        exporter = destination_filter.wrap_if_narrowed(dest, exporter)
         return PeriodicExportingMetricReader(
             exporter,
             export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,
@@ -1407,11 +1542,12 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
 def _install_locked(built: _Build) -> None:
     """Publish a finished build. Call under ``_lock``."""
     global _recorder, _provider, _initialized, _built_consent, _consent_checked_at
-    global _ever_built, _built_agent_key
+    global _ever_built, _built_agent_key, _built_endpoints_key
     _recorder = built.recorder
     _provider = built.provider
     _built_consent = built.consent
     _built_agent_key = built.agent_key
+    _built_endpoints_key = built.endpoints_key
     _initialized = True
     _consent_checked_at = time.monotonic()
     _ever_built = True
@@ -1431,15 +1567,19 @@ def _consent_worker(generation: int) -> None:
     for the provider's life, so a change rebuilds it. The gateway also gets that
     rebuild from ``watch_config``; a process that registers no watcher (the MCP
     gateway daemon, through ``recheck_consent``) gets it only from here.
+    The OTLP endpoint settings are compared the same way, so a list entry that
+    was disabled or removed loses its reader there too.
     """
     global _consent_checked_at, _check_in_flight, _recorder, _initialized
     global _built_consent
     try:
         agent_key: object = None
+        endpoints_key: object = None
         try:
             full_cfg = KiroCrewConfig.load()
             consent: Optional[bool] = _consent_enabled(full_cfg.telemetry)
             agent_key = _agent_key(full_cfg)
+            endpoints_key = _endpoints_key(full_cfg.telemetry)
         except Exception as exc:
             # Losing the ability to READ the setting is not withdrawal. Keep the
             # live recorder and try again after the next window.
@@ -1464,10 +1604,14 @@ def _consent_worker(generation: int) -> None:
             # The harness only labels a live recorder; a disabled one has no
             # resource to relabel.
             harness_moved = bool(consent) and agent_key != _built_agent_key
-            if consent == _built_consent and not harness_moved:
+            # Same for the endpoint settings: a disabled one has no reader.
+            endpoints_moved = bool(consent) and endpoints_key != _built_endpoints_key
+            if consent == _built_consent and not harness_moved and not endpoints_moved:
                 return
             if harness_moved and consent == _built_consent:
                 logger.info("configured harness changed on disk; rebuilding recorder")
+            elif endpoints_moved and consent == _built_consent:
+                logger.info("OTLP endpoint settings changed on disk; rebuilding recorder")
             else:
                 logger.info("telemetry consent changed on disk; rebuilding recorder")
             doomed = _take_provider_locked()
@@ -1625,13 +1769,14 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
     flushes it after the lock is released.
     """
     global _recorder, _initialized, _provider, _built_consent, _build_generation
-    global _built_agent_key
+    global _built_agent_key, _built_endpoints_key
     doomed = _provider
     _provider = None
     _recorder = None
     _initialized = False
     _built_consent = None
     _built_agent_key = None
+    _built_endpoints_key = None
     # Any rebuild started before this point is now stale.
     _build_generation += 1
     return doomed

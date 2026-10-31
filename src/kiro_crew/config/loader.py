@@ -732,6 +732,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _log_config_clamp_event,
         _member_remap_logged,
         _note_member_remap,
+        _otlp_endpoint_rows,
         _read_backend_choice,
         _registry_entry,
         _restore_stored_harness_fields,

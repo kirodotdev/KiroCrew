@@ -79,7 +79,7 @@ omit the policy.
 | `knowledge` | adapter | `DefaultKnowledgeProvider` (no extra connectors) | enterprise doc connector (`extra_connectors`) |
 | `memory_files` | adapter | `DefaultMemoryFilesProvider` (memory's markdown source text on local disk) | a non-local `MemoryFiles` for memory's markdown source. `memory_files_for` does not catch a provider error: `PlatformCompositionError` propagates and nothing falls back to local disk. Memory's derived state (the FTS index, the SQLite stores, the FAISS vectors) stays local and does not travel through this seam |
 | `tunnel` | adapter | `DefaultTunnelProvider` (no-op) | internal tunnel supervisor |
-| `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destination from `telemetry.otlp_endpoint`) | RUM/Cognito config + its own OTLP collector |
+| `telemetry` | adapter | `DefaultTelemetryProvider` (no-op, RUM off; OTLP destinations from `telemetry.otlp_endpoint` and `telemetry.otlp_endpoints`) | RUM/Cognito config + its own OTLP collector |
 | `dashboard` | adapter | `DefaultDashboardContributor` (no routes/services, no login handler, no internal-reachable paths) | secretary/taskkeeper routes + enterprise SSO PTY login |
 | `jail` | adapter | `DefaultJailProvider` (no-op, never jails) | enterprise process isolation |
 | `mobile_connect` | adapter | `DefaultMobileConnectProvider` (personal-install pair: `tailnet_qr` + `login_link` (id == kind by design)) | edition-specific phone-connection methods (descriptor-only `{id, kind}`; minting stays on each method's own endpoint; an empty list hides the dashboard entry; list + mint governed by `capabilities.mobile_connect`) |
@@ -544,7 +544,7 @@ Runtime code reads only the module constant, never the build variable or a confi
 | Control id | Local source ignored | Read site | Setting API |
 |---|---|---|---|
 | `tunnel` | `tunnel.enabled`, `slack.use_tunnel_url` | `dashboard/server_runtime/tunnel.py::_start_aea_tunnel` (the edition's own `TunnelProvider` is not a local source); `dashboard/urls.py::slack_tunnel_opt_in`, read by `tunnel_origin_if_opted_in` and by `send_dashboard_link` before its on-demand `ensure_available()` door, so Slack links stay on the local origin | `GET /api/config/schema` marks both paths `lockedByPolicy` |
-| `telemetry.otlp_hosts` | `telemetry.otlp_endpoint` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
+| `telemetry.otlp_hosts` | `telemetry.otlp_endpoint`, `telemetry.otlp_endpoints` | `metrics/provider.py::_edition_locked_view`, read by `_otlp_destinations` and `otlp_egress_active` before any provider sees the config (an edition provider's own destinations stay) | `GET /api/config/schema` marks the path `lockedByPolicy` |
 | `developer_mode` | `KIROCREW_DEV_MODE` (and the `-dev` home suffix for the update simulator) | `session_environment.py::session_environments_enabled` (remote placement stays off) and `dashboard/routes/system.py` (`POST /api/update/simulate` is not registered) | none; an environment variable has no setting API. The flag's on-loop persistence strictness only raises more, so it is left as is |
 
 The update channel left this table when it gained its key, `updates.channel` (see governance.md, "Update pins"): an enterprise build follows the policy's channel, or `stable` with none, and still ignores `$KIROCREW_HOME/channel`.
@@ -1156,7 +1156,8 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `signals`, and an optional authenticated `session`; the session is the seam a
   ROTATING credential composes against, since `requests` re-evaluates
   `Session.auth` per export where `OTEL_EXPORTER_OTLP_HEADERS` freezes at
-  construction (static per-destination headers ride on `Session.headers`).
+  construction (a destination built in code carries static headers on
+  `Session.headers`; one declared as data names them in `headers_env`).
   Must be cheap and side-effect-free per call: it is read once per recorder build
   AND on every egress-posture read (Privacy panel status, each `telemetry.enabled`
   write), so an edition builds its transport once rather than minting a credential
@@ -1166,8 +1167,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   exporters take the same constructor arguments, so a later core that emits traces
   or logs reads the same descriptor instead of needing another method. Deny-by-
   default — an empty `endpoint`, or a signal this core does not emit, is dropped.
-  Default: one destination for a non-empty `telemetry.otlp_endpoint`, none
-  otherwise (byte-identical to the endpoint-only exporter it replaced).
+  Default: one destination for a non-empty `telemetry.otlp_endpoint`
+  (byte-identical to the endpoint-only exporter it replaced), then one per
+  enabled `telemetry.otlp_endpoints` entry; none when neither is set.
+  An override that should keep the operator's entries returns
+  `metrics.otlp_endpoints.config_destinations(cfg)` first; a destination it
+  returns from code cannot be removed or turned off from config (the Privacy panel
+  lists it as set by the build), and still passes every gate.
 - `DashboardContributor.on_user_message(app, message)` — fired once per user
   message by `dashboard/chat_api/chat_send.py::api_chat` before the turn, inside a
   fail-safe `safe_context_call`. OBSERVER only. Default no-op.
