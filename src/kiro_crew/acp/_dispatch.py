@@ -72,6 +72,7 @@ from kiro_crew.acp_backends import (  # noqa: F401
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_META_IDENTITY,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
