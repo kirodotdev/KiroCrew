@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import {
   PencilRuler, Image as ImageIcon, Upload, Plus, ChevronDown,
-  Check, ChevronRight, Maximize2, X, Sparkle,
+  Check, ChevronRight, Maximize2, Sparkle,
 } from 'lucide-react'
 
 import { sevOf, KIND_LABEL, HARD_CAP_MS, MAX_SCREENS, BLOCKED, SAMPLE_REPORT, SAMPLE_SCREENS } from './constants'
@@ -22,6 +22,7 @@ import WaitingScreen from './WaitingScreen'
 import Composer from './Composer'
 import ScopingPicker from './ScopingPicker'
 import AskLayer from './AskLayer'
+import ZoomLightbox from './ZoomLightbox'
 import type {
   Ask,
   Blocked,
@@ -1312,22 +1313,9 @@ export default function DesignCritiquePage() {
   const canvas = <div style={S.canvas}>{canvasInner}</div>
 
   const lightbox = (zoom && thumbUrl) ? (
-    <div
-      style={S.lbOverlay}
-      role="presentation"
-      onClick={(e) => { if (e.target === e.currentTarget) setZoom(false) }}
-    >
-      <div style={S.lbInner} role="dialog" aria-modal="true" aria-label={i18nT('apps.designCritique.designCritiquePage.full_size_view')}>
-        <img src={thumbUrl} style={S.lbImg} alt={i18nT('apps.designCritique.designCritiquePage.full_size')} />
-        {buildMarkers(false)}
-      </div>
-      <button
-        style={S.lbClose}
-        onClick={() => setZoom(false)}
-        title={i18nT('apps.designCritique.designCritiquePage.close_esc')}
-        aria-label={i18nT('apps.designCritique.askLayer.close')}
-      ><X size={18} /></button>
-    </div>
+    <ZoomLightbox src={thumbUrl} onClose={() => setZoom(false)}>
+      {buildMarkers(false)}
+    </ZoomLightbox>
   ) : null
 
   return (

@@ -528,6 +528,37 @@ describe('WatchlistPanel clear completed', () => {
     expect(api.clearCompletedWatchItems).not.toHaveBeenCalled()
   })
 
+  // The confirm is aria-modal: focus left on the list behind it, or a Tab that
+  // walks out of it, reaches controls the overlay hides.
+  it('moves focus into the confirm, keeps Tab inside, and returns it on close', async () => {
+    await mountWith(seed())
+    fireEvent.click(screen.getByRole('button', { name: 'Show completed (2)' }))
+    const trigger = screen.getByRole('button', { name: 'Clear all completed' })
+    trigger.focus()
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog')
+    const keep = within(dialog).getByRole('button', { name: 'Keep them' })
+    const clear = within(dialog).getByRole('button', { name: 'Clear' })
+    expect(document.activeElement).toBe(keep)
+
+    // jsdom has no layout, so give the buttons an offsetParent for the trap's visibility filter.
+    for (const b of [keep, clear]) {
+      Object.defineProperty(b, 'offsetParent', { configurable: true, get: () => dialog })
+    }
+    clear.focus()
+    fireEvent.keyDown(clear, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+    fireEvent.keyDown(keep, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(clear)
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+
+    fireEvent.click(keep)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
+  })
+
   it('keeps everything when the confirmation is declined', async () => {
     const dialog = await openConfirm()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep them' }))
