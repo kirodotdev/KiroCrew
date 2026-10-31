@@ -7264,7 +7264,18 @@
       "scroll_suggestions_left": "Rolar sugestões para a esquerda",
       "scroll_suggestions_right": "Rolar sugestões para a direita",
       "send_now": "Enviar agora",
-      "send_now_2": "Enviar agora: {{option}}"
+      "send_now_2": "Enviar agora: {{option}}",
+      "action_unavailable_while_options_are_selected": "Indisponível enquanto uma seleção estiver preparada como texto no campo de mensagem: ela seria descartada",
+      "action_unavailable_while_the_composer_has_unsent": "Indisponível enquanto o campo de mensagem tiver texto ou anexos não enviados — fechar iria descartá-los",
+      "action_unavailable_short_options_selected": "Indisponível — desmarque as opções primeiro",
+      "action_unavailable_short_unsent_draft": "Indisponível: rascunho a enviar ou apagar",
+      "action_closes_this_session": "Fechar sessão — {{label}}",
+      "action_unavailable_while_capture_in_flight": "Indisponível enquanto uma gravação ou envio ainda está em andamento — fechar descartaria",
+      "action_unavailable_short_capture_in_flight": "Indisponível — gravação ou envio ainda em andamento",
+      "action_unavailable_short_unsent_draft_elsewhere": "Indisponível: rascunho do outro painel a enviar ou apagar",
+      "action_unavailable_short_unsent_draft_window": "Indisponível: rascunho da outra janela a enviar ou apagar",
+      "action_unavailable_while_unsent_draft_elsewhere": "Esta ação está indisponível enquanto outro painel desta sessão — lateral ou em vista dividida — tiver um rascunho não enviado. É preciso enviá-lo ou eliminá-lo aí primeiro.",
+      "action_unavailable_while_unsent_draft_window": "Esta ação fica indisponível enquanto outra janela do navegador desta sessão tiver um rascunho não enviado. É preciso enviar ou descartar o rascunho nessa janela primeiro."
     },
     "followUpCard": {
       "add_to_this_session": "Adicionar a esta sessão",
