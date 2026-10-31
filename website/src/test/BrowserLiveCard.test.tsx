@@ -129,7 +129,11 @@ describe('BrowserLiveCard faces', () => {
     const root = screen.getByTestId('browser-live-card')
     expect(root).toHaveAttribute('data-state', 'in_control')
     expect(root).toHaveAttribute('data-grown', 'true')
-    expect(screen.getByText(i18next.t('pages.chat.browserLiveCard.you_are_in_control'))).toBeInTheDocument()
+    const label = screen.getByText(i18next.t('pages.chat.browserLiveCard.you_are_in_control'))
+    expect(label).toBeInTheDocument()
+    // Narrow-first: the takeover header wraps, and below `sm` only its icons show.
+    expect(label.parentElement).toHaveClass('flex-wrap')
+    expect(screen.getByText(i18next.t('pages.chat.browserLiveCard.kiro_paused'))).toHaveClass('hidden', 'sm:inline')
     // The step strip and the action bubble leave while the person drives.
     expect(screen.queryByRole('list')).toBeNull()
     const canvas = screen.getByTestId('browser-live-canvas')

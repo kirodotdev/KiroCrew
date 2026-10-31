@@ -216,12 +216,13 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
       aria-label={i18nT('pages.chat.browserLiveStage.region_label', { host: host || i18nT('pages.chat.browserLiveCard.browsed') })}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border min-h-[44px] shrink-0" data-stage-header="">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border min-h-[44px] shrink-0" data-stage-header="">
         {mode === 'live' ? (
           inControl ? (
             <span className="flex items-center gap-1.5 text-[13px] font-semibold text-text-strong whitespace-nowrap">
               <Hand size={15} aria-hidden="true" className="text-accent" />
-              {i18nT('pages.chat.browserLiveCard.you_are_in_control')}
+              <span className="hidden sm:inline">{i18nT('pages.chat.browserLiveCard.you_are_in_control')}</span>
+              <span className="sr-only sm:hidden">{i18nT('pages.chat.browserLiveCard.you_are_in_control')}</span>
             </span>
           ) : (
             <span className="flex items-center gap-1.5 text-[12px] font-semibold text-ok whitespace-nowrap" role="status">

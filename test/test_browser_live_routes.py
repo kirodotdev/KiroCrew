@@ -161,6 +161,18 @@ async def test_visibility_reaches_the_stream_and_refuses_a_non_boolean() -> None
             client, "/api/browser/live/visibility", {"session_key": "chat-1", "visible": "no"}
         )
         assert status == 400 and body["code"] == "invalid_visible"
+        status, body = await _post(
+            client,
+            "/api/browser/live/visibility",
+            {"session_key": "chat-1", "visible": True, "client": 7},
+        )
+        assert status == 400 and body["code"] == "invalid_client"
+        status, body = await _post(
+            client,
+            "/api/browser/live/visibility",
+            {"session_key": "chat-1", "visible": True, "client": "tab-a"},
+        )
+        assert status == 200 and body["visible"] is True
 
 
 async def test_ack_validates_seq_and_reports_whether_a_frame_waited() -> None:

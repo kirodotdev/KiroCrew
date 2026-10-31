@@ -1096,3 +1096,33 @@ async def test_closing_a_view_while_an_expiry_releases_waits_for_that_release() 
     # The expiry folded the card; neither caller sends a second release.
     assert await closing is False and await handing == ""
     assert _types(relay.calls) == ["rawKeyDown", "keyUp"]
+
+
+async def test_one_tab_reporting_not_visible_does_not_stop_another_tabs_view(hub) -> None:
+    """Two dashboard tabs: the stream pauses only when no tab shows the card."""
+    h, _wire = hub
+    relay = FakeRelay()
+    stream = await h.start_stream(
+        "chat-1", relay, "a", browser="edge", headless=False, stream_factory=FakeStream
+    )
+
+    def last() -> bool:
+        return [v for name, v in stream.calls if name == "visible"][-1]
+
+    await h.set_visible("chat-1", True, "tab-a")
+    await h.set_visible("chat-1", False, "tab-b")
+    assert h.get("chat-1").visible is True and last() is True
+    await h.set_visible("chat-1", True, "tab-b")
+    await h.set_visible("chat-1", False, "tab-a")
+    assert last() is True
+    await h.set_visible("chat-1", False, "tab-b")
+    assert h.get("chat-1").visible is False and last() is False
+
+
+async def test_the_visible_tab_set_is_capped(hub, monkeypatch) -> None:
+    h, _wire = hub
+    monkeypatch.setattr(lh, "VISIBLE_TABS_CAP", 2)
+    await h.set_visible("chat-1", True, "a")
+    await h.set_visible("chat-1", True, "b")
+    await h.set_visible("chat-1", True, "c")
+    assert h.get("chat-1").visible_tabs == {"a", "b"}

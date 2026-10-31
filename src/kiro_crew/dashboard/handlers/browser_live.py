@@ -140,7 +140,10 @@ async def api_browser_live_visibility(request: web.Request) -> web.Response:
         visible = body.get("visible")
         if not isinstance(visible, bool):
             return _error("invalid_visible", "visible must be a boolean", 400)
-        await hub.set_visible(key, visible)
+        tab = body.get("client", "")
+        if not isinstance(tab, str) or len(tab) > 64:
+            return _error("invalid_client", "client must be a short string", 400)
+        await hub.set_visible(key, visible, tab)
         return {"visible": visible}
 
     return await _run(request, "browser_live_visibility", act)

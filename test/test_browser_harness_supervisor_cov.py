@@ -739,7 +739,7 @@ async def test_the_worker_start_checks_install_ping_and_isolation(
     proc = await sup._start_worker(_handle())
     assert proc is procs[1] and stopped == [procs[0]]
     argv, kw = spawned[-1]
-    assert argv[:2] == ["/venv/bin/python", "-I"] and argv[2].endswith("helper_worker.py")
+    assert argv[:2] == [str(Path("/venv/bin/python")), "-I"] and argv[2].endswith("helper_worker.py")
     assert kw["pipes"] is True and kw["env"] == {"BU_CDP_URL": "http://127.0.0.1:1/s"}
 
 

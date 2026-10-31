@@ -7,6 +7,7 @@
  * FRAME pixels; nothing here converts.
  */
 
+import { TAB_ID } from '../tabId'
 import type { ClientTransport } from './transport'
 import type { BrowserInputEvent } from '../../hooks/useBrowserLive.input'
 import type { QuickAskAction, QuickAskValues } from '../../pages/chat/quickAsk/types'
@@ -40,7 +41,7 @@ export function createBrowserLiveEndpoints({ get, post, j }: ClientTransport) {
     browserLive: {
       /** The card is (or is not) on screen: an off-screen card stops the screencast. */
       browserLiveVisibility: (sessionKey: string, visible: boolean) =>
-        post('/api/browser/live/visibility', { session_key: sessionKey, visible }).then(j) as Promise<BrowserLiveOk>,
+        post('/api/browser/live/visibility', { session_key: sessionKey, visible, client: TAB_ID }).then(j) as Promise<BrowserLiveOk>,
       /** Frame `seq` of `stream` reached the card; the relay acks Chrome only after this.
        *  `stream` is the frame header's stream id, so a late ack for a replaced stream
        *  never releases the new stream's frame of the same number. */

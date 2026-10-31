@@ -146,17 +146,18 @@ export function BrowserLiveLiveView({ turn, onScreen, canvasRef, onClaim, onRele
   return (
     <div ref={rootRef} data-testid="browser-live-live">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border min-h-[44px]">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-border min-h-[44px]">
         {inControl ? (
           <>
             <Hand size={16} aria-hidden="true" className="text-accent shrink-0" />
             <span className="text-[13px] font-semibold text-text-strong whitespace-nowrap">{i18nT('pages.chat.browserLiveCard.you_are_in_control')}</span>
-            <span className="text-[12px] text-muted truncate">{i18nT('pages.chat.browserLiveCard.kiro_paused')}</span>
+            <span className="hidden sm:inline text-[12px] text-muted truncate min-w-0">{i18nT('pages.chat.browserLiveCard.kiro_paused')}</span>
             <span className="flex-1" />
             {target && (
               <Btn onClick={onOpenInBrowser} className="whitespace-nowrap shrink-0">
                 <ExternalLink size={14} aria-hidden="true" />
-                {i18nT('pages.chat.browserLiveCard.open_in', { browser: target })}
+                <span className="hidden sm:inline">{i18nT('pages.chat.browserLiveCard.open_in', { browser: target })}</span>
+                <span className="sr-only sm:hidden">{i18nT('pages.chat.browserLiveCard.open_in', { browser: target })}</span>
               </Btn>
             )}
             <Btn primary onClick={() => onRelease()} className="whitespace-nowrap shrink-0">

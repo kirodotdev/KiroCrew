@@ -78,6 +78,8 @@ MAX_STEPS = 200
 #: waiting for the event in flight plus every release sent. The input lock stays
 #: shut meanwhile, so a slow page delays the agent by this much at most.
 HELD_RELEASE_DEADLINE_S = 2.0
+#: How many dashboard tabs one session remembers as showing its card.
+VISIBLE_TABS_CAP = 32
 
 Publish = Callable[[str, Mapping[str, Any]], Awaitable[Any]]
 SendFrame = Callable[[bytes], Awaitable[Any]]
@@ -112,6 +114,9 @@ class LiveSession:
     lock: InputLock = field(default_factory=InputLock)
     stream: LiveStream | None = None
     visible: bool = True
+    #: Dashboard tabs that last reported this session's card as visible. Frames are
+    #: sent while any of them is; one tab's "not visible" cannot stop another's.
+    visible_tabs: set[str] = field(default_factory=set)
     rung: int = 0
     fps: float = 0.0
     started_at: float = 0.0
@@ -943,9 +948,15 @@ class LiveHub:
 
     # ── the card's side ────────────────────────────────────────────────────
 
-    async def set_visible(self, session_key: str, visible: bool) -> None:
+    async def set_visible(self, session_key: str, visible: bool, tab: str = "") -> None:
+        """Record *tab*'s view of the card; frames flow while any tab sees it."""
         sess = self._session(session_key)
-        sess.visible = bool(visible)
+        if visible:
+            if tab in sess.visible_tabs or len(sess.visible_tabs) < VISIBLE_TABS_CAP:
+                sess.visible_tabs.add(tab)
+        else:
+            sess.visible_tabs.discard(tab)
+        sess.visible = bool(sess.visible_tabs)
         if sess.visible:
             sess.seen_at = self._clock()
         if sess.stream is not None:
