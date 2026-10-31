@@ -404,7 +404,7 @@ _MAX_CMD_TOKENS = 8
 _MAX_CMD_TOKEN_CHARS = 48
 
 
-def _redacted_command(cmd: str, span: tuple[int, int]) -> str:
+def _redacted_command(argv: list[str]) -> str:
     """The command that matched, reduced to names and flags that can hold no secret.
 
     A pid alone cannot say whether a match is a real run or a filename that reads
@@ -446,25 +446,27 @@ def _redacted_command(cmd: str, span: tuple[int, int]) -> str:
       flag printed without a value is itself the record that one went. A retained
       token is clipped at ``_MAX_CMD_TOKEN_CHARS`` and marked ``~`` -- a backstop for a
       later vocabulary entry, since nothing printable today approaches it.
+    The tokens are the process's real *argv* -- the NUL-separated ``/proc/<pid>/cmdline``
+    the rule matched, so the field cannot disagree with ``rule=`` about what was seen.
+    Reading argv rather than re-splitting the space-joined string is what keeps an
+    argument whole: ``/proc`` joins arguments with spaces, so a ``;``, ``&`` or ``|``
+    inside one argument reads like shell syntax in the joined text, while in argv that
+    character is the argument data it is. A real exec'd command's argv carries no shell
+    operator between its tokens, so every token outside the printed window is counted
+    and ``+<n>`` describes the whole command.
 
-    The text comes from the same ``cmdline`` read the rule matched, so it cannot
-    disagree with ``rule=`` about what was seen. Splitting on whitespace means an
-    argument containing a space arrives as several tokens; that costs nothing,
-    because the pieces are judged by the same shapes and an unrecognised piece is
-    withheld like any other.
+    One argv element can itself be a shell wrapper's command string -- ``bash -c
+    'pytest -n4 t'`` carries the run as text inside one argument (emitted only under a
+    custom rule, since built-in wrappers are exempt). The program inside that string is
+    not separable from data inside a space-bearing path (``/work/My Project/pytest``)
+    without parsing a shell, which this scan does not do: a token holding whitespace is
+    withheld and counted like any other non-name token (see the whitespace guard in the
+    loop), so the wrapper's own argv tokens (``bash``, ``-c``) still print and the
+    command string is one ``+<n>`` entry.
 
-    *span* is where in *cmd* the thing being reported sits, and it selects the one
-    command segment to reduce. A joined-line rule passes its own match span, because a
-    shell string can hold several commands and only the matched one is worth printing.
-    The ARGV path passes the whole of *cmd*: what it reported is a single command read
-    from NUL-separated tokens, so there is no other command in there to narrow to, and
-    a separator character sitting inside one of its arguments is data rather than an
-    end.
+    Every token that is not printed is added to ``withheld``, so ``+<n>`` counts the
+    whole command and a reduced command cannot read as a complete one.
     """
-    start, end = span
-    before = [cmd.rfind(sep, 0, start) for sep in _COMMAND_SEPARATORS]
-    after = [idx for idx in (cmd.find(sep, end) for sep in _COMMAND_SEPARATORS) if idx != -1]
-    segment = cmd[max(before) + 1 : min(after) if after else len(cmd)]
     kept: list[str] = []
     withheld = 0
 
@@ -474,8 +476,18 @@ def _redacted_command(cmd: str, span: tuple[int, int]) -> str:
             text = text[:_MAX_CMD_TOKEN_CHARS] + "~"
         kept.append(text)
 
-    for index, token in enumerate(segment.split()):
+    for index, token in enumerate(argv):
         bare = token.strip("\"'")
+        # A kept token is one field of a whitespace-separated line, so it can never
+        # hold whitespace itself. A program or flag name never does; only an argv
+        # element carrying an embedded space, tab or NEWLINE can. The ``$``-anchored
+        # name/flag patterns match before a final ``\n``, so a token like ``python3\n``
+        # satisfies them while carrying a newline that splits the BANNED line into two.
+        # A name or flag cannot carry whitespace, so such a token is not printable:
+        # withhold it like any other non-name token, which also counts it.
+        if any(ch.isspace() for ch in bare):
+            withheld += 1
+            continue
         assigned = "=" in bare
         # Dropping the directory is safe only once the token is known not to be an
         # assignment: the strip is what turns a slash-bearing secret VALUE into a
@@ -709,13 +721,9 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                     if not _argv_is_uncapped_argv_only_runner(argv, entry):
                         continue
                     matched = ARGV_RUNNER_RULE_LABEL
-                    match_span = (0, len(cmd))
                 else:
-                    # The rule's own text, so a reader can see WHICH shape fired, and the
-                    # match position, so the line can name the one command it fired on
-                    # rather than the whole script that command sits in.
+                    # The rule's own text, so a reader can see WHICH shape fired.
                     matched = hit.re.pattern
-                    match_span = hit.span()
                 # The rule matched somewhere in the joined cmdline, which for a
                 # shell running a command string is the shell's ARGUMENT and not
                 # the program this pid is running. See ``_is_shell_command_wrapper``
@@ -835,7 +843,7 @@ def _host_lines(cfg: dict[str, Any]) -> tuple[list[str], str]:
                 age_field = "?" if age is None else str(age)
                 lines.append(
                     f"BANNED pid={entry.name} rule={matched} cwd={cwd_class} "
-                    f"age={age_field}s scope={_run_scope(argv)} cmd={_redacted_command(cmd, match_span)}"
+                    f"age={age_field}s scope={_run_scope(argv)} cmd={_redacted_command(argv)}"
                 )
     per_cpu = None
     if hasattr(os, "getloadavg"):
