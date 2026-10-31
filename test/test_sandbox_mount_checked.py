@@ -461,8 +461,9 @@ _CHECKED_RAW_MOUNTS = {
 #: private window's two -- staging its real contents out before the parent is masked,
 #: then binding them onto the placeholder inside the stand-in -- the nested re-mask that
 #: re-hides a masked leaf sitting INSIDE such a window, sensitive files and the read-only
-#: seal on an unreadable mask, and ~/.ssh.
-_GUARDED_SITES = 11
+#: seal on an unreadable mask, ~/.ssh, and the recursive self-bind that pins each
+#: renameable parent of a read-only seal.
+_GUARDED_SITES = 12
 
 _EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 

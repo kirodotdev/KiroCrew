@@ -126,6 +126,13 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setattr(sandbox, "config_dir", lambda: pinned.crew)
     monkeypatch.setattr(sandbox, "kiro_agents_dir", lambda: pinned.home / ".kiro" / "agents")
     monkeypatch.setattr(sandbox, "carveout_chain_has_planted_link", lambda _path: False)
+    # Only directories whose parent lies inside the pinned root are renameable, so the
+    # rename guards stop at the fixture root and never name this machine's own tree.
+    monkeypatch.setattr(
+        sandbox,
+        "_caller_can_rename",
+        lambda path: (os.path.dirname(path) + os.sep).startswith(str(pinned.root) + os.sep),
+    )
     monkeypatch.setattr(sandbox, "_voice_runtime_paths_cache", pinned.voice_cache(pinned.crew))
     monkeypatch.setattr(os, "getuid", lambda: _UID, raising=False)
     monkeypatch.setattr(os, "getgid", lambda: _GID, raising=False)
@@ -311,6 +318,19 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
     "sensitive_dir_ids": {"<ROOT>/crew/apps": [13, 14]},
     "private_dirs": ["<ROOT>/crew/apps/alpha/data"],
     "private_dir_ids": {"<ROOT>/crew/apps/alpha/data": [11, 12]},
+    "parent_pins": [
+        "<ROOT>/op/.kiro",
+        "<ROOT>/op",
+        "<ROOT>/op/.kiro/crew",
+        "<ROOT>/op/.kiro/crew/apps",
+        "<ROOT>/op/.kiro/crew/mcp",
+        "<ROOT>/op/.kirocrew",
+        "<ROOT>/op/.kirocrew/apps",
+        "<ROOT>/op/.kirocrew/mcp",
+        "<ROOT>/crew",
+        "<ROOT>/crew/apps",
+        "<ROOT>/crew/mcp",
+    ],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
         "<ROOT>/crew/run",
@@ -584,6 +604,16 @@ _PROFILE_GOLDEN = """\
 (deny file-link (subpath "<ROOT>/crew/run"))
 (deny file-write* (literal "<ROOT>/crew/run"))
 (deny file-write* (literal "<ROOT>/crew"))
+(deny file-write* (literal "<ROOT>/op/.kiro"))
+(deny file-write* (literal "<ROOT>/op"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/apps"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/mcp"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/apps"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/mcp"))
+(deny file-write* (literal "<ROOT>/crew/apps"))
+(deny file-write* (literal "<ROOT>/crew/mcp"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-write* (subpath "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-link (subpath "<ROOT>/op/.kiro/crew/subagents"))
