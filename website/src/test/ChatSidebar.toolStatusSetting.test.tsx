@@ -73,6 +73,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const TOOL_DETAIL = {
   kind: 'tool',
@@ -182,11 +183,11 @@ describe('chat sidebar — tool status honors simplifiedToolNames', () => {
 
   it('composes the goal-loop detail from the same setting-aware label', () => {
     cfg.value = { ...cfg.value, simplifiedToolNames: false }
-    const { getByText } = renderSidebar(slots, {
+    const { container, getByText } = renderSidebar(slots, {
       goalLoops: { k: { cycle_count: 3, max_cycles: 24 } },
       slotStatusDetail: { k: TOOL_DETAIL },
     })
-    expect(getByText('Loop 3/24')).toBeTruthy()
+    expectLoopIcon(container, 3, 24)
     expect(getByText(/setPermissionCheckHandler/)).toBeTruthy()
   })
 })

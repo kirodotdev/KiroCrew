@@ -888,19 +888,28 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         // stays under both approval branches: an owed decision must never read
         // as unattended progress. Nothing is lost by ranking it high —
         // `goalLoopDetail` carries whatever the lower branch would have shown,
-        // so this reads "Loop 7/24 · 3 agents running". Stalled (see
-        // `goalLoopStalled`): the whole row flashes danger-red (the
+        // so this reads "<loop glyph> 3 agents running". The cycle count is not
+        // shown as text (it took the room the detail needs); it lives on the
+        // glyph's tooltip and accessible name ("Goal loop · cycle 7 of 24").
+        // Stalled (see `goalLoopStalled`): the whole row flashes danger-red (the
         // `session-loop-stalled` class on the row container, index.css) and
         // the label reads "interrupted" in static danger text — a stalled loop
         // is a failure that needs attention, not a calm in-progress state.
         key: 'goal_loop',
         when: !!goalLoop,
-        build: () => (
-          <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : goalLoop && goalLoop.maxCycles > 0 ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles }) : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycleCount ?? 0 })}>
-            <Goal size={ROW_ICON_PX} className={`shrink-0 ${goalLoopStalled ? 'text-danger' : 'text-accent animate-pulse'}`} aria-hidden />
-            <span className="truncate"><span className={`font-medium ${goalLoopStalled ? 'text-danger' : 'text-accent'}`}>{goalLoopLabel}{goalLoopStalled ? ` — ${i18nT('pages.chatSidebar.loop_interrupted')}` : ''}</span>{goalLoopDetail ? <span className="text-muted"> · {goalLoopDetail}</span> : null}</span>
-          </div>
-        ),
+        build: () => {
+          const cycleTitle = goalLoop && goalLoop.maxCycles > 0
+            ? i18nT('pages.chatSidebar.goal_loop_cycle', { count: goalLoop.cycleCount, total: goalLoop.maxCycles })
+            : i18nT('pages.chatSidebar.goal_loop_cycle_no_cap', { count: goalLoop?.cycleCount ?? 0 })
+          return (
+            <div className={ROW_STATUS_LINE_CLS} title={goalLoopStalled ? i18nT('pages.chatSidebar.goal_loop_interrupted_title') : (goalLoopDetail || undefined)}>
+              <span role="img" aria-label={cycleTitle} title={cycleTitle} data-testid="goal-loop-icon" className="inline-flex shrink-0">
+                <Goal size={ROW_ICON_PX} className={`shrink-0 ${goalLoopStalled ? 'text-danger' : 'text-accent animate-pulse'}`} aria-hidden />
+              </span>
+              <span className="truncate">{goalLoopStalled ? <span className="font-medium text-danger">{i18nT('pages.chatSidebar.loop_interrupted')}</span> : null}{goalLoopDetail ? <span className="text-muted">{goalLoopStalled ? ' · ' : ''}{goalLoopDetail}</span> : null}</span>
+            </div>
+          )
+        },
       },
       {
         // An ordinary session whose last turn ended without a reply needs a

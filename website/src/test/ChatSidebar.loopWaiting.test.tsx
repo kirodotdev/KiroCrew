@@ -74,6 +74,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
+import { expectLoopIcon } from './GoalLoopIconTestUtils'
 
 const WAITING_LABEL = 'Waiting on you'
 
@@ -162,15 +163,15 @@ describe('chat sidebar — loop waiting-on-you subtitle', () => {
     // over an old [OPTIONS:] marker arrives here as has_options=false: the badge
     // clears by construction, never by a dismiss endpoint (#10615).
     const slots = [{ key: 'k', title: 'loop', running: false, messages: 5, has_options: false }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 8, max_cycles: 24 } } })
-    expect(getByText('Loop 8/24')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 8, max_cycles: 24 } } })
+    expectLoopIcon(container, 8, 24)
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 
   it('a RUNNING loop turn is the loop working, not waiting — even with options still on the newest reply', () => {
     const slots = [{ key: 'k', title: 'loop', running: true, messages: 5, has_options: true }]
-    const { getByText, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 3, max_cycles: 24 } } })
-    expect(getByText('Loop 3/24')).toBeTruthy()
+    const { container, queryByText } = renderSidebar(slots, { goalLoops: { k: { cycle_count: 3, max_cycles: 24 } } })
+    expectLoopIcon(container, 3, 24)
     expect(queryByText(WAITING_LABEL)).toBeNull()
   })
 
