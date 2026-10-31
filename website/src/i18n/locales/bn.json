@@ -663,7 +663,10 @@
         "header_addressing_review": "রিভিউ",
         "header_awaiting_merge": "মার্জ অপেক্ষা",
         "header_resolved": "সমাধান",
-        "page_label": "স্বয়ংক্রিয় ট্রায়াজ পাইপলাইন"
+        "page_label": "স্বয়ংক্রিয় ট্রায়াজ পাইপলাইন",
+        "load_failed": "পাইপলাইন লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "global": {
         "unattributed_label": "রিপোজিটরি ছাড়া ইভেন্ট",
@@ -4954,7 +4957,10 @@
           "up": "উপরে",
           "use_recent_project": "সাম্প্রতিক প্রকল্প {{path}} ব্যবহার করো",
           "use_this_folder": "এই ফোল্ডারটি ব্যবহার করুন",
-          "use_this_folder_path": "এই ফোল্ডারটি ব্যবহার করো: {{path}}"
+          "use_this_folder_path": "এই ফোল্ডারটি ব্যবহার করো: {{path}}",
+          "load_failed": "এই ফোল্ডারের তালিকা আনা যায়নি",
+          "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+          "retry": "আবার চেষ্টা করো"
         },
         "settingsModal": {
           "cancel": "বাতিল",
@@ -14438,7 +14444,10 @@
         "recenter": "পুনরায় কেন্দ্রে আনুন",
         "start_physics": "ফিজিক্স",
         "pause_physics": "বিরতি",
-        "graph_region_label": "নলেজ এনটিটি গ্রাফ"
+        "graph_region_label": "নলেজ এনটিটি গ্রাফ",
+        "load_failed": "নলেজ গ্রাফ লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "sourceGroup": {
         "items_added_directly": "সরাসরি যোগ করা আইটেম",
@@ -15132,7 +15141,10 @@
         "partial_notice": "এখানে তোমার মেমরির শুধু একটি অংশ দেখানো হয়েছে, তাই অনুসন্ধান কেবল এই নোডগুলো খুঁজে পায়।",
         "refresh": "রিফ্রেশ",
         "search_memory_nodes": "মেমরি নোড অনুসন্ধান",
-        "search_nodes": "নোড অনুসন্ধান…"
+        "search_nodes": "নোড অনুসন্ধান…",
+        "load_failed": "মেমরি গ্রাফ লোড করা যায়নি",
+        "load_failed_unknown": "কোনো কারণ ছাড়াই পড়া ব্যর্থ হয়েছে।",
+        "retry": "আবার চেষ্টা করো"
       },
       "memoryTab": {
         "actions": "অ্যাকশন",

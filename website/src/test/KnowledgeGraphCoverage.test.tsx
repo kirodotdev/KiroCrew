@@ -15,7 +15,7 @@
  * only mutates plain {x,y} objects, so it runs fine under happy-dom.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { GraphData } from '../pages/knowledge/types'
 
@@ -641,5 +641,23 @@ describe('KnowledgeGraph — lifecycle', () => {
     // sigma may or may not have constructed depending on timing, but if it did
     // it must have been killed by the cleanup.
     for (const s of sigmaInstances) expect(s.killed).toBe(true)
+  })
+})
+
+describe('KnowledgeGraph — failed refetch over a loaded graph', () => {
+  it('keeps the graph and flags the failed read with a retry', async () => {
+    renderGraph()
+    await mounted()
+
+    mockKnowledgeApi.mockImplementation((path: string) =>
+      path.startsWith('/sources') ? Promise.resolve([]) : Promise.reject(new Error('502 Bad Gateway')),
+    )
+    await act(async () => { await qc.refetchQueries({ queryKey: ['knowledge-graph'] }) })
+
+    const notice = await screen.findByTestId('knowledge-graph-load-error')
+    expect(notice.textContent).toContain('502 Bad Gateway')
+    // The graph from the earlier read stays on screen under the notice.
+    expect(screen.getByRole('application')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
   })
 })

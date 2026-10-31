@@ -663,7 +663,10 @@
         "header_addressing_review": "समीक्षा",
         "header_awaiting_merge": "मर्ज प्रतीक्षा",
         "header_resolved": "समाधानित",
-        "page_label": "स्वचालित ट्रायाज पाइपलाइन"
+        "page_label": "स्वचालित ट्रायाज पाइपलाइन",
+        "load_failed": "पाइपलाइन लोड नहीं हो सकी",
+        "load_failed_unknown": "पढ़ना बिना किसी कारण के विफल हुआ।",
+        "retry": "फिर कोशिश करो"
       },
       "global": {
         "unattributed_label": "रिपॉज़िटरी के बिना ईवेंट",
@@ -4954,7 +4957,10 @@
           "up": "ऊपर",
           "use_recent_project": "हाल का प्रोजेक्ट {{path}} इस्तेमाल करो",
           "use_this_folder": "इस फ़ोल्डर का उपयोग करो",
-          "use_this_folder_path": "इस फ़ोल्डर का उपयोग करो: {{path}}"
+          "use_this_folder_path": "इस फ़ोल्डर का उपयोग करो: {{path}}",
+          "load_failed": "इस फ़ोल्डर की सूची नहीं मिल सकी",
+          "load_failed_unknown": "पढ़ना बिना किसी कारण के विफल हुआ।",
+          "retry": "फिर कोशिश करो"
         },
         "settingsModal": {
           "cancel": "रद्द करें",
@@ -14438,7 +14444,10 @@
         "recenter": "फिर केंद्र में लाएं",
         "start_physics": "फ़िज़िक्स",
         "pause_physics": "रोकें",
-        "graph_region_label": "नॉलेज एंटिटी ग्राफ़"
+        "graph_region_label": "नॉलेज एंटिटी ग्राफ़",
+        "load_failed": "नॉलेज ग्राफ़ लोड नहीं हो सका",
+        "load_failed_unknown": "पढ़ना बिना किसी कारण के विफल हुआ।",
+        "retry": "फिर कोशिश करो"
       },
       "sourceGroup": {
         "items_added_directly": "सीधे जोड़े गए आइटम",
@@ -15132,7 +15141,10 @@
         "partial_notice": "यहाँ तुम्हारी मेमोरी का केवल एक हिस्सा दिखाया गया है, इसलिए खोज केवल इन्हीं नोड को ढूँढती है।",
         "refresh": "रीफ़्रेश करें",
         "search_memory_nodes": "मेमोरी नोड खोजें",
-        "search_nodes": "नोड खोजें…"
+        "search_nodes": "नोड खोजें…",
+        "load_failed": "मेमोरी ग्राफ़ लोड नहीं हो सका",
+        "load_failed_unknown": "पढ़ना बिना किसी कारण के विफल हुआ।",
+        "retry": "फिर कोशिश करो"
       },
       "memoryTab": {
         "actions": "कार्रवाइयाँ",

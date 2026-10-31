@@ -678,7 +678,10 @@
         "header_addressing_review": "REVUE",
         "header_awaiting_merge": "ATTENTE FUSION",
         "header_resolved": "RÉSOLU",
-        "page_label": "Pipeline d'auto-triage"
+        "page_label": "Pipeline d'auto-triage",
+        "load_failed": "Impossible de charger le pipeline",
+        "load_failed_unknown": "La lecture a échoué sans raison indiquée.",
+        "retry": "Réessayer"
       },
       "global": {
         "unattributed_label": "ÉVÉNEMENTS SANS DÉPÔT",
@@ -5133,7 +5136,10 @@
           "up": "Remonter",
           "use_recent_project": "Utiliser le projet récent {{path}}",
           "use_this_folder": "Utiliser ce dossier",
-          "use_this_folder_path": "Utiliser ce dossier : {{path}}"
+          "use_this_folder_path": "Utiliser ce dossier : {{path}}",
+          "load_failed": "Impossible de lister ce dossier",
+          "load_failed_unknown": "La lecture a échoué sans raison indiquée.",
+          "retry": "Réessayer"
         },
         "settingsModal": {
           "cancel": "Annuler",
@@ -14677,7 +14683,10 @@
         "recenter": "Recentrer",
         "start_physics": "Physique",
         "pause_physics": "Pause",
-        "graph_region_label": "Graphe d'entités de connaissances"
+        "graph_region_label": "Graphe d'entités de connaissances",
+        "load_failed": "Impossible de charger le graphe de connaissances",
+        "load_failed_unknown": "La lecture a échoué sans raison indiquée.",
+        "retry": "Réessayer"
       },
       "sourceGroup": {
         "items_added_directly": "Éléments ajoutés directement",
@@ -15386,7 +15395,10 @@
         "partial_notice": "Seule une partie de ta mémoire est affichée ici, la recherche ne trouve donc que ces nœuds.",
         "refresh": "Actualiser",
         "search_memory_nodes": "Rechercher des nœuds de mémoire",
-        "search_nodes": "Rechercher des nœuds…"
+        "search_nodes": "Rechercher des nœuds…",
+        "load_failed": "Impossible de charger le graphe de mémoire",
+        "load_failed_unknown": "La lecture a échoué sans raison indiquée.",
+        "retry": "Réessayer"
       },
       "memoryTab": {
         "actions": "Actions",

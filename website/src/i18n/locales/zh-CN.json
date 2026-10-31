@@ -648,7 +648,10 @@
         "header_addressing_review": "评审处理",
         "header_awaiting_merge": "等待合并",
         "header_resolved": "已解决",
-        "page_label": "自动分诊流水线"
+        "page_label": "自动分诊流水线",
+        "load_failed": "无法加载流水线",
+        "load_failed_unknown": "读取失败，未给出原因。",
+        "retry": "重试"
       },
       "global": {
         "unattributed_label": "没有仓库的事件",
@@ -4865,7 +4868,10 @@
           "up": "向上",
           "use_recent_project": "使用最近的项目 {{path}}",
           "use_this_folder": "使用此文件夹",
-          "use_this_folder_path": "使用此文件夹：{{path}}"
+          "use_this_folder_path": "使用此文件夹：{{path}}",
+          "load_failed": "无法列出此文件夹",
+          "load_failed_unknown": "读取失败，未给出原因。",
+          "retry": "重试"
         },
         "settingsModal": {
           "cancel": "取消",
@@ -14199,7 +14205,10 @@
         "recenter": "重新居中",
         "start_physics": "物理模拟",
         "pause_physics": "暂停",
-        "graph_region_label": "知识实体图谱"
+        "graph_region_label": "知识实体图谱",
+        "load_failed": "无法加载知识图谱",
+        "load_failed_unknown": "读取失败，未给出原因。",
+        "retry": "重试"
       },
       "sourceGroup": {
         "items_added_directly": "直接添加的条目",
@@ -14878,7 +14887,10 @@
         "partial_notice": "这里只显示了你的部分记忆，因此搜索只能找到这些节点。",
         "refresh": "刷新",
         "search_memory_nodes": "搜索记忆节点",
-        "search_nodes": "搜索节点…"
+        "search_nodes": "搜索节点…",
+        "load_failed": "无法加载记忆图谱",
+        "load_failed_unknown": "读取失败，未给出原因。",
+        "retry": "重试"
       },
       "memoryTab": {
         "actions": "操作",
