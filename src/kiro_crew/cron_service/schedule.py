@@ -95,9 +95,12 @@ def _humanize_cron(expr: str, tz_name: str = "") -> str:
     if tz_name and len(parts) == 5 and parts[0].isdigit() and parts[1].isdigit():
         try:
             tz = ZoneInfo(tz_name)
-            # Evaluate in job timezone, same as the scheduler does
-            base = seams.datetime.now(tz)
-            next_local = croniter(expr, base).get_next(seams.datetime).astimezone(tz)
+            # Step in the job timezone's WALL clock, then attach the zone. Given
+            # an aware zoneinfo start, croniter <6 shifts a next run that lies
+            # past a DST change by the offset change a second time, so a 3 AM
+            # job read "4:00 AM PST" through the day before a fall-back.
+            base = seams.datetime.now(tz).replace(tzinfo=None)
+            next_local = croniter(expr, base).get_next(seams.datetime).replace(tzinfo=tz)
             local_time = platform_compat.strftime(next_local, "%-I:%M %p %Z")
             # cron_descriptor produces UTC-based text; replace the time portion
             utc_base = seams.datetime.now(timezone.utc)
