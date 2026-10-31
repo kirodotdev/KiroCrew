@@ -24,9 +24,10 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { confirmOptimisticSend, endLocalTurn, selectTurnInterrupted, sseChatMessage, startLocalTurn } from '../store/chatSlice'
+import chatReducer, { appendQueuedMessage, confirmOptimisticSend, endLocalTurn, selectTurnInterrupted, sseChatMessage, startLocalTurn } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { addReviewComment, clearReviewComments, peekReviewComments } from '../store/reviewComments'
 import { i18nT } from '../i18n/t'
 
 vi.mock('react-virtuoso', () => ({
@@ -211,6 +212,20 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     expect(messages().some(m => m.role === 'user' && m.content === SENT_TEXT)).toBe(false)
   })
 
+  it('the warning strip hands back the review drafts the removed send carried', async () => {
+    // The drafts ride the wire, not the typed text, so a Remove that put back
+    // only the text would lose them.
+    clearReviewComments('slot-a')
+    addReviewComment('slot-a', { blockId: 'b1', fileIndex: 0, file: 'src/retry.ts', side: 'new', line: 13, lineText: 'retry()', text: 'cap the retries' })
+    const { input } = await sendPastTheDeadline()
+    expect(peekReviewComments('slot-a')).toHaveLength(0)
+    expect(String(sendChat.mock.calls[0][0])).toContain('cap the retries')
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect(input.value).toBe(SENT_TEXT))
+    expect(peekReviewComments('slot-a').map(d => d.text)).toEqual(['cap the retries'])
+    clearReviewComments('slot-a')
+  })
+
   it('hands back both texts when two timed-out sends are removed with one click', async () => {
     const { store, messages, input } = await sendPastTheDeadline()
     await waitFor(() => expect(messages().some(m => m.role === 'notice')).toBe(true))
@@ -264,6 +279,39 @@ describe('a plain send whose POST hits the deadline (response-late)', { timeout:
     expect(messages().some(m => m.role === 'user' && m.content === SENT_TEXT)).toBe(false)
     expect(messages().some(m => m.role === 'notice' || m.role === 'error')).toBe(false)
     expect(input.value).toBe('')
+    expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
+  })
+
+  it('holds the review drafts a busy-slot Queue send carried, for the strip to hand back', async () => {
+    // The drafts left the bar with the send, and with no bubble and no queue id
+    // nothing else kept a copy (fork GPT review). They are not put back on their
+    // own: a request that was merely late may be queued, and a resend would
+    // deliver them twice. The strip's exit hands them back with the text.
+    clearReviewComments('slot-a')
+    addReviewComment('slot-a', { blockId: 'b1', fileIndex: 0, file: 'src/retry.ts', side: 'new', line: 13, lineText: 'retry()', text: 'cap the retries' })
+    const { messages, input } = await sendPastTheDeadline({ busy: true })
+    expect(String(sendChat.mock.calls[0][0])).toContain('cap the retries')
+    expect(peekReviewComments('slot-a')).toHaveLength(0)
+    // Still no bubble and no notice: there is no row for either to describe.
+    expect(messages().some(m => m.role === 'user' || m.role === 'notice' || m.role === 'error')).toBe(false)
+    fireEvent.click(await screen.findByTestId('delivery-exit-dismiss'))
+    await waitFor(() => expect(peekReviewComments('slot-a').map(d => d.text)).toEqual(['cap the retries']))
+    expect(input.value).toBe(SENT_TEXT)
+    clearReviewComments('slot-a')
+  })
+
+  it('stops holding the drafts once the slot shows the send queued after all, without putting them back', async () => {
+    // The queue card now owns the message, drafts included: its cancel is the
+    // way back. Chips restored here as well would go out a second time.
+    clearReviewComments('slot-a')
+    addReviewComment('slot-a', { blockId: 'b1', fileIndex: 0, file: 'src/retry.ts', side: 'new', line: 13, lineText: 'retry()', text: 'cap the retries' })
+    const { store, sendId } = await sendPastTheDeadline({ busy: true })
+    await screen.findByTestId('delivery-exit-dismiss')
+    act(() => {
+      store.dispatch(appendQueuedMessage({ slot: 'slot-a', content: String(sendChat.mock.calls[0][0]), ts: '2026-09-28T00:00:01Z', queue_id: 'q-late', meta: { sendId } }))
+    })
+    await waitFor(() => expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull())
+    expect(peekReviewComments('slot-a')).toHaveLength(0)
   })
 })
 

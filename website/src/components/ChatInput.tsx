@@ -14,8 +14,9 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
 import { useAppStore, useAppDispatch } from '../store'
 import { switchSlot } from '../store/chatSlice'
-import { useSlotId } from '../providers/SlotContext'
+import { useSlotId, useReviewSurface } from '../providers/SlotContext'
 import { emitComposeIntent } from '../lib/composeIntent'
+import { useReviewComments } from '../store/reviewComments'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { savePrefExplicitly } from '../lib/uiPrefs'
@@ -370,6 +371,14 @@ function ChatInput({
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  // Pending inline review comments count as sendable content for the IDLE
+  // send button, like staged session refs: a comments-only send needs no
+  // placeholder prompt. Only on a review surface: a composer whose send path
+  // never drains drafts (split panes, side chat) must not arm its button from
+  // drafts it cannot deliver. Mid-turn they wait for the turn to end, as
+  // session refs do (steer refuses a payload without typed text).
+  const reviewSurface = useReviewSurface()
+  const hasReviewDrafts = useReviewComments(reviewSurface ? slotId : null).length > 0
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
   // can pull THIS pane's slot messages without re-rendering every composer on
   // each streamed frame. useAppStore returns the Provider-injected store, the
@@ -1788,7 +1797,7 @@ function ChatInput({
                 WCAG 2.5.3 (Label in Name). `title` carries the longer
                 explanation for hover.
               */}
-              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote ? (
+              {continuable && onContinue && !value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote && !hasReviewDrafts ? (
                 <button
                   className="primary h-8 px-3 rounded-full bg-accent text-accent-fg border-none inline-flex items-center gap-1.5 text-[12px] font-medium leading-none cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                   onClick={onContinue}
@@ -1804,7 +1813,7 @@ function ChatInput({
               <button
                 className="primary w-8 h-8 rounded-full bg-accent text-accent-fg border-none flex items-center justify-center cursor-pointer hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                 onClick={fireComposer}
-                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote) || disabled || holdSend || optimizing || !connected}
+                disabled={(!value.trim() && !pendingFiles.length && !hasSessionRefs && !hasQuote && !hasReviewDrafts) || disabled || holdSend || optimizing || !connected}
                 title={holdSend ? holdSendReason : undefined}
                 aria-label={i18nT('components.chatInput.send')}
                 {...offlineProps(connected, i18nT('utils.offline.send'), i18nT('components.chatInput.send'))}

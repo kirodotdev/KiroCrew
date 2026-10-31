@@ -5,15 +5,16 @@ import { useAppDispatch, useAppSelector, useAppStore, type AppDispatch, type Roo
 import { appendSlotMessage, dropUnconfirmedRow, endLocalTurn, selectSendAccepted, selectSlotMessages, selectSlotRunEpoch } from '../store/chatSlice'
 import {
   dismissDeliveryWarnings, pruneDeliveryWarnings, removedSendsFor, takeRemovedSend, useDeliveryWarnings,
-  type DeliveryWarningSurface,
+  type DeliveryWarningRecord, type DeliveryWarningSurface,
 } from '../utils/deliveryWarning'
 import { i18nT } from '../i18n/t'
 
-/** Pending means the optimistic row is still on screen and no row anywhere confirms or queues
- *  the send: confirmed, queued, cleared and refetched-away sends have nothing left to hand back. */
-const sendPending = (state: RootState, slot: string, sendId: string): boolean =>
+/** Pending means no row anywhere confirms or queues the send, and either its optimistic row is
+ *  still on screen or it never drew one (a busy-slot Queue send, `rowless`). Confirmed, queued,
+ *  cleared and refetched-away sends have nothing left to hand back. */
+const sendPending = (state: RootState, slot: string, { sendId, rowless }: Pick<DeliveryWarningRecord, 'sendId' | 'rowless'>): boolean =>
   !selectSendAccepted(state, slot, sendId) &&
-  selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !!m.meta?.optimistic)
+  (!!rowless || selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !!m.meta?.optimistic))
 
 /** For the receipt paths: a removed send whose late receipt still lands must say so, because the
  *  composer now holds a copy of a delivered message. */
@@ -43,13 +44,13 @@ export function useDeliveryWarningStrip<P>(host: DeliveryWarningStripHost<P>): {
   const store = useAppStore()
   const records = useDeliveryWarnings(slot)
   const pending = useAppSelector(state =>
-    !!slot && records.some(r => r.surface === surface && sendPending(state, slot, r.sendId)))
+    !!slot && records.some(r => r.surface === surface && sendPending(state, slot, r)))
   const removedIds = removedSendsFor(slot)
   const acceptedRemoved = useAppSelector(state =>
     slot ? removedIds.filter(id => selectSendAccepted(state, slot, id)).join('\n') : '')
 
   useEffect(() => {
-    if (slot && records.length) pruneDeliveryWarnings(slot, id => sendPending(store.getState(), slot, id))
+    if (slot && records.length) pruneDeliveryWarnings(slot, r => sendPending(store.getState(), slot, r))
   }, [slot, records, pending, store])
 
   useEffect(() => {
@@ -61,7 +62,7 @@ export function useDeliveryWarningStrip<P>(host: DeliveryWarningStripHost<P>): {
     const at = currentSlot()
     if (!at || disabled) return
     dismissDeliveryWarnings<P>(at, surface, {
-      stillPending: sendId => sendPending(store.getState(), at, sendId),
+      stillPending: r => sendPending(store.getState(), at, r),
       dropRow: (sendId, epoch) => {
         dispatch(dropUnconfirmedRow({ slot: at, sendId }))
         if (selectSlotRunEpoch(store.getState(), at) === epoch) dispatch(endLocalTurn(at))

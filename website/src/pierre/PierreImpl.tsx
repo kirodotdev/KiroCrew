@@ -6,13 +6,14 @@
  * look/behavior of code and diff rendering is decided.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { FileContents, LineAnnotation, SelectedLineRange, SupportedLanguages } from '@pierre/diffs'
+import type { DiffLineAnnotation, FileContents, FileDiffMetadata, LineAnnotation, SelectedLineRange, SupportedLanguages } from '@pierre/diffs'
 import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, registerCustomLanguage, setCustomExtension } from '@pierre/diffs'
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import type { FileOptions } from '@pierre/diffs/react'
 import { WorkerPoolManager, type WorkerRequest, type WorkerResponse } from '@pierre/diffs/worker'
 import highlightWorkerUrl from '@pierre/diffs/worker/worker-portable.js?worker&url'
 import { workerUrlWithBuildKey } from '../utils/workerCacheKey'
+import type { PatchReviewHooks, ReviewFileRef } from './index'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePlainDiff } from '../hooks/usePlainDiff'
 import ErrorNotice from '../components/ErrorNotice'
@@ -655,13 +656,68 @@ export function PierreCodeImpl({ file, options, className, langHint, scrollClass
   )
 }
 
-export function PierrePatchImpl({ patch, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix }: {
+/** Parse a chat patch ONCE for both rendering and review identity: returns
+ * Pierre's parsed file entries (`a/`/`b/` prefixes stripped) plus one
+ * `ReviewFileRef` per entry — full path and line-text resolver. This is the single source of file identity for review
+ * commenting; no other patch parser may exist in the review path (a second
+ * parser and this one eventually disagree on some patch shape — headerless
+ * renames, binary entries — and index drift between them corrupts draft
+ * identity). Exported for tests. */
+export function parseReviewPatch(patch: string, cacheSalt: string): { files: FileDiffMetadata[]; refs: ReviewFileRef[] } {
+  try {
+    const parsed = parsePatchFiles(normalizePatchHunks(patch)).flatMap(p => p.files)
+    const fileRefs: ReviewFileRef[] = []
+    parsed.forEach((f, index) => {
+      // Strip git's a/ b/ prefixes: Pierre keeps them verbatim, so every
+      // file would render as a rename (a/x → b/x) in the file header.
+      // Independently per side — a deletion parses with the `a/`-prefixed
+      // OLD path as its `name` (`+++ /dev/null` never names a file), a
+      // normal change with the `b/` side.
+      if (f.name?.startsWith('b/') || f.name?.startsWith('a/')) f.name = f.name.slice(2)
+      if (f.prevName?.startsWith('a/')) {
+        const prev = f.prevName.slice(2)
+        f.prevName = prev === f.name ? undefined : prev
+      }
+      // Full path from THIS parse: the new-side name identifies the file;
+      // a deletion (`+++ /dev/null`) is identified by its old side.
+      const path = (f.name && f.name !== '/dev/null' ? f.name : f.prevName) ?? ''
+      // Pierre's line arrays keep each line's trailing newline; the quoted
+      // draft anchor must not.
+      const chomp = (s: string | undefined) => (s == null ? null : s.replace(/\r?\n$/, ''))
+      fileRefs.push({
+        path,
+        index,
+        lineTextAt: (side, line) => {
+          for (const h of f.hunks ?? []) {
+            if (side === 'new' && line >= h.additionStart && line < h.additionStart + h.additionCount) {
+              return chomp(f.additionLines[h.additionLineIndex + (line - h.additionStart)])
+            }
+            if (side === 'old' && line >= h.deletionStart && line < h.deletionStart + h.deletionCount) {
+              return chomp(f.deletionLines[h.deletionLineIndex + (line - h.deletionStart)])
+            }
+          }
+          return null
+        },
+      })
+      // The highlight cache key is built from the file's index and full path,
+      // so two files that share a name in one patch never share cached tokens.
+      f.cacheKey = contentCacheKey(`${index}:${path}`, patch, cacheSalt)
+    })
+    return { files: parsed, refs: fileRefs }
+  } catch {
+    return { files: [], refs: [] }
+  }
+}
+
+export function PierrePatchImpl({ patch, options, className, renderHeaderMetadata, renderHeaderPrefix, renderHeaderFilenameSuffix, review }: {
   patch: string
   options?: PierreDiffOptions
   className?: string
   renderHeaderMetadata?: () => React.ReactNode
   renderHeaderPrefix?: () => React.ReactNode
   renderHeaderFilenameSuffix?: () => React.ReactNode
+  /** Inline review-comment hooks; see `PatchReviewHooks` in ./index. */
+  review?: PatchReviewHooks
 }) {
   const dark = useIsDark()
   const surfaceId = useId()
@@ -675,25 +731,13 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   // one complete file diff and throws otherwise, but chat patches stream
   // through partial frames (bare headers, unterminated hunks) and may carry
   // several files. Unparseable-yet text renders as plain monospace until a
-  // later frame parses; a parser throw is treated the same way.
-  const files = useMemo(() => {
-    try {
-      const parsed = parsePatchFiles(normalizePatchHunks(patch)).flatMap(p => p.files)
-      for (const f of parsed) {
-        // Strip git's a/ b/ prefixes: Pierre keeps them verbatim, so every
-        // file would render as a rename (a/x → b/x) in the file header.
-        if (f.name?.startsWith('b/') && f.prevName?.startsWith('a/')) {
-          f.name = f.name.slice(2)
-          const prev = f.prevName.slice(2)
-          f.prevName = prev === f.name ? undefined : prev
-        }
-        f.cacheKey = contentCacheKey(f.name ?? '', patch, surfaceId + ':patch')
-      }
-      return parsed
-    } catch {
-      return []
-    }
-  }, [patch, surfaceId])
+  // later frame parses; a parser throw is treated the same way. The same
+  // parse is the single source of review file identity — see
+  // `parseReviewPatch`.
+  const { files, refs } = useMemo(
+    () => parseReviewPatch(patch, surfaceId + ':patch'),
+    [patch, surfaceId],
+  )
   // Zero files is an outright parse failure. Zero HUNKS across every file is
   // the subtler one: Pierre reads that as a pure rename and draws a header with
   // `+0 −0` and no rows — so when the raw text plainly carries changes, treat
@@ -718,17 +762,38 @@ export function PierrePatchImpl({ patch, options, className, renderHeaderMetadat
   }
   return (
     <PierreShell pool={activePool} generation={poolState.generation}>
-      {files.map((fileDiff, i) => (
-        <FileDiff
-          key={`${fileDiff.name ?? ''}:${i}`}
-          className={className}
-          fileDiff={fileDiff}
-          options={resolved}
-          renderHeaderMetadata={i === 0 && renderHeaderMetadata ? renderHeaderMetadata : undefined}
-          renderHeaderPrefix={i === 0 ? renderHeaderPrefix : undefined}
-          renderHeaderFilenameSuffix={i === 0 ? renderHeaderFilenameSuffix : undefined}
-        />
-      ))}
+      {files.map((fileDiff, i) => {
+        // Review commenting is keyed by refs[i] — full path and line text
+        // captured from the same parse that produced `fileDiff`, so the hook
+        // identity can never drift from what Pierre renders. The interaction
+        // callbacks live on the OPTIONS object — one InteractionManager per
+        // FileDiff — so each file gets its own closure;
+        // `lineHoverHighlight: 'number'` makes the hoverable gutter visible,
+        // which is what makes the "+" discoverable.
+        const fileName = fileDiff.name ?? ''
+        const ref = refs[i]
+        const reviewOptions = review && ref
+          ? {
+              ...resolved,
+              enableGutterUtility: true,
+              lineHoverHighlight: 'number' as const,
+              onGutterUtilityClick: (range: SelectedLineRange) => review.onGutterUtilityClick(ref, range),
+            }
+          : resolved
+        return (
+          <FileDiff
+            key={`${fileName}:${i}`}
+            className={className}
+            fileDiff={fileDiff}
+            options={reviewOptions}
+            renderHeaderMetadata={i === 0 && renderHeaderMetadata ? renderHeaderMetadata : undefined}
+            renderHeaderPrefix={i === 0 ? renderHeaderPrefix : undefined}
+            renderHeaderFilenameSuffix={i === 0 ? renderHeaderFilenameSuffix : undefined}
+            lineAnnotations={review && ref ? review.annotationsFor(ref) : undefined}
+            renderAnnotation={review && ref ? (a: DiffLineAnnotation<unknown>) => review.renderAnnotation(a, ref) : undefined}
+          />
+        )
+      })}
     </PierreShell>
   )
 }

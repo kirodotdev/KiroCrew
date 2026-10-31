@@ -124,6 +124,7 @@
   "components.queueStack.hidden_attachments",
   "components.queueStack.hidden_lines",
   "components.queueStack.sub_agent_result",
+  "components.reviewCommentBar.pending_label",
   "components.skillBrowserModal.file",
   "components.tabCloseMenu.close_terminals_body",
   "components.webPreviewPanel.annotate_clear_confirm",

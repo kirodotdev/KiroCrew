@@ -6,6 +6,8 @@ import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
 import type { ChatMessage } from '../types'
 import type { PasteBlock } from '../utils/pasteTokens'
+import { restoreReviewComments, type ReviewCommentDraft } from '../store/reviewComments'
+import { formatReviewComments } from '../store/reviewComments.prompt'
 
 /** Pre-serialization composer state of a send the server QUEUED, written by the
  *  host's send path when the `queued: true` receipt names the entry. */
@@ -28,6 +30,30 @@ export interface QueuedSendRecord {
    *  so a cancel puts it back as a staged card rather than leaving its `>` block
    *  in the restored text -- or, without a stash hit, losing it (fork GPT review). */
   quote?: MessageQuote
+}
+
+/** Inline review-comment drafts a QUEUED send carried, keyed by the same
+ *  `queue_id` as `queuedSendStash`, and kept apart from it: that stash is
+ *  written only when the wire is the typed text alone, while a send with
+ *  drafts can carry any other extra too (pastes, session links). `sent` is
+ *  the exact POSTed text, the same edit guard as `QueuedSendRecord.sent`.
+ *  A cancel strips their block (appended last, see composerSend) off the wire
+ *  text before any parse, and puts the drafts back as chips once the server
+ *  confirms it. */
+export interface QueuedReviewRecord {
+  slot: string
+  reviews: ReviewCommentDraft[]
+  sent: string
+}
+
+export const queuedReviewStash = new Map<string, QueuedReviewRecord>()
+
+/** The wire text without the review block the send appended to it. Exact
+ *  suffix only; anything else is returned unchanged. */
+function stripReviewBlock(sent: string, block: string): string {
+  if (sent === block) return ''
+  const suffix = '\n\n' + block
+  return sent.endsWith(suffix) ? sent.slice(0, -suffix.length) : sent
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -220,6 +246,9 @@ export function useQueuedMessageActions({
     // envelope into the human composer would corrupt the draft AND launder
     // app text into user authorship on the next send.
     const isAppEntry = (msg?.meta?.kind as string) === 'mcp_app_message'
+    // Review drafts this card carried, put back once the server confirms the
+    // cancel (below).
+    let reviewsBack: QueuedReviewRecord | undefined
     if (msg?.content && !isAppEntry) {
       // Restore by QUEUE IDENTITY: the record was stored under the queue id
       // the send receipt returned, which is the id this cancel carries — so a
@@ -237,20 +266,31 @@ export function useQueuedMessageActions({
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
       const hit = stashed && stashed.sent === msg.content
+      // Review drafts come back as CHIPS whenever their record is this
+      // card's own (the same `sent` guard), never as composer text: their
+      // block comes off the wire text before the parser below sees it. `raw`
+      // never held the block, so a stash hit is unaffected. Recency merge
+      // lives in the store, so out-of-order cancellations cannot resurrect
+      // older wording.
+      const reviewRecord = queuedReviewStash.get(queueId)
+      if (reviewRecord) queuedReviewStash.delete(queueId)
+      const reviewHit = reviewRecord && reviewRecord.sent === msg.content ? reviewRecord : undefined
+      reviewsBack = reviewHit
+      const content = reviewHit ? stripReviewBlock(msg.content, formatReviewComments(reviewHit.reviews)) : msg.content
       // Without a stash hit the row's own `meta.quote` (the gateway carries
       // it on the entry) is the quote, and its block comes off the head of
       // the parsed text so the host restages a card, not raw `>` lines.
       // Accepted only while its block still opens the text: a record the
       // row kept past an edit that deleted the block is not restaged.
       const rowMetaQuote = hit ? null : readMessageQuote(msg.meta as Record<string, unknown> | undefined)
-      const rowQuote = rowMetaQuote && msg.content.startsWith(quoteBlock(rowMetaQuote)) ? rowMetaQuote : undefined
+      const rowQuote = rowMetaQuote && content.startsWith(quoteBlock(rowMetaQuote)) ? rowMetaQuote : undefined
       // The block comes off BEFORE the parse: the parser's producer-block
       // patterns are anchored at offset 0, so a quote on the head would hide
       // an image block behind it and the file would restore as literal text.
       const parsed = hit
         ? { text: stashed.raw, files: stashed.files, aliases: stashed.aliases }
         : restoreQueuedContent(
-          rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content,
+          rowQuote ? stripQuoteBlock(content, rowQuote) : content,
           queueEntryAttachments(msg.meta).files,
           stagedFilesRef.current?.(),
           projectRef.current?.(),
@@ -267,7 +307,15 @@ export function useQueuedMessageActions({
     }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
     dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))
-    run(queueId, api.cancelQueuedMessage(slot, queueId))
+    const call = api.cancelQueuedMessage(slot, queueId)
+    // A refused or failed cancel leaves the entry queued, or already sent, so
+    // its review block still reaches the agent. Chips put back on top of that
+    // would go out a second time with the next send, so they wait for success.
+    if (reviewsBack) {
+      const { slot: draftSlot, reviews } = reviewsBack
+      call.then(() => restoreReviewComments(draftSlot, reviews), () => {})
+    }
+    run(queueId, call)
   }, [slot, dispatch, run])
 
   const onInterrupt = useCallback((queueId: string) => {

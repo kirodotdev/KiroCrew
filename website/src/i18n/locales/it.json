@@ -6960,6 +6960,13 @@
     "diffBlock": {
       "added": "aggiunto",
       "binary": "binario",
+      "comment_add": "Aggiungi commento",
+      "comment_cancel": "Annulla",
+      "comment_edit": "Modifica commento",
+      "comment_keys": "Esc per annullare · {{save}} per salvare",
+      "comment_placeholder": "Commento per l'agente…",
+      "comment_remove": "Rimuovi commento",
+      "comment_save": "Salva commento",
       "copied": "Copiato!",
       "copy_patch": "Copia la patch",
       "deleted": "eliminato",
@@ -9842,6 +9849,13 @@
     "fileMenuContributions": {
       "app_actions": "Azioni dell'app",
       "contributed_by": "App: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "vecchia",
+      "pending_label_many": "{{count}} commenti di revisione verranno inviati con il tuo prossimo messaggio in questa chat",
+      "pending_label_one": "{{count}} commento di revisione verrà inviato con il tuo prossimo messaggio in questa chat",
+      "pending_label_other": "{{count}} commenti di revisione verranno inviati con il tuo prossimo messaggio in questa chat",
+      "remove": "Rimuovi commento"
     },
     "featurePreviewIntro": {
       "learn_more": "Guarda com’è fatto",

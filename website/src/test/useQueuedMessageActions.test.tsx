@@ -40,7 +40,9 @@ const apiMocks = vi.hoisted(() => ({
 }))
 vi.mock('../api/client', () => ({ api: apiMocks }))
 
-import { useQueuedMessageActions, queuedSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash, queuedReviewStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { clearReviewComments, peekReviewComments, type ReviewCommentDraft } from '../store/reviewComments'
+import { formatReviewComments } from '../store/reviewComments.prompt'
 
 const queued = (queueId: string, content: string): ChatMessage =>
   ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } }) as ChatMessage
@@ -99,6 +101,8 @@ beforeEach(() => {
   // Module-level store: entries would otherwise leak across tests (and across
   // reused queue ids like 'q1'), making the suite order-dependent.
   queuedSendStash.clear()
+  queuedReviewStash.clear()
+  clearReviewComments('chat-1')
   for (const fn of Object.values(apiMocks)) fn.mockResolvedValue({ ok: true })
 })
 
@@ -303,6 +307,46 @@ describe('useQueuedMessageActions — cancel', () => {
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).not.toHaveBeenCalled()
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
+  })
+})
+
+describe('useQueuedMessageActions — cancel of a review-bearing card', () => {
+  const draft: ReviewCommentDraft = {
+    id: 'rc-1', blockId: 'msg-a:4:db-1', fileIndex: 0, file: 'src/retry.ts', side: 'new',
+    line: 13, lineText: 'retry()', text: 'cap the retries', updatedAt: 1,
+  }
+  const sent = 'check these' + '\n\n' + formatReviewComments([draft])
+
+  /** Queue the card with its review record, cancel it, and return the
+   *  pending server answer for the test to settle. */
+  function cancelReviewCard() {
+    queuedReviewStash.set('q1', { slot: 'chat-1', reviews: [draft], sent })
+    const answer = deferred()
+    apiMocks.cancelQueuedMessage.mockReturnValue(answer.promise)
+    const restoreDraft = vi.fn()
+    const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
+    act(() => { get().onCancel('q1') })
+    return { answer, restoreDraft }
+  }
+
+  it('hands back the typed text at once and the drafts once the server confirms', async () => {
+    const { answer, restoreDraft } = cancelReviewCard()
+    expect(restoreDraft).toHaveBeenCalledWith('check these', [], undefined)
+    expect(peekReviewComments('chat-1')).toHaveLength(0)
+    await act(async () => { answer.resolve({ ok: true }) })
+    expect(peekReviewComments('chat-1').map(d => d.text)).toEqual(['cap the retries'])
+  })
+
+  it('keeps the drafts out of the bar when the server refuses, since the queued message still carries them', async () => {
+    const { answer } = cancelReviewCard()
+    await act(async () => { answer.reject(Object.assign(new Error('already in the conversation'), { status: 409 })) })
+    expect(peekReviewComments('chat-1')).toHaveLength(0)
+  })
+
+  it('keeps the drafts out of the bar when the cancel request fails outright', async () => {
+    const { answer } = cancelReviewCard()
+    await act(async () => { answer.reject(new TypeError('Failed to fetch')) })
+    expect(peekReviewComments('chat-1')).toHaveLength(0)
   })
 })
 

@@ -1348,7 +1348,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
                   {i18nT('pages.chat.toolCallLine.edit_n_of_m', { n: i + 1, total: runCodes.length })}
                 </span>
               )}
-              <DiffBlock code={code} complete onFileOpen={onFileOpen} />
+              <DiffBlock code={code} complete onFileOpen={onFileOpen} reviewAnchor={toolCallId ? `tc:${slot ?? ''}:${toolCallId}:${i}` : undefined} />
             </div>
           ))}
         </div>

@@ -5,6 +5,7 @@ import { formatToken, type PasteBlock } from '../utils/pasteTokens'
 import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
 import type { SessionRef } from '../utils/sessionRefs'
 import type { KnowledgeResult } from '../pages/chat/useKnowledgeFetch'
+import type { ReviewCommentDraft } from '../store/reviewComments'
 
 const paste = (id: string, content: string): PasteBlock => ({ id, seq: 1, lines: 4, content })
 const quoteA: MessageQuote = { role: 'assistant', text: 'first answer' }
@@ -46,6 +47,18 @@ describe('mergeSentTurns', () => {
     expect(merged.quote).toBe(quoteB)
     expect(merged.inlined).not.toContain(quoteB.text)
     expect(merged.slotTokens).toBeUndefined()
+    expect(merged.reviews).toBeUndefined()
+  })
+
+  it('keeps the review drafts both sends drained', () => {
+    const draft = (id: string, line: number): ReviewCommentDraft => ({
+      id, blockId: 'b1', fileIndex: 0, file: 'a.ts', side: 'new', line, lineText: 'x', text: id, updatedAt: line,
+    })
+    const merged = mergeSentTurns(
+      { inlined: 'first', pastes: [], sessionRefs: [], quote: null, reviews: [draft('rc-1', 1)] },
+      { inlined: 'second', pastes: [], sessionRefs: [], quote: null, reviews: [draft('rc-2', 2)] },
+    )
+    expect(merged.reviews?.map(d => d.id)).toEqual(['rc-1', 'rc-2'])
   })
 })
 

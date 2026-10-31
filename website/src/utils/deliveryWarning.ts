@@ -24,6 +24,10 @@ export interface DeliveryWarningRecord<P = unknown> {
   /** The slot's run epoch when the warning was raised: Remove ends only that turn. */
   epoch: number
   sent: P
+  /** The send drew no transcript row: a plain send on a busy slot, which the server's queue
+   *  card stands for. With no optimistic row to read, it is pending until a row anywhere shows
+   *  the send accepted, or the user removes it. */
+  rowless?: boolean
 }
 
 const warnings = new Map<string, DeliveryWarningRecord[]>()
@@ -50,12 +54,13 @@ export function deliveryWarningsFor(slot: string | null | undefined): readonly D
   return (slot && warnings.get(slot)) || NONE
 }
 
-/** Drop records whose row is no longer pending in the transcript: confirmed, queued, cleared or
- *  refetched away. Nothing is left for those to hand back without duplicating or misplacing it. */
-export function pruneDeliveryWarnings(slot: string, stillPending: (sendId: string) => boolean): void {
+/** Drop records whose send is no longer pending: confirmed, queued, cleared or refetched away.
+ *  Nothing is left for those to hand back without duplicating or misplacing it. The whole record
+ *  is judged, since a rowless one has no row to read. */
+export function pruneDeliveryWarnings(slot: string, stillPending: (record: DeliveryWarningRecord) => boolean): void {
   const held = warnings.get(slot)
   if (!held) return
-  const kept = held.filter(r => stillPending(r.sendId))
+  const kept = held.filter(stillPending)
   if (kept.length === held.length) return
   if (kept.length) warnings.set(slot, kept)
   else warnings.delete(slot)
@@ -91,8 +96,8 @@ export function useDeliveryWarnings(slot: string | null | undefined): readonly D
 }
 
 export interface DismissDeliveryWarningDeps<P> {
-  /** Is this send's row still pending in the transcript, re-read at click time. */
-  stillPending: (sendId: string) => boolean
+  /** Is this send still pending, re-read at click time. */
+  stillPending: (record: DeliveryWarningRecord) => boolean
   dropRow: (sendId: string, epoch: number) => void
   /** The surface's own send-failure restore. */
   restore: (sent: P) => void
@@ -115,7 +120,7 @@ export function dismissDeliveryWarnings<P>(
   const others = held.filter(r => r.surface !== surface)
   if (others.length) warnings.set(slot, others)
   else warnings.delete(slot)
-  const live = mine.filter(r => deps.stillPending(r.sendId))
+  const live = mine.filter(deps.stillPending)
   if (live.length) {
     deps.restore(live.map(r => r.sent as P).reduce(deps.merge))
     const ids = removed.get(slot) ?? new Set<string>()

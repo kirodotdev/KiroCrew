@@ -6728,6 +6728,13 @@
     "diffBlock": {
       "added": "追加",
       "binary": "バイナリ",
+      "comment_add": "コメントを追加",
+      "comment_cancel": "キャンセル",
+      "comment_edit": "コメントを編集",
+      "comment_keys": "Esc でキャンセル · {{save}} で保存",
+      "comment_placeholder": "エージェントへのコメント…",
+      "comment_remove": "コメントを削除",
+      "comment_save": "コメントを保存",
       "copied": "コピーしました！",
       "copy_patch": "パッチをコピー",
       "deleted": "削除",
@@ -9556,6 +9563,11 @@
     "fileMenuContributions": {
       "app_actions": "アプリの操作",
       "contributed_by": "アプリ: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "旧",
+      "pending_label_other": "{{count}} 件のレビューコメントがこのチャットで次に送るメッセージと一緒に送信されます",
+      "remove": "コメントを削除"
     },
     "featurePreviewIntro": {
       "learn_more": "どんな見た目か見る",

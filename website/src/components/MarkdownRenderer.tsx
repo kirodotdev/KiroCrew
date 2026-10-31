@@ -1043,11 +1043,17 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       const foldKey = slotKey != null && messageTs != null && block.startLine != null
         ? `${slotKey}:${messageTs}:${block.startLine}`
         : undefined
+      // Drafts are already partitioned by SlotContext in the review store, so
+      // their host identity needs only the message and fence line. This keeps
+      // user rows commentable even when the renderer has no slotKey prop.
+      const reviewAnchor = messageTs && block.startLine != null
+        ? `${messageTs}:${block.startLine}`
+        : undefined
       // A finalized fence that never closed may have swallowed the rest of the
       // reply, so the chat must not leave it folded: the same chip stays
       // mounted, opens itself and says why it looks wrong.
       const node = !collapseDiffs
-        ? <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} />
+        ? <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} reviewAnchor={reviewAnchor} />
         : <FoldableDiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} foldKey={foldKey}
             warning={block.unclosed ? i18nT('components.markdownRenderer.unclosed_diff_warning') : undefined} />
       // Smooth mode: wrap so the block height eases as lines arrive. The wrapper

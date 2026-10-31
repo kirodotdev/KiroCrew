@@ -5,7 +5,9 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { expandAll as expandPasteTokens, carryPastes, mergeCarriedDraft, type PasteBlock } from '../../../utils/pasteTokens'
 import { mergeSessionRefs, type SessionRef } from '../../../utils/sessionRefs'
 import type { PickedFileTokens } from './composerFileMentions'
-import { queuedSendStash } from '../../../hooks/useQueuedMessageActions'
+import { queuedSendStash, queuedReviewStash } from '../../../hooks/useQueuedMessageActions'
+import { peekReviewComments, clearReviewComments, restoreReviewComments, type ReviewCommentDraft } from '../../../store/reviewComments'
+import { formatReviewComments } from '../../../store/reviewComments.prompt'
 import { syncSlotRunningFromServer, capturePendingAskId, createSlot, appendMessage, selectComposerBusy, startLocalTurn, endLocalTurn, appendSlotMessage, setSlotRunning, selectSendConfirmed, selectSlotRunEpoch, markSendUnconfirmed, confirmOptimisticSend, ageFolderSuggestion } from '../../../store/chatSlice'
 import { confirmedDelivered } from '../../../utils/sendDelivery'
 import { warnDeliveryUnconfirmed } from '../../../utils/deliveryWarning'
@@ -100,6 +102,9 @@ export interface SentTurnRestore {
   quote: MessageQuote | null
   slotTokens?: Record<string, string[]>
   knowledge?: readonly KnowledgeResult[]
+  /** Review drafts the send drained from the bar. They ride the wire, not `inlined`, so a
+   *  restore that left them out would lose them. */
+  reviews?: ReviewCommentDraft[]
 }
 
 /** Two sends' payloads as one, so a single restore puts both back. The stage holds one quote, so
@@ -117,6 +122,8 @@ export function mergeSentTurns(earlier: SentTurnRestore, later: SentTurnRestore)
     quote: earlier.quote ?? later.quote,
     slotTokens: earlier.slotTokens || later.slotTokens ? tokens : undefined,
     knowledge: [...(earlier.knowledge ?? []), ...(later.knowledge ?? []).filter(i => !knowledgeIds.has(i.id))],
+    // Both lists go back: the store keeps the newer wording on a shared anchor.
+    reviews: earlier.reviews || later.reviews ? [...(earlier.reviews ?? []), ...(later.reviews ?? [])] : undefined,
   }
 }
 
@@ -245,6 +252,10 @@ export function useComposerSend({
     // fresh bookkeeping (fork GPT review; same rule as the text above).
     if (sent.slotTokens) mergeSlotTokens(slot, sent.slotTokens)
     if (sent.knowledge?.length && onScreenNow) mergeKnowledgeBack(sent.knowledge)
+    // Review drafts go back to the slot they were drained from, on screen or
+    // not. The store merges, so a draft re-made while the send was in flight
+    // keeps its newer wording.
+    if (sent.reviews?.length) restoreReviewComments(slot, sent.reviews)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messageQuote.recoverInto])
 
@@ -286,7 +297,10 @@ export function useComposerSend({
     if (!isolated) widgetPrefillRef.current = null
     // A staged quote alone is a sendable message (the quote IS the text).
     const sentQuote: MessageQuote | null = isolated || optionText ? null : messageQuote.consume('').quote
-    if (isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
+    // Review comments drafted on this chat's diff lines are sendable content
+    // on their own: a comments-only send needs no placeholder prompt.
+    const hasReviewDrafts = !isolated && !optionText && !targetSlot && peekReviewComments(activeSlotRef.current ?? '').length > 0
+    if (!hasReviewDrafts && isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
 
     // Sending while STREAMING dictation is live ends the dictation (see
     // `useComposerVoice.disarmForSend` for the full rationale — streaming only,
@@ -509,6 +523,26 @@ export function useComposerSend({
     if (!targetSlot) {
       forceNew = newSessionRef.current
       newSessionRef.current = false
+    }
+    // Inline review comments drafted on diff lines ride the next normal send
+    // into the session they were drafted in, and leave the bar with it.
+    // Option sends (follow-up chips, question answers), targeted sends and a
+    // send that opens a new session skip them: that text is aimed elsewhere.
+    // Snapshotted, not only cleared, so a failed send, a removed unconfirmed
+    // send and a cancelled queued send can put them back. The block is
+    // APPENDED after every serializer has run: it quotes code verbatim, so an
+    // `@docs/`-shaped string inside it must reach the agent as written, and a
+    // staged quote must still open the message for the bubble's quote card.
+    const reviewSlot = !isolated && !optionText && !targetSlot && !forceNew && uiSlot && slot === uiSlot ? uiSlot : null
+    const sentReviews = reviewSlot ? peekReviewComments(reviewSlot) : []
+    // `reviewSlot` is `slot` whenever drafts were drained, so the restore
+    // payload can carry them for the same slot it restores.
+    const sentReviewsBack: Pick<SentTurnRestore, 'reviews'> = sentReviews.length ? { reviews: sentReviews } : {}
+    if (reviewSlot && sentReviews.length) {
+      clearReviewComments(reviewSlot)
+      const reviewBlock = formatReviewComments(sentReviews)
+      turn.wire = turn.wire ? turn.wire + '\n\n' + reviewBlock : reviewBlock
+      turn.bubble = turn.bubble ? turn.bubble + '\n\n' + reviewBlock : reviewBlock
     }
     if (!slot || forceNew) {
       sendingRef.current = true;
@@ -739,7 +773,7 @@ export function useComposerSend({
       // App payloads remain in the page-level error notice for copying; the
       // composer was never consumed and must not gain the app's text or chips.
       if (!slot || isolated) return
-      restoreSentTurn(slot, { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens })
+      restoreSentTurn(slot, { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens, ...sentReviewsBack })
     }
     // The POST, its 10 s deadline, the resolves-not-rejects trap and the body
     // classification all live in the chat-core transport now; this surface
@@ -807,11 +841,26 @@ export function useComposerSend({
       // policy hands its text back (applySteerReceipt), so a caller that
       // persists on this verdict (a comment batch) keeps its payload.
       const lateVerdict = !steerNow
-      // A busy-slot Queue send minted no bubble, so there is no row to mark and
-      // the notice below would point at nothing. It keeps the bare pending
-      // verdict; what becomes of its text is the restore decision this arm
-      // does not take.
-      if (!bubbleMinted || !slot) return lateVerdict
+      // What the strip's exit hands back for this send: the composer's pre-send state, plus the
+      // drafts it drained, which ride the wire and not the text.
+      const sentPayload: SentTurnRestore = { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens, knowledge: knowledgeBlock?.items, ...sentReviewsBack }
+      if (!slot) return lateVerdict
+      if (!bubbleMinted) {
+        // A busy-slot Queue send minted no bubble, so there is no row to mark and
+        // the notice below would point at nothing. It keeps the bare pending
+        // verdict; what becomes of its text is the restore decision this arm
+        // does not take. The drafts it drained are different: the bar emptied
+        // when they left, and with no bubble, no queue id and no warning record
+        // nothing could put them back (fork GPT review). So a send that carried
+        // drafts records the whole pre-send payload as a ROWLESS warning: the
+        // strip stays up until a row shows the send accepted (the queue card or
+        // the user row carries this sendId) or the user removes it, and its exit
+        // hands text and chips back together. Never put back on their own: a
+        // late request may still be queued, and resent drafts reach the agent
+        // twice.
+        if (sentReviews.length) warnDeliveryUnconfirmed<SentTurnRestore>(slot, { sendId, surface: 'page', epoch: sendEpoch, rowless: true, sent: sentPayload })
+        return lateVerdict
+      }
       // The mark is what draws the bubble's pending line (the `optimistic` flag
       // alone cannot, see `markSendUnconfirmed`), and the row under the bubble
       // says what the line cannot: that the deadline passed and what to do.
@@ -820,7 +869,7 @@ export function useComposerSend({
       // slot like the failure rows: the user can switch sessions inside the
       // deadline window.
       dispatch(markSendUnconfirmed({ slot, sendId }))
-      if (!isolated) warnDeliveryUnconfirmed<SentTurnRestore>(slot, { sendId, surface: 'page', epoch: sendEpoch, sent: { inlined: turn.inlined, pastes: activePastes, sessionRefs: sentSessionRefs, quote: sentQuote, slotTokens: sentSlotTokens, knowledge: knowledgeBlock?.items } })
+      if (!isolated) warnDeliveryUnconfirmed<SentTurnRestore>(slot, { sendId, surface: 'page', epoch: sendEpoch, sent: sentPayload })
       dispatch(appendSlotMessage({ slot, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(isolated ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
       return lateVerdict
     }
@@ -854,6 +903,12 @@ export function useComposerSend({
       if (typeof body.queue_id === 'string' && body.queue_id) {
         queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: turn.wire, aliases: sentSlotTokens, ...(sentQuote ? { quote: sentQuote } : {}) })
       }
+    }
+    // Drafts a queued send carried are recorded whatever else it carried
+    // (`typedOnly` above was decided before their block was appended), so a
+    // cancel puts them back as chips. See `queuedReviewStash`.
+    if (body.queued && reviewSlot && sentReviews.length && typeof body.queue_id === 'string' && body.queue_id) {
+      queuedReviewStash.set(body.queue_id, { slot: reviewSlot, reviews: sentReviews, sent: turn.wire })
     }
     if (receipt.status === 'refused') {
       // FRAMED like the steer's refusal (and ChatEmbed's): a raw backend reason

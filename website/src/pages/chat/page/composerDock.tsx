@@ -8,6 +8,7 @@ import { setMovedSlot, useMovedSlot } from '../../../hooks/useMoveSlotToFolder'
 import { pathBasename } from '../../../utils/pathBasename'
 import { TipCard, type useTipTrigger } from '../../../components/TipCard'
 import VoicePlaybackBar from '../../../components/VoicePlaybackBar'
+import ReviewCommentBar from '../../../components/ReviewCommentBar'
 import { i18nT } from '../../../i18n/t'
 import type { RootState } from '../../../store'
 import FolderSuggestionCard from '../FolderSuggestionCard'
@@ -73,6 +74,9 @@ export function useComposerAboveBand({
     void langGen
     return (
     <>
+      {/* Review comments drafted on this chat's diff lines; they ride the
+          next normal send (see composerSend). */}
+      <ReviewCommentBar slotId={activeSlot} />
       <VoicePlaybackBar />
       {/* Session-control failures surface HERE, beside the chips they
           are about, rather than on the chat. Both hooks fail closed —

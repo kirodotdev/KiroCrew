@@ -6844,6 +6844,13 @@
     "diffBlock": {
       "added": "যোগ করা হয়েছে",
       "binary": "বাইনারি",
+      "comment_add": "মন্তব্য যোগ করো",
+      "comment_cancel": "বাতিল",
+      "comment_edit": "মন্তব্য সম্পাদনা করো",
+      "comment_keys": "বাতিল করতে Esc · সংরক্ষণ করতে {{save}}",
+      "comment_placeholder": "এজেন্টের জন্য মন্তব্য…",
+      "comment_remove": "মন্তব্য সরান",
+      "comment_save": "মন্তব্য সংরক্ষণ করো",
       "copied": "কপি হয়েছে!",
       "copy_patch": "প্যাচ কপি করো",
       "deleted": "মুছে ফেলা হয়েছে",
@@ -9699,6 +9706,12 @@
     "fileMenuContributions": {
       "app_actions": "অ্যাপ ক্রিয়া",
       "contributed_by": "অ্যাপ: {{app}}"
+    },
+    "reviewCommentBar": {
+      "old_side": "পুরানো",
+      "pending_label_one": "{{count}}টি রিভিউ মন্তব্য এই চ্যাটে তোমার পরবর্তী বার্তার সাথে পাঠানো হবে",
+      "pending_label_other": "{{count}}টি রিভিউ মন্তব্য এই চ্যাটে তোমার পরবর্তী বার্তার সাথে পাঠানো হবে",
+      "remove": "মন্তব্য সরান"
     },
     "featurePreviewIntro": {
       "learn_more": "দেখো এটা কেমন দেখায়",

@@ -1,10 +1,13 @@
-import { memo, useState, useMemo } from 'react'
-import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import { motion } from 'framer-motion'
+import { Copy, Check, Columns2, Rows2, X } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { usePathKind } from '../hooks/usePathKind'
 import { isSafePath } from '../utils/safePath'
 import { splitPatchSections, type PatchSection } from '../utils/diffLineCounts'
-import { PierrePatch } from '../pierre'
+import { PierrePatch, type PatchReviewHooks, type ReviewFileRef } from '../pierre'
+import { useContextSlotId, useReviewSurface } from '../providers/SlotContext'
+import { addReviewComment, getReviewComment, removeReviewComment, useReviewComments } from '../store/reviewComments'
 import { PlainCodeFallback, PlainFilePairHeader, PlainPatchBodyContext, type PlainPatchBodyOwner } from '../pierre/PlainCodeFallback'
 import { PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
@@ -156,7 +159,87 @@ function changeNote(words: string[]) {
   )
 }
 
-export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string }) {
+/** Immutable content identity for one diff block: full-length FNV-1a over
+ * the whole text. Review draft identity combines this with the host-supplied
+ * message/fence or tool-call anchor; without that host anchor, drafting is
+ * unavailable because byte-identical renders cannot be distinguished. */
+export function diffBlockId(code: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  let h2 = 5381
+  for (let i = code.length - 1; i >= 0; i--) h2 = ((h2 << 5) + h2 + code.charCodeAt(i)) | 0
+  return `db-${code.length}-${(h >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}`
+}
+
+/* File identity and line text for review comments come from Pierre's OWN
+ * parse — `ReviewFileRef` produced in `pierre/PierreImpl.tsx` from the same
+ * `parsePatchFiles` enumeration Pierre renders. No second patch parser exists
+ * here by design: every prior local parser (basename keys, header-pair
+ * counting) eventually disagreed with Pierre's file enumeration on some patch
+ * shape — duplicate basenames, hunk bodies that look like headers, deleted
+ * files, headerless rename entries — and each disagreement corrupted draft
+ * identity a different way. One parse, one identity. */
+
+/** Inline draft form rendered as a Pierre line annotation under the picked
+ * diff line. Local text state, so typing never re-renders the diff. */
+function CommentForm({ onSubmit, onCancel, initialText }: { onSubmit: (text: string) => void; onCancel: () => void; initialText?: string }) {
+  const [text, setText] = useState(initialText ?? '')
+  const submit = () => { if (text.trim()) onSubmit(text) }
+  const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
+  const boxRef = useRef<HTMLTextAreaElement>(null)
+  // Pierre projects this form through an annotation slot it creates in its
+  // own render, after this commit. React's `autoFocus` fires while the
+  // textarea has no box yet and silently does nothing, so typing right after
+  // a click on "+" would go to the page. Focus on the next frames instead,
+  // until the textarea takes it (about a second at most), caret at the end.
+  useEffect(() => {
+    let raf = 0
+    let tries = 0
+    const focus = () => {
+      const el = boxRef.current
+      if (!el) return
+      el.focus()
+      if (document.activeElement === el) el.setSelectionRange(el.value.length, el.value.length)
+      else if (++tries < 60) raf = requestAnimationFrame(focus)
+    }
+    focus()
+    return () => cancelAnimationFrame(raf)
+  }, [])
+  return (
+    // `font-body`: the form mounts inside Pierre's diff, whose code font it
+    // would otherwise inherit (the textarea too, via preflight's font:inherit).
+    <div className="px-3 py-2 bg-bg-elevated border-y border-border flex flex-col gap-1.5 font-body">
+      <textarea
+        ref={boxRef}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={2}
+        aria-label={i18nT('components.diffBlock.comment_placeholder')}
+        placeholder={i18nT('components.diffBlock.comment_placeholder')}
+        className="w-full resize-y rounded-md border border-border bg-bg-hover/30 px-2 py-1 text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/50"
+        onKeyDown={e => {
+          if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+          else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit() }
+        }}
+      />
+      {/* A split-view column is narrow: the row wraps between the hint and
+          the button pair, so the hint keeps its line and the buttons stay
+          together, each label on one line. */}
+      <div className="flex flex-wrap gap-x-2 gap-y-1 items-center justify-end">
+        <span className="text-[11px] text-muted mr-auto" aria-hidden="true">{i18nT('components.diffBlock.comment_keys', { save: isMac ? '⌘↵' : 'Ctrl+↵' })}</span>
+        <div className="flex gap-2 shrink-0">
+          <button className="px-2 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer whitespace-nowrap" onClick={onCancel}>{i18nT('components.diffBlock.comment_cancel')}</button>
+          <button className="px-2 py-0.5 rounded text-[12px] text-text bg-bg-hover disabled:opacity-50 cursor-pointer whitespace-nowrap" disabled={!text.trim()} onClick={submit}>{i18nT(initialText != null ? 'components.diffBlock.comment_save' : 'components.diffBlock.comment_add')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, reviewAnchor }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; reviewAnchor?: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   // Shares the app-wide `mc-diff-split` preference with the side panel and
@@ -167,6 +250,20 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   // own; this block reads it too because the split/unified toggle below is a
   // Pierre layout option, meaningless over the raw text plain mode prints.
   const [plain] = usePlainDiff()
+  // ---- Inline review comments -------------------------------------------
+  // Slot from context ONLY (useContextSlotId): DiffBlock stays mountable
+  // with no provider (bare tests, embeds) — commenting simply switches off.
+  const slotId = useContextSlotId()
+  // Drafting is offered only where the composer DRAINS drafts (ChatPage marks
+  // it via ReviewSurfaceProvider). A pane or side surface with its own send
+  // path shows the diff without the gutter, rather than collecting drafts its
+  // composer would never display or send.
+  const reviewSurface = useReviewSurface()
+  const drafts = useReviewComments(slotId)
+  // The line a comment is being drafted on; null = no form open. `fileIndex`
+  // is the file's position in the patch (its section below), so two files
+  // that share a basename never share a form.
+  const [commentTarget, setCommentTarget] = useState<{ fileIndex: number; side: 'old' | 'new'; line: number; endLine?: number } | null>(null)
   // Resolve the file path: prefer headers inside the diff, fall back to the
   // pathHint extracted from the surrounding chat text by MarkdownRenderer
   // (helps when a tool emits "Created /path/to/file:" before a
@@ -250,6 +347,126 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   // stationary, and a header that changes height while someone is reading is not.
   const reserveOpen = Boolean(onFileOpen && probePath && isSafePath(probePath))
 
+  // ---- Review-comment hooks handed to Pierre ------------------------------
+  // File identity arrives as a `ReviewFileRef` from Pierre's OWN parse (see
+  // pierre/PierreImpl.tsx): full path, enumeration index, and a line-text
+  // resolver, all from the single `parsePatchFiles` call Pierre renders.
+  // The STORE keys drafts by `ref.path`, so the outgoing message cites a
+  // usable path; ephemeral form state keys by `ref.index`.
+  // Identity of THIS diff block combines the host's render anchor (message +
+  // fence line, or a tool_call_id) with immutable content identity. The host
+  // separates byte-identical renders; the content separates local variants.
+  // With no host anchor, drafting stays off rather than sharing identity.
+  const blockId = useMemo(() => reviewAnchor ? `${reviewAnchor}:${diffBlockId(code)}` : null, [reviewAnchor, code])
+  const toStoreSide = (s: 'deletions' | 'additions'): 'old' | 'new' => (s === 'deletions' ? 'old' : 'new')
+
+  const annotationsFor = useCallback((file: ReviewFileRef) => {
+    if (!blockId) return undefined
+    const storeKey = file.path || 'diff'
+    const anns: { side: 'deletions' | 'additions'; lineNumber: number; metadata: unknown }[] = []
+    for (const d of drafts) {
+      if (d.blockId === blockId && d.fileIndex === file.index && d.file === storeKey) anns.push({ side: d.side === 'old' ? 'deletions' : 'additions', lineNumber: d.line, metadata: null })
+    }
+    if (
+      commentTarget && commentTarget.fileIndex === file.index
+      && !drafts.some(d => d.blockId === blockId && d.fileIndex === file.index && d.file === storeKey && d.side === commentTarget.side && d.line === commentTarget.line)
+    ) {
+      anns.push({ side: commentTarget.side === 'old' ? 'deletions' : 'additions', lineNumber: commentTarget.line, metadata: null })
+    }
+    return anns.length ? anns : undefined
+  }, [drafts, commentTarget, blockId])
+
+  const onGutterUtilityClick = useCallback((file: ReviewFileRef, range: { start: number; end: number; side?: 'deletions' | 'additions' }) => {
+    const side = toStoreSide(range.side ?? 'additions')
+    const start = Math.min(range.start, range.end)
+    const end = Math.max(range.start, range.end)
+    setCommentTarget(t => (
+      t && t.fileIndex === file.index && t.side === side && t.line === start
+        ? null
+        : { fileIndex: file.index, side, line: start, endLine: end !== start ? end : undefined }
+    ))
+  }, [])
+
+  const renderAnnotation = useCallback((annotation: { side: 'deletions' | 'additions'; lineNumber: number }, file: ReviewFileRef) => {
+    if (!blockId) return null
+    const side = toStoreSide(annotation.side)
+    const line = annotation.lineNumber
+    const storeKey = file.path || 'diff'
+    const formOpen = commentTarget !== null && commentTarget.fileIndex === file.index && commentTarget.side === side && commentTarget.line === line
+    const draft = getReviewComment(slotId, blockId, file.index, storeKey, side, line)
+    if (!formOpen && !draft) return null
+    // ONE persistent annotation container for both states (saved chip ↔ edit
+    // form): the outer div keeps its identity across the swap and the inner
+    // motion.div transitions each state in, so the chip visibly *becomes*
+    // the form instead of vanishing and being replaced (repo animation rule:
+    // Framer, no new CSS keyframes).
+    // `contain: inline-size`: the annotation's own content never sizes Pierre's
+    // split columns. Without it a long chip label (one line, truncated) widens
+    // its side and squeezes the other side's code into wrapping.
+    return (
+      <div key={`ann:${side}:${line}`} className="[contain:inline-size]">
+        <motion.div
+          key={formOpen ? 'form' : 'chip'}
+          initial={{ opacity: 0, y: -3 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.15, ease: 'easeOut' }}
+        >
+          {formOpen ? (
+            <CommentForm
+              initialText={draft?.text}
+              onCancel={() => setCommentTarget(null)}
+              onSubmit={text => {
+                if (slotId) {
+                  addReviewComment(slotId, {
+                    blockId,
+                    fileIndex: file.index,
+                    file: storeKey,
+                    side,
+                    line,
+                    endLine: commentTarget?.endLine,
+                    lineText: file.lineTextAt(side, line) ?? '',
+                    text,
+                  })
+                }
+                setCommentTarget(null)
+              }}
+            />
+          ) : (
+            // Pending-draft chip under its line: the note text, click to edit,
+            // X to remove. Buttons, so both are keyboard-reachable. The note
+            // gets two lines before it clips: a split-view column is narrow,
+            // and one truncated line rarely says which comment this is.
+            <div className="flex items-center gap-2 px-3 py-1 bg-bg-elevated border-y border-border text-[12px] font-body">
+              <button
+                className="flex-1 min-w-0 text-left text-muted hover:text-text cursor-pointer bg-transparent border-none p-0"
+                onClick={() => setCommentTarget({ fileIndex: file.index, side, line, endLine: draft!.endLine })}
+                title={i18nT('components.diffBlock.comment_edit')}
+                aria-label={`${i18nT('components.diffBlock.comment_edit')}: ${draft!.text}`}
+              >
+                <span className="line-clamp-2 break-words">{draft!.text}</span>
+              </button>
+              <button
+                className="p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer shrink-0 bg-transparent border-none"
+                onClick={() => { if (slotId) removeReviewComment(slotId, draft!.id) }}
+                title={i18nT('components.diffBlock.comment_remove')}
+                aria-label={i18nT('components.diffBlock.comment_remove')}
+              >
+                <X size={12} className="lucide-inline" aria-hidden />
+              </button>
+            </div>
+          )}
+        </motion.div>
+      </div>
+    )
+  }, [commentTarget, slotId, blockId])
+
+  // Only offered when a slot and host anchor exist; plain mode renders raw
+  // text through a different path and never sees these hooks.
+  const review: PatchReviewHooks | undefined = useMemo(
+    () => (slotId && reviewSurface && blockId ? { annotationsFor, renderAnnotation, onGutterUtilityClick } : undefined),
+    [slotId, reviewSurface, blockId, annotationsFor, renderAnnotation, onGutterUtilityClick],
+  )
+
   // Frames are still arriving: render the patch as plain text and mount Pierre
   // only once the block is final. Pierre re-parses and re-tokenizes the WHOLE
   // patch on every frame -- `contentCacheKey` is content-derived, so each frame
@@ -267,6 +484,21 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   // pool is starting or recovering, in plain mode — because the block owns
   // them. A single-file patch is one section.
   const sections = useMemo(() => splitPatchSections(code), [code])
+  // Each section renders through its own one-file PierrePatch, so Pierre's
+  // `ReviewFileRef.index` is 0 in every section. Re-index each ref to its
+  // section's position, so a file's drafts and open form stay its own.
+  const sectionReviews = useMemo<(PatchReviewHooks | undefined)[]>(
+    () => sections.map((_, i) => {
+      if (!review) return undefined
+      const at = (file: ReviewFileRef): ReviewFileRef => ({ ...file, index: i })
+      return {
+        annotationsFor: file => review.annotationsFor(at(file)),
+        renderAnnotation: (annotation, file) => review.renderAnnotation(annotation, at(file)),
+        onGutterUtilityClick: (file, range) => review.onGutterUtilityClick(at(file), range),
+      }
+    }),
+    [sections, review],
+  )
   // Whether Pierre is showing plain text INSTEAD of the diff under any of the
   // rows — its highlight pool down, or a section it cannot parse. Pierre's
   // patch surface reports each such body through `PlainPatchBodyContext` as it
@@ -382,7 +614,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
               <PlainPatchBodyContext.Provider value={plain ? null : plainBodyOwner}>
                 {standInForStream
                   ? <PlainCodeFallback text={section.text} />
-                  : <PierrePatch patch={section.text} options={options} />}
+                  : <PierrePatch patch={section.text} options={options} review={sectionReviews[i]} />}
               </PlainPatchBodyContext.Provider>
             </div>
           )
