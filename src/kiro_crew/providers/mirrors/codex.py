@@ -67,6 +67,7 @@ from typing import Any, Mapping
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.base import (
     AgentConfigMirror,
@@ -77,6 +78,7 @@ from kiro_crew.providers.mirrors.base import (
 )
 from kiro_crew.providers.mirrors.identity import (
     control_plane_identity_env,
+    control_plane_instance_env,
     identity_bound_crew_servers,
     with_env,
     withheld_servers,
@@ -333,10 +335,14 @@ def codex_projection(
     the stub NAMES the translation already yields to, lets the withhold rule run
     over both halves in one place instead of being re-spelled at the call site.
 
-    Stubs are appended as given rather than run through :func:`codex_elements`: they
-    are gateway-authored, their env is the broker's own, and none of them is Crew's
-    control plane (a session-strict server is never pooled), so there is no identity
-    to add and no name the fold could collide with. They ARE held to the spec's
+    Stubs are not run through :func:`codex_elements`: they are gateway-authored and
+    carry their session as a token, so there is no session identity to add and no
+    name the fold could collide with. A stub for one of Crew's OWN servers is the
+    exception on one axis: ``kirocrew-core`` can be pooled (it is the stub leader),
+    and when the broker is unreachable its stub execs the real server with the
+    environment codex gave it, so it carries the instance env
+    (:func:`~kiro_crew.providers.mirrors.identity.control_plane_instance_env`) that
+    names the gateway this session belongs to. They ARE held to the spec's
     ``tools`` allowlist, from the same parse that filtered the translated half: the
     overlay is written per agent from the global settings file too, so it can carry
     a stub for a server this agent never references, and a stub is that server.
@@ -381,6 +387,7 @@ def codex_projection(
     out: list[dict[str, Any]] = codex_elements(
         kept, session_key=session_key, channel_id=channel_id, session_token=session_token
     )
+    instance_env: dict[str, str] | None = None
     for stub in stub_elements:
         if not isinstance(stub, Mapping):
             continue
@@ -410,6 +417,16 @@ def codex_projection(
                 "half applies to a stub of the same name",
                 name,
             )
+            continue
+        if name in KIROCREW_BIN_MCP_SERVERS:
+            # A stub for one of Crew's own servers is the one stub whose fallback
+            # runs Crew's code. codex clears the child environment, so without the
+            # instance env here that fallback starts with no bound port and no home
+            # override and finds its gateway by guess (control_plane_instance_env).
+            # Instance only: the stub already carries the session token.
+            if instance_env is None:
+                instance_env = control_plane_instance_env(label="codex")
+            out.append(with_env(dict(stub), instance_env))
             continue
         out.append(dict(stub))
     denied = frozenset((codex_name(server), tool) for server, tool in projection.disabled_tools)

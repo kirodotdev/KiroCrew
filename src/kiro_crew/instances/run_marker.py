@@ -684,6 +684,81 @@ def marker_ports() -> list[int]:
     return sorted(ports)
 
 
+def port_served_by(pid: int) -> int | None:
+    """The one port whose run-marker records *pid* as the serving gateway, or ``None``.
+
+    For a process that knows WHICH gateway owns it (the MCP gateway daemon is
+    spawned with ``--owner-pid``) but was started before that gateway bound its
+    listener, so it inherited no ``KIROCREW_BOUND_PORT``. The marker is written by
+    the gateway itself after the bind, inside this data home's owner-only ``run/``
+    directory, so a match names the port that process actually serves.
+
+    A match needs the pid record AND its start identity: the recorded start token
+    must be non-empty and equal what :func:`pid_start_token` reports for *pid*
+    now, so a marker left by a crashed gateway whose pid number was later reused
+    cannot be mistaken for the owner. An empty token is unproven, never a match.
+
+    ``None`` when no marker names *pid*, when the start identity cannot be proven,
+    or when MORE than one port names it: there is then no basis to pick, and a
+    caller that guesses would pair a credential with a listener it cannot vouch
+    for. Read-only; never creates ``run/``.
+    """
+    if pid <= 0:
+        return None
+    try:
+        live_token = pid_start_token(pid)
+    except Exception:
+        return None
+    if not live_token:
+        return None
+    matches: list[int] = []
+    for port in marker_ports():
+        record = read_pid_record_path(config_dir() / RUN_DIR_NAME / pid_file_name(port))
+        if record is None:
+            continue
+        recorded_pid, recorded_token = record
+        if recorded_pid == pid and recorded_token and recorded_token == live_token:
+            matches.append(port)
+    if matches:
+        return matches[0] if len(matches) == 1 else None
+    return _port_served_by_successor_of(pid)
+
+
+def _port_served_by_successor_of(pid: int) -> int | None:
+    """The port served by the gateway an in-app restart of *pid* left running.
+
+    An in-app restart through a supervising launcher execs *pid* into the
+    launcher, which runs the new gateway as its child: *pid* lives on with its
+    start identity unchanged and serves nothing, and the successor writes its
+    own pid into the marker. A daemon the successor adopted still names *pid* as
+    its owner, so the direct match in :func:`port_served_by` finds no marker for
+    the whole of the successor's life.
+
+    The successor is proven the same way the restart's other ownership checks
+    prove it (:func:`platform_compat.is_exec_supervisor_of`): its marker's start
+    token matches the live process, and every process from its parent up to
+    *pid* is a readable non-Python image, so no other live gateway sits between.
+    Exactly one such marker, or ``None``.
+    """
+    matches: list[int] = []
+    for port in marker_ports():
+        record = read_pid_record_path(config_dir() / RUN_DIR_NAME / pid_file_name(port))
+        if record is None:
+            continue
+        recorded_pid, recorded_token = record
+        if recorded_pid == pid or recorded_pid <= 1 or not recorded_token:
+            continue
+        try:
+            if pid_start_token(recorded_pid) != recorded_token:
+                continue
+            if not platform_compat.is_exec_supervisor_of(pid, recorded_pid):
+                continue
+        except Exception:
+            continue
+        matches.append(port)
+    return matches[0] if len(matches) == 1 else None
+
+
 def gateway_launcher_path() -> str | None:
     """Absolute path to the running gateway's own ``kirocrew`` launcher.
 
