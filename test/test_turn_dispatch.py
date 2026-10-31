@@ -392,7 +392,9 @@ class TestFinishTurnTask:
         # The row also carries its localization token and the values its copy
         # interpolates, so the dashboard renders the frame in the reader's language.
         assert _meta["notice"] == "turn_timeout"
-        assert _meta["notice_args"]["limit"] == "1-minute"
+        assert _meta["notice_args"]["limit_value"] == 1
+        assert _meta["notice_args"]["limit_unit"] == "minute"
+        assert _meta["notice_args"]["limit_scope"] == td.TURN_LIMIT_GLOBAL
 
     @pytest.mark.asyncio
     async def test_deadline_absorbed_by_the_turn_still_renders_a_card(self) -> None:

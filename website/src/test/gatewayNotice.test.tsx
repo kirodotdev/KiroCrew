@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -9,6 +9,8 @@ import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import { defaultMessageRenderers, mergeRenderers, resolveRenderer, type MessageRenderContext } from '../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import en from '../i18n/locales/en.json'
+import '../i18n/all'
+import { i18next } from '../i18n'
 
 /**
  * Frontend half of the gateway status-row notice contract, starting with the
@@ -405,11 +407,78 @@ describe('the status rows composed outside the dashboard', () => {
     })
   })
 
+  it('wraps a BARE excerpt in the localized label, and drops the label when there is none', () => {
+    // New rows pass the bare (redacted) excerpt; the frontend owns the label.
+    const withExcerpt = resolveGatewayNotice(
+      row('notice', 'send_dropped', { target: 's2', change: 'a constraint changed', excerpt: 'hello world' }),
+      [],
+      0,
+    )?.text
+    expect(withExcerpt).toContain('hello world')
+    expect(withExcerpt).toContain(GN.send_excerpt.replace('{{excerpt}}', 'hello world'))
+    // Empty excerpt => no label.
+    const noExcerpt = resolveGatewayNotice(
+      row('notice', 'send_discarded', { target: 's2', reason: 'it was cancelled', excerpt: '' }),
+      [],
+      0,
+    )?.text
+    expect(noExcerpt).not.toContain('Text')
+    expect(noExcerpt).toBe(
+      GN.send_discarded.replace('{{target}}', 's2').replace('{{reason}}', 'it was cancelled').replace('{{excerpt}}', ''),
+    )
+    // A legacy row whose excerpt IS the English ` Text: "…"` suffix is left verbatim.
+    const legacy = resolveGatewayNotice(
+      row('notice', 'send_dropped', { target: 's2', change: 'c', excerpt: ' Text: "legacy"' }),
+      [],
+      0,
+    )?.text
+    expect(legacy).toContain(' Text: "legacy"')
+  })
+
+  it('words the turn-limit from a number + unit, and picks the hint from the scope', () => {
+    // Minutes, global scope.
+    const g = resolveGatewayNotice(
+      row('error', 'turn_timeout', { limit_value: 30, limit_unit: 'minute', limit_scope: 'global' }),
+      [],
+      0,
+    )?.text
+    expect(g).toBe(
+      GN.turn_timeout
+        .replace('{{limit}}', GN.turn_limit_minutes_other.replace('{{count}}', '30'))
+        .replace('{{hint}}', ` ${GN.turn_timeout_hint_global}`),
+    )
+    // Fractional hours, session scope, native-pending variant.
+    const s = resolveGatewayNotice(
+      row('error', 'turn_timeout_native_pending', { limit_value: 1.5, limit_unit: 'hour', limit_scope: 'session' }),
+      [],
+      0,
+    )?.text
+    expect(s).toBe(
+      GN.turn_timeout_native_pending
+        .replace('{{limit}}', GN.turn_limit_hours_other.replace('{{count}}', '1.5'))
+        .replace('{{hint}}', ` ${GN.turn_timeout_hint_session}`),
+    )
+    // Singular minute uses the _one form in English.
+    const one = resolveGatewayNotice(
+      row('error', 'turn_timeout', { limit_value: 1, limit_unit: 'minute', limit_scope: 'global' }),
+      [],
+      0,
+    )?.text
+    expect(one).toContain(GN.turn_limit_minutes_one.replace('{{count}}', '1'))
+  })
+
+  it('words the never-started wait from a minute count', () => {
+    const many = resolveGatewayNotice(row('error', 'background_turn_abandoned', { waited_minutes: 5 }), [], 0)?.text
+    expect(many).toBe(GN.background_turn_abandoned.replace('{{waited}}', GN.background_turn_waited_other.replace('{{count}}', '5')))
+    const one = resolveGatewayNotice(row('error', 'background_turn_abandoned', { waited_minutes: 1 }), [], 0)?.text
+    expect(one).toBe(GN.background_turn_abandoned.replace('{{waited}}', GN.background_turn_waited_one.replace('{{count}}', '1')))
+  })
+
   it('keeps the error-family rows on the red ErrorCard, localized, with their args', () => {
     expect(resolveGatewayNotice(row('error', 'turn_interrupted_restart'), [], 0)).toEqual({ card: 'error', text: GN.turn_interrupted_restart })
     expect(resolveGatewayNotice(row('error', 'crew_turn_no_permit'), [], 0)).toEqual({ card: 'error', text: GN.crew_turn_no_permit })
     expect(resolveGatewayNotice(row('error', 'eager_spawn_stopped', { failures: 3, detail: 'BootError' }), [], 0)?.text).toBe(
-      GN.eager_spawn_stopped.replace('{{failures}}', '3').replace('{{detail}}', 'BootError'),
+      GN.eager_spawn_stopped_other.replace('{{count}}', '3').replace('{{detail}}', 'BootError'),
     )
     expect(resolveGatewayNotice(row('error', 'turn_timeout', { limit: '10-minute', hint: ' Raise it in Settings.' }), [], 0)?.text).toBe(
       GN.turn_timeout.replace('{{limit}}', '10-minute').replace('{{hint}}', ' Raise it in Settings.'),
@@ -470,5 +539,38 @@ describe('wire parity with the gateway constants', () => {
       (role) => resolveGatewayNotice(msg(role, { content: 'x', meta: { notice: token } } as Partial<ChatMessage>), [], 0) !== null,
     )
     expect(resolvedOn).toHaveLength(1)
+  })
+})
+
+describe('the composed cards carry no English fragment in a non-English locale', () => {
+  // The defect buluoray flagged: the turn-limit and never-started rows handed
+  // the frontend a pre-worded English `limit` / `waited` / hint, so the zh-CN
+  // card read "30-minute limit" and "5 minutes" in the middle of Chinese prose.
+  // RED on origin/main (the row carried the English words); GREEN here (the
+  // number + unit + scope are worded by the catalog).
+  const row = (role: string, notice: string, args?: Record<string, unknown>) =>
+    msg(role, { content: `fallback prose for ${notice}`, meta: { notice, ...(args ? { notice_args: args } : {}) } } as Partial<ChatMessage>)
+
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  it('renders the turn-limit and never-started rows with no English minute/hour words in zh-CN', async () => {
+    await i18next.changeLanguage('zh-CN')
+    expect(i18next.resolvedLanguage).toBe('zh-CN')
+
+    const limit = resolveGatewayNotice(
+      row('error', 'turn_timeout', { limit_value: 30, limit_unit: 'minute', limit_scope: 'global' }),
+      [],
+      0,
+    )?.text ?? ''
+    // The Chinese unit is present and no English unit word leaks through.
+    expect(limit).toContain('分钟')
+    expect(limit).not.toMatch(/-minute|minutes?|hours?/)
+    // The remedy hint is localized, not the English sentence naming the menu path.
+    expect(limit).not.toContain('Settings → Chat → Advanced')
+    expect(limit).not.toContain(en.pages.chat.gatewayNotice.turn_timeout_hint_global)
+
+    const waited = resolveGatewayNotice(row('error', 'background_turn_abandoned', { waited_minutes: 5 }), [], 0)?.text ?? ''
+    expect(waited).toContain('分钟')
+    expect(waited).not.toMatch(/minutes?/)
   })
 })

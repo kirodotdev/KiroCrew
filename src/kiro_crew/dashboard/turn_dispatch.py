@@ -390,20 +390,28 @@ def turn_timeout_notice(
     timeout_secs: float,
     native_cancel_outcome: "CancelOutcome | None" = None,
     limit_scope: str = TURN_LIMIT_GLOBAL,
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str, dict[str, str | int | float]]:
     """The timeout card's English text, its notice token and the args its copy needs.
 
-    The dashboard localizes the fixed frame keyed on the token and renders the
-    *limit* and the *hint* (which names the setting that supplied the limit, so
-    it is the variable part) verbatim inside it, so the card keeps its exact
-    remedy text in every locale.
+    The English ``content`` is the channel/SSE/model fallback and is unchanged.
+    The args the dashboard localizes from are STRUCTURED, not pre-worded English:
+    the limit is a ``limit_value`` number plus a ``limit_unit`` key
+    (``minute``/``hour``), so the frontend words "30-minute" / "1.5-hour" with
+    the catalog's plural keys rather than being handed an English adjective to
+    drop into every locale. ``limit_scope`` (``session``/``global``) lets the
+    frontend pick the matching localized remedy hint; the English hint is baked
+    into ``content`` only, never passed as an arg to interpolate.
     """
     from kiro_crew.dashboard import gateway_notice as gn
 
     if timeout_secs >= 3600:
-        limit = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + "-hour"
+        limit_value: float = round(timeout_secs / 3600, 1)
+        limit_unit = "hour"
+        limit = f"{limit_value:.1f}".rstrip("0").rstrip(".") + "-hour"
     else:
-        limit = f"{max(1, round(timeout_secs / 60))}-minute"
+        limit_value = max(1, round(timeout_secs / 60))
+        limit_unit = "minute"
+        limit = f"{limit_value}-minute"
     hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
     if native_cancel_outcome in ("timeout", "no_turn", "error"):
         text = (
@@ -420,7 +428,15 @@ def turn_timeout_notice(
             f"message to continue from where it stopped.{hint}"
         )
         token = gn.GATEWAY_NOTICE_TURN_TIMEOUT
-    return text, token, {"limit": limit, "hint": hint}
+    return (
+        text,
+        token,
+        {
+            "limit_value": limit_value,
+            "limit_unit": limit_unit,
+            "limit_scope": limit_scope,
+        },
+    )
 
 
 def format_turn_timeout_card(
@@ -438,8 +454,14 @@ def format_turn_timeout_card(
     return text
 
 
-def background_turn_abandoned_notice(wait_secs: float) -> tuple[str, str, dict[str, str]]:
-    """The never-started card's text, its notice token and its copy args."""
+def background_turn_abandoned_notice(wait_secs: float) -> tuple[str, str, dict[str, int]]:
+    """The never-started card's text, its notice token and its copy args.
+
+    The English ``content`` is unchanged; the arg is the ``waited_minutes``
+    NUMBER, so the frontend words "1 minute" / "5 minutes" with the catalog's
+    plural keys rather than being handed an English string to render in every
+    locale.
+    """
     from kiro_crew.dashboard import gateway_notice as gn
 
     minutes = max(1, round(wait_secs / 60))
@@ -450,7 +472,7 @@ def background_turn_abandoned_notice(wait_secs: float) -> tuple[str, str, dict[s
         "or loop cycle starts a new turn. If turns keep queueing at the cap, raise "
         "`dashboard.max_background_turns`."
     )
-    return text, gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED, {"waited": waited}
+    return text, gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED, {"waited_minutes": minutes}
 
 
 def format_background_turn_abandoned_card(wait_secs: float) -> str:

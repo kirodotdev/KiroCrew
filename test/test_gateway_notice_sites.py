@@ -49,12 +49,21 @@ def test_turn_timeout_notice_tokens_and_args() -> None:
 
     text, token, args = td.turn_timeout_notice(600, None, td.TURN_LIMIT_GLOBAL)
     assert token == gn.GATEWAY_NOTICE_TURN_TIMEOUT
-    assert args["limit"] == "10-minute"
-    assert "10-minute" in text and args["hint"] in text
+    # Structured args: a NUMBER plus a unit key, so the frontend words the limit
+    # with its own plural keys. The English content still reads "10-minute".
+    assert args["limit_value"] == 10
+    assert args["limit_unit"] == "minute"
+    assert args["limit_scope"] == td.TURN_LIMIT_GLOBAL
+    assert "10-minute" in text
+    # No pre-worded English limit/hint rides in the args any more.
+    assert "limit" not in args and "hint" not in args
 
-    _t2, token2, args2 = td.turn_timeout_notice(600, "timeout", td.TURN_LIMIT_SESSION)
+    _t2, token2, args2 = td.turn_timeout_notice(5400, "timeout", td.TURN_LIMIT_SESSION)
     assert token2 == gn.GATEWAY_NOTICE_TURN_TIMEOUT_NATIVE_PENDING
-    assert args2["limit"] == "10-minute"
+    assert args2["limit_value"] == 1.5
+    assert args2["limit_unit"] == "hour"
+    assert args2["limit_scope"] == td.TURN_LIMIT_SESSION
+    assert "1.5-hour" in _t2
 
 
 def test_background_turn_abandoned_notice_token_and_args() -> None:
@@ -62,8 +71,39 @@ def test_background_turn_abandoned_notice_token_and_args() -> None:
 
     text, token, args = td.background_turn_abandoned_notice(120)
     assert token == gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED
-    assert args == {"waited": "2 minutes"}
+    # A NUMBER, not the English "2 minutes": the frontend words the plural.
+    assert args == {"waited_minutes": 2}
     assert "2 minutes" in text
+
+
+def test_finish_turn_task_abandoned_call_site_carries_its_token() -> None:
+    # Pins the CALL SITE, not just the helper: finish_turn_task must stamp the
+    # abandoned-turn card's notice token + args on the appended row. Removing the
+    # meta from this append (buluoray's mutation) makes this fail, where the
+    # helper-return test above would stay green.
+    from kiro_crew.dashboard import turn_dispatch as td
+
+    class _DoneTask:
+        def cancelled(self) -> bool:
+            return False
+
+        def exception(self):
+            return td.BackgroundTurnAbandoned(120.0, cap=4)
+
+    class _State:
+        def __init__(self) -> None:
+            self._background_tasks: set = set()
+            self.pushed = 0
+
+        def push_slots_update(self) -> None:
+            self.pushed += 1
+
+    slot = _Slot()
+    td.finish_turn_task(_State(), slot, _DoneTask(), timeout_secs=600.0)
+
+    (row,) = slot.appended
+    assert _notice(row) == gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED
+    assert _args(row) == {"waited_minutes": 2}
 
 
 def test_close_interruption_row_carries_its_token() -> None:

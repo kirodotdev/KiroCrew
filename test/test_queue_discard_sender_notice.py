@@ -127,9 +127,16 @@ def _notice_rows(slot):
 
 
 def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
-    """The excerpt rides in meta.notice_args, which the row's content-only
-    redaction does not reach. It must still pass the egress redaction chain, or a
-    credential in the dropped message would surface in the sender's dashboard."""
+    """The excerpt that rides in meta.notice_args must carry no credential, so a
+    secret in the dropped message never surfaces in the sender's dashboard.
+
+    This asserts the OBSERVABLE contract, not a single scrub site. The queued
+    prompt is already ``sanitize_outbound``-ed when it is enqueued
+    (``session_messaging.send_to_target``), and the notice path scrubs the
+    excerpt again before it rides in ``notice_args`` — defense in depth. Either
+    scrub alone removes the token here, so this test does not prove one of them
+    is load-bearing; it pins the end-to-end guarantee that the token never
+    reaches the sender's row, in meta or in content."""
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = _busy(state.get_or_create_slot("chat-2"))
@@ -142,8 +149,8 @@ def test_cancel_notice_excerpt_in_meta_is_redacted(tmp_path):
     (row,) = _notice_rows(caller)
     meta = row.get("meta") or {}
     excerpt = meta.get("notice_args", {}).get("excerpt", "")
-    # The credential-shaped token is scrubbed from the excerpt before it rides
-    # in notice_args, and the redaction marker proves the chain ran.
+    # The bare excerpt now rides in notice_args (the frontend owns the
+    # ``Text: "…"`` label); whichever scrub ran, the credential is gone from it.
     assert "AKIAIOSFODNN7EXAMPLE" not in excerpt
     assert "[REDACTED" in excerpt
     # The content the dashboard renders carries the same scrubbed excerpt.

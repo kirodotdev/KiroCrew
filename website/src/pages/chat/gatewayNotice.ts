@@ -218,6 +218,73 @@ const RESTORED_KEY = 'pages.chat.transientNotice.restored'
 const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 const BACKEND_HICCUP_RESUME_KEY = 'pages.chat.errorCard.retry_backend_hiccup'
 
+/**
+ * The turn-limit and never-started cards are COMPOSED by the gateway
+ * (`turn_dispatch.py`): their English `content` is the channel/SSE/model
+ * fallback, and the dashboard words the variable parts itself from STRUCTURED
+ * args so no English fragment leaks into a localized card.
+ *
+ * - the limit phrase ("30-minute" / "1.5-hour") is a count + unit, worded with
+ *   the plural keys below (`Intl.PluralRules` picks the form INSIDE the call —
+ *   see `website/docs/i18n-catalog.md`, "Counts: never concatenate a plural
+ *   suffix"), never handed over pre-worded;
+ * - the remedy hint is one of two localized sentences chosen by `limit_scope`
+ *   (the session's own limit vs the global setting), so the card's remedy is
+ *   not the one English fragment in an otherwise-translated card;
+ * - the never-started wait is a count of minutes, worded the same way;
+ * - a dropped/discarded message's excerpt is quoted under a localized label.
+ *
+ * A pre-token row persisted on disk carries only its English capture groups
+ * (`limit`, `hint`, `waited`, the ` Text: "…"` suffix) and no structured field,
+ * so it keeps rendering those verbatim — the localization is for new rows.
+ */
+const TURN_LIMIT_PHRASE_KEY = {
+  minute: 'pages.chat.gatewayNotice.turn_limit_minutes',
+  hour: 'pages.chat.gatewayNotice.turn_limit_hours',
+} as const
+const TURN_LIMIT_HINT_KEY = {
+  session: 'pages.chat.gatewayNotice.turn_timeout_hint_session',
+  global: 'pages.chat.gatewayNotice.turn_timeout_hint_global',
+} as const
+const BACKGROUND_TURN_WAITED_KEY = 'pages.chat.gatewayNotice.background_turn_waited'
+const SEND_EXCERPT_KEY = 'pages.chat.gatewayNotice.send_excerpt'
+
+/**
+ * Word the variable parts a COMPOSED card carries, from its structured args,
+ * and return them as interpolation vars for the frame copy. Returns the vars
+ * unchanged for every other token, and for a legacy row that carries the old
+ * English captures instead of the structured fields (keyed on their presence),
+ * so the frame still interpolates those verbatim.
+ */
+function composedCardVars(token: GatewayNoticeToken, args: Args, vars: Record<string, string>): Record<string, string> {
+  if (token === 'turn_timeout' || token === 'turn_timeout_native_pending') {
+    const out = { ...vars }
+    if (typeof args.limit_value === 'number' && (args.limit_unit === 'minute' || args.limit_unit === 'hour')) {
+      out.limit = i18nT(TURN_LIMIT_PHRASE_KEY[args.limit_unit], { count: args.limit_value })
+    }
+    const scope = args.limit_scope === 'session' ? 'session' : 'global'
+    // The frame abuts `{{hint}}` directly ("…stopped.{{hint}}"), so the leading
+    // space lives here, not in the catalog value — a value with edge whitespace
+    // is a fragment the source-string gate rejects.
+    if (typeof args.limit_scope === 'string') out.hint = ` ${i18nT(TURN_LIMIT_HINT_KEY[scope])}`
+    return out
+  }
+  if (token === 'background_turn_abandoned' && typeof args.waited_minutes === 'number') {
+    return { ...vars, waited: i18nT(BACKGROUND_TURN_WAITED_KEY, { count: args.waited_minutes }) }
+  }
+  if (token === 'send_dropped' || token === 'send_discarded') {
+    // The structured arg is the BARE excerpt; a legacy row's `excerpt` is the
+    // whole ` Text: "…"` suffix, told apart because it opens with that label.
+    // The frame abuts `{{excerpt}}` ("…will not run.{{excerpt}}"), so the leading
+    // space is added here rather than carried in the (edge-whitespace-free) key.
+    const raw = typeof args.excerpt === 'string' ? args.excerpt : ''
+    if (raw && !/^ Text: "/u.test(raw)) {
+      return { ...vars, excerpt: ` ${i18nT(SEND_EXCERPT_KEY, { excerpt: raw })}` }
+    }
+  }
+  return vars
+}
+
 type Args = Readonly<Record<string, unknown>>
 
 interface Legacy {
@@ -504,9 +571,18 @@ function resumeTextOf({ token, args, hiccupResume }: Shape): string | undefined 
 }
 
 function copyOf({ token, args }: Shape): string {
-  const vars = copyVars(args)
+  const vars = composedCardVars(token, args, copyVars(args))
   if (token in COUNTED_KEY && vars.n !== undefined && vars.max !== undefined) {
     return i18nT(COUNTED_KEY[token as keyof typeof COUNTED_KEY], vars)
+  }
+  if (token === 'eager_spawn_stopped') {
+    // The failure count sits mid-sentence ("failed to start N times in a row"),
+    // and "times" agrees with it grammatically (ru: раз / раза / раз). Pass a
+    // numeric `count` so the catalog's plural keys pick the form — a bare
+    // {{failures}} in one fixed form reads "3 раз" in Russian. `count` must be a
+    // number: a legacy row carries it as a captured string, so coerce.
+    const n = typeof args.failures === 'number' ? args.failures : Number(vars.failures)
+    if (Number.isFinite(n)) return i18nT(COPY_KEY[token], { ...vars, count: n })
   }
   return i18nT(COPY_KEY[token], vars)
 }

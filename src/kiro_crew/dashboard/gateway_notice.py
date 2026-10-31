@@ -148,11 +148,13 @@ GATEWAY_SHARED_RUNTIME_RESTARTING_TEXT = (
 )
 
 
-def gateway_notice_meta(token: str, **args: str | int) -> dict[str, object]:
+def gateway_notice_meta(token: str, **args: str | int | float) -> dict[str, object]:
     """The row ``meta`` that names *token*, plus its interpolation values.
 
     Merge it into a row's other meta (``{"kind": ..., **gateway_notice_meta(...)}``).
-    Values are plain strings or ints; the frontend interpolates them as text.
+    Values are plain strings, ints or floats (a fractional count such as a
+    ``1.5``-hour turn limit); the frontend interpolates them as text and lets the
+    catalog's plural keys pick the grammatical form.
     """
     meta: dict[str, object] = {GATEWAY_NOTICE_META_KEY: token}
     if args:

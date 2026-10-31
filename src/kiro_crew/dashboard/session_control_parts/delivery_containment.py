@@ -732,7 +732,11 @@ def notify_send_origin_dropped(
                 GATEWAY_NOTICE_SEND_DROPPED,
                 target=target_key,
                 change=_change,
-                excerpt=_excerpt_suffix,
+                # The BARE redacted excerpt, never the English `` Text: "…"``
+                # wrapper: the frontend owns that label (its own catalog key), so
+                # every locale frames the quote in its own words. Empty string
+                # when there is nothing to quote, so the frontend drops the label.
+                excerpt=excerpt,
             ),
         )
     except Exception:  # pragma: no cover - reporting must not block the drop
@@ -801,7 +805,9 @@ def notify_send_origin_discarded(
                 GATEWAY_NOTICE_SEND_DISCARDED,
                 target=target_key,
                 reason=reason,
-                excerpt=_excerpt_suffix,
+                # Bare redacted excerpt; the frontend owns the `` Text: "…"``
+                # label. See the dropped-notice path for why.
+                excerpt=excerpt,
             ),
         )
     except Exception:

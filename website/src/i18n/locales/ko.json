@@ -11929,10 +11929,16 @@
         "give_up": "연결이 불안정합니다 — 다시 시도해 주세요."
       },
       "gatewayNotice": {
+        "turn_limit_minutes_other": "{{count}}분",
+        "turn_limit_hours_other": "{{count}}시간",
+        "background_turn_waited_other": "{{count}}분",
+        "send_excerpt": "텍스트: ‘{{excerpt}}’",
+        "turn_timeout_hint_global": "더 긴 턴을 허용하려면 설정 → 채팅 → 고급에서 턴 시간 제한을 높이거나, 세션 메뉴에서 이 세션에 고유한 제한을 지정하세요.",
+        "turn_timeout_hint_session": "이 세션에는 고유한 제한이 있습니다. 여기서 더 긴 턴을 허용하려면 이 카드의 턴 시간 제한 변경에서, 또는 세션 메뉴의 턴 시간 제한에서 더 긴 값을 고르세요.",
         "queued_message_dropped": "대기 중이던 메시지를 버렸습니다: {{change}} — 대기열에 들어간 뒤에 일어난 일이라, 그것을 허용했던 권한이 더 이상 유효하지 않습니다.",
         "send_dropped": "{{target}}에 보낸 메시지가 실행되기 전에 버려졌습니다: {{change}} — 대기열에 들어간 뒤에 일어난 일이라, 그것을 허용했던 권한이 더 이상 유효하지 않습니다. 전달되지 않았고 실행되지도 않습니다.{{excerpt}}",
         "send_discarded": "{{target}}에 보낸 메시지가 실행되기 전에 폐기되었습니다: {{reason}}. 전달되지 않았고 실행되지도 않습니다.{{excerpt}}",
-        "eager_spawn_stopped": "이 채팅의 에이전트가 연속으로 {{failures}}번 시작에 실패하여 백그라운드에서 다시 시작하지 않습니다. 메시지를 보내 다시 시도하세요. 마지막 오류: {{detail}}",
+        "eager_spawn_stopped_other": "이 채팅의 에이전트가 연속으로 {{count}}번 시작에 실패하여 백그라운드에서 다시 시작하지 않습니다. 메시지를 보내 다시 시도하세요. 마지막 오류: {{detail}}",
         "turn_failed_before_start": "이 메시지는 시작되기 전에 실패했습니다. 자세한 내용은 게이트웨이 로그에 있습니다.",
         "local_command_failed_before_start": "`{{command}}`이(가) 실패했습니다. 자세한 내용은 게이트웨이 로그에 있습니다.",
         "turn_timeout": "이 턴은 {{limit}} 제한에 도달하여 중지되었습니다. 이미 디스크에 기록된 작업은 그대로 남아 있으며, 되돌려진 것은 없습니다. 메시지를 보내 중단된 지점부터 계속하세요.{{hint}}",

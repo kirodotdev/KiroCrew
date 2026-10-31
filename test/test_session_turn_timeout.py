@@ -174,7 +174,8 @@ class TestDispatch:
         # The row also carries its localization token and the limit its copy
         # interpolates, beside the kind/scope the frontend already read.
         assert _meta["notice"] in ("turn_timeout", "turn_timeout_native_pending")
-        assert "limit" in _meta["notice_args"]
+        assert _meta["notice_args"]["limit_unit"] in ("minute", "hour")
+        assert _meta["notice_args"]["limit_scope"] == td.TURN_LIMIT_SESSION
         assert td.SESSION_TURN_LIMIT_MENU in errors[0].args[1]
 
     def test_session_card_points_at_the_session_menu_not_settings(self) -> None:
