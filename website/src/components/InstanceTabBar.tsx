@@ -655,6 +655,12 @@ function SwitcherMenu({
   stableOrder,
   onToggleStableOrder,
   showStableOrderToggle,
+  open,
+  onOpenChange,
+  activeChipRef,
+  onCaretPointerDown,
+  onCloseAutoFocus,
+  onDismissOutsideChip,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -665,8 +671,27 @@ function SwitcherMenu({
   stableOrder: boolean
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
+  /** The menu's open state, lifted to the parent so the leading active chip and
+   *  the caret toggle the same menu. */
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** The leading active chip, when one is rendered. A press on it is excluded
+   *  from the menu's outside-press dismissal so the chip's own toggle is the one
+   *  that acts: without this, Radix closes the menu on the outside press and the
+   *  chip's click reopens it, a close-then-reopen flicker. Null when no chip
+   *  doubles as the trigger (e.g. stable order with the active crew pinned). */
+  activeChipRef: React.RefObject<HTMLButtonElement | null>
+  /** Fired on the caret's pointer-down, so the parent can record that the caret
+   *  (not the chip) opened the menu and let focus return to the caret on close. */
+  onCaretPointerDown: () => void
+  /** Radix's focus-restore hook on close. The parent uses it to send focus back
+   *  to the active chip when the chip opened the menu. */
+  onCloseAutoFocus: (event: Event) => void
+  /** Fired when the menu is dismissed by a press outside both the menu and the
+   *  active chip. The parent clears the chip-opener flag so focus stays where
+   *  the user clicked rather than returning to the chip. */
+  onDismissOutsideChip: () => void
 }) {
-  const [open, setOpen] = useState(false)
   // Unread the user cannot see: everything that is neither the active pane nor a
   // chip currently on screen. A pinned crew whose chip got cut off counts, since
   // its badge went with it.
@@ -680,12 +705,18 @@ function SwitcherMenu({
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
       : i18nT('components.instanceTabBar.switch_crew')
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    // Non-modal: a modal Radix menu sets `pointer-events: none` on the body while
+    // open, which would make the leading active chip (its second trigger, outside
+    // the portal) unclickable — so a click on it to CLOSE the menu could never
+    // reach it. Non-modal keeps the chip live; the page behind may scroll while
+    // the menu is open, the same as every Popover here.
+    <DropdownMenu open={open} onOpenChange={onOpenChange} modal={false}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           title={label}
           aria-label={label}
+          onPointerDown={onCaretPointerDown}
           className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted transition-colors hover:bg-bg-hover hover:text-text focus-ring"
         >
           <ChevronDown className="lucide-inline shrink-0" />
@@ -706,6 +737,21 @@ function SwitcherMenu({
         align="start"
         aria-label={i18nT('components.instanceTabBar.instances')}
         className="min-w-[240px] max-w-[340px]"
+        onCloseAutoFocus={onCloseAutoFocus}
+        onInteractOutside={event => {
+          // The leading active chip toggles this same menu, so a press on it is
+          // not a dismissal: let the chip's own handler close the menu, or Radix
+          // closes it here and the chip's click reopens it on the same press.
+          const chip = activeChipRef.current
+          if (chip && chip.contains(event.target as Node)) {
+            event.preventDefault()
+            return
+          }
+          // A press anywhere else dismisses the menu: clear the chip-opener flag
+          // so onCloseAutoFocus leaves focus where the user clicked instead of
+          // yanking it back to the chip.
+          onDismissOutsideChip()
+        }}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {entries.map((entry, i) => (
@@ -775,6 +821,9 @@ function SwitcherChip({
   onSelect,
   className = '',
   shrinkable = false,
+  buttonRef,
+  ariaHasPopup,
+  ariaExpanded,
 }: {
   entry: SwitcherEntry
   active: boolean
@@ -807,13 +856,26 @@ function SwitcherChip({
    * would break the arithmetic.
    */
   shrinkable?: boolean
+  /**
+   * When the chip doubles as the menu's trigger (the leading active chip), the
+   * caller passes a ref so the menu can tell a press ON the chip apart from a
+   * press outside it, plus the `aria-haspopup`/`aria-expanded` that say the chip
+   * opens a menu. Pinned chips leave all three unset and stay plain switch
+   * buttons.
+   */
+  buttonRef?: React.Ref<HTMLButtonElement>
+  ariaHasPopup?: 'menu'
+  ariaExpanded?: boolean
 }) {
   const isLocal = entry.id === null
   const hasBadge = entry.unread > 0
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onSelect}
+      aria-haspopup={ariaHasPopup}
+      aria-expanded={ariaHasPopup ? ariaExpanded : undefined}
       aria-current={active ? 'true' : undefined}
       aria-label={entry.title}
       title={entry.title}
@@ -1119,6 +1181,18 @@ function Switcher({
   const stableOrder = (stableOrderProp ?? (embedded ? false : storeStableOrder)) === true
   const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
+  // The menu's open state lives here, not in SwitcherMenu, so the leading active
+  // chip and the caret toggle one menu. The chip, when it leads, is also the
+  // menu's trigger: `activeChipRef` lets SwitcherMenu exclude a press on the chip
+  // from Radix's outside-press dismissal (see its `onInteractOutside`).
+  const [menuOpen, setMenuOpen] = useState(false)
+  const activeChipRef = useRef<HTMLButtonElement>(null)
+  // Which trigger opened the menu. Radix returns focus to its own trigger (the
+  // caret) on close; when the chip opened the menu, a keyboard user who closes
+  // it with Escape would land on the caret, one stop right of where they
+  // started. Track the chip as the opener so `onCloseAutoFocus` can send focus
+  // back to it instead.
+  const openedByChipRef = useRef(false)
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
   // Two orderings for the always-visible chips:
   //  • Default: the crew on screen LEADS the row and is never also a pinned chip
@@ -1149,8 +1223,19 @@ function Switcher({
         <SwitcherChip
           entry={active}
           active
-          onSelect={() => onSelect(active.id)}
+          onSelect={() =>
+            setMenuOpen(o => {
+              const next = !o
+              // Opening via the chip: mark it the opener so focus returns here
+              // on close. Closing via the chip: the chip already has focus.
+              openedByChipRef.current = next
+              return next
+            })
+          }
           className="tb-crew-active-chip"
+          buttonRef={activeChipRef}
+          ariaHasPopup="menu"
+          ariaExpanded={menuOpen}
         />
       ) : null}
       {chips.length > 0 ? (
@@ -1171,6 +1256,28 @@ function Switcher({
         stableOrder={stableOrder}
         onToggleStableOrder={toggleStableOrder}
         showStableOrderToggle={!relayUnsupported}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        activeChipRef={activeChipRef}
+        onCaretPointerDown={() => {
+          // The caret, not the chip, is opening the menu: clear the chip-opener
+          // flag so focus returns to the caret (Radix's default) on close.
+          openedByChipRef.current = false
+        }}
+        onCloseAutoFocus={event => {
+          if (openedByChipRef.current && activeChipRef.current) {
+            // The chip opened the menu: override Radix's focus-to-caret and send
+            // focus back to the chip the user started from.
+            event.preventDefault()
+            activeChipRef.current.focus()
+          }
+          openedByChipRef.current = false
+        }}
+        onDismissOutsideChip={() => {
+          // Dismissed by a press outside the menu and the chip: don't reclaim
+          // focus to the chip, leave it where the user put it.
+          openedByChipRef.current = false
+        }}
       />
     </div>
   )
