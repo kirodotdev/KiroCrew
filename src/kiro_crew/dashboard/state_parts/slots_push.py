@@ -607,11 +607,29 @@ def push_slot_patch(self: DashboardState, key: str, fields: Iterable[str]) -> No
     if slot is None or key in under_construction:
         self.push_slots_update()
         return
+    row: dict[str, Any] | None = None
+    if "title" in field_names:
+        # A renamed title must also be the name a closed-creator label reads once this
+        # slot closes, and that registry is otherwise fed only by full frames. Taken
+        # from the same dashboard-user projection the patch sends, so it is redacted
+        # the same way, and BEFORE the audience checks: a rename nobody is watching
+        # still names the creator for whoever opens the sidebar after it closes.
+        row = self.serialize_slot(slot, dashboard_user=True)
+        try:
+            from kiro_crew.dashboard.session_memory import remember_slot_title
+
+            resolve = getattr(self, "spend_slot_by_session", None)
+            remember_slot_title(key, row.get("title"), resolve() if callable(resolve) else None)
+        except Exception:
+            # The rename itself must still publish; a closed-creator label then
+            # keeps the last title a full frame recorded.
+            logger.debug("could not remember the patched title of %s", key, exc_info=True)
     if self._has_legacy_slots_audience():
         self.push_slots_update(legacy_only=True)
     if not self._has_slot_patch_clients():
         return
-    row = self.serialize_slot(slot, dashboard_user=True)
+    if row is None:
+        row = self.serialize_slot(slot, dashboard_user=True)
     patch: dict[str, Any] = {"key": key}
     for field in field_names:
         if field in row:

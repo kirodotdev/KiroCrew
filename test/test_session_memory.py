@@ -891,6 +891,46 @@ async def test_a_creator_that_is_not_running_leaves_the_child_a_root_with_its_ci
 
 
 @pytest.mark.asyncio
+async def test_a_closed_creator_is_named_by_the_title_it_had_on_an_earlier_sample(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The creator is sampled live once, then closes -- the child names it.
+
+    No disk read: the title is the one the earlier sample already resolved (and
+    redacted) through ``session_title``, remembered in memory.
+    """
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    titles = {"p": "Release conductor", "c": "Worker"}
+    get_slot = lambda k: _FakeSlot(titles[k])  # noqa: E731
+    sampler = sm.SessionMemorySampler()
+
+    await sampler.sample(
+        _FakeSessions([_row("dashboard:p", 7), _row("dashboard:c", 8)]), None, get_slot=get_slot
+    )
+    out = await sampler.sample(_FakeSessions([_row("dashboard:c", 8)]), None, get_slot=get_slot)
+
+    [row] = out["sessions"]  # type: ignore[misc]
+    assert row["parent"] == {"slot": "p", "key": None, "title": "Release conductor"}
+
+
+@pytest.mark.asyncio
+async def test_an_untitled_creator_is_not_named_after_it_closes(
+    stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _crew_log_with_parent(monkeypatch, tmp_path, creator_running=True)
+    get_slot = lambda k: _FakeSlot(sm.NEW_SESSION_TITLE)  # noqa: E731
+    sampler = sm.SessionMemorySampler()
+
+    await sampler.sample(
+        _FakeSessions([_row("dashboard:p", 7), _row("dashboard:c", 8)]), None, get_slot=get_slot
+    )
+    out = await sampler.sample(_FakeSessions([_row("dashboard:c", 8)]), None, get_slot=get_slot)
+
+    [row] = out["sessions"]  # type: ignore[misc]
+    assert row["parent"] == {"slot": "p", "key": None}
+
+
+@pytest.mark.asyncio
 async def test_logs_past_the_scan_cap_are_counted_on_the_payload_not_dropped_silently(
     stub_proc: None, monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

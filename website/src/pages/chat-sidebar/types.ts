@@ -22,7 +22,7 @@ export interface Slot {
    * nearest session above it that is still open. The row then wears the same
    * closed-creator glyph an orphan does, one level in.
    */
-  parent?: { slot?: string; key?: string | null; ancestor?: boolean } | null
+  parent?: { slot?: string; key?: string | null; ancestor?: boolean; title?: string } | null
   /** Present and true while the gateway's lineage projection is still seeding for the
    *  current store, which makes THIS frame's `parent` provisional rather than final.
    *  Absent on an ordinary frame, and absent when there is nothing to wait for (the

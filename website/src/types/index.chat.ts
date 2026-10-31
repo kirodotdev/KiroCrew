@@ -295,7 +295,7 @@ export interface ChatSlot extends TurnIdentityFields {
    * the creator in `slot`, which the backend resolves when the creator itself has
    * closed: the row nests where the run is owned and keeps citing its closed
    * creator. */
-  parent?: { slot: string; key: string | null; ancestor?: boolean } | null
+  parent?: { slot: string; key: string | null; ancestor?: boolean; title?: string } | null
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */
