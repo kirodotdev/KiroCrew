@@ -89,6 +89,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "quick_send",
             "session_grid",
             "tail_fork_enabled",
+            "fork_inherits_pin",
             "link_previews",
             "link_patterns",
             "mcp_app_panel",
@@ -359,6 +360,16 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     {"error": "tail_fork_enabled must be a boolean"}, status=400
                 )
             updates["tail_fork_enabled"] = val
+        if "fork_inherits_pin" in body:
+            val = body["fork_inherits_pin"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {"error": "fork_inherits_pin must be a boolean"}, status=400
+                )
+            updates["fork_inherits_pin"] = val
         if "folder_suggestions_enabled" in body:
             val = body["folder_suggestions_enabled"]
             if not isinstance(val, bool):
@@ -736,6 +747,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "session_folder_root": cfg.dashboard.session_folder_root,
             "default_session_folder": cfg.dashboard.default_session_folder,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
+            "fork_inherits_pin": cfg.dashboard.fork_inherits_pin,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
             "topic_tags_enabled": cfg.dashboard.topic_tags_enabled,

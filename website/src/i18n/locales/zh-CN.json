@@ -16805,6 +16805,8 @@
         "summarize_each_session_by_intent_hint": "按意图总结每个会话。",
         "summarize_each_session_by_intent_in_the_right_pa": "在更改会话的轮次中会消耗令牌。",
         "tail_only_fork": "仅尾部分叉",
+        "pin_forks_of_pinned_sessions": "置顶会话的分叉也置顶",
+        "pin_forks_of_pinned_sessions_desc": "置顶会话的分叉也会置顶，从而保留在原会话旁边。",
         "tail_preserve_end_final_summary": "尾部（保留结尾 / 最终摘要）",
         "technical_comfort": "技术熟悉度",
         "text_streaming_style": "文本流式风格",

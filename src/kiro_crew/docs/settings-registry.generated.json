@@ -703,6 +703,13 @@
       "hint": "A click opens the session in its own session tab instead of replacing the active tab's session."
     },
     {
+      "id": "chat.pin-forks-of-pinned-sessions",
+      "label": "Pin forks of pinned sessions",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.pin-forks-of-pinned-sessions",
+      "description": "A fork of a pinned session is pinned too, so it stays beside the original."
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",

@@ -16805,6 +16805,8 @@
         "summarize_each_session_by_intent_hint": "各セッションを意図別に要約します。",
         "summarize_each_session_by_intent_in_the_right_pa": "セッションを変更するターンではトークンを消費します。",
         "tail_only_fork": "終了のみフォーク",
+        "pin_forks_of_pinned_sessions": "ピン留めしたセッションのフォークもピン留め",
+        "pin_forks_of_pinned_sessions_desc": "ピン留めしたセッションのフォークもピン留めされ、元のセッションの隣に表示されます。",
         "tail_preserve_end_final_summary": "終了（終了 / 最終要約を保持）",
         "technical_comfort": "技術的快適度",
         "text_streaming_style": "テキストストリーミングスタイル",

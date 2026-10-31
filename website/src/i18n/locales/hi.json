@@ -17097,6 +17097,8 @@
         "summarize_each_session_by_intent_hint": "प्रत्येक सत्र को उद्देश्य के अनुसार सारांशित करें।",
         "summarize_each_session_by_intent_in_the_right_pa": "सत्र बदलने वाले टर्न पर टोकन खर्च होते हैं।",
         "tail_only_fork": "केवल-टेल फ़ॉर्क",
+        "pin_forks_of_pinned_sessions": "पिन किए गए सेशन के फ़ॉर्क भी पिन करो",
+        "pin_forks_of_pinned_sessions_desc": "पिन किए गए सेशन का फ़ॉर्क भी पिन होता है, ताकि वह मूल सेशन के पास रहे।",
         "tail_preserve_end_final_summary": "टेल (अंत / आख़िरी सार बचाएँ)",
         "technical_comfort": "तकनीकी सहजता",
         "text_streaming_style": "टेक्स्ट स्ट्रीमिंग शैली",

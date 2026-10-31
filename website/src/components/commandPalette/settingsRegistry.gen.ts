@@ -1258,6 +1258,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.pin-forks-of-pinned-sessions",
+    "label": "Pin forks of pinned sessions",
+    "labelKey": "pages.settings.chatPanel.pin_forks_of_pinned_sessions",
+    "description": "A fork of a pinned session is pinned too, so it stays beside the original.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.pin-summary-in-side-panel",
     "label": "Pin Summary in Side Panel",
     "labelKey": "pages.settings.chatPanel.side_panel_pin_summary",

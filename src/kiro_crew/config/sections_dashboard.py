@@ -555,6 +555,14 @@ class DashboardConfig:
             "earlier messages are dropped.",
         ),
     )
+    fork_inherits_pin: bool = field(
+        default=True,
+        metadata=_meta(
+            "Pin forks of pinned sessions",
+            "A fork of a pinned session is pinned too, so it stays beside the "
+            "original. When off, forks start unpinned.",
+        ),
+    )
     auto_open_browser: bool = field(
         default=True,
         metadata=_meta(

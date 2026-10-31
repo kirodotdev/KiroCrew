@@ -33,6 +33,7 @@ const BASE_DASH = {
   quick_send: false,
   session_grid: false,
   tail_fork_enabled: false,
+  fork_inherits_pin: true,
   link_previews: false,
   mcp_app_panel: false,
   folder_suggestions_enabled: true,
@@ -661,6 +662,7 @@ describe('ChatPanel — Sessions', () => {
   it.each([
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
+    ['Pin forks of pinned sessions', 'fork_inherits_pin', false],
     ['Restore Sessions', 'restore_sessions', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')

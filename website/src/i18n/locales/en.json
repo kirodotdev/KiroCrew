@@ -9670,6 +9670,8 @@
         "session_folder_root_saved": "Saved",
         "subagents": "Subagents",
         "tail_only_fork": "Tail-only Fork",
+        "pin_forks_of_pinned_sessions": "Pin forks of pinned sessions",
+        "pin_forks_of_pinned_sessions_desc": "A fork of a pinned session is pinned too, so it stays beside the original.",
         "technical_comfort": "Technical Comfort",
         "text_streaming_style": "Text Streaming Style",
         "time_window_for_session_restoration": "Time window for session restoration",

@@ -17097,6 +17097,8 @@
         "summarize_each_session_by_intent_hint": "প্রতিটি সেশনকে উদ্দেশ্য অনুসারে সারসংক্ষেপ করে।",
         "summarize_each_session_by_intent_in_the_right_pa": "সেশন পরিবর্তন করে এমন টার্নে টোকেন ব্যবহার হয়।",
         "tail_only_fork": "শুধু টেইল ফর্ক",
+        "pin_forks_of_pinned_sessions": "পিন করা সেশনের ফর্কও পিন করো",
+        "pin_forks_of_pinned_sessions_desc": "পিন করা সেশনের ফর্কও পিন হয়, যাতে সেটা মূল সেশনের পাশে থাকে।",
         "tail_preserve_end_final_summary": "টেইল (শেষটা / চূড়ান্ত সারসংক্ষেপ রাখে)",
         "technical_comfort": "প্রযুক্তিগত স্বাচ্ছন্দ্য",
         "text_streaming_style": "টেক্সট স্ট্রিমিং স্টাইল",

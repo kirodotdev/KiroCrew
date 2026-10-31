@@ -17389,6 +17389,8 @@
         "summarize_each_session_by_intent_hint": "Resume cada sesión por intención.",
         "summarize_each_session_by_intent_in_the_right_pa": "Consume tokens en los turnos que cambian la sesión.",
         "tail_only_fork": "Bifurcación solo de la cola",
+        "pin_forks_of_pinned_sessions": "Fijar las bifurcaciones de sesiones fijadas",
+        "pin_forks_of_pinned_sessions_desc": "La bifurcación de una sesión fijada también queda fijada, así se mantiene junto a la original.",
         "tail_preserve_end_final_summary": "Final (conserva el final / el resumen final)",
         "technical_comfort": "Nivel técnico",
         "text_streaming_style": "Estilo de transmisión del texto",

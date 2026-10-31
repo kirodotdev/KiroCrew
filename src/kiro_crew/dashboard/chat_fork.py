@@ -472,7 +472,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if direction == _FORK_DIRECTION_TAIL and not KiroCrewConfig.load().dashboard.tail_fork_enabled:
+    dash_cfg = (await asyncio.to_thread(KiroCrewConfig.load)).dashboard
+    if direction == _FORK_DIRECTION_TAIL and not dash_cfg.tail_fork_enabled:
         # Server-side gate: tail-fork requested but disabled in config —
         # fall back to a normal head-fork rather than reject the request outright.
         # outcome="allowed" (not "denied"): the request still succeeds, just as a
@@ -523,10 +524,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         folder_principal=folder_principal(state, request),
         audit_caller=request_app or "dashboard",
         # A person forking a pinned session gets a pinned fork, so it stays
-        # beside its parent in the pinned group. Set through ``stamp`` so the
+        # beside its parent in the pinned group, unless
+        # ``dashboard.fork_inherits_pin`` is off. Set through ``stamp`` so the
         # pin rides the child's birth save. Agent ``session_fork`` children
         # never get it: pinned marks a session as human-owned.
-        stamp=_inherit_pin(source.slot),
+        stamp=_inherit_pin(source.slot) if dash_cfg.fork_inherits_pin else None,
     )
     if isinstance(result, web.Response):
         return result
