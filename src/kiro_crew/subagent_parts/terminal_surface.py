@@ -324,6 +324,10 @@ def wave_has_live_nested_spawns(self: SubagentManager, batch_id: str) -> bool:
     return self._waves.wave_has_live_nested_spawns_impl(batch_id)
 
 
+async def wave_has_live_nested_spawns_async(self: SubagentManager, batch_id: str) -> bool:
+    return await self._waves.wave_has_live_nested_spawns_async_impl(batch_id)
+
+
 def finalize_batch(self: SubagentManager, batch_id: str) -> None:
     return self._waves.finalize_batch_impl(batch_id)
 

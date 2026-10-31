@@ -2213,9 +2213,14 @@ reap reported, a spawn approval denied after a Stop) does not re-arm, because
 that path armed at its own flip and its report may already have released the
 hold, while the late site spawns no report for the claim it lost.
 
-The consumer's one await on this path, the off-loop `batch_members_pending`
-lookup, runs BEFORE the member touches the wave record (it is skipped when the
-member's own count closes the wave). From reading `_batch_progress` through
+The consumer's awaits on this path run BEFORE the member touches the wave
+record: the off-loop `batch_members_pending` lookup (skipped when the member's
+own count closes the wave) and, for a completion that may close the wave,
+`wave_has_live_nested_spawns_async`. That second read counts a member's child
+the task store holds outside the dispatch window (`taskq_overflow_async` per
+member session key), which the synchronous `wave_has_live_nested_spawns` the
+digest also consults cannot see; a True from either keeps the final chunk off
+"This run is complete". From reading `_batch_progress` through
 the hold-or-flush decision the consumer is synchronous, so a sibling can never
 close the wave between a member writing its result line and that member
 choosing how the line is delivered: the closing digest's settle set always
