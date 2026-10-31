@@ -8,7 +8,7 @@ const {
   resolveDeepLink,
 } = require("../deep-link");
 
-describe("resolveDeepLink accepts exactly two shapes", () => {
+describe("resolveDeepLink accepts exactly three shapes", () => {
   it("bare scheme raises the window and routes nowhere", () => {
     for (const raw of ["kirocrew://", "kirocrew:", "KIROCREW://"]) {
       assert.deepEqual(resolveDeepLink(raw), { ok: true, route: "", slotKey: "" }, raw);
@@ -31,6 +31,35 @@ describe("resolveDeepLink accepts exactly two shapes", () => {
     assert.equal(r2.ok, true);
     assert.equal(r2.slotKey, "hook:cos:menubar-chat");
     assert.equal(r2.route, "/chat?sid=hook%3Acos%3Amenubar-chat");
+  });
+
+  it("apps/detail/<name> routes to that app's detail page and carries no session", () => {
+    assert.deepEqual(resolveDeepLink("kirocrew://apps/detail/keeb-crew"), {
+      ok: true,
+      route: "/apps/detail/keeb-crew",
+      slotKey: "",
+    });
+    // A trailing slash and host case are the URL parser's business, as for chat.
+    assert.deepEqual(resolveDeepLink("kirocrew://apps/detail/mochi/"), { ok: true, route: "/apps/detail/mochi", slotKey: "" });
+    assert.deepEqual(resolveDeepLink("kirocrew://APPS/detail/a1"), { ok: true, route: "/apps/detail/a1", slotKey: "" });
+  });
+
+  it("an app name is admitted only in the manifest's own kebab-case grammar", () => {
+    // Mirrors KEBAB_RE in src/kiro_crew/apps/manifest_names.py: a name the
+    // manifest validator would refuse never becomes a route.
+    for (const raw of [
+      "kirocrew://apps/detail/Keeb-Crew",
+      "kirocrew://apps/detail/keeb_crew",
+      "kirocrew://apps/detail/-keeb",
+      "kirocrew://apps/detail/keeb-",
+      "kirocrew://apps/detail/keeb--crew",
+      "kirocrew://apps/detail/keeb.crew",
+      "kirocrew://apps/detail/keeb%2Dcrew",
+      `kirocrew://apps/detail/${"a".repeat(201)}`,
+    ]) {
+      assert.deepEqual(resolveDeepLink(raw), { ok: false, reason: "invalid app name" }, raw);
+    }
+    assert.equal(resolveDeepLink(`kirocrew://apps/detail/${"a".repeat(200)}`).ok, true);
   });
 });
 
@@ -57,6 +86,19 @@ describe("resolveDeepLink refuses everything else", () => {
     ["kirocrew://chat?sid=a%20b", "invalid sid"],
     ["kirocrew://chat?sid=-leading-dash", "invalid sid"],
     [`kirocrew://chat?sid=${"a".repeat(201)}`, "invalid sid"],
+    // Under apps/ only the detail page is a target: not the store pages, not the
+    // app's own page, and nothing the page could read as an instruction.
+    ["kirocrew://apps", "unknown route"],
+    ["kirocrew://apps/library", "unknown route"],
+    ["kirocrew://apps/-/updates", "unknown route"],
+    ["kirocrew://apps/keeb-crew", "unknown route"],
+    ["kirocrew://apps/migrate/keeb-crew", "unknown route"],
+    ["kirocrew://apps/detail", "unknown route"],
+    ["kirocrew://apps/detail/keeb-crew/settings", "unknown route"],
+    ["kirocrew://apps/detail/keeb-crew?autoAction=install", "unknown query parameter"],
+    ["kirocrew://apps/detail/keeb-crew?sid=x", "unknown query parameter"],
+    ["kirocrew://apps/detail/keeb-crew#enable", "fragment not allowed"],
+    ["kirocrew://apps:5476/detail/keeb-crew", "credentials or port in URL"],
   ];
   for (const [raw, reason] of refused) {
     it(`${JSON.stringify(raw).slice(0, 60)} -> ${reason}`, () => {
@@ -77,6 +119,17 @@ describe("resolveDeepLink refuses everything else", () => {
       const r = resolveDeepLink(raw);
       if (r.ok) assert.match(r.route, /^\/chat\?sid=[A-Za-z0-9._%-]*$/, raw);
     }
+    const appProbes = [
+      "kirocrew://apps/detail/%0D%0Ainjected",
+      "kirocrew://apps/detail/x%00y",
+      "kirocrew://apps/detail/javascript:alert(1)",
+      "kirocrew://apps/detail/..%2F..%2Fsettings",
+      "kirocrew://apps/detail/keeb-crew%3Fautoaction%3Dinstall",
+    ];
+    for (const raw of appProbes) {
+      const r = resolveDeepLink(raw);
+      if (r.ok) assert.match(r.route, /^\/apps\/detail\/[a-z0-9-]+$/, raw);
+    }
   });
 
   it("dot-segments are normalized by the URL parser and cannot escape the chat route", () => {
@@ -87,6 +140,22 @@ describe("resolveDeepLink refuses everything else", () => {
     for (const raw of ["kirocrew://chat/../settings?sid=k", "kirocrew://settings/../chat?sid=k"]) {
       const r = resolveDeepLink(raw);
       if (r.ok) assert.match(r.route, /^\/chat\?sid=k$/, raw);
+      else assert.equal(r.reason, "unknown route", raw);
+    }
+  });
+
+  it("dot-segments cannot turn an app link into another route", () => {
+    // `..` is collapsed before the segments are read, so a traversal lands on
+    // a two-segment detail path (rebuilt under /apps/detail/) or is refused.
+    assert.deepEqual(resolveDeepLink("kirocrew://apps/../detail/mochi"), { ok: true, route: "/apps/detail/mochi", slotKey: "" });
+    for (const raw of [
+      "kirocrew://apps/detail/../library",
+      "kirocrew://apps/detail/../../settings",
+      "kirocrew://apps/detail/keeb-crew/../../../settings",
+      "kirocrew://chat/../apps/detail/mochi?sid=k",
+    ]) {
+      const r = resolveDeepLink(raw);
+      if (r.ok) assert.match(r.route, /^\/apps\/detail\/[a-z0-9-]+$/, raw);
       else assert.equal(r.reason, "unknown route", raw);
     }
   });
