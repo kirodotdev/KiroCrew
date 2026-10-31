@@ -101,6 +101,16 @@ The file is untrusted. Core re-checks everything in it, exactly as it re-checks 
 
 ### 5.2 The `.crewmate` file
 
+**The `.crewjam` file (amendment of 2026-10-31).** The maintainer iamwhatever decided on 2026-10-31 that the export file changes name, built in [#26601](https://github.com/kirodotdev/KiroCrew/pull/26601). The product name is now Jam ([#26452](https://github.com/kirodotdev/KiroCrew/pull/26452)), which kept `.crewmate`, and old files must keep working. So:
+
+- Export writes `<name>.crewjam`. Its manifest entry is `crewjam.json`, and its `format` is `kirocrew.crewjam`.
+- Import keeps accepting the old form forever: a `.crewmate` file, a `crewmate.json` manifest, `format` `kirocrew.crewmate`. It takes either manifest name with either `format` value. Both forms run through the same reader checks, with the same caps and the same refusals.
+- A file that carries both `crewjam.json` and `crewmate.json` is refused.
+- The manifest entry's name and its `format` value change. Its keys and every other entry stay the same, so `formatVersion` stays `1`.
+- A build from before this change (0.11.0 shipped the `.crewmate` reader) refuses a `.crewjam` file as an unknown entry (`crewjam.json`). It does not say "this file needs a newer Kiro Crew". That is the accepted cost: only new files hit it, and every old file still imports.
+
+The rest of this document says `.crewmate` and `crewmate.json`. Read them as the new names for what export writes, and as either name for what import takes.
+
 A `.crewmate` file is a zip. Its top-level entries are fixed by name. Two folders are allowed, each exactly one level deep: `skills/<name>/<file>` and `crons/<file>.py`. No other path has a `/`.
 
 | Entry | Required | Holds |
@@ -183,11 +193,11 @@ Under the list sits one line: "Not included: memory, history, credentials and ap
 
 **What export skips, and says so.** A `script` cron whose file is gone from `~/.kiro/crew/crons/` is left out and listed "not included (script missing)". A skill folder over the §5.2 caps, or holding a file the credential checks below refuse, is left out and listed with the reason.
 
-The press sends the toggles and the edited lessons text to `POST /api/members/{slug}/export`, which runs `_require_owner(request, "crewmate.export")`. Core builds the bundle from the crew record, the mate-owned file, the member rules and goals records, the cron store, the skill folders and the avatar. On the way out it runs `placeholder_mcp_values`, strips every grant field, drops a `user:` dashboard id and never opens an `EXPORT_EXCLUDE` name. Every skill and script file passes the same credential and control-character checks `crewmate.create` runs on text (`_validate_crewmate_create` in `guide_catalog.py`). It answers with the zip bytes and `Content-Disposition: attachment; filename="<name>.crewmate"`; the browser saves the file. Core writes nothing on disk, so the export needs no change card and has nothing to undo.
+The press sends the toggles and the edited lessons text to `POST /api/members/{slug}/export`, which runs `_require_owner(request, "crewmate.export")`. Core builds the bundle from the crew record, the mate-owned file, the member rules and goals records, the cron store, the skill folders and the avatar. On the way out it runs `placeholder_mcp_values`, strips every grant field, drops a `user:` dashboard id and never opens an `EXPORT_EXCLUDE` name. Every skill and script file passes the same credential and control-character checks `crewmate.create` runs on text (`_validate_crewmate_create` in `guide_catalog.py`). It answers with the zip bytes and `Content-Disposition: attachment; filename="<name>.crewjam"` (§5.2 amendment); the browser saves the file. Core writes nothing on disk, so the export needs no change card and has nothing to undo.
 
 ### 5.4 Import
 
-The crewmate dropdown (`CrewmateSwitcher.tsx`) gains one footer item, **Import from file**, under "New crewmate". It opens the system file picker filtered to `.crewmate`. The browser posts the file to `POST /api/members/import`, which runs `_require_owner(request, "crewmate.import")`, vets the zip, re-runs every check in §5.2 and raises one `crewmate.import` card. A file that fails a check raises no card; the dropdown shows the refusal. The SPA then opens the card in a dialog with the shared card component.
+The crewmate dropdown (`CrewmateSwitcher.tsx`) gains one footer item, **Import from file**, under "New crewmate". It opens the system file picker filtered to `.crewjam` and `.crewmate` (§5.2 amendment). The browser posts the file to `POST /api/members/import`, which runs `_require_owner(request, "crewmate.import")`, vets the zip, re-runs every check in §5.2 and raises one `crewmate.import` card. A file that fails a check raises no card; the dropdown shows the refusal. The SPA then opens the card in a dialog with the shared card component.
 
 The card shows:
 
@@ -313,7 +323,7 @@ Exit criteria:
 
 ## 7. Backward compatibility
 
-Compatible. Every part is added: two owner-only routes, a new card kind and two controls. No existing route, card kind or file format changes, and no App Kit contract changes.
+Compatible. Every part is added: two owner-only routes, a new card kind and two controls. No existing route, card kind or file format changes, and no App Kit contract changes. The 2026-10-31 rename to `.crewjam` (§5.2) changes the file export writes: its name, its manifest entry and its `format` value. Import still reads every `.crewmate` file. A build from before the rename refuses a `.crewjam` file as an unknown entry.
 
 ## 8. Security considerations
 
