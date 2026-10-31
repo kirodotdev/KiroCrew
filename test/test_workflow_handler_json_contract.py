@@ -201,3 +201,50 @@ async def test_runs_list_is_compact_and_detail_carries_result() -> None:
         got = await client.get("/api/workflows/runs/wf_1")
         assert got.status == 200
         assert (await got.json())["result"] == big_result
+
+
+_INTENT_HANDLERS = [
+    pytest.param("/api/workflows/author", api_workflow_author, "author", id="author"),
+    pytest.param(
+        "/api/workflows/run_intent", api_workflow_run_intent, "start_from_intent", id="run_intent"
+    ),
+]
+
+
+@pytest.mark.parametrize(("path", "handler", "service_method"), _INTENT_HANDLERS)
+@pytest.mark.parametrize("intent", [5, ["a"], {"a": 1}], ids=["int", "list", "dict"])
+async def test_intent_handlers_answer_non_string_intent_with_coded_400(
+    path, handler, service_method, intent
+) -> None:
+    """A truthy non-string intent is a coded 400, not a 500 from ``.strip()``."""
+    method = AsyncMock()
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=SimpleNamespace(**{service_method: method}))
+    app.router.add_post(path, handler)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(path, json={"intent": intent})
+        body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "intent must be a string", "code": "invalid_field_type"}
+    method.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("path", "handler", "service_method"), _INTENT_HANDLERS)
+@pytest.mark.parametrize("payload", [{}, {"intent": None}, {"intent": "  "}, {"intent": 0}])
+async def test_intent_handlers_keep_missing_or_blank_intent_answer(
+    path, handler, service_method, payload
+) -> None:
+    method = AsyncMock()
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=SimpleNamespace(**{service_method: method}))
+    app.router.add_post(path, handler)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(path, json=payload)
+        body = await response.json()
+
+    assert response.status == 400
+    assert body == {"error": "intent is required"}
+    method.assert_not_awaited()

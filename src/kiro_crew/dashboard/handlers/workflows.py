@@ -479,7 +479,10 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    intent = (body.get("intent") or "").strip()
+    intent = body.get("intent") or ""
+    if not isinstance(intent, str):
+        return _error("intent must be a string", "invalid_field_type", 400)
+    intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
     author = request.headers.get("X-Session-Key", "")
@@ -661,7 +664,10 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
-    intent = (body.get("intent") or "").strip()
+    intent = body.get("intent") or ""
+    if not isinstance(intent, str):
+        return _error("intent must be a string", "invalid_field_type", 400)
+    intent = intent.strip()
     if not intent:
         return web.json_response({"error": "intent is required"}, status=400)
     budget_total = body.get("budget_total")

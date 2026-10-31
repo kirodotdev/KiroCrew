@@ -462,6 +462,10 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     spec_path = body.get("spec", "")
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
+    if not isinstance(spec_path, str):
+        return web.json_response(
+            {"error": "spec must be a string", "code": "invalid_field_type"}, status=400
+        )
 
     # Validate non-inline paths against traversal, then forward the *validated*
     # resolved path (not the raw input) to the sink below so the guard and the
