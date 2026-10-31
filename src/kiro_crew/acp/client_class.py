@@ -125,6 +125,9 @@ class AcpClient:
     # The frame the idle reader saw an agent-started turn begin with, which it
     # left in _buffer (see _agent_turn_pending).
     _agent_turn_start: JsonRpcMessage | None = None
+    # That turn's frames a claimed reader other than the turn has read, held for
+    # the turn until that reader returns (see _claiming_stdout).
+    _agent_turn_held: list[JsonRpcMessage] | None = None
     # _install_idle_reader has bound its steps on this client.
     _idle_reader_installed: bool = False
     # Held by stream_unsolicited while it reads; a prompt waits on it (see

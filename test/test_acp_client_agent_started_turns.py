@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_STEER_CONSUMED,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     METHOD_SESSION_STEERING,
     JsonRpcMessage,
 )
@@ -530,6 +531,7 @@ def _callers_of(method: str) -> set[str]:
 
 
 _BOUND_BY_THE_CLAUDE_ADAPTER = (
+    "_read_message",
     "ensure_ready",
     "_initialize_session",
     "_wait_for_response",
@@ -553,8 +555,9 @@ _QUEUED_BY_THE_CLAUDE_ADAPTER = (
 def test_every_read_message_caller_claims_stdout() -> None:
     client, _reader, _proc = _client()
     sites = _callers_of("_read_message")
-    # _kill_process and _reset_state drop the reader; they do not claim stdout.
-    claimed = set(_BOUND_BY_THE_CLAUDE_ADAPTER) - {"_kill_process", "_reset_state"}
+    # _kill_process and _reset_state drop the reader, and _read_message holds a
+    # pending turn's frames; they do not claim stdout.
+    claimed = set(_BOUND_BY_THE_CLAUDE_ADAPTER) - {"_read_message", "_kill_process", "_reset_state"}
     assert claimed <= set(vars(client))
 
     # The idle reader is the one reader that is stopped instead of stopping. A
@@ -676,22 +679,126 @@ async def test_each_read_site_stops_the_idle_reader_and_the_last_release_restart
     await client._stop_idle_reader()
 
 
+_THOUGHT = _update(
+    {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "checking"}}
+)
+_COMPACTED = {
+    "jsonrpc": "2.0",
+    "method": "_kiro.dev/compaction/status",
+    "params": {"status": {"type": "completed"}, "summary": ""},
+}
+_METADATA = {
+    "jsonrpc": "2.0",
+    "method": "_kiro.dev/metadata",
+    "params": {"contextUsagePercentage": 12.5},
+}
+# Readers that file the notifications they read in _mcp_notifications.
+_READERS_IN_THE_HAND_OFF_WINDOW = [
+    "_wait_for_response",
+    "wait_for_compaction",
+    "_drain_post_compaction_metadata",
+]
+
+
+async def _run_reader(
+    client: AcpClient, reader: asyncio.StreamReader, site: str, *frames: dict
+) -> None:
+    """Feed *frames*, then the frames that end the *site* reader, and run it."""
+    if site == "_wait_for_response":
+        _feed(reader, *frames, {"jsonrpc": "2.0", "id": 9, "result": {}})
+        await client._wait_for_response(9, timeout=5)
+    elif site == "wait_for_compaction":
+        _feed(reader, *frames, _COMPACTED, _METADATA)
+        await client.wait_for_compaction(timeout=5)
+    else:
+        _feed(reader, *frames, _METADATA)
+        await client._drain_post_compaction_metadata(grace=5)
+
+
+@pytest.mark.parametrize("site", _READERS_IN_THE_HAND_OFF_WINDOW)
 @pytest.mark.asyncio
-async def test_a_request_wait_that_reads_the_first_frame_ends_the_hand_off() -> None:
+async def test_a_reader_in_the_hand_off_window_keeps_the_turns_frames_for_it(site: str) -> None:
     turns: list[AcpClient] = []
     client, reader, _proc = _client(on_turn=turns.append)
     await _handed_off(client, reader, _chunk("one"))
 
-    _feed(reader, {"jsonrpc": "2.0", "id": 9, "result": {}})
+    await _run_reader(client, reader, site, _THOUGHT, _SESSION_INFO, _chunk("two"))
+
+    # A frame that only reports state is still the reader's.
+    assert [m.params for m in client._mcp_notifications] == [_SESSION_INFO["params"]]
+    assert client._agent_turn_pending() is True
+    assert turns == [client]
+    _feed(reader, _AUTONOMOUS_END)
+    async with contextlib.aclosing(client.stream_unsolicited(timeout=30)) as stream:
+        events = [e async for e in stream]
+
+    assert (events[0].kind, events[0].text) == (EVENT_TEXT_CHUNK, "one")
+    assert [
+        (e.kind, e.text) for e in events if e.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK)
+    ] == [(EVENT_TEXT_CHUNK, "one"), (EVENT_THINKING_CHUNK, "checking"), (EVENT_TEXT_CHUNK, "two")]
+    assert events[-1].kind == EVENT_COMPLETE
+    await _stop_restarted_reader(client)
+
+
+@pytest.mark.parametrize("site", _READERS_IN_THE_HAND_OFF_WINDOW)
+@pytest.mark.asyncio
+async def test_a_permission_request_in_the_window_keeps_its_place_among_the_turns_frames(
+    site: str,
+) -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+
+    await _run_reader(client, reader, site, _PERMISSION, _chunk("two"))
+
+    assert [m.params for m in client._buffer] == [
+        frame["params"] for frame in (_chunk("one"), _PERMISSION, _chunk("two"))
+    ]
+    assert client._agent_turn_pending() is True
+    assert client._mcp_notifications == []
+
+
+@pytest.mark.asyncio
+async def test_held_frames_go_back_ahead_of_what_the_reader_left_unread() -> None:
+    client, _reader, _proc = _client(on_turn=lambda _c: None)
+    response = {"jsonrpc": "2.0", "id": 9, "result": {}}
+    client._buffer.extend(
+        JsonRpcMessage.from_dict(f) for f in (_chunk("one"), response, _chunk("two"))
+    )
+    client._maybe_start_idle_reader()
+    await _reader_exits(client)
+    assert client._agent_turn_pending() is True
+
     await client._wait_for_response(9, timeout=5)
 
-    # The wait filed the chunk as it files any notification, so the restarted
-    # reader hands off the next frame instead.
-    assert client._agent_turn_pending() is False
-    assert [m.params["update"]["content"]["text"] for m in client._mcp_notifications] == ["one"]
-    _feed(reader, _chunk("two"))
-    await async_wait_until(lambda: len(turns) == 2, timeout=5)
-    assert client._buffer[0].params["update"]["content"]["text"] == "two"
+    assert [m.params["update"]["content"]["text"] for m in client._buffer] == ["one", "two"]
+
+
+@pytest.mark.asyncio
+async def test_frames_past_the_buffers_room_get_the_readers_own_handling() -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    client._buffer = deque(maxlen=3)
+    await _handed_off(client, reader, _chunk("1"))
+
+    await _run_reader(client, reader, "_wait_for_response", _chunk("2"), _chunk("3"), _chunk("4"))
+
+    # Holding the fourth would push one out of the deque when they go back.
+    assert [m.params["update"]["content"]["text"] for m in client._buffer] == ["1", "2", "3"]
+    assert [m.params["update"]["content"]["text"] for m in client._mcp_notifications] == ["4"]
+
+
+@pytest.mark.asyncio
+async def test_a_reset_during_the_window_drops_what_the_reader_held() -> None:
+    client, reader, _proc = _client(on_turn=lambda _c: None)
+    await _handed_off(client, reader, _chunk("one"))
+    wait = asyncio.ensure_future(client._wait_for_response(9, timeout=5))
+    await _parked(reader)
+
+    client._reset_state()
+    _feed(reader, {"jsonrpc": "2.0", "id": 9, "result": {}})
+    await await_until(wait, what="the request wait to return")
+
+    assert list(client._buffer) == []
+    assert client._agent_turn_held is None
 
 
 @pytest.mark.asyncio
