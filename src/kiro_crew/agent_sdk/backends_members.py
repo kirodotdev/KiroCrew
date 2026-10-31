@@ -22,6 +22,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Backends that can verify an enrolled member's saved spec at spawn.
@@ -71,6 +72,16 @@ from kiro_crew.agent_sdk.backends import (
 # ``test/fixtures/acp_frames/pi/saved-spec-projection-live.jsonl`` is a member session on
 # pi-acp 0.0.34 over pi 1.3.0 whose saved spec the client confirmed after
 # ``session/new``; the same drive with the spec edited after its save was refused.
+#
+# strands is a member on the mirrored hosts' confirmation: ``providers/mirrors/strands.py``
+# records the consumed spec from the one ``session_mcp_projection`` parse its array comes
+# from, and ``confirm_member_projection`` digests it against the saved intent. The array
+# reaches the CLI as the ``--mcp-config`` launch file rather than the wire, and is built
+# before that launch, so the spec confirmed is the spec the process started with.
+# ``test/fixtures/acp_frames/strands/saved-spec-projection-live.jsonl`` is a member session on
+# @strands-agents/cli 0.2.3 whose saved spec the client confirmed with no gaps, and whose
+# turn then called the spec's own ``probe`` server through the gate; the same drive with
+# the spec edited after its save was refused with ``capability_runtime_unverified``.
 ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -79,6 +90,7 @@ ACP_BACKENDS_MEMBER_CAPABILITIES = frozenset(
         ACP_BACKEND_CODEX,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
     }
 )
 
@@ -123,15 +135,25 @@ ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS = frozenset({ACP_BACKEND_KAS})
 # ``test/fixtures/acp_frames/claude/saved-spec-projection-live.jsonl``. The server a
 # spec declares, projected into the ``session/new`` array, ran in the session; the
 # worker's spec reaches claude through that same array.
-ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE})
+# strands builds its array the way claude does, by the session key
+# (``providers/mirrors/strands.py``), and the launch writes it to the ``--mcp-config``
+# file the CLI mounts at start. Captured live on @strands-agents/cli 0.2.3:
+# ``test/fixtures/acp_frames/strands/worker-kit-live.jsonl``. A worker whose crewmate
+# file adds a ``probe`` server ran with that server mounted beside the base's, and the
+# model's call to it was gated and answered; without the session key the same drive
+# mounted the base's server alone. Its single-tool limits are not honoured (the mirror
+# withholds a narrowed server whole and reports ``excludedTools`` as a gap), so strands
+# is not in ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``.
+ACP_BACKENDS_MATE_WORKER_KIT = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_STRANDS})
 
 # Backends of the set above whose worker gets its prompt only from the
 # ``[AGENT SYSTEM PROMPT]`` context block: their mirrors project no spec prompt
 # (``Concern.PROMPT`` is ``WITHHELD``), so the block carries the worker's own
 # principles and its crewmate's prompt (``context_assembly.agent_spec
 # ._crewmate_worker_prompt``). KAS is not here: its wire spec already carries both,
-# so its block stays the base.
-ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
+# so its block stays the base. strands is here for claude's reason: its mirror rules
+# ``Concern.PROMPT`` ``WITHHELD``.
+ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_STRANDS})
 
 # Backends that can mount a DIFFERENT MCP tool set on one session than the
 # on-disk agent template declares — the capability crew-member dispatch rides
@@ -314,6 +336,15 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE})
 # session here (``mcp-stdio-rollback-live.jsonl``), so an entry that does not
 # resolve is never placed (``member_dispatch_session_server`` answers ``None``).
 #
+# strands is NOT a member, although its array is client-composed and its routing is
+# enforced. The dispatch entry is a stdio ``kirocrew mcp-dashboard`` child the CLI
+# starts inside the session's sandbox, and the enforced credential mask
+# (``tool_gate.adapter_hidden_credential_dirs``) hides ``.local_secret`` and ``run/``
+# from that child, so it would reach the gateway with no internal credential and every
+# call would be refused (``internal_secret_missing``). Joining would advertise a tool
+# that cannot work; letting the child read the credential widens the mask, which this
+# set does not decide.
+#
 # WHERE the mount happens differs by backend, and opencode's is the client's.
 # ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
 # CLIENT composes -- claude's, opencode's, goose's, deepseek's and pi's -- while codex and
@@ -408,6 +439,11 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 # sandbox backend). Like deepseek, a narrowed panel tool withholds the whole mount (no
 # mirror, so no per-tool deny channel), and ``agent.crew_panel: false`` withholds it
 # outright.
+#
+# strands is NOT a member, for the reason it is outside ``ACP_BACKENDS_MEMBER_DISPATCH``:
+# the panel entry is a stdio ``kirocrew mcp-panel`` child inside the session's
+# sandbox, and the enforced credential mask hides the gateway credential from it, so
+# every publish would be refused (``internal_secret_missing``).
 #
 # kiro is excluded and cannot be added by this set alone: a member session's key is
 # what every mount reads, and ``providers/acp_runtime_start.py`` ``_member_session_key`` gates

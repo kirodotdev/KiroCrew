@@ -11,6 +11,10 @@ Measured end to end in ``test/fixtures/acp_frames/strands/mcp-stdio-mount-live.j
 
 Per-tool restrictions are honoured by withholding the narrowed server whole, the
 conservative choice goose, deepseek and copilot make.
+
+The projection is keyed by the session, as claude's is, so a crewmate's worker
+session reads its own spec (``mate_worker.worker_session_spec``) rather than the
+bare worker base. Measured in ``strands/worker-kit-live.jsonl``.
 """
 
 from __future__ import annotations
@@ -58,6 +62,8 @@ def strands_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        # A crewmate's worker reads its own spec by its session's record.
+        session_key=session_key,
     )
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     out = place_single_binary_array(

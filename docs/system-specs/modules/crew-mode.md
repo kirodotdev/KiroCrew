@@ -3986,7 +3986,7 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   (`slot_guards._record_explicit_agent_selection`), so a session switched off the
   worker template leaves the crewmate's backend too. The pin is that record, so the worker
   follows its crewmate's backend for its whole life. It runs on a backend in
-  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude; harness-parity.md),
+  `ACP_BACKENDS_MATE_WORKER_KIT` (KAS, claude, strands; harness-parity.md),
   its spec carried the way a member chat's
   saved spec is -- KAS through its per-session projection, the mirrored hosts
   through the session MCP projection, which reads the worker's own spec by the
