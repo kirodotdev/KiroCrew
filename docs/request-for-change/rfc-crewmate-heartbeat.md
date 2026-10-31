@@ -28,6 +28,7 @@ superseded-by: []
   | 2026-10-20 | The text was revised (`e9afde0fa9`) and merged in [#20934](https://github.com/kirodotdev/KiroCrew/pull/20934) on 2026-10-21. The revision moved the intervals to 30, 60 (default), 120 and 240 minutes (§ 3.1, § 3.6). It dropped the promise that every crewmate gets the session tools: a wake uses them only when the thread already holds them (§ 3.7, new). It rewrote § 3.2 (a stopping skip, folding pre-tool text, a gateway line once every milestone is met) and § 3.6 (cost as a ceiling on wakes a day). No review or comment on #20934 recorded acceptance of this revision before the merge. |
   | 2026-10-21 | After bolichen97's post-merge review ([comment](https://github.com/kirodotdev/KiroCrew/pull/20934#issuecomment-6308582968)), the product owner (rayrayxu) kept the status `accepted` for the revised text, with this change. This change also matches § 3.2 to #21172 as it stands: the gateway folds no text and adds no milestones line, and a wake skips while a monitor loop drives the thread. It defines what follows a declined or expired milestones card (§ 3.2), splits the facts (§ 7) and moves every audit to the two commits named above. |
   | 2026-10-21 | With #21172's review fixes, § 3.2 adds that a wake proposes no new milestones while a milestones card waits on the user, checks a stopping gateway once (after its reads), and reads the monitor-loop skip from `ledger_wake.worker_looping`. Acceptance of this addition is not recorded yet. |
+  | 2026-10-31 | The owner (CrysisDeu) ruled in [#26398](https://github.com/kirodotdev/KiroCrew/issues/26398): "a mate's heartbeat must always wake the mate." § 3.2 and § 3.6 now say that a wake loads the crewmate's own DM thread when no slot holds it, including one closed with ✕ or by the idle sweep, and that every other thread still skips when closed. Implemented in [#26401](https://github.com/kirodotdev/KiroCrew/pull/26401). |
 - Author: buluoray
 - Related: [rfc-crewmate-goals.md](rfc-crewmate-goals.md) § 3.5 (check-ins, and
   which turns may raise a card), [rfc-crewmate-dynamic-dashboard.md](rfc-crewmate-dynamic-dashboard.md)
@@ -87,9 +88,17 @@ Its cron expression comes from the interval: `*/30 * * * *`, `0 * * * *`,
 
 The wake goes through the check-ins' existing `fire` path and dispatches one
 hidden turn in the crewmate's pinned thread (`mate_welcome.dispatch_hidden_turn`,
-`human_seen=False`). It inherits that path's skips, so a heartbeat does nothing
-that time when the thread is not open, a turn is running or queued, the switch
-is off, or no goal is left. It adds two skips of its own. A wake that finds the
+`human_seen=False`). A heartbeat always wakes the mate (owner ruling,
+[#26398](https://github.com/kirodotdev/KiroCrew/issues/26398)): for a mate's DM
+the heartbeat is something the owner turned on, and its switch, not the tab, is
+how it stops. So when no slot holds the crewmate's own DM thread, the wake loads
+it from its transcript first, whether a restart left it unloaded or it was
+closed with ✕ or by the idle sweep, and then wakes the mate. Any other kind of
+thread keeps the close-stays-closed rule. A thread that cannot be built (no
+transcript, or a binding that resolves to no crewmate) is skipped. The wake also
+inherits the path's other skips, so a heartbeat does nothing that time when a
+turn is running or queued, the switch is off, or no goal is left. It adds two
+skips of its own. A wake that finds the
 gateway stopping after its own reads (`kiro_crew.shutdown_event` set) starts no
 turn, since the stop would cancel a turn that had already been paid for; the
 cron timer itself stops firing once the event is set. A wake that fires while a
@@ -211,7 +220,7 @@ interval sets a ceiling on wakes a day, and the user picks the ceiling.
 | | |
 |---|---|
 | Default | off, for every crewmate, new and existing |
-| Fewer wakes than the ceiling | a wake is skipped when the thread is busy or closed, the switch is off, there is no goal, an active monitor loop is bound to the thread, or the gateway is stopping |
+| Fewer wakes than the ceiling | a wake is skipped when the thread is busy or cannot be built, the switch is off, there is no goal, an active monitor loop is bound to the thread, or the gateway is stopping; a mate's own DM thread that is closed is reopened and woken, not skipped (§ 3.2) |
 | Cheapest wake | one that finds nothing ends at once with `nothing_to_do` |
 | Where it is said | the check-ins page under the switch ("Each wake uses credits."), the `crewmate.check_ins` card's row ("Heartbeat (each wake uses credits)"), the `set_check_ins` tool description, and the offer after the milestones are confirmed |
 
