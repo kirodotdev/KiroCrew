@@ -7703,7 +7703,8 @@
     "linkPreview": {
       "copied": "Copiato",
       "copy_url": "Copia URL",
-      "copy_url_of": "Copia URL di {{name}}"
+      "copy_url_of": "Copia URL di {{name}}",
+      "load_failed": "Impossibile caricare questa anteprima."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Impossibile connettersi a {{label}}: {{reason}}",
@@ -11012,6 +11013,9 @@
       "grant_not_approved": "non approvata",
       "grants_reconsent_api": "Accesso all’API: consente all’app di chiamare questi percorsi dell’API di {{productName}} con il proprio token.",
       "grants_reconsent_events": "Eventi WebSocket: consente all’app di ricevere o inviare questi eventi della dashboard.",
+      "grants_reconsent_link_hosts": "Host dei link: consente alle schede dell’app di vedere i link a questi siti nei messaggi della chat.",
+      "grants_reconsent_link_patterns": "Modelli di testo: consente alle schede dell’app di vedere il testo della chat che corrisponde a questi modelli.",
+      "grants_reconsent_link_full_url": "Indirizzi completi dei link: le schede dell’app vedono anche la parte di un link dopo ? o #, che può contenere un codice di accesso.",
       "grants_approved": "Approvate: {{entries}}. L'app può usarle da ora."
     },
     "appPage": {

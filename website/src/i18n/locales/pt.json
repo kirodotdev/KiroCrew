@@ -7703,7 +7703,8 @@
     "linkPreview": {
       "copied": "Copiado",
       "copy_url": "Copiar URL",
-      "copy_url_of": "Copiar URL de {{name}}"
+      "copy_url_of": "Copiar URL de {{name}}",
+      "load_failed": "Não foi possível carregar esta pré-visualização."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Não foi possível conectar a {{label}}: {{reason}}",
@@ -11012,6 +11013,9 @@
       "grant_not_approved": "não aprovada",
       "grants_reconsent_api": "Acesso à API: permite que o app chame estes caminhos da API do {{productName}} com o próprio token.",
       "grants_reconsent_events": "Eventos WebSocket: permite que o app receba ou envie estes eventos do painel em tempo real.",
+      "grants_reconsent_link_hosts": "Hosts de links: permite que os cartões do app vejam links para estes sites nas mensagens do chat.",
+      "grants_reconsent_link_patterns": "Padrões de texto: permite que os cartões do app vejam o texto do chat que corresponde a estes padrões.",
+      "grants_reconsent_link_full_url": "Endereços de link completos: os cartões do app também veem a parte de um link depois de ? ou #, que pode conter um código de login.",
       "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
     },
     "appPage": {

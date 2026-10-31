@@ -7703,7 +7703,8 @@
     "linkPreview": {
       "copied": "Copié",
       "copy_url": "Copier l’URL",
-      "copy_url_of": "Copier l’URL de {{name}}"
+      "copy_url_of": "Copier l’URL de {{name}}",
+      "load_failed": "Impossible de charger cet aperçu."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Impossible de se connecter à {{label}} : {{reason}}",
@@ -11012,6 +11013,9 @@
       "grant_not_approved": "non approuvée",
       "grants_reconsent_api": "Accès à l’API : permet à l’app d’appeler ces chemins de l’API {{productName}} avec son propre jeton.",
       "grants_reconsent_events": "Événements WebSocket : permet à l’app de recevoir ou d’envoyer ces événements du tableau de bord en temps réel.",
+      "grants_reconsent_link_hosts": "Hôtes de liens : permet aux cartes de survol de l’app de voir les liens vers ces sites dans les messages du chat.",
+      "grants_reconsent_link_patterns": "Motifs de texte : permet aux cartes de survol de l’app de voir le texte du chat qui correspond à ces motifs.",
+      "grants_reconsent_link_full_url": "Adresses de lien complètes : les cartes de survol de l’app voient aussi la partie d’un lien après « ? » ou « # », qui peut contenir un code de connexion.",
       "grants_approved": "Approuvées : {{entries}}. L’app peut les utiliser dès maintenant."
     },
     "appPage": {

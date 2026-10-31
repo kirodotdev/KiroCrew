@@ -7451,7 +7451,8 @@
     "linkPreview": {
       "copied": "コピー済み",
       "copy_url": "URL をコピー",
-      "copy_url_of": "{{name}} の URL をコピー"
+      "copy_url_of": "{{name}} の URL をコピー",
+      "load_failed": "このプレビューを読み込めませんでした。"
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}} に接続できませんでした：{{reason}}",
@@ -10702,6 +10703,9 @@
       "grant_not_approved": "未承認",
       "grants_reconsent_api": "API アクセス: アプリが自身のトークンでこれらの {{productName}} API パスを呼び出せるようにします。",
       "grants_reconsent_events": "WebSocket イベント: アプリがこれらのダッシュボードのリアルタイムイベントを受信または送信できるようにします。",
+      "grants_reconsent_link_hosts": "リンクのホスト: チャットメッセージ内のこれらのサイトへのリンクを、アプリのホバーカードが見られるようにします。",
+      "grants_reconsent_link_patterns": "テキストパターン: これらのパターンに一致するチャットのテキストを、アプリのホバーカードが見られるようにします。",
+      "grants_reconsent_link_full_url": "リンクの完全なアドレス: アプリのホバーカードは、リンクの ? や # 以降の部分も見られます。ここにはサインイン用のコードが含まれることがあります。",
       "grants_approved": "承認しました: {{entries}}。アプリは今から使用できます。"
     },
     "appPage": {

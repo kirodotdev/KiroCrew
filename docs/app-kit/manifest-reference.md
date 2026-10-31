@@ -705,6 +705,180 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 
 ## Backend
 
+### `contributes.linkPreviews` — Hover Cards for Links
+
+A link preview shows the app's own card when the user hovers a link in a chat
+message (links elsewhere in the dashboard never reach an app). The host owns detection (which links, the 300 ms hover delay, leave,
+Escape, scroll and blur); the app owns the card, which runs in a sandboxed frame.
+No app code runs until a link on one of the provider's `hosts` is hovered.
+
+```json
+{
+  "contributes": {
+    "linkPreviews": [
+      {
+        "id": "cards",
+        "entry": "dist/link-preview.mjs",
+        "hosts": ["tickets.example.com", ".example.dev"]
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Storage-safe slug, unique within the app |
+| `entry` | string | ESM module, relative to `ui/` (same base as `ui.entry`) |
+| `hosts` | string[] | 1-64 hostnames; a leading dot means the domain and every subdomain. Only `https:` links match. Stored lowercased, in IDNA (punycode) form and without a trailing dot. A public suffix (`co.uk`, `.github.io`) or a bare TLD (`com`) is refused |
+| `textPatterns` | object[] | Optional. Plain text in chat messages that also opens a card; see below |
+| `fullUrl` | boolean | Optional. `show` gets the URL without its query and fragment unless this is `true` and the owner approved it |
+
+**Approval.** The hosts, the text patterns (id, flags and source) and `fullUrl` are
+part of what the owner approves for the app, like `permissions.api`. An update that
+adds a host, changes a pattern or turns `fullUrl` on waits on the app's page until
+the owner approves it, and
+until then the app previews only what was approved before. An update that only
+removes entries needs nothing. When no host and no pattern is approved, the
+provider is off: no frame is made, and a live frame's capability stops renewing and
+its fetches are refused.
+
+At most **one** provider per app; a link goes to the first enabled app whose
+`hosts` claim it.
+
+**Where the module runs.** Never in the dashboard's document. On the first hover
+the dashboard creates an iframe for the provider that is `sandbox="allow-scripts"`
+with no `allow-same-origin`, and loads a frame document the gateway serves at
+`/link-preview-frame/<app>/…` with its own `Content-Security-Policy: sandbox
+allow-scripts`. The frame's origin is opaque: it cannot read the dashboard's DOM,
+its cookies, its storage or its token. The iframe is `credentialless`, the frame's
+CSP starts from `default-src 'none'` (scripts and network on the gateway only,
+images from any `https:` host, no workers, frames, objects, forms or `<base>`),
+and it is sent with `Referrer-Policy: no-referrer`. A frame that navigates itself
+away is removed. The frame imports `entry` and calls
+`activate(ctx)` once. The dashboard sends it only the hovered URL or text, the
+anchor's rect, the theme and the modifier keys, over `postMessage`, and it
+positions and sizes the frame itself.
+
+```ts
+export function activate(ctx: {
+  appName: string
+  theme(): 'dark' | 'light'
+  /** fetch() to this app's own backend routes; `path` is relative. */
+  fetch(path: string, init?: RequestInit): Promise<Response>
+  /** Which `textPatterns` ids this app's settings turn off now. */
+  setTextPatternsOff(ids: string[]): void
+  // Overlay mode: the frame covers the viewport and is clipped to these rects.
+  setRegions(rects: { left: number; top: number; width: number; height: number }[]): void
+}): {
+  // A link: `url`. A `textPatterns` match: `text`. `rect` is where it is on screen.
+  show(link: {
+    url?: string; text?: string; theme: 'dark' | 'light'
+    rect: { left: number; top: number; width: number; height: number }
+    modifiers?: { alt: boolean; shift: boolean; ctrl: boolean; meta: boolean }
+    // Card mode: the controls for THIS show's card, placed next to its link.
+    card: {
+      open(): void
+      close(): void
+      resize(size: { width: number; height: number }): void
+      pin(pinned: boolean): void          // a pinned card stays on leave and chat scroll
+      dragBy(dx: number, dy: number): void
+      dock(edge: 'left' | 'right' | null): void
+    }
+  }): void
+  leave(): void              // the pointer left the link; the card may hold itself open
+  hide(reason: string): void // 'scroll' | 'escape' | 'blur' | 'other-provider' | 'disabled'
+  theme?(theme: 'dark' | 'light'): void
+  dispose?(): void           // the app was disabled
+}
+```
+
+Two ways to draw:
+
+- **Card mode** (the default). The module renders its card into the frame's
+  `document.body`, reports the size with `link.card.resize`, and shows it with
+  `link.card.open`. The dashboard places the frame below the link (above when there is
+  no room) and keeps it on screen. `card.pin(true)` keeps the card when the
+  pointer leaves or the chat scrolls; the next hover then gets a fresh frame, and
+  at most 8 cards stay pinned. `card.dragBy` moves it (use `screenX`/`screenY`
+  deltas: the frame moves under the pointer) and `card.dock` sticks it to an edge.
+  A scroll inside the card stays in the frame and never closes it.
+- **Overlay mode**, for a provider that keeps windows of its own (pinned cards, a
+  dock, a settings dialog). Its first `ctx.setRegions` makes the frame cover the
+  viewport, clipped to the rects it reports; outside them the page stays
+  clickable. The frame's viewport is then the dashboard's, so `rect` is exactly
+  where the link is. Card-mode calls are ignored, and `hide` is only a notice:
+  the module decides what closes.
+
+Every `show` starts a new invocation, and its `link.card` is bound to it. Keep the
+`card` of the show you are answering: a call on an earlier show's `card`, for
+example from a slow fetch that finished after the user moved to another link, is
+dropped. A message over 8 KB, or
+past a burst of 120 messages refilled at 60 a second, is dropped unread.
+
+Links in a card open through the dashboard's link bridge, only right after a click
+in the card. A plain key pressed in the dashboard while a card shows is passed to
+the frame as a `keydown`, so a card's own shortcuts work; never while the
+dashboard is taking text (a field, or an editor inside a shadow root), and never
+with Ctrl, Alt or Meta.
+
+**`ctx.fetch`** reaches the app's own backend routes and nothing else: the routes
+it registers through `backend.routes`, or its process backend through the same
+signed proxy as `/apps/<app>/api/`. Core routes under `/api/apps/<app>/` are not
+reachable. The request carries a capability the dashboard mints for that one
+frame (`X-KiroCrew-Capability`), short-lived and renewed while the frame lives;
+no cookie is sent and no other route accepts it. Only `GET`, `POST`, `PUT`,
+`PATCH` and `DELETE` are forwarded; any other method gets `405`.
+
+If the app list cannot be read, a hover on a chat link shows the same notice and
+the list is asked for again. If the frame does not report `ready` within 10 seconds, or the module fails to
+import, or `activate` throws, the host logs the error, shows a short "couldn't
+load this preview" notice under the hovered element, and tries again on a hover
+at least 30 seconds later. When the app is disabled the host sends `hide('disabled')`
+and `dispose`, then removes the frame.
+
+**Plain text (`textPatterns`).** Each entry names text that is not a link but should
+open the app's card:
+
+```json
+"textPatterns": [
+  { "id": "ticket", "pattern": "(?<![\\w-])(TK-\\d{4,})(?![\\w-])", "flags": "g" },
+  { "id": "team", "pattern": "(?<![\\w.-])(team\\.[a-z0-9]+)", "flags": "gi", "defaultOff": true }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `pattern` | JavaScript regex source, at most 200 characters; at most 16 entries |
+| `flags` | Optional. A subset of `giu`; `g` is implied |
+| `id` | Optional slug the module names in `ctx.setTextPatternsOff` |
+| `defaultOff` | Optional. Not drawn until the module reports it on |
+
+- In chat messages only, the host wraps each match in
+  `<span class="link-preview-text" data-link-preview-text>`. It is never a link,
+  and never drawn inside code, inline code, math, raw HTML or an existing link. A
+  token an edition's autolink rule already linked stays that link.
+- Hovering the span calls `show({ text, rect })` on the app whose pattern matches
+  the span's whole text. The span carries no owner: the host re-derives it from the
+  text, so a span written in raw message HTML reaches nothing a pattern would not.
+- `ctx.setTextPatternsOff(ids)` reports which ids the app's own settings turn off.
+  The host remembers it across reloads, so the first paint after a reload already
+  follows the app's settings although the module only loads on the first hover.
+- A pattern must compile with its flags and must not match the empty string. It is
+  never run on the dashboard's thread, not even for that check: matching and the
+  empty-string test happen in a Web Worker, one batch per render, with a hard budget
+  of 250 ms per pattern, restarted as each pattern starts, so an overrun is charged
+  to the pattern that used up its own time. A pattern that matches
+  the empty string is turned off for the session. A pattern that overruns is
+  stopped (the worker is terminated), turned off for the rest of the session, and
+  logged once; the rest of the batch, and text already drawn, is matched again
+  without it, so a span it owned can move to the next app whose pattern takes it. A text node
+  longer than 2,000 characters is not scanned. Text renders plain until the worker
+  answers, then gains its spans. A span belongs to the first app (in app-list
+  order) whose pattern matches its whole text, the same in every message. At most
+  20,000 distinct text nodes are scanned per page load; later ones stay plain. If the worker does not start within 5 seconds,
+  plain-text previews are off for that page load. `textPatterns` is signed.
+
 ### `backend` — App Backend Process
 
 ```json

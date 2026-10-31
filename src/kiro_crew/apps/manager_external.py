@@ -17,6 +17,7 @@ from typing import Any
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
+from kiro_crew.apps.link_preview_grants import grant_source
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -266,7 +267,7 @@ def register_external_app(
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to
     # widen, as with an install.
-    new_permissions = manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
+    new_permissions = grant_source(manifest_data) if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
@@ -274,13 +275,13 @@ def register_external_app(
         if existing:
             approved_grants = _effective_approved_grants(name, existing)
         elif (on_disk := get_app_manifest(name)) is not None:
-            approved_grants = _declared_grant_entries(on_disk.permissions)
+            approved_grants = _declared_grant_entries(grant_source(on_disk))
         else:
             approved_grants = None
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
-            old_permissions=prior_manifest.permissions if prior_manifest else None,
+            old_permissions=grant_source(prior_manifest),
             new_permissions=new_permissions,
         )
     else:

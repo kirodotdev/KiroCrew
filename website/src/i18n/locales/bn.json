@@ -7577,7 +7577,8 @@
     "linkPreview": {
       "copied": "কপি করা হয়েছে",
       "copy_url": "URL কপি করুন",
-      "copy_url_of": "{{name}} এর URL কপি করুন"
+      "copy_url_of": "{{name}} এর URL কপি করুন",
+      "load_failed": "এই প্রিভিউ লোড করা যায়নি।"
     },
     "linkedSurfacesSection": {
       "connect_failed": "{{label}}-এ সংযোগ করা যায়নি: {{reason}}",
@@ -10857,6 +10858,9 @@
       "grant_not_approved": "অনুমোদিত নয়",
       "grants_reconsent_api": "API অ্যাক্সেস: অ্যাপকে নিজের টোকেন দিয়ে এই {{productName}} API পাথগুলো কল করতে দেয়।",
       "grants_reconsent_events": "WebSocket ইভেন্ট: অ্যাপকে ড্যাশবোর্ডের এই রিয়েল-টাইম ইভেন্টগুলো পেতে বা পাঠাতে দেয়।",
+      "grants_reconsent_link_hosts": "লিংক হোস্ট: চ্যাট বার্তায় এই সাইটগুলোর লিংক অ্যাপের হোভার কার্ডকে দেখতে দেয়।",
+      "grants_reconsent_link_patterns": "টেক্সট প্যাটার্ন: চ্যাটের যে লেখা এই প্যাটার্নগুলোর সাথে মেলে, তা অ্যাপের হোভার কার্ডকে দেখতে দেয়।",
+      "grants_reconsent_link_full_url": "পুরো লিংক ঠিকানা: অ্যাপের হোভার কার্ড লিংকের ? বা # এর পরের অংশও দেখবে, যেখানে সাইন-ইন কোড থাকতে পারে।",
       "grants_approved": "অনুমোদিত: {{entries}}। অ্যাপটি এখন এগুলো ব্যবহার করতে পারে।"
     },
     "appPage": {

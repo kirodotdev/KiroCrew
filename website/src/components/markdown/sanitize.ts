@@ -105,6 +105,11 @@ function isAllowedAttr(tag: string, key: string): boolean {
   // `data-message-edit`, `data-Message-Edit` and `dataMessageEdit` all reach
   // here as some casing of `datamessageedit`. Every other `data-*` stays admitted.
   if (k.replace(/-/g, '').startsWith('datamessage')) return false
+  // `data-link-preview-scope` marks a chat message's root, the only place an
+  // app's link preview listens (LinkPreviewLayer). Authored HTML on any surface
+  // (a remote artifact, a doc) could otherwise mint one and hand its links to an
+  // app. Reserved by normalized key, like the markers above.
+  if (k.replace(/-/g, '').startsWith('datalinkpreviewscope')) return false
   // The guide's own markers (`data-ui-location`, `data-guide-pick`, ...): a
   // message could otherwise draw a control a guide takes for the product's.
   if (isGuideMarkerAttr(k)) return false

@@ -6157,6 +6157,9 @@
       "reason": "I can't run this, but you can.",
       "run_unanswered": "The terminal didn't respond, so copy it into the Terminal app on your computer.",
       "title": "Run this yourself"
+    },
+    "linkPreview": {
+      "load_failed": "Couldn't load this preview."
     }
   },
   "hooks": {

@@ -7577,7 +7577,8 @@
     "linkPreview": {
       "copied": "Kopiert",
       "copy_url": "URL kopieren",
-      "copy_url_of": "URL von {{name}} kopieren"
+      "copy_url_of": "URL von {{name}} kopieren",
+      "load_failed": "Diese Vorschau konnte nicht geladen werden."
     },
     "linkedSurfacesSection": {
       "connect_failed": "Verbindung mit {{label}} konnte nicht hergestellt werden: {{reason}}",
@@ -10857,6 +10858,9 @@
       "grant_not_approved": "nicht genehmigt",
       "grants_reconsent_api": "API-Zugriff: erlaubt der App, diese {{productName}}-API-Pfade mit ihrem eigenen Token aufzurufen.",
       "grants_reconsent_events": "WebSocket-Ereignisse: erlaubt der App, diese Echtzeit-Ereignisse des Dashboards zu empfangen oder zu senden.",
+      "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
+      "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",
+      "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
     },
     "appPage": {

@@ -7451,7 +7451,8 @@
     "linkPreview": {
       "copied": "已复制",
       "copy_url": "复制网址",
-      "copy_url_of": "复制 {{name}} 的网址"
+      "copy_url_of": "复制 {{name}} 的网址",
+      "load_failed": "无法加载此预览。"
     },
     "linkedSurfacesSection": {
       "connect_failed": "无法连接到 {{label}}：{{reason}}",
@@ -10702,6 +10703,9 @@
       "grant_not_approved": "未批准",
       "grants_reconsent_api": "API 访问：允许应用用自己的令牌调用这些 {{productName}} API 路径。",
       "grants_reconsent_events": "WebSocket 事件：允许应用接收或发送这些仪表板实时事件。",
+      "grants_reconsent_link_hosts": "链接主机：允许应用的悬停卡片看到聊天消息中指向这些站点的链接。",
+      "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
+      "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
     },
     "appPage": {

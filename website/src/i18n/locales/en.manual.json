@@ -4805,6 +4805,9 @@
       "grant_not_approved": "not approved",
       "grants_reconsent_api": "API access: lets the app call these {{productName}} API paths with its own token.",
       "grants_reconsent_events": "WebSocket events: lets the app receive or send these real-time dashboard events.",
+      "grants_reconsent_link_hosts": "Link hosts: lets the app's hover cards see links to these sites in chat messages.",
+      "grants_reconsent_link_patterns": "Text patterns: lets the app's hover cards see chat text these patterns match.",
+      "grants_reconsent_link_full_url": "Whole link addresses: the app's hover cards also see the part of a link after ? or #, which can hold a sign-in code.",
       "grants_approved": "Approved: {{entries}}. The app can use them now."
     },
     "appsPage": {

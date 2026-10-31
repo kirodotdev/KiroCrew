@@ -124,6 +124,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         set_app_source,
     )
     from kiro_crew.apps.manager_records import (  # noqa: F401
+        _ALWAYS_STORED_FAMILIES,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
         _VALID_ORIGIN,
@@ -263,6 +264,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         app_execution_denied,
         repository_bound_grant_denied,
         shipped_builtin_app_root,
+    )
+    from kiro_crew.apps.link_preview_grants import (  # noqa: F401
+        LINK_PREVIEW_GRANT_FAMILIES,
+        grant_source,
+        link_preview_grant_row,
     )
     from kiro_crew.apps.manifest import (  # noqa: F401
         RESERVED_APP_NAME_CODE,

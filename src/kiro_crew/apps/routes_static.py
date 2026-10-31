@@ -392,7 +392,14 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 "Last-Modified": formatdate(st.st_mtime, usegmt=True),
                 "Content-Security-Policy": "default-src 'none'; sandbox",
                 "X-Content-Type-Options": "nosniff",
+                # Read by the link-preview frame (apps/link_preview_frame.py): an
+                # opaque-origin sandbox loads the app's module in CORS mode. Only
+                # the "null" origin is answered, never with credentials, and these
+                # bytes are already served to anyone without a token.
+                "Vary": "Origin",
             }
+            if request.headers.get("Origin") == "null":
+                headers["Access-Control-Allow-Origin"] = "null"
             # The shared compare reads aiohttp's parsed accessors, not raw header
             # strings: If-None-Match may carry a list, a weak `W/"..."` form, or
             # `*` (RFC 9110 §13.1.2 weak comparison), and If-Modified-Since is

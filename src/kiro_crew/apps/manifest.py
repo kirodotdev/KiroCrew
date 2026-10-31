@@ -47,20 +47,27 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_PREVIEW_HOSTS,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
     _MAX_TITLE,
     _PANEL_TAB_ID_RE,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
+    _TEXT_PATTERN_FLAGS_RE,
+    _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
+    MAX_LINK_PREVIEW_TEXT_PATTERNS,
+    MAX_LINK_PREVIEWS_PER_APP,
     MAX_SESSION_CONTROLS_PER_APP,
     CommandArgument,
     CommandContribution,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkPreviewConfig,
     PanelTabConfig,
     SessionControlContribution,
     _mirrored_len,
@@ -180,6 +187,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "dev",
         "disable",
         "enable",
+        "link-preview",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -501,6 +509,11 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A link-preview entry is imported by the same ESM host, so same check.
+        for preview in self.contributes.linkPreviews:
+            refusal = path_refusal(preview.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -562,9 +575,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -734,6 +745,9 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            # A link-preview `entry` is an ESM module the dashboard imports and runs
+            # in its own origin, like a panel tab's: same reason to sign it.
+            or self.contributes.linkPreviews
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -1183,9 +1197,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges_mcp.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.execution import shipped_builtin_app_root
+from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager_builtins import detect_orphaned_builtins
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -394,6 +395,7 @@ def list_apps() -> list[dict[str, Any]]:
         app_info: dict[str, Any] = {
             **meta.to_dict(),
             **_approved_grants_row(entry.name),
+            **link_preview_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -426,7 +428,12 @@ def get_app(name: str) -> dict[str, Any] | None:
                 meta.version = manifest.version
         except Exception:
             pass
-    return {**meta.to_dict(), **_approved_grants_row(name), "manifest": manifest_data}
+    return {
+        **meta.to_dict(),
+        **_approved_grants_row(name),
+        **link_preview_grant_row(name, manifest_data),
+        "manifest": manifest_data,
+    }
 
 
 def _absence_is_genuine(meta_path: Path) -> bool:

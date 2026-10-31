@@ -36,6 +36,9 @@ import LogsPage from './pages/LogsPage'
 const MembersPage = lazy(() => import('./pages/members/MembersPage'))
 // The guide pill renders only once a guide is offered; keep it off the entry chunk.
 const GuideLayer = lazy(() => import('./guide/GuideLayer'))
+// App-contributed link previews (`contributes.linkPreviews`): hover detection only;
+// an app's module loads on the first hover of one of its links.
+const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
 // Lazy for the same reason: the crew work-item board is opened from a conductor
 // session or the Crew page, never at startup.
 const CrewBoardPage = lazy(() => import('./pages/CrewBoardPage'))
@@ -801,6 +804,7 @@ export default function App() {
               read their draft and request-header seams from this provider. */}
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
+          <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />

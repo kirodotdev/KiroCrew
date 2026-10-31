@@ -99,8 +99,21 @@ def _extra_frame_ancestors(
     Empty (default ``'self'`` + ``X-Frame-Options`` posture) for any request
     without such a token. See docs/system-specs/modules/security.md.
     """
-    if request is None:
+    port = _embed_parent_port(request, app)
+    if port is None:
         return []
+    return parent_port_frame_ancestors(port)
+
+
+def _embed_parent_port(
+    request: "web.Request | None", app: "web.Application | None" = None
+) -> int | None:
+    """The validated ``embed_parent_port`` claim of the request's signed token, or ``None``.
+
+    The reader behind :func:`_extra_frame_ancestors`; see there for the order.
+    """
+    if request is None:
+        return None
     # Prefer the claim the auth middleware validated and stashed on the request:
     # it is set BEFORE the link→session exchange revokes the link nonce, so the
     # first ``?token=`` framed document (whose header the browser enforces) still
@@ -129,7 +142,16 @@ def _extra_frame_ancestors(
             cookie_port = _cookie_port_from_host(request, port_fallback)
             token = request.cookies.get(f"mc_token_{cookie_port}", "")
         port = token_embed_parent_port(token)
-    if port is None:
+    return port
+
+
+def parent_port_frame_ancestors(port: int) -> list[str]:
+    """The loopback origins of an embedding parent dashboard on ``port``.
+
+    Also used by a document whose request carries no dashboard credential (the
+    link-preview frame), which recovers the port from its own signed URL instead.
+    """
+    if not 1 <= port <= 65535:
         return []
     # A CSP host-source admits only letters, digits and hyphens in the host, so a
     # bracketed IPv6 literal cannot be expressed: `http://[::1]:<port>` is refused by

@@ -1,5 +1,16 @@
 import { i18nT } from '../../i18n/t'
 
+/** An app row's `linkPreviewGrant`: approved hosts and text patterns, and the ones held back. */
+export interface LinkPreviewGrantRow {
+  hosts?: string[]
+  textPatterns?: string[]
+  stagedHosts?: string[]
+  stagedTextPatterns?: string[]
+  /** Whole URLs (query and fragment) approved, and asked for but waiting. */
+  fullUrl?: boolean
+  stagedFullUrl?: boolean
+}
+
 /**
  * Shared types for the Apps page (Discover + Library) surfaces.
  *
@@ -81,6 +92,8 @@ export type InstalledApp = {
   sessionApprovalConsentPending?: boolean
   /** Approved api/events entries, present only while an update's new ones await approval. */
   approvedGrants?: { api?: string[]; events?: string[] }
+  /** Approved link-preview hosts and text patterns, and the ones an update holds back. */
+  linkPreviewGrant?: LinkPreviewGrantRow
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
