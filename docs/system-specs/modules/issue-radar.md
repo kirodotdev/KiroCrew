@@ -323,9 +323,12 @@ per-repo store-scoping rule.
 | GET | `/crews/names` | Suggested names for a new crew |
 | GET/PUT | `/crews/settings` | Per-repo crew settings |
 | GET/PUT/DELETE | `/crew` | Read one crew with its open items, events and the repo's shared skip index; PUT updates it; DELETE retires it (the record survives) |
-| GET | `/crew/fabric` | The crews pipeline view's whole payload (phases and items). Non-GitHub providers answer `items: []` |
+| GET | `/crew/fabric` | The crews pipeline view's whole payload (phases and items), folded from the crew store for every provider |
 | PUT | `/crew/work` | Record one work-item step and its progress event (the write behind `issue_radar_crew_record`) |
 | POST | `/crew/pause` | Pause or resume a crew |
+| GET | `/pipeline/overview` | Pipeline tab L0: per-step throughput folded from the forge's audit log, for one `owner`/`repo` (both required) over the last `hours` (default `DEFAULT_RECENT_HOURS`). `provider`/`host` select the FORGE whose files are read (see "Pipeline tab by forge"); public GitHub and an allowlisted GitLab host are served, anything else is 400 `repo_provider_unsupported`; a repo not connected on that forge is 404 `repo_not_connected`; an unreadable or oversized log is 503 `unreadable`. Mounted by `pipeline_routes.py` under `/pipeline/`, read-only, no write route, no forge call |
+| GET | `/pipeline/step` | Pipeline tab L1: the items inside one `step` (required, 400 `step_required` / `bad_step`), at most `limit` rows (default `MAX_ROWS`), joined with the repo's queue shard and issue cache from the same forge. Same forge and connection answers as `/overview`; a GitHub queue not yet sharded is 503 `queue_migration_pending` |
+| GET | `/pipeline/item/sessions` | Pipeline tab L2: every session that worked item `number` (required, numeric, 400 `number_required` / `bad_item`), spend summed over its current and retired slots, from the same forge's shard. Same forge, connection, `unreadable` and `queue_migration_pending` answers |
 
 **`website/src/apps/issue-radar/api.ts` holds the dashboard's calls to these
 routes** (`issueRadarApi`), plus the base path and the AI-language hint that
@@ -1247,9 +1250,151 @@ and that is indistinguishable from "no links" on the server side.
 Azure and any unknown provider are answered an empty graph by `/deps` without a rebuild;
 nothing is written to their cache.
 
-The Pipeline tab (`pipeline_routes.py`) is unchanged and still github.com-only: its files
-are keyed on `owner/repo` alone by the GitHub jobs that write them, so serving another
-forge from them would show a same-slug project the wrong repository's rows.
+### Crews on GitLab
+
+The crew runtime (`crew_runtime.py`) reaches the forge through `provider.client_for(key)`
+and speaks the provider's vocabulary (`MR`, `!`), so a crew can be created on a GitLab
+repo with no route change. Two seams complete that:
+
+- **The sweep's deps refresh** (`_read_or_refresh_deps`) dispatches like `/deps`: a
+  stale GitLab graph is rebuilt by `gitlab_queries.fetch_dependency_edges` with the
+  repo's host, so `SIG_DEP_UNBLOCKED` fires for a GitLab crew when its blocker closes.
+  Any other provider stays a plain cache read. A refresh failure keeps the cached graph
+  (stale beats wrong), on both forges. The GitLab fetcher leaves an issue whose own
+  `/links` it never read either flagged `blockers_unknown` or out of `nodes` altogether
+  (past `_MAX_LINKS_CALLS` / `_MAX_DEPS_NODES` with no fetched issue linking to it, or
+  a failed call no edge touched), so `fingerprint_item` reads both shapes as an UNKNOWN
+  blocker count for a GitLab item, never as zero: an edgeless reading cannot fire a
+  false 1→0 unlock. The GitHub fetcher seeds and walks every open issue in the
+  snapshot, so a GitHub item with no node keeps reading as zero.
+- **`GET /crew/fabric` folds every provider** from the crew store, which keys and
+  persists a GitLab repo's crews exactly like a GitHub repo's; the pipeline view's
+  designed empty state is now only "no crews", never "wrong forge". A GitLab lane takes
+  its title from the issues cache alone: GitLab numbers issues and merge requests in
+  separate sequences, so a number-keyed MR title would belong to an unrelated item.
+  GitHub keeps the pull title winning on a shared number.
+
+`gitlab_client` has no crew write calls: there is no GitLab `update_issue_comment` or
+`create_pull_request`, because nothing in the backend would call them. They land with
+the first route or tool that needs them.
+
+Unchanged on GitLab: `enable_auto_merge` / `disable_auto_merge` and `REQUEST_CHANGES`
+stay refused (no safe verb), the host allowlist and `glab` transport are untouched, and
+no token scope beyond `api` is needed.
+
+## Pipeline tab by forge
+
+The Pipeline tab (`pipeline_routes.py`, mounted under `/api/apps/issue-radar/pipeline/`)
+is a READ-ONLY fold over the files the triage jobs write: an audit log, one dispatch-queue
+shard per repository, and the issue cache. It was github.com-only because those files
+were keyed on `owner/repo` alone, so a same-slug GitLab project would have been shown
+the GitHub repository's events, titles and credit costs under its own heading. The
+fix is a **forge split** (`pipeline_fold.Forge`), not a stamp on every event:
+
+- **Files are namespaced by forge.** Public GitHub keeps its original names
+  (`gh-autofix-audit.jsonl`, `gh-autofix-dispatch-queue.<slug>.jsonl`, the legacy issue
+  cache root), so nothing on disk moves. Every other forge reads
+  `autofix-audit.<provider>.<host>.jsonl`, `autofix-dispatch-queue.<provider>.<host>.<slug>.jsonl`
+  and the issue cache under `store.provider_subpath(provider, host)` (pure path
+  composition; unlike `provider_root` it creates nothing, which a fold that promises to
+  write nothing needs). In the file name a host's `:` is written as `_`, never `-`: `-`
+  is a legal hostname character, so `gitlab.example:8443` and `gitlab.example-8443`
+  would otherwise share files. A GitLab repository can therefore never be served
+  another forge's, or another host's, rows.
+- **The GitLab queue slug is injective** (`_forge_repo_slug`): `/` -> `__`, a literal
+  `_` -> `_u`, anything else outside `[A-Za-z0-9-]` -> `_` plus two hex digits (so
+  `.` -> `_2e`). The dot is escaped because the filename is `<tag>.<slug>` and the tag
+  carries the host's own dots: `gitlab.example` + `team.prod/widget` and
+  `gitlab.example.team` + `prod/widget` would otherwise be one file. The GitHub slug
+  (`_repo_slug`) is left byte-identical because it is the GitHub jobs' on-disk
+  contract, and it is unambiguous there (a GitHub owner cannot contain `_` and there
+  are exactly two segments); nested GitLab group paths CAN carry `_` in any segment,
+  which is why `gitlab/proj/sub` and `gitlab__proj/sub` needed distinct files.
+- **These names are the writer contract, version 1.** An operator's job that appends
+  GitLab events or queue rows must produce exactly `audit_log_path(forge=...)` /
+  `queue_path(repo=..., forge=...)`; `test_issue_radar_pipeline_forge.py`
+  (`test_the_writer_contract_names_are_pinned`) pins the literal names. Once a job has
+  written them, a rename is a migration, not a refactor.
+- **Served forges:** public GitHub (no `provider`, or `github` with no host or a GitHub
+  host) and GitLab with an explicit `host`. Azure DevOps, GitHub Enterprise and a GitLab
+  request with no host are refused with `repo_provider_unsupported` (`_forge_params`).
+  A GitLab host is then put through the GitLab client's OWN rule,
+  `gitlab_transport.resolve_host` over `gitlab_client.allowed_hosts()` (`_servable_host`,
+  off the event loop), BEFORE the connected-repo gate and before any file is opened.
+  There is no second host grammar in the pipeline: gitlab.com always passes and never
+  appears in `dashboard.gitlab_hosts` (the coercer drops it), and any other host that
+  passes was already held to the coercer's label-and-port grammar, so it is safe as a
+  filename segment and an issue-cache directory. Removing a host from the allowlist
+  therefore takes effect on the Pipeline tab at once, exactly as on `glab` calls, and a
+  de-listed host answers `repo_provider_unsupported`. Authorization is unchanged: the
+  connected-repo gate (`store.is_repo_connected`) matches provider + host + owner +
+  repo. GitLab `owner` and `repo` are matched by anchored regexes built from the
+  transport's own segment grammar (`gitlab_transport.SEGMENT_RE` character class and
+  length, `MAX_NAMESPACE_SEGMENTS` depth), minus `.` and `..`, so a project the client
+  could connect (a segment starting with `_` or `.`, longer than a GitHub name) is
+  never refused here, no segment is empty, and nothing walks the cache tree.
+- **The client's unsupported-forge notice** (`GlobalPipelineView`) is one `ErrorNotice`
+  with the agent hand-off on for every refused forge: the value comes from a rejected
+  request, which is what `errors-use-error-notice` governs, and the page holds no draft
+  input. The headline is `apps.issueRadar.views.pipelineDashboard.forge_unsupported`
+  ("The triage pipeline isn't available for this repository"); the GitHub-only keys it
+  replaces, `github_only` and `github_only_hint`, were removed from every locale. What
+  varies is the hint under the shared headline, chosen from the connected
+  record's `provider` and `host`, which the host handed down: a GitLab repository with
+  a host gets the one step that clears the refusal, naming that host
+  (`forge_unsupported_gitlab_hint`, "Add {{host}} to dashboard.gitlab_hosts ..."); Azure
+  DevOps, GitHub Enterprise and a GitLab ref with no host get the reason and no config
+  step (`forge_unsupported_other_hint`: "The pipeline's scheduled jobs don't run against
+  this repository's host, so there is no pipeline data to show"; "scheduled jobs" names
+  the operator-run triage jobs the tab reads, as in the next bullet), because a fix
+  sentence pointing at a setting that cannot help is worse than none. The refusal body carries no forge; the client's
+  own identity decides the hint.
+- **No writer ships here, and the tab makes no forge call.** Kiro Crew ships no triage
+  jobs for any forge; an operator's own job appends events in the fold's schema to the
+  forge's audit file and the tab renders them from disk. The three routes never reach
+  `gh` or `glab`. (The crews lanes view beside this tab already folds every provider;
+  see "Crews on GitLab".)
+- **Still GitHub-only in this change: the CI Runs page** (`http_routes/ci_runs.py`,
+  `GET /ci-runs`). It lists each connected repo's most recent runs through
+  `github_client.list_recent_workflow_runs` and skips every other provider; GitLab has
+  no equivalent in the client yet (a project-wide recent-pipelines read), so that page
+  keeps listing GitHub repos alone until one is added. It is a separate surface from
+  the CI-failure watch below, which does cover GitLab.
+
+### CI-failure alerts by forge
+
+The background watcher's CI pass (`ci_watch.py`, see "Background Watcher") covers
+GitHub and GitLab repos (`CI_WATCH_PROVIDERS`); Azure stays excluded whatever its
+settings say. The per-repo setting, the `ci-failure` channel, the seeding rule, the
+settled-head recheck and the `ci-watch-state.json` record schema are the same on both
+forges; the record lives under the repo's own provider subtree (`store.provider_root`),
+so a same-slug project never shares a record, and the in-memory settled/failed-run tags
+carry provider and host for the same reason. Per cycle the pass dispatches by provider:
+
+| Step | GitHub | GitLab |
+|---|---|---|
+| Own open PRs with head commits | `github_client.search_viewer_open_pull_heads`: one GraphQL search per few repos, `author:@me`, paged to `CI_SEARCH_MAX_PAGES` | `gitlab_client.search_viewer_open_mr_heads(owner, repo, host=)`: one per project, `GET /projects/:id/merge_requests?scope=created_by_me&state=opened&order_by=updated_at&sort=desc&per_page=100&page=N`, paged to `CI_SEARCH_MAX_PAGES`; the signed-in user is read from `GET /user` once per host per cycle and passed in, and a row whose author is not that user is dropped |
+| Runs on a head commit | `github_client.list_pr_workflow_runs` (Actions runs) | `gitlab_client.list_pr_workflow_runs` (`GET .../pipelines?sha=`; the pipeline id is the run id, and GitLab's `failed` status is normalized to the shared `failure` conclusion). `pipelines?sha=` returns every pipeline on that commit, the branch pipeline and the merge-request pipeline alike, so one note can name two pipelines for one push |
+| Truncated listing | repo skipped for the cycle, warned | project skipped for the cycle, warned |
+| A re-run that fails again | announced again: a run's `attempt` climbs on each re-run | NOT announced: "Retry" reuses the pipeline id and rows carry no attempt, so an in-place retry is the same recorded failure; a new commit is announced, because its pipelines are new ids |
+| Note title / group key | `owner/repo#N` | `owner/repo!N`, grouped under `provider/host/owner/repo` so it never stacks onto a GitHub thread; `provider` and `host` ride in the note's meta |
+
+The toggle (`RepoSettings`, `notify_on_own_pr_ci_failure`) is shown for exactly these
+forges (`CI_WATCH_PROVIDERS` on both sides) and hidden on Azure, where nothing reads
+the setting; its copy takes the forge's words (`{{prs}}` = pull/merge requests,
+`{{ci}}` = GitHub Actions / GitLab pipelines, `{{cli}}` = gh / glab).
+
+`search_viewer_open_mr_heads` returns exactly the shape of its GitHub counterpart
+(`{"pulls": [{owner, repo, number, title, url, head_sha}], "truncated": [(owner, repo)]}`,
+`tests/test_gitlab.py::TestOwnMrHeads`). GitLab's REST API has no `@me` spelling for
+`author_username`; `scope=created_by_me` is its server-side "author is the token's
+user" filter. Every GitLab call goes through the existing `glab` transport: the host is
+checked against the operator's allowlist in the function itself, before any call,
+and again at the spawn boundary; the calls are GETs with no body, so nothing authored
+by a model or a user is sent and the token scope stays `api`, as for the rest of the
+GitLab client. Nothing is written to the forge. A listing or runs error skips that
+project for the cycle and leaves its record untouched; a failing GitLab host never
+stops the GitHub repos in the same pass, and vice versa.
 
 ## Background Watcher
 
@@ -1257,6 +1402,8 @@ An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new
 issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
+The same loop runs the crew sweep and the CI-failure pass (`ci_watch.py`) for the
+GitHub and GitLab repos that opted in; see "CI-failure alerts by forge".
 
 The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py`
 keeps the sweep and its unblock signals, and is a mirror façade

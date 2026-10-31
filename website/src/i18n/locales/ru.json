@@ -3000,8 +3000,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Какие метки означают, что задача всё ещё требует разбора. Определяет счётчик «Без разбора» в обзоре и очередь задач, требующих внимания.",
             "without_push_access_to": "Без прав на запись в",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Ваши правки остаются здесь, но не сохранятся. Если вы только что обновили Issue Radar, перезапустите бэкенд, чтобы стал доступен API настроек.",
-            "notify_me_when_ci_fails_on_my_pull_request": "Уведомлять, когда CI падает в одном из моих пул-реквестов в {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски GitHub Actions только в твоих собственных открытых пул-реквестах, через твой вход в gh. Отключи звук или измени приоритет в разделе Настройки → Уведомления."
+            "notify_me_when_ci_fails_on_my_pull_request": "Уведомлять, когда CI падает в одном из моих {{prs}} в {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Читает запуски {{ci}} только в твоих собственных открытых {{prs}}, через твой вход в {{cli}}. Отключи звук или измени приоритет в разделе Настройки → Уведомления."
           }
         },
         "tagging": {
@@ -3144,8 +3144,9 @@
           "see_all": "Смотреть все в GitLab"
         },
         "pipelineDashboard": {
-          "github_only": "Конвейер сортировки работает только с репозиториями GitHub",
-          "github_only_hint": "Его плановые задания читают и записывают только в GitHub, поэтому на этой панели нет данных конвейера для этого репозитория."
+          "forge_unsupported": "Конвейер триажа недоступен для этого репозитория",
+          "forge_unsupported_gitlab_hint": "Добавь {{host}} в dashboard.gitlab_hosts в ~/.kiro/crew/config.json, чтобы увидеть этот конвейер.",
+          "forge_unsupported_other_hint": "Запланированные задания конвейера не выполняются для хоста этого репозитория, поэтому данных конвейера для показа нет."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Недавние запуски GitHub Actions в подключённых репозиториях GitHub.",

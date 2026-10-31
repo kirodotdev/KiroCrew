@@ -2699,8 +2699,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "कौन से लेबल का अर्थ है कि किसी इश्यू को अभी ट्राइएज चाहिए। यह ओवरव्यू की “अनट्राइएज्ड” गिनती और ध्यान-चाहिए कतार को चलाता है।",
             "without_push_access_to": "इसमें पुश एक्सेस के बिना:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "आपके संपादन यहाँ रखे जाते हैं लेकिन बने नहीं रहेंगे। यदि आपने Issue Radar अभी अपडेट किया है, तो बैकएंड को पुनः आरंभ करें ताकि सेटिंग API उपलब्ध हो।",
-            "notify_me_when_ci_fails_on_my_pull_request": "जब {{repo}} में मेरे किसी pull request पर CI विफल हो, तो मुझे सूचित करो",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "तुम्हारे gh साइन-इन से केवल तुम्हारे अपने खुले pull requests पर GitHub Actions रन पढ़ता है। इसे सेटिंग्स → सूचनाएँ में म्यूट करो या इसकी प्राथमिकता बदलो।"
+            "notify_me_when_ci_fails_on_my_pull_request": "जब {{repo}} में मेरे किसी {{prs}} पर CI विफल हो, तो मुझे सूचित करो",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "तुम्हारे {{cli}} साइन-इन से केवल तुम्हारे अपने खुले {{prs}} पर {{ci}} रन पढ़ता है। इसे सेटिंग्स → सूचनाएँ में म्यूट करो या इसकी प्राथमिकता बदलो।"
           }
         },
         "tagging": {
@@ -3006,8 +3006,9 @@
           "see_all": "GitLab पर सब देखो"
         },
         "pipelineDashboard": {
-          "github_only": "ट्राइएज पाइपलाइन केवल GitHub रिपॉज़िटरी पर चलती है",
-          "github_only_hint": "इसके शेड्यूल किए गए जॉब केवल GitHub पढ़ते और लिखते हैं, इसलिए इस बोर्ड पर इस रिपॉज़िटरी का पाइपलाइन डेटा नहीं है।"
+          "forge_unsupported": "इस रिपॉज़िटरी के लिए ट्राइएज पाइपलाइन उपलब्ध नहीं है",
+          "forge_unsupported_gitlab_hint": "यह पाइपलाइन देखने के लिए {{host}} को ~/.kiro/crew/config.json में dashboard.gitlab_hosts में जोड़ो।",
+          "forge_unsupported_other_hint": "पाइपलाइन के शेड्यूल किए गए जॉब इस रिपॉजिटरी के होस्ट पर नहीं चलते, इसलिए दिखाने के लिए कोई पाइपलाइन डेटा नहीं है।"
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "तुम्हारी जुड़ी हुई GitHub रिपॉज़िटरी में हाल के GitHub Actions रन।",

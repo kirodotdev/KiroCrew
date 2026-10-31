@@ -732,8 +732,8 @@
             "role_read": "Read",
             "role_triage": "Triage",
             "role_write": "Write",
-            "notify_me_when_ci_fails_on_my_pull_request": "Notify me when CI fails on one of my pull requests in {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Reads GitHub Actions runs only on your own open pull requests, through your gh sign-in. Mute it or change its priority under Settings → Notifications."
+            "notify_me_when_ci_fails_on_my_pull_request": "Notify me when CI fails on one of my {{prs}} in {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Reads {{ci}} runs only on your own open {{prs}}, through your {{cli}} sign-in. Mute it or change its priority under Settings → Notifications."
           },
           "generalSettings": {
             "always_refetch": "Always refetch",
@@ -980,8 +980,9 @@
           "rail_filters": "Filters"
         },
         "pipelineDashboard": {
-          "github_only": "The triage pipeline runs on GitHub repositories",
-          "github_only_hint": "Its scheduled jobs read and write GitHub only, so this board has no pipeline data for this repository."
+          "forge_unsupported": "The triage pipeline isn't available for this repository",
+          "forge_unsupported_gitlab_hint": "Add {{host}} to dashboard.gitlab_hosts in ~/.kiro/crew/config.json to see this pipeline.",
+          "forge_unsupported_other_hint": "The pipeline's scheduled jobs don't run against this repository's host, so there is no pipeline data to show."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Recent GitHub Actions runs in your connected GitHub repositories.",
