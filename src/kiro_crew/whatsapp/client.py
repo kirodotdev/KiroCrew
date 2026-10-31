@@ -303,7 +303,8 @@ class WhatsAppClient:
         # Snapshot BEFORE NewAClient: constructing the client creates the sqlite
         # store (schema and all), so a `session_exists()` asked afterwards is
         # ALWAYS true and the first-boot pairing state would never be announced.
-        had_session = self.session_exists()
+        # Off the loop like the steps above: it is an exists() plus a stat().
+        had_session = await asyncio.to_thread(self.session_exists)
 
         # The first positional arg doubles as the sqlite session-store path
         # (ClientFactory passes its database_name through the same slot).
@@ -406,9 +407,8 @@ class WhatsAppClient:
                 logger.debug("whatsapp: stop() during disconnect failed", exc_info=True)
             self._client = None
         if self.state == STATE_CONNECTED:
-            self._set_state(
-                STATE_UNPAIRED if not self.session_exists() else STATE_ERROR, "disconnected"
-            )
+            has_session = await asyncio.to_thread(self.session_exists)
+            self._set_state(STATE_UNPAIRED if not has_session else STATE_ERROR, "disconnected")
 
     async def logout(self) -> None:
         """Unlink this device (invalidates the session DB server-side).
