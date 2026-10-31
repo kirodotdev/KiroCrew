@@ -133,6 +133,9 @@ def _security(args: argparse.Namespace) -> None:
             pass
         else:
             print("✅ No suspicious content in vector memory.")
+        if findings or mem_findings:
+            # Exit non-zero so a script can gate on the scan, like `policy validate`.
+            raise SystemExit(1)
     elif action == "events":
 
         limit = getattr(args, "limit", 20)
@@ -217,6 +220,7 @@ def _security(args: argparse.Namespace) -> None:
                 f"⚠️  Audit history UNVERIFIABLE: {result.reason}. "
                 f"Rotated segments were not checked — {live}."
             )
+            raise SystemExit(1)
         elif result.total == 0:
             print("No security events to verify.")
         elif result.total == result.valid:
@@ -226,6 +230,7 @@ def _security(args: argparse.Namespace) -> None:
                 f"⚠️  HMAC chain COMPROMISED: {result.valid}/{result.total} entries "
                 f"valid, {result.total - result.valid} tampered."
             )
+            raise SystemExit(1)
     else:
         print("Usage: kirocrew security {audit|deny-list|events|verify}")
 

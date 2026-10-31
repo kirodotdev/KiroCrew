@@ -347,7 +347,9 @@ class TestDefaultOnlyInstallIsUnchanged:
         _plant(resolve_store_path(DEFAULT_MEMORY_STORE), INJECTIONS[DEFAULT_MEMORY_STORE])
         (finding,) = security.scan_memory()
 
-        _security(argparse.Namespace(sec_action="audit"))
+        with pytest.raises(SystemExit) as exc:  # a finding fails the command
+            _security(argparse.Namespace(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
 
         assert f"  [episodic] {finding['key']}: {_WARNING}" in out.splitlines()
@@ -358,7 +360,9 @@ class TestDefaultOnlyInstallIsUnchanged:
         _plant(resolve_store_path(WORK), INJECTIONS[WORK])
         (finding,) = security.scan_memory()
 
-        _security(argparse.Namespace(sec_action="audit"))
+        with pytest.raises(SystemExit) as exc:  # a finding fails the command
+            _security(argparse.Namespace(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
 
         assert f"  [episodic] {finding['key']} (store {WORK}): {_WARNING}" in out.splitlines()
@@ -615,7 +619,9 @@ class TestAnUnreadableLessonsFileSurfaces:
         """The property that matters: the CLI must not print its clean tick."""
         self._make_unreadable(WORK)
 
-        _security(argparse.Namespace(sec_action="audit"))
+        with pytest.raises(SystemExit) as exc:  # a finding fails the command
+            _security(argparse.Namespace(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
 
         assert "No suspicious content in vector memory." not in out
@@ -668,7 +674,9 @@ class TestLessonsFindingsRenderLikeEveryOther:
         _write_lessons(WORK, _lesson_row(INJECTIONS[WORK]))
         global_finding, silo_finding = security.scan_memory()
 
-        _security(argparse.Namespace(sec_action="audit"))
+        with pytest.raises(SystemExit) as exc:  # a finding fails the command
+            _security(argparse.Namespace(sec_action="audit"))
+        assert exc.value.code == 1
         lines = capsys.readouterr().out.splitlines()
 
         kind = security.LESSON_FINDING_TYPE
@@ -703,7 +711,9 @@ class TestAnInstallWithNoNamedStoresIsUnchanged:
         assert list(findings[0]) == ["type", "key", "value", "warning", "store"]
         assert findings[0]["store"] == DEFAULT_MEMORY_STORE
 
-        _security(argparse.Namespace(sec_action="audit"))
+        with pytest.raises(SystemExit) as exc:  # a finding fails the command
+            _security(argparse.Namespace(sec_action="audit"))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert f"  [episodic] {findings[0]['key']}: {_WARNING}" in out.splitlines()
         assert "(store" not in out
