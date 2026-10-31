@@ -604,8 +604,99 @@ def reset_shared_backend() -> None:
 _SUPPORTED_PLATFORM_IDS: frozenset[str] = frozenset({PLATFORM_MACOS, PLATFORM_WINDOWS})
 
 
+#: ``computer_use.driver`` values (``config.integration_sections.ComputerUseConfig``).
+DRIVER_AUTO = "auto"
+DRIVER_AGENT_DESKTOP = "agent-desktop"
+DRIVER_NATIVE = "native"
+AGENT_DESKTOP_MISSING_REASON = (
+    "computer_use.driver is 'agent-desktop', but no agent-desktop executable was found "
+    "(install it from Settings -> Computer Use, or set computer_use.driver to 'auto')"
+)
+
+
+def _configured_driver() -> str:
+    """``computer_use.driver`` from config.json, ``auto`` when unreadable."""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        value = getattr(getattr(KiroCrewConfig.load(), "computer_use", None), "driver", "")
+    except Exception:
+        logger.debug("computer_use.driver unreadable; using auto", exc_info=True)
+        return DRIVER_AUTO
+    return value if value in (DRIVER_AGENT_DESKTOP, DRIVER_NATIVE) else DRIVER_AUTO
+
+
 def select_default_backend() -> ComputerUseBackend:
-    """Build the backend for THIS platform. The only platform branch in the package.
+    """The backend ``computer_use.driver`` selects for THIS platform.
+
+    ``native`` returns :func:`select_native_backend`. ``auto`` and ``agent-desktop``
+    wrap the native driver in :class:`agent_desktop_driver.AgentDesktopBackend` when
+    ``agent_desktop_locate.locate`` finds an executable that verifies against the
+    pinned digests; the native driver stays underneath for what agent-desktop cannot
+    do (pointer-free coordinate input, the window inventory, launch, capture). A
+    missing or unverified agent-desktop leaves ``auto`` on the native driver, and
+    makes ``agent-desktop`` a typed refusal rather than a silent downgrade.
+
+    Building the wrapper never raises: a driver that cannot load must disable one
+    capability, not crash the process that asked about it.
+    """
+    mode = _configured_driver()
+    native = select_native_backend()
+    if mode == DRIVER_NATIVE:
+        return native
+    try:
+        from kiro_crew.computer_use import agent_desktop_locate
+
+        binary = agent_desktop_locate.locate()
+        reason = agent_desktop_locate.verify(binary) if binary else AGENT_DESKTOP_MISSING_REASON
+    except Exception as exc:
+        binary, reason = None, DRIVER_IMPORT_REASON.format(detail=exc)
+    if reason or not binary:
+        if mode == DRIVER_AGENT_DESKTOP:
+            logger.warning("agent-desktop driver unavailable: %s", reason)
+            return UnsupportedBackend(native.platform_id, reason or AGENT_DESKTOP_MISSING_REASON)
+        return native
+    try:
+        from kiro_crew.computer_use.agent_desktop_driver import AgentDesktopBackend, state_home_for
+
+        return AgentDesktopBackend(
+            binary,
+            native.platform_id,
+            native=native if native.status().supported else None,
+            capture=_native_capture(),
+            state_home=state_home_for(str(agent_desktop_locate.INSTALL_PREFIX())),
+        )
+    except Exception as exc:
+        logger.warning("agent-desktop driver could not be built: %s", exc)
+        if mode == DRIVER_AGENT_DESKTOP:
+            return UnsupportedBackend(native.platform_id, DRIVER_IMPORT_REASON.format(detail=exc))
+        return native
+
+
+def _native_capture() -> "Callable[[Snapshot, int, int], Snapshot] | None":
+    """The native window capture for this platform, adapted to the driver's call shape.
+
+    Each capture function owns the secure-field and truncation floors (it returns the
+    snapshot unchanged when either holds), so the agent-desktop driver inherits them
+    by calling it rather than re-implementing them.
+    """
+    try:
+        if platform_compat.IS_MACOS:
+            from kiro_crew.computer_use import capture_macos as capture
+        elif platform_compat.IS_WINDOWS:
+            from kiro_crew.computer_use import capture_windows as capture  # type: ignore[no-redef]
+        else:
+            return None
+    except Exception:
+        logger.debug("native capture unavailable", exc_info=True)
+        return None
+    return lambda snap, max_px, quality: capture.capture_snapshot_image(
+        snap, max_px=max_px, quality=quality
+    )
+
+
+def select_native_backend() -> ComputerUseBackend:
+    """Build the native backend for THIS platform. The only platform branch in the package.
 
     Branches on ``platform_compat.IS_MACOS`` / ``IS_WINDOWS`` / ``IS_LINUX``
     (never a raw ``sys.platform`` read), which is also what lets a test flip a

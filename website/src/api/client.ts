@@ -240,6 +240,10 @@ export type {
   ComputerUsePermissions,
   ComputerUseConfigData,
   ComputerUseConfigSave,
+  AgentDesktopDriver,
+  AgentDesktopJob,
+  AgentDesktopPermission,
+  AgentDesktopStatus,
 } from './client/browserAndComputerUse'
 export type {
   DecisionsConsentData,

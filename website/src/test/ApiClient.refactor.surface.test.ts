@@ -182,6 +182,7 @@ const API_KEY_ORDER = [
   'postArtifactComment', 'replyArtifactComment', 'markCommentReview', 'resolveComment',
   'reopenComment', 'deleteArtifactComment', 'editArtifactComment',
   'getComputerUseConfig', 'saveComputerUseConfig',
+  'getAgentDesktopStatus', 'installAgentDesktop', 'openAgentDesktopPermissionsGuide',
   'getBrowserStatus', 'installBrowserHarness', 'testBrowser', 'disconnectBrowser',
   'getDecisionsConsent', 'getDecisionsProvider', 'getDecisionsLocalRuntime', 'saveDecisionsConsent', 'saveDecisionsScope',
   'saveDecisionsHistoryBudget', 'sendDecisionsFeedback', 'saveDecisionsProvider', 'removeDecisionsLocalModel', 'getSlackConfig', 'getSlackManifest', 'getSlackManifestStatus', 'saveSlackConfig',

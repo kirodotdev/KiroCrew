@@ -64,6 +64,10 @@ from kiro_crew import _facade_mirror
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # Beside the registered computer_use/agent_desktop_install.py sink:
+        # install_runner.py DEFINES `redact_install_output`, the redactor that sink and
+        # the install handler call; it emits nothing itself.
+        "computer_use/install_runner.py",
         # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.

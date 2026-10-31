@@ -719,7 +719,10 @@ class TestConfigSection:
         # Exhaustive on purpose: a new field here has to be a deliberate edit, so
         # nobody can add a security-relevant one to the agent-writable file by
         # accident. ``cursor_motion`` is purely visual (a drawn overlay), which is
-        # why it is allowed to live here rather than on the keystone.
+        # why it is allowed to live here rather than on the keystone. ``driver``
+        # chooses between two drivers that run behind the same chokepoint, and the
+        # agent-desktop one is accepted only as a digest-pinned build, so flipping it
+        # grants nothing.
         assert names == {
             "max_tree_nodes",
             "max_tree_depth",
@@ -728,6 +731,7 @@ class TestConfigSection:
             "screenshot_max_px",
             "screenshot_jpeg_quality",
             "cursor_motion",
+            "driver",
         }
 
     def test_section_is_known_and_round_trips(self, home):

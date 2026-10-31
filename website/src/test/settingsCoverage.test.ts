@@ -69,6 +69,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'BrowserEngineSection.tsx': "the Browser tab's Engine row under More (Harness and Chromium versions) with a Redownload action; status and one action, no setting of its own",
   'BrowserStatusCard.tsx': "the Browser tab's main card (browser, status dot, one state-dependent Install / Retry / Allow / Connect / Disconnect action); it reports the engine and holds no setting",
   'KiroHarnessFallbackNote.tsx': 'informational note ChatPanel mounts above the fallback pickers on a Kiro harness, zero controls',
+  'ComputerUseInstallStatus.tsx': "the Computer Use tab's agent-desktop driver card: install state, versions and grants plus Install and grant-guide action buttons; it acts on the installed driver and holds no setting",
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'CustomSoundsSection.tsx': 'the Notifications tab\'s add-a-sound form (name + tones) and the list of saved sounds; it creates entries rather than holding settings, and the sounds it saves are chosen through the per-category pickers NotificationsPanel already indexes',
