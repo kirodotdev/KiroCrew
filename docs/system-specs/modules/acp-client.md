@@ -2658,19 +2658,14 @@ terminal — so `PAGER=cat` / `-y` / the ssh options are PROPOSED via the hint t
 recovery nudge carries, not applied. Applying them at the harness is a
 follow-up seam, not a matcher's job.
 
-The ssh hint does not propose `BatchMode=yes`. Once case is folded, that option
-name contains a permission verb, so a proposed `ssh -o BatchMode=yes … /usr/…` is
-refused by the permission deny rows. The hint proposes `-o
+The ssh hint does not propose `BatchMode=yes`. The hint proposes `-o
 StrictHostKeyChecking=yes -o NumberOfPasswordPrompts=0 -o
 PasswordAuthentication=no -o KbdInteractiveAuthentication=no` instead, aimed at
 the prompts ssh_config(5) says BatchMode disables: password prompts and host key
 confirmation. The classifier still counts only `BatchMode` as proof that ssh will
 not prompt. A command using the proposed options stays prompt-shaped, because a
 FIDO/sk key PIN or an encrypted key's passphrase may still be asked for under
-them, and the conservative reading keeps the shorter stall window. A
-permission-row refusal whose command spells `BatchMode` carries remediation text
-naming the same options (`deny_guidance.SSH_BATCHMODE_REMEDIATION`). The rows
-themselves are unchanged, so that spelling is still refused.
+them, and the conservative reading keeps the shorter stall window.
 
 **Post-stall classification.** When the tool branch acts, the stall is a wait
 for input on exactly two grounds: the oracle's own `STUCK_INPUT` (Linux), or a
