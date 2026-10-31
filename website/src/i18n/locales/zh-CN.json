@@ -10369,6 +10369,25 @@
       "reason": "我不能运行这条命令，但你可以。",
       "run_unanswered": "终端没有响应，请把它复制到你电脑上的终端应用里。",
       "title": "请你自己运行"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}：{{title}}",
+      "item_label": "{{title}}，来自 {{app}}",
+      "item_from": "来自 {{app}}",
+      "text_unreadable": "无法读取这条消息，因此没有向 {{app}} 发送任何内容。请滚动回这条消息后重试。",
+      "menu_load_failed": "无法加载应用操作，此菜单可能缺少部分项目。",
+      "menu_load_retry": "重新加载应用操作",
+      "close": "关闭",
+      "loading": "正在打开 {{app}}…",
+      "load_failed": "{{app}} 没有打开。请稍后再试。",
+      "app_error": "{{app}} 没能完成这一步。",
+      "copy": "复制",
+      "copied": "已复制",
+      "copy_failed": "无法复制",
+      "open_host": "打开 {{host}}",
+      "grant_role_user": "{{title}}：你自己的消息，不只是回复",
+      "grant_role_assistant": "{{title}}：助手回复",
+      "grant_format_markdown": "{{title}}：消息的 Markdown 原文，含链接地址"
     }
   },
   "hooks": {
@@ -10750,6 +10769,7 @@
       "grants_reconsent_link_hosts": "链接主机：允许应用的悬停卡片看到聊天消息中指向这些站点的链接。",
       "grants_reconsent_link_patterns": "文本模式：允许应用的悬停卡片看到聊天中与这些模式匹配的文本。",
       "grants_reconsent_link_full_url": "完整链接地址：应用的悬停卡片还会看到链接中 ? 或 # 之后的部分，其中可能包含登录代码。",
+      "grants_reconsent_message_actions": "消息操作：应用在聊天消息上的菜单项能读取哪些内容。",
       "grants_approved": "已批准：{{entries}}。应用现在可以使用它们。"
     },
     "appPage": {

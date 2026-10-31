@@ -4205,7 +4205,11 @@ owner each:
   `apps/app_frame.py`). `resolve(app_name, id) -> (entry, process_backed, app) |
   None` says whether that entry is enabled and granted; the mint, the frame
   document and every fetch call it, off the event loop, so revoking an entry stops
-  its frame, its renewal and its next fetch. An unregistered point is a 404.
+  its frame, its renewal and its next fetch. An unregistered point is a 404. An
+  optional fourth argument, `admit(app_name, id, query) -> bool`, checks the one
+  act a mint is for (its query parameters other than `frame`) against the live
+  grant; a refusal is a 403 `not_granted`, audited. A point without one admits
+  every mint its resolver serves.
   `clean_entry` and `process_backed` are the helpers a resolver uses. The points
   this package ships register at the bottom of the module.
 - **One frame runtime.** The document is `_RUNTIME` (config island, sub-path mount,
@@ -4242,13 +4246,109 @@ owner each:
   trailing dot, leading dot kept) and `host_refusal` (not a hostname, a public
   suffix or a bare TLD), for every point that names hosts.
 - **Dashboard side** (`website/src/appFrame/`): `createSandboxedFrame` (the
-  attributes), `mintAppFrame(app, point, id, frameId?)` (accepts only an
+  attributes), `mintAppFrame(app, point, id, frameId?, request?)` (`request` goes
+  on the query for `admit`, never overriding `frame`; accepts only an
   `/app-frame/` URL), `loadMintedFrame` (`init` on the first load, teardown on a
   second), `postToFrame`, `renewIntervalMs`, `currentTheme`, and the tag and
   per-frame token bucket in `frameProtocol.ts`.
 
 Writers: `apps/app_frame.py`, `apps/app_hosts.py`, `apps/point_grants.py`,
 `website/src/appFrame/*`.
+
+## 18c. A message action gets one message, on one click
+
+`contributes.messageActions` is the second point on the §18b contract, and the
+first that hands an app conversation content. Its rule: the app gets the text of
+the ONE message the user clicked its row on, and nothing else. It registers
+`messageActions` with `register_frame_point` (resolver `_message_action_entry`:
+the app enabled, the action declared with a servable `entry`, and at least one
+role approved; admission `_admit_message_action`: every mint, renewals included,
+names the click's `role` and `format`, and is refused unless that role is in the
+live approved row and `markdown` is asked only where it is approved, so a tab
+holding an older grant sends nothing) and its `messageActions` grant family with
+`register_point_grants`.
+
+- **Trigger.** A row at the end of a finished message's More menu
+  (`messageActions/MessageActionMenuItems.tsx`), named with the action's title and
+  its app, for each approved action whose roles include the message's role. Never a
+  row button, so the footer's two-control limit holds; where app actions are what
+  opens More on a reply (no Quote, Speak or thread row), Raw view moves into More,
+  so the row stays Copy + More. Not on a streaming reply; on
+  a user message only where the row has a More menu (the surfaces that offer
+  Quote). The click is the consent for that one value; there is no further prompt.
+  While the app list has failed to load and none is held, a reply's More menu
+  shows an `ErrorNotice` in place of the rows, with a "Load app actions again"
+  retry and the agent hand-off, so a failure never reads as "no app declares one".
+- **What the frame gets.** `message.invoke { invocationId, deadlineMs, text,
+  format, truncated, role }`, sent by `HostInvocation.start`. With the default
+  `plain` format, `text` is the message's own text as the chat renders it, read
+  from the page at the click (`messageText.ts` `readMessageText`, over
+  `utils/visibleText.ts`). **The rule: plain text is the message's own text,
+  minus what the renderer hides; styling the author applied counts as content.**
+  So text a message's own markup or classes make faint, transparent, tiny or
+  zero-opacity is still the message's text and is sent, just as the `markdown`
+  format sends it; the plain format's promise is no link addresses and nothing
+  the renderer itself withholds, not a pixel-level reading of the screen:
+  - a link gives its label; an image, an SVG diagram, a canvas, an iframe or a
+    host button gives nothing; what the renderer hides (`hidden`, `aria-hidden`,
+    `sr-only`, `display: none`, `visibility: hidden`) gives nothing;
+  - a KaTeX formula gives its TeX annotation once (never the MathML copy and the
+    drawn glyphs both);
+  - a code block gives exactly its code (`CodeBlock` registers it with
+    `holdVisibleCodeText`, since the highlighter draws in a shadow root): no
+    language label, line numbers or button text. An open diff reads as its patch
+    the same way; a folded one shows only its chip, a button, so it gives nothing;
+  - a closed `<details>` gives its summary only; text clipped by a scroll box or
+    max-height is still the message and is read in full; a Raw-view toggle shows
+    source, so the source is what is read;
+  - only the message's own content roots are read: the elements the renderers
+    mark `data-message-body` (the `MarkdownRenderer` root and its Raw-view
+    `<pre>`, and a user message's plain-text and inline-mention segments). A
+    formula, like anything else, is read only when the renderer does not hide
+    it. The seed label, a quoted message's card, a knowledge
+    chip, attachment cards, paste chips and steer chips sit outside them and give
+    nothing. The sanitizer drops a content-minted `data-message-*` attribute, so
+    a message cannot mark a second root.
+  - every character of the content passes through unchanged: the walk emits
+    tokens, never in-band marker characters.
+  A bubble that is no longer on the page (scrolled out of a virtualized list),
+  has no content root (a host-drawn body) or shows no text gives `null`, and the popover refuses up front ("Couldn't read
+  this message…") without minting a frame or sending anything. With the approved
+  `markdown` format, `text` is the markdown source. Either is cut to `maxChars`
+  UTF-16 units without splitting a surrogate pair. Never another message, the
+  session key, title, folder, agent, model or project, attachments, tool calls,
+  the message id or position, or any DOM node: the app gets a string, and the
+  popover's anchor element stays on the dashboard side.
+- **Invocation.** The shared contract (§18b) with a 2-minute deadline. It also
+  ends when the popover closes (`invoke.cancel { reason: "closed" }`), when another
+  action opens (`other`), and when the action's grant, revision or role no longer
+  covers it (`revoked`). Copy and Open are drawn under the frame in host chrome;
+  Open shows the parsed host name. The popover's header names the app and the
+  action (`displaySafe`).
+- **Grant.** One staged family, `messageActions`, with entries
+  `<id>:role:assistant`, `<id>:role:user` and `<id>:format:markdown`
+  (`apps/message_action_grants.py`). Installing approves what is declared; an
+  update that adds a role, markdown or an action holds those entries back until
+  the owner approves them on the App Detail page, and the action meanwhile works
+  at its approved reach (no approved role: not offered; markdown waiting: plain
+  text). `maxChars` and `popover` are not grants. The app row's
+  `messageActionGrant { actions, staged }` is what the dashboard offers from
+  (`messageActionRegistry.ts` re-checks shape and caps and requires the action to
+  be both approved and still declared).
+- **Bounds.** At most 2 actions per app (`MAX_MESSAGE_ACTIONS_PER_APP`, mirrored);
+  `title` 1 to 40 UTF-16 units; `maxChars` 1 to 32,000; popover width 200 to 480
+  and max height 120 to 600. A wrong JSON type or an unknown key is refused at
+  install. No `ready` within 10 seconds shows "didn't open".
+- **No feature preview.** Nothing renders until an installed, admitted app
+  declares an action and its install is approved; no app shipped in this
+  repository declares one.
+
+Writers: `apps/app_frame.py` (the point), `apps/message_action_grants.py`,
+`apps/point_grants.py` (its family), `apps/manifest_contributes.py`
+(`MessageActionConfig`), `apps/manifest.py` (entry containment, signing),
+`apps/manager_lookup.py` (the row), `website/src/messageActions/*`,
+`website/src/pages/chat/{AssistantMessage,UserMessage}.tsx` (the rows),
+`website/src/pages/AppDetailPage.tsx` (the held-back entries).
 
 ## 19. Spec Builder's backend is composed by lifecycle owner
 

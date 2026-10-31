@@ -10530,6 +10530,25 @@
       "reason": "Ich kann das nicht ausführen, du aber schon.",
       "run_unanswered": "Das Terminal hat nicht geantwortet, also kopiere ihn in die Terminal-App auf deinem Computer.",
       "title": "Selbst ausführen"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, von {{app}}",
+      "item_from": "Von {{app}}",
+      "text_unreadable": "Diese Nachricht konnte nicht gelesen werden, daher wurde nichts an {{app}} gesendet. Scrolle zurück zu ihr und versuche es erneut.",
+      "menu_load_failed": "App-Aktionen konnten nicht geladen werden, daher fehlen in diesem Menü vielleicht einige.",
+      "menu_load_retry": "App-Aktionen erneut laden",
+      "close": "Schließen",
+      "loading": "{{app}} wird geöffnet…",
+      "load_failed": "{{app}} hat sich nicht geöffnet. Versuche es gleich noch einmal.",
+      "app_error": "{{app}} konnte das nicht abschließen.",
+      "copy": "Kopieren",
+      "copied": "Kopiert",
+      "copy_failed": "Kopieren fehlgeschlagen",
+      "open_host": "{{host}} öffnen",
+      "grant_role_user": "{{title}}: auch deine eigenen Nachrichten, nicht nur Antworten",
+      "grant_role_assistant": "{{title}}: Antworten des Assistenten",
+      "grant_format_markdown": "{{title}}: das Markdown der Nachricht, mit Linkadressen"
     }
   },
   "hooks": {
@@ -10913,6 +10932,7 @@
       "grants_reconsent_link_hosts": "Link-Hosts: erlaubt den Hover-Karten der App, Links zu diesen Seiten in Chat-Nachrichten zu sehen.",
       "grants_reconsent_link_patterns": "Textmuster: erlaubt den Hover-Karten der App, Chat-Text zu sehen, auf den diese Muster passen.",
       "grants_reconsent_link_full_url": "Vollständige Linkadressen: Die Hover-Karten der App sehen auch den Teil eines Links nach ? oder #, der einen Anmeldecode enthalten kann.",
+      "grants_reconsent_message_actions": "Nachrichtenaktionen: was die Menüeinträge der App an Chatnachrichten lesen können.",
       "grants_approved": "Genehmigt: {{entries}}. Die App kann sie jetzt nutzen."
     },
     "appPage": {

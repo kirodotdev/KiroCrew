@@ -10369,6 +10369,25 @@
       "reason": "저는 이걸 실행할 수 없지만, 직접 실행할 수는 있어요.",
       "run_unanswered": "터미널이 응답하지 않았으니 컴퓨터의 터미널 앱에 복사해 붙여 넣으세요.",
       "title": "직접 실행하세요"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, {{app}} 제공",
+      "item_from": "{{app}} 제공",
+      "text_unreadable": "이 메시지를 읽지 못해 {{app}}에 아무것도 보내지 않았습니다. 메시지로 다시 스크롤한 뒤 다시 시도하세요.",
+      "menu_load_failed": "앱 작업을 불러오지 못해 이 메뉴에 일부가 빠져 있을 수 있습니다.",
+      "menu_load_retry": "앱 작업 다시 불러오기",
+      "close": "닫기",
+      "loading": "{{app}} 여는 중…",
+      "load_failed": "{{app}}이(가) 열리지 않았습니다. 잠시 후 다시 시도하세요.",
+      "app_error": "{{app}}이(가) 이 작업을 마치지 못했습니다.",
+      "copy": "복사",
+      "copied": "복사됨",
+      "copy_failed": "복사할 수 없음",
+      "open_host": "{{host}} 열기",
+      "grant_role_user": "{{title}}: 답장뿐 아니라 내 메시지도",
+      "grant_role_assistant": "{{title}}: 어시스턴트 답장",
+      "grant_format_markdown": "{{title}}: 링크 주소를 포함한 메시지의 Markdown"
     }
   },
   "hooks": {
@@ -10750,6 +10769,7 @@
       "grants_reconsent_link_hosts": "링크 호스트: 앱의 호버 카드가 채팅 메시지에서 이 사이트로 가는 링크를 볼 수 있게 합니다.",
       "grants_reconsent_link_patterns": "텍스트 패턴: 앱의 호버 카드가 이 패턴과 일치하는 채팅 텍스트를 볼 수 있게 합니다.",
       "grants_reconsent_link_full_url": "전체 링크 주소: 앱의 호버 카드가 링크에서 ? 또는 # 뒤의 부분도 봅니다. 이 부분에는 로그인 코드가 들어 있을 수 있습니다.",
+      "grants_reconsent_message_actions": "메시지 작업: 채팅 메시지에 있는 앱 메뉴 항목이 읽을 수 있는 내용.",
       "grants_approved": "승인됨: {{entries}}. 이제 앱에서 사용할 수 있습니다."
     },
     "appPage": {

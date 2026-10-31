@@ -82,8 +82,13 @@ from kiro_crew.apps.link_preview_grants import (  # noqa: E402
     LINK_PREVIEW_GRANT_FAMILIES,
     link_preview_grant_entries,
 )
+from kiro_crew.apps.message_action_grants import (  # noqa: E402
+    MESSAGE_ACTION_GRANT_FAMILIES,
+    message_action_grant_entries,
+)
 
 register_point_grants(LINK_PREVIEW_GRANT_FAMILIES, link_preview_grant_entries)
+register_point_grants(MESSAGE_ACTION_GRANT_FAMILIES, message_action_grant_entries)
 
 
 __all__ = [

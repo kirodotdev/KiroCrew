@@ -10691,6 +10691,25 @@
       "reason": "Eu não posso executar isto, mas você pode.",
       "run_unanswered": "O terminal não respondeu, então copie para o aplicativo Terminal do seu computador.",
       "title": "Execute você mesmo"
+    },
+    "messageActions": {
+      "popover_label": "{{app}}: {{title}}",
+      "item_label": "{{title}}, de {{app}}",
+      "item_from": "De {{app}}",
+      "text_unreadable": "Não foi possível ler esta mensagem, então nada foi enviado para {{app}}. Role de volta até ela e tente de novo.",
+      "menu_load_failed": "Não foi possível carregar as ações de apps, então podem faltar algumas neste menu.",
+      "menu_load_retry": "Carregar as ações de apps de novo",
+      "close": "Fechar",
+      "loading": "Abrindo {{app}}…",
+      "load_failed": "{{app}} não abriu. Tente de novo em instantes.",
+      "app_error": "{{app}} não conseguiu concluir isto.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "copy_failed": "Não foi possível copiar",
+      "open_host": "Abrir {{host}}",
+      "grant_role_user": "{{title}}: também suas próprias mensagens, não só as respostas",
+      "grant_role_assistant": "{{title}}: respostas do assistente",
+      "grant_format_markdown": "{{title}}: o Markdown da mensagem, com os endereços dos links"
     }
   },
   "hooks": {
@@ -11076,6 +11095,7 @@
       "grants_reconsent_link_hosts": "Hosts de links: permite que os cartões do app vejam links para estes sites nas mensagens do chat.",
       "grants_reconsent_link_patterns": "Padrões de texto: permite que os cartões do app vejam o texto do chat que corresponde a estes padrões.",
       "grants_reconsent_link_full_url": "Endereços de link completos: os cartões do app também veem a parte de um link depois de ? ou #, que pode conter um código de login.",
+      "grants_reconsent_message_actions": "Ações de mensagem: o que os itens de menu do app nas mensagens do chat podem ler.",
       "grants_approved": "Aprovadas: {{entries}}. O app já pode usá-las."
     },
     "appPage": {

@@ -1,6 +1,7 @@
 """App frames: the one sandboxed document model every frame-backed contribution point uses.
 
-A point that draws app UI beside the conversation (today ``contributes.linkPreviews``)
+A point that draws app UI beside the conversation (``contributes.linkPreviews``,
+``contributes.messageActions``)
 never runs app code in the dashboard's document. It runs in an iframe that is
 ``sandbox="allow-scripts"`` with no ``allow-same-origin``, so its origin is opaque:
 it cannot read the dashboard's DOM, its cookies or its token, and the dashboard
@@ -59,7 +60,7 @@ import json
 import logging
 import re
 import secrets as _secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -67,6 +68,7 @@ from aiohttp import web
 
 from kiro_crew.apps.link_preview_grants import link_preview_grant_row
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, resolve_mcp_backend_url
+from kiro_crew.apps.message_action_grants import approved_message_action
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -101,6 +103,11 @@ FrameEntry = tuple[str, bool, str]
 #: ``resolve(app_name, point_id)``: the served entry of an enabled, granted point
 #: entry, or None. Called on every mint, frame and fetch, off the event loop.
 Resolver = Callable[[str, str], "FrameEntry | None"]
+#: ``admit(app_name, point_id, query)``: whether THIS mint's request (its query
+#: parameters, e.g. the role and format of the one act it is for) is within the
+#: live grant. Called on every mint, off the event loop, after ``resolve`` found
+#: the entry; a point without one admits every mint its resolver serves.
+Admit = Callable[[str, str, Mapping[str, str]], bool]
 
 
 @dataclass(frozen=True)
@@ -111,17 +118,30 @@ class FramePoint:
     resolve: Resolver
     #: JavaScript that defines ``const POINT = { ctx, accepts, missing, message }``.
     script: str
+    admit: Admit | None = None
 
 
 _POINTS: dict[str, FramePoint] = {}
 _signers: dict[str, PathTokenSigner] = {}
 
 
-def register_frame_point(name: str, resolve: Resolver, script: str) -> None:
-    """Register a point's resolver and its frame script. Registering a name again replaces it."""
+def register_frame_point(
+    name: str, resolve: Resolver, script: str, admit: Admit | None = None
+) -> None:
+    """Register a point's resolver, frame script and optional per-mint admission.
+
+    Registering a name again replaces it.
+    """
     if not POINT_RE.fullmatch(name):
         raise ValueError(f"not a point name: {name!r}")
-    _POINTS[name] = FramePoint(name=name, resolve=resolve, script=script)
+    _POINTS[name] = FramePoint(name=name, resolve=resolve, script=script, admit=admit)
+
+
+def _point_admits(name: str, point: str, point_id: str, query: Mapping[str, str]) -> bool:
+    registered = _POINTS.get(point)
+    if registered is None or registered.admit is None:
+        return True
+    return registered.admit(name, point_id, query)
 
 
 def registered_frame_points() -> tuple[str, ...]:
@@ -250,6 +270,15 @@ async def handle_app_frame_mint(request: web.Request) -> web.Response:
         return web.json_response(
             {"code": "no_app_frame", "error": f"app {name!r} has no enabled {key!r} frame"},
             status=404,
+        )
+    # The act this mint is for, checked against the live grant: a tab holding an
+    # older grant cannot mint for a reach the owner has since taken back.
+    query = {k: v for k, v in request.query.items() if k != "frame"}
+    if not await asyncio.to_thread(_point_admits, name, point, point_id, query):
+        _audit("app_frame_mint", "denied", name, "request outside the live grant", key)
+        return web.json_response(
+            {"code": "not_granted", "error": f"app {name!r} is not approved for this request"},
+            status=403,
         )
     client = request.remote or ""
     # A renewal names the frame it is for, so the new capability is that frame's.
@@ -741,8 +770,78 @@ const POINT = {
 #: The link-preview frame's whole bootstrap; one name for its tests.
 _BOOTSTRAP = _RUNTIME + _INVOCATION + _LINK_PREVIEW_POINT
 
+
+# ---------------------------------------------------------------------------
+# Point: messageActions
+# ---------------------------------------------------------------------------
+
+
+def _message_action_entry(name: str, action_id: str) -> FrameEntry | None:
+    """One message action's served entry: declared, and at least one role approved."""
+    if not is_app_enabled(name):
+        return None
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.name != name:
+        return None
+    action = next((a for a in manifest.contributes.messageActions if a.id == action_id), None)
+    entry = clean_entry(action.entry) if action is not None else None
+    if entry is None:
+        return None
+    # No approved role: the action is not offered, so its frame is not served.
+    if approved_message_action(name, manifest, action_id) is None:
+        return None
+    return entry, process_backed(manifest), manifest.name
+
+
+def _resolve_message_action(name: str, action_id: str) -> FrameEntry | None:
+    return _message_action_entry(name, action_id)
+
+
+def _admit_message_action(name: str, action_id: str, query: Mapping[str, str]) -> bool:
+    """Whether the click's ``role`` and ``format`` are within the live approved row.
+
+    Every mint names both: a role outside the approved row, or ``markdown`` where
+    only plain is approved, is refused before the host sends any text.
+    """
+    role = query.get("role")
+    fmt = query.get("format")
+    if role not in ("assistant", "user") or fmt not in ("plain", "markdown"):
+        return False
+    manifest = get_app_manifest(name)
+    if manifest is None or manifest.name != name:
+        return False
+    row = approved_message_action(name, manifest, action_id)
+    if row is None or role not in row.get("roles", ()):
+        return False
+    return fmt == "plain" or row.get("format") == "markdown"
+
+
+# A message action. One invocation per click: the host's `message.invoke` carries
+# the one message's text and the invocation id, and the handler gets that
+# invocation's frozen controls (the shared contract in `_INVOCATION`).
+_MESSAGE_ACTION_POINT = r"""
+const POINT = {
+  ctx: { appName: CFG.app, theme: () => CFG.theme, fetch: capFetch },
+  accepts: (h) => !!h && typeof h.invoke === 'function',
+  missing: 'activate(ctx) returned no handler with invoke()',
+  message(m) {
+    if (m.type !== 'message.invoke' || typeof m.invocationId !== 'string') return;
+    const message = {
+      text: typeof m.text === 'string' ? m.text : '',
+      format: m.format === 'markdown' ? 'markdown' : 'plain',
+      truncated: m.truncated === true,
+      role: m.role === 'user' ? 'user' : 'assistant',
+    };
+    call('invoke', message, invocationControls(m.invocationId));
+  },
+};
+"""
+
 # Registered points. A new frame-backed point adds its resolver and script here.
 register_frame_point("linkPreviews", _resolve_link_preview, _LINK_PREVIEW_POINT)
+register_frame_point(
+    "messageActions", _resolve_message_action, _MESSAGE_ACTION_POINT, _admit_message_action
+)
 
 
 __all__: list[str] = [
@@ -751,6 +850,7 @@ __all__: list[str] = [
     "FRAME_PREFIX",
     "POINT_ID_RE",
     "POINT_RE",
+    "Admit",
     "FrameEntry",
     "FramePoint",
     "Resolver",
