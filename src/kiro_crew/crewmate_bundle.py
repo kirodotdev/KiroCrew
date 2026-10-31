@@ -30,7 +30,16 @@ from typing import Any
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_carried
 
-CREWMATE_FORMAT = "kirocrew.crewmate"
+#: The format an export writes. Its manifest entry is :data:`MANIFEST_ENTRY`.
+CREWMATE_FORMAT = "kirocrew.crewjam"
+MANIFEST_ENTRY = "crewjam.json"
+#: The format and manifest entry of a file made before the Crew Jam rename. The
+#: reader still takes them, through the same checks, so old files keep importing.
+LEGACY_CREWMATE_FORMAT = "kirocrew.crewmate"
+LEGACY_MANIFEST_ENTRY = "crewmate.json"
+CREWMATE_FORMATS = (CREWMATE_FORMAT, LEGACY_CREWMATE_FORMAT)
+#: The file extension an export writes (an import also takes ``.crewmate``).
+FILE_SUFFIX = ".crewjam"
 
 #: §5.2 caps.
 FILE_MAX_BYTES = 8 * 1024 * 1024
@@ -53,7 +62,8 @@ _TEMPLATE_ID_RE = re.compile(r"^builtin:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 SKILL_FILE = "SKILL.md"
 _JSON_ENTRIES = {
-    "crewmate.json": "crewmate",
+    MANIFEST_ENTRY: "crewmate",
+    LEGACY_MANIFEST_ENTRY: "crewmate",
     "agent.json": "agent",
     "rules.json": "rules",
     "goals.json": "goals",
@@ -188,6 +198,9 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
             if not _is_plain_file(info):
                 raise _refuse("invalid_entry", f"'{info.filename[:64]}' is not a plain file")
             if kind == "json":
+                if _JSON_ENTRIES[where[0]] in parts:
+                    # crewjam.json and crewmate.json are one part; a file holds one.
+                    raise _refuse("invalid_bundle", "the file holds more than one manifest")
                 parts[_JSON_ENTRIES[where[0]]] = _json_part(
                     where[0], _read_entry(zf, info, JSON_MAX_BYTES)
                 )
@@ -210,7 +223,7 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
             total += blob_len
             if total > FILE_MAX_BYTES:
                 raise _refuse("too_large", "the file unpacks to over 8 MiB")
-    for required in ("crewmate.json", "agent.json"):
+    for required in (MANIFEST_ENTRY, "agent.json"):
         if _JSON_ENTRIES[required] not in parts:
             raise _refuse("invalid_bundle", f"the file has no {required}")
     if avatar is not None:
@@ -330,7 +343,7 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
     catalog._only(bundle, _BUNDLE_KEYS, "bundle")
     m = _bundle_part(bundle, "crewmate", dict, required=True)
     catalog._only(m, _MANIFEST_KEYS, "crewmate.json")
-    if m.get("format") != CREWMATE_FORMAT:
+    if m.get("format") not in CREWMATE_FORMATS:
         raise _refuse("invalid_bundle", "this is not a .crewmate file")
     version = m.get("formatVersion")
     if type(version) is not int or version < 1:

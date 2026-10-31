@@ -297,7 +297,7 @@ def test_a_name_or_description_the_importer_refuses_never_reaches_a_file() -> No
     assert err.value.code == "invalid_name"
     plan, entries = _build(_sources(description="d" * 1001))
     assert ("description", "", ex.REASON_TOO_LARGE) in _reasons(plan)
-    assert json.loads(entries["crewmate.json"])["description"] == ""
+    assert json.loads(entries["crewjam.json"])["description"] == ""
     # The reader refuses a carriage return in these two; each stays home on its own.
     plan, entries = _build(_sources(description="one\r\ntwo", rules="a\r\nb"))
     assert ("description", "", ex.REASON_CONTROL_CHARS) in _reasons(plan)
@@ -594,7 +594,7 @@ def test_a_skill_the_sender_wrote_travels_with_every_file(tmp_path: Path) -> Non
     plan, entries = _build(_sources(skills_root=root))
     assert entries["skills/branch-triage/SKILL.md"] == b"# Triage\n"
     assert entries["skills/branch-triage/helper.py"] == b"print('hi')\r\n"
-    assert json.loads(entries["crewmate.json"])["skills"] == [
+    assert json.loads(entries["crewjam.json"])["skills"] == [
         {"name": "branch-triage", "source": "bundled"}
     ]
     assert ex.preview(plan)["skills"][0]["files"]["helper.py"] == "print('hi')\r\n"
@@ -697,7 +697,7 @@ def test_the_file_stays_inside_the_entry_cap(tmp_path: Path) -> None:
     assert len(entries) <= ex.MAX_ENTRIES
     assert any(i.reason == ex.REASON_BUNDLE_FULL for i in plan.left_out)
     names = {n.split("/")[1] for n in entries if n.startswith("skills/")}
-    assert {s["name"] for s in json.loads(entries["crewmate.json"])["skills"]} == names
+    assert {s["name"] for s in json.loads(entries["crewjam.json"])["skills"]} == names
 
 
 # ── lessons ──
@@ -746,11 +746,11 @@ def test_lessons_with_an_ordinary_link_still_travel() -> None:
 
 def test_a_user_template_is_not_in_the_file_and_the_view_says_so() -> None:
     plan, entries = _build(_sources(dashboard_custom=True))
-    manifest = json.loads(entries["crewmate.json"])
+    manifest = json.loads(entries["crewjam.json"])
     assert "dashboardTemplate" not in manifest and b"user:" not in _all_bytes(entries)
     assert ("dashboard", "", ex.REASON_CUSTOM_TEMPLATE) in _reasons(plan)
     plan, entries = _build(_sources(dashboard_builtin="builtin:release-board"))
-    assert json.loads(entries["crewmate.json"])["dashboardTemplate"] == "builtin:release-board"
+    assert json.loads(entries["crewjam.json"])["dashboardTemplate"] == "builtin:release-board"
 
 
 def test_the_dashboard_reader_turns_only_a_shipped_template_into_a_builtin_id(
@@ -796,7 +796,7 @@ def test_an_uploaded_avatar_travels_and_an_oversized_one_does_not() -> None:
     _plan, entries = _build(
         _sources(avatar={"kind": "ghost", "traits": {"eyes": "round", "hat": True}})
     )
-    assert json.loads(entries["crewmate.json"])["avatarTraits"] == {"eyes": "round", "hat": True}
+    assert json.loads(entries["crewjam.json"])["avatarTraits"] == {"eyes": "round", "hat": True}
 
 
 @pytest.mark.parametrize("kind", ["image", "ghost"])
@@ -851,7 +851,7 @@ def test_preview_names_the_avatar_the_file_carries(
     plan, entries = _build(_sources(avatar=avatar, avatar_image=_png() if image else None))
     assert ex.preview(plan)["avatar"] == kind
     assert ("avatar.png" in entries) is (kind == "image")
-    assert ("avatarTraits" in json.loads(entries["crewmate.json"])) is (kind == "ghost")
+    assert ("avatarTraits" in json.loads(entries["crewjam.json"])) is (kind == "ghost")
 
 
 def test_picture_metadata_never_travels() -> None:
@@ -960,13 +960,13 @@ def test_schedules_and_their_scripts_stay_inside_the_entry_cap() -> None:
 
 def test_a_non_ascii_name_is_utf8_in_the_file_and_in_the_download_name() -> None:
     plan, entries = _build(_sources(name="发布队长", description="Ünïcode ✓"))
-    manifest = json.loads(entries["crewmate.json"].decode("utf-8"))
+    manifest = json.loads(entries["crewjam.json"].decode("utf-8"))
     assert manifest["name"] == "发布队长" and manifest["description"] == "Ünïcode ✓"
-    assert "发布队长".encode("utf-8") in entries["crewmate.json"]
+    assert "发布队长".encode("utf-8") in entries["crewjam.json"]
     header = ex.content_disposition(plan.name)
     header.encode("latin-1")  # an HTTP header value must be latin-1 safe
-    assert 'filename="crewmate.crewmate"' in header
-    assert "filename*=UTF-8''%E5%8F%91%E5%B8%83%E9%98%9F%E9%95%BF.crewmate" in header
+    assert 'filename="crewmate.crewjam"' in header
+    assert "filename*=UTF-8''%E5%8F%91%E5%B8%83%E9%98%9F%E9%95%BF.crewjam" in header
     assert all(n.isascii() for n in entries)
 
 
@@ -1150,11 +1150,11 @@ def test_the_owner_downloads_a_file_and_nothing_is_written_on_the_server(seeded:
     assert view["goals"]["longTerm"] == "Ship release notes"
     status, headers, body = _call(seeded, {"member": MEMBER}, "owner", jobs)
     assert status == 200
-    assert headers["Content-Disposition"].startswith('attachment; filename="Scout.crewmate"')
+    assert headers["Content-Disposition"].startswith('attachment; filename="Scout.crewjam"')
     assert headers["Cache-Control"] == "no-store"
     entries = _zip(body)
     assert {
-        "crewmate.json",
+        "crewjam.json",
         "agent.json",
         "goals.json",
         "crons.json",
