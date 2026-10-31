@@ -177,6 +177,7 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     coerce_refusal_fallback_model,
     coerce_role_efforts,
     coerce_role_models,
+    normalize_acp_failover,
     normalize_agent_model,
     safe_imported,
     worker_session_defaults,
