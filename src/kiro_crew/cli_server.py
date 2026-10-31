@@ -261,6 +261,17 @@ async def _gateway(
             "Activated mise at gateway start (updated %s)", ", ".join(_mise_changed)
         )
 
+    # Point the Claude Code harness at a Crew-owned, isolated config root
+    # (``~/.claudecrew``) unless the operator set ``CLAUDE_CONFIG_DIR`` themselves.
+    # Setting it in the gateway process environment is the single lever: the
+    # harness child inherits it at spawn, and the sandbox floor / read gate read
+    # the live value when they anchor the credential leaf. This closes the
+    # inherited-``~/.claude`` permissions.allow bypass documented in
+    # docs/system-specs/modules/claude-code-provider.md (its "Known gap").
+    from kiro_crew.acp.harness import claude_config_root
+
+    claude_config_root.apply_to_environ(os.environ)
+
     # Ensure Node >= 16 so frontend builds work (avoids legacy fallback).
     from kiro_crew.cli import _ensure_node, _node_ok  # circular import: cli -> cli_server -> cli
 

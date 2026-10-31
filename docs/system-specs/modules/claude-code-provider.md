@@ -624,11 +624,9 @@ environment, which is how a
 caller-supplied `CLAUDE_CONFIG_DIR` reaches the adapter
 (`test_spawn_forwards_claude_config_dir_from_extra_env`). The gateway contract is
 to forward inherited `ANTHROPIC_*` and `CLAUDE_CODE_*` variables to the harness
-child, so the spawn scrub list must not grow to cover either namespace. The public
-core does not set `CLAUDE_CONFIG_DIR` itself: an isolated CC config root (seeding a
-Crew-owned directory from the user's `~/.claude`, keeping credentials and models
-while stripping inherited `permissions` that would pre-approve past Crew's gate)
-is **not implemented here** — see the known gap below.
+child, so the spawn scrub list must not grow to cover either namespace. The core
+DOES set `CLAUDE_CONFIG_DIR` now, at gateway boot, to an isolated Crew-owned root
+(`acp/harness/claude_config_root.py`) — see "Isolated config root" below.
 
 ### Native subagents (the Agent tool)
 
@@ -715,21 +713,57 @@ opens a sensitive path, since a deny rule outranks both from any source. A launc
 does not start the session.
 Detail: [side.md](side.md), "On claude the confinement is the session's own options".
 
-### Known gap: the user's global `~/.claude` is inherited
+### Isolated config root
 
-With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the
-user's real `~/.claude`. Project-scope `settings.local.json` outranks it for
-`defaultMode`, but `permissions.allow` entries **merge** rather than being
-overridden — so a user whose global settings pre-approve a tool family gets those
-calls auto-approved by Claude's own engine, which never calls `canUseTool` and so
-never reaches Crew's gate. A project's own `settings.local.json` is not part of
-this gap: a session that carries Crew's tools either governs a Crew seed (authored or
-shared) or excludes the project tier from its setting sources. Its checked-in `.claude/settings.json` is part of the
-gap only for a session whose file Crew authored. Both are the same hazard the "no gate on pre-approved calls"
-section above describes, arriving through inherited config. Closing it means an
-isolated config root, which is a separate change: it has to carry credentials
-across (or CC cannot authenticate at all) while dropping exactly the `permissions`
-keys that bypass the gate.
+The core sets `CLAUDE_CONFIG_DIR` to a Crew-owned root (`~/.claudecrew` by
+default; `KIROCREW_CLAUDE_CONFIG_DIR` relocates it) at gateway boot, unless the
+operator set `CLAUDE_CONFIG_DIR` themselves — the same "only when unset" rule the
+adapter uses for `CLAUDE_CODE_EXECUTABLE`, so an operator who points the adapter
+elsewhere always wins. `claude_config_root.apply_to_environ` owns the one
+assignment, and setting it on the GATEWAY process environment is the single lever:
+the harness child inherits it at spawn, and the sandbox floor / read gate read the
+live value when they anchor the credential leaf, so one assignment relocates both
+the adapter's config and the fence that guards its token. The credential fence
+needs no new entry — `.claude/.credentials.json` is a declared credential leaf
+whose `home_override_env_vars` already names `CLAUDE_CONFIG_DIR`, so
+`override_anchored_leaves` re-anchors it under the root; the home-relative
+`~/.claude/.credentials.json` stays fenced too, so the override only ADDS the new
+location and widens nothing.
+
+The root is seeded ONCE, idempotently, from the operator's own `~/.claude`:
+`settings.json` is copied with the whole `permissions` key (and any top-level
+`defaultMode`) stripped, so model/env/theme preferences carry while no inherited
+`allow` or `acceptEdits` rule does, and an existing root `settings.json` is left
+untouched. That is what closes the inherited-`~/.claude` bypass below at its
+source: the user tier a Claude session loads no longer carries any allow rule, so
+every tool call falls through to `canUseTool` and Crew's gate. Where the
+credential store is a FILE (Linux / WSL) the `.credentials.json` is copied so the
+session authenticates without a fresh sign-in; on macOS the credential lives in
+the login Keychain keyed by the config directory, so it cannot be copied and the
+operator signs in once with `claude` while `CLAUDE_CONFIG_DIR` points at the root
+(a boot log line says so). Covered by `test_claude_config_root.py`.
+
+What this does NOT yet do is apply the OS credential MASK to a foreign Claude
+child — this harness stays outside `tool_gate.ENFORCED_ROUTINGS`, so
+`adapter_hidden_credential_dirs` returns empty for it (host_auth declares no
+`adapter_own_leaves`), and the other crew credential leaves are reachable to a
+spawned shell through an `open()` that never routes through the tool gate. That is
+the second half of WS-B, tracked separately.
+
+### Known gap: a user-tier `settings.json` under the root is still read
+
+The isolated root's `settings.json` is Crew-seeded with no `permissions`, but the
+adapter still loads the `user` tier from that root. A `permissions.allow` an
+operator later writes into `~/.claudecrew/settings.json` by hand would merge and
+pre-approve past Crew's gate the same way the inherited global did — Claude's own
+engine never calls `canUseTool` for a pre-approved tool. The difference from
+before is that the root is Crew-owned and starts clean, so this is now an operator
+editing their own Crew config rather than an inherited surprise from a tool they
+run separately. A project's own `settings.local.json` is not part of this gap: a
+session that carries Crew's tools either governs a Crew seed (authored or shared)
+or excludes the project tier from its setting sources. Closing the user tier too
+means re-reading and stripping it per spawn, which is tracked with the enforced-
+routing half above.
 
 ### Standing rule
 
