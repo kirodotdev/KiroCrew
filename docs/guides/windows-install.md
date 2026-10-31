@@ -699,9 +699,16 @@ POSIX fleet too, where the Windows branches never execute.
 
 `session.watchdog_rss_max_mb` (default `4096`) recycles a
 non-busy session whose process tree exceeds the ceiling. Its measurement is
-`/proc`-based on POSIX. On Windows `get_session_rss_mb` delegates to
-`platform_compat.proc_rss_tree_mb_for_pid`; a `/proc` read there would measure
-every tree as 0 MiB, so the ceiling could never be reached.
+`/proc`-based on POSIX. On Windows `get_session_rss_mb` reads both
+`platform_compat.proc_rss_tree_mb_for_pid` and
+`platform_compat.proc_private_tree_mb_for_pid` and returns the larger; a `/proc`
+read there would measure every tree as 0 MiB, and a working-set-only read misses
+the committed-but-never-resident leak that exhausts a Windows host's commit
+charge (a 10 GB process reporting a ~120 MB working set is the measured case).
+Handle counts are watched separately: a tree with more than 50,000 handles in
+one process logs a warning (without recycling) whether or not the ceiling is
+set, and `kirocrew doctor` prints the gateway tree's committed bytes and busiest
+handle count so a leak is visible before the ceiling fires.
 
 That helper, **not** a Toolhelp parent->child walk, is the only safe route.
 `th32ParentProcessID` is never cleared when a parent exits and Windows recycles
