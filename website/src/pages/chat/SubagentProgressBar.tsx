@@ -132,6 +132,16 @@ function StallText({ tool, idleSecs: idleBase, stalledAt }: { tool: string; idle
  * figure: an empty slot where a number belongs reads as "this agent has not
  * started", while `--` reads as "the elapsed time is not known".
  */
+/** A histogram count: the digit for the eye, the words for a screen reader. */
+function HistogramCount({ n, label }: { n: number; label: string }) {
+  return (
+    <>
+      <span aria-hidden="true">{n}</span>
+      <span className="sr-only">{label}</span>
+    </>
+  )
+}
+
 function RowElapsed({ startedAt, assumed, toolCount }: { startedAt: number; assumed?: boolean; toolCount?: number }) {
   const elapsed = useSecondClock(now => Math.max(0, Math.round((now - startedAt) / 1000)), !assumed)
   return (
@@ -368,14 +378,16 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
           <Bot size={14} className="text-accent shrink-0" />
           {/* Histogram header: whole-wave counts so mid-wave failures stay visible */}
           <span className="text-text-strong font-medium flex items-center gap-2 min-w-0" data-testid="subagent-histogram">
-            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> {running}</span>
-            {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> {awaiting}</span>}
-            {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> {unresolved}</span>}
-            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> {queued}</span>}
-            {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok"><CheckCircle size={12} /> {counts.done}</span>}
-            {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger"><AlertCircle size={12} /> {counts.failed}</span>}
-            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> {counts.stopped}</span>}
-            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> {counts.stalled}</span>}
+            {/* Icons are aria-hidden (lucide's default): each count hides its
+                bare digit and carries sr-only words instead. */}
+            <span className="inline-flex items-center gap-1" data-testid="subagent-running-count"><Loader2 size={12} className="animate-spin text-accent" /> <HistogramCount n={running} label={i18nT('pages.chat.subagentProgressBar.chip_running', { count: running })} /></span>
+            {awaiting > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-awaiting-count" title={i18nT('pages.chat.subagentProgressBar.waiting_for_your_approval_to_start')}><Hand size={12} /> <HistogramCount n={awaiting} label={i18nT('pages.chat.subagentProgressBar.chip_awaiting', { count: awaiting })} /></span>}
+            {unresolved > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-unresolved-count" title={i18nT('pages.chat.subagentProgressBar.checking_whether_it_started')}><CircleDashed size={12} /> <HistogramCount n={unresolved} label={i18nT('pages.chat.subagentProgressBar.chip_unresolved', { count: unresolved })} /></span>}
+            {queued > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-queued-count" title={waitText ?? i18nT('pages.chat.subagentProgressBar.waiting_to_start_queued_behind_the_concurrency_l')}><Clock size={12} /> <HistogramCount n={queued} label={i18nT('pages.chat.subagentProgressBar.chip_queued', { count: queued })} /></span>}
+            {counts.done > 0 && <span className="inline-flex items-center gap-1 text-ok" data-testid="subagent-done-count"><CheckCircle size={12} /> <HistogramCount n={counts.done} label={i18nT('pages.chat.subagentProgressBar.chip_done', { count: counts.done })} /></span>}
+            {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger" data-testid="subagent-failed-count"><AlertCircle size={12} /> <HistogramCount n={counts.failed} label={i18nT('pages.chat.subagentProgressBar.chip_failed', { count: counts.failed })} /></span>}
+            {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> <HistogramCount n={counts.stopped} label={i18nT('pages.chat.subagentProgressBar.chip_stopped', { count: counts.stopped })} /></span>}
+            {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-stalled-count" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> <HistogramCount n={counts.stalled} label={i18nT('pages.chat.subagentProgressBar.chip_stalled', { count: counts.stalled })} /></span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
             {failedIds.length > 0 && (

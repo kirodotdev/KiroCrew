@@ -289,6 +289,25 @@ const SubagentRunCard = memo(function SubagentRunCard({
       : null,
   ].filter((note): note is string => note !== null)
 
+  // The state glyph and the chip icons are aria-hidden (lucide's default), so a
+  // screen reader would hear only bare numbers. Each one carries sr-only words,
+  // ranked exactly like the glyph below. The idle Bot glyph states nothing.
+  // "Finished" needs the same proof as the headline: a wave not fully observable
+  // gets no state words, and its chips report the members actually seen.
+  const stateLabel = counts.running > 0
+    ? i18nT('pages.chat.subagentRunCard.state_running')
+    : counts.awaiting > 0
+      ? i18nT('pages.chat.subagentRunCard.state_awaiting')
+      : counts.failed > 0
+        ? i18nT('pages.chat.subagentRunCard.state_failed')
+        : settled > 0
+          ? settled >= total && fullyObservable
+            ? i18nT('pages.chat.subagentRunCard.state_finished')
+            : null
+          : queued > 0
+            ? i18nT('pages.chat.subagentRunCard.state_queued')
+            : null
+
   const card = (
     <button
       type="button"
@@ -312,6 +331,7 @@ const SubagentRunCard = memo(function SubagentRunCard({
                 : queued > 0
                   ? <Clock size={15} className="text-muted" />
                   : <Bot size={15} className="text-accent/70" />}
+        {stateLabel && <span className="sr-only" data-testid="subagent-card-state">{stateLabel}</span>}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
@@ -332,22 +352,26 @@ const SubagentRunCard = memo(function SubagentRunCard({
               data-testid="subagent-card-awaiting"
               title={i18nT('pages.chat.subagentRunCard.waiting_for_your_approval_to_start')}
             >
-              <Hand size={10} aria-hidden /> {counts.awaiting}
+              <Hand size={10} aria-hidden /> <span aria-hidden="true">{counts.awaiting}</span>
+              <span className="sr-only">{i18nT('pages.chat.subagentRunCard.chip_awaiting', { count: counts.awaiting })}</span>
             </span>
           )}
           {counts.done > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-ok-subtle border border-ok/20 text-ok-text">
-              <CheckCircle2 size={10} aria-hidden /> {counts.done}
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-ok-subtle border border-ok/20 text-ok-text" data-testid="subagent-card-done">
+              <CheckCircle2 size={10} aria-hidden /> <span aria-hidden="true">{counts.done}</span>
+              <span className="sr-only">{i18nT('pages.chat.subagentRunCard.chip_done', { count: counts.done })}</span>
             </span>
           )}
           {counts.failed > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-danger-subtle border border-danger/20 text-danger-text">
-              <AlertCircle size={10} aria-hidden /> {counts.failed}
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-danger-subtle border border-danger/20 text-danger-text" data-testid="subagent-card-failed">
+              <AlertCircle size={10} aria-hidden /> <span aria-hidden="true">{counts.failed}</span>
+              <span className="sr-only">{i18nT('pages.chat.subagentRunCard.chip_failed', { count: counts.failed })}</span>
             </span>
           )}
           {counts.stopped > 0 && (
-            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted">
-              <Square size={10} aria-hidden /> {counts.stopped}
+            <span className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-4 px-1.5 py-0.5 rounded bg-muted/15 border border-border text-muted" data-testid="subagent-card-stopped">
+              <Square size={10} aria-hidden /> <span aria-hidden="true">{counts.stopped}</span>
+              <span className="sr-only">{i18nT('pages.chat.subagentRunCard.chip_stopped', { count: counts.stopped })}</span>
             </span>
           )}
         </div>

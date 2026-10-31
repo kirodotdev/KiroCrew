@@ -11775,7 +11775,12 @@
         "open_in_the_subagents_panel": "在“子代理”面板中打开",
         "panel": "面板",
         "show_details": "显示详情",
-        "stopped": "已停止"
+        "stopped": "已停止",
+        "chip_ok_other": "{{count}} 个代理成功",
+        "chip_failed_other": "{{count}} 个代理失败",
+        "chip_stopped_other": "{{count}} 个代理已停止",
+        "state_some_failed": "部分失败",
+        "state_partial": "部分已送达"
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "连接不稳定 — 正在重试…",
@@ -11802,7 +11807,15 @@
         "stop_all_failed": "无法停止子代理",
         "retry_failed_error": "有 {{count}} 个失败的子代理无法重试",
         "checking_whether_it_started": "正在确认是否已启动…",
-        "liveness_check_failed": "无法确认它是否已启动。正在重试…"
+        "liveness_check_failed": "无法确认它是否已启动。正在重试…",
+        "chip_running_other": "{{count}} 个代理运行中",
+        "chip_awaiting_other": "{{count}} 个代理等待批准",
+        "chip_unresolved_other": "{{count}} 个代理尚未确认启动",
+        "chip_queued_other": "{{count}} 个代理已排队",
+        "chip_done_other": "{{count}} 个代理已完成",
+        "chip_failed_other": "{{count}} 个代理失败",
+        "chip_stopped_other": "{{count}} 个代理已停止",
+        "chip_stalled_other": "{{count}} 个代理可能已停滞"
       },
       "subagentQueued": {
         "low_memory": "等待开始 — 需要 {{required}} 可用内存，当前可用 {{available}}；请释放内存以继续",
@@ -11832,7 +11845,16 @@
         "open_subagents_panel": "打开子代理面板",
         "waiting": "等待中",
         "waiting_for_your_approval_to_start": "等待你的批准后开始",
-        "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
+        "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队",
+        "chip_awaiting_other": "{{count}} 个代理等待批准",
+        "chip_done_other": "{{count}} 个代理已完成",
+        "chip_failed_other": "{{count}} 个代理失败",
+        "chip_stopped_other": "{{count}} 个代理已停止",
+        "state_running": "运行中",
+        "state_awaiting": "等待批准",
+        "state_failed": "失败",
+        "state_finished": "已完成",
+        "state_queued": "排队中"
       },
       "taskProgressBar": {
         "all_tasks_complete": "所有任务已完成",

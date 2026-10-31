@@ -11950,7 +11950,15 @@
         "open_in_the_subagents_panel": "সাবএজেন্ট প্যানেলে খুলুন",
         "panel": "প্যানেল",
         "show_details": "বিবরণ দেখাও",
-        "stopped": "থামানো হয়েছে"
+        "stopped": "থামানো হয়েছে",
+        "chip_ok_one": "{{count}}টি এজেন্ট সফল",
+        "chip_ok_other": "{{count}}টি এজেন্ট সফল",
+        "chip_failed_one": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_failed_other": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_stopped_one": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "chip_stopped_other": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "state_some_failed": "কিছু ব্যর্থ",
+        "state_partial": "আংশিক পৌঁছেছে"
       },
       "subagentProgressBar": {
         "backend_hiccup_retrying": "সংযোগ অস্থির — আবার চেষ্টা করা হচ্ছে…",
@@ -11979,7 +11987,23 @@
         "stop_all_failed": "সাবএজেন্টগুলো থামানো যায়নি",
         "retry_failed_error": "ব্যর্থ সাবএজেন্টের মধ্যে {{count}} টি আবার চালানো যায়নি",
         "checking_whether_it_started": "এটি শুরু হয়েছে কি না যাচাই করা হচ্ছে…",
-        "liveness_check_failed": "এটি শুরু হয়েছে কি না যাচাই করা যায়নি। আবার চেষ্টা করা হচ্ছে…"
+        "liveness_check_failed": "এটি শুরু হয়েছে কি না যাচাই করা যায়নি। আবার চেষ্টা করা হচ্ছে…",
+        "chip_running_one": "{{count}}টি এজেন্ট চলছে",
+        "chip_running_other": "{{count}}টি এজেন্ট চলছে",
+        "chip_awaiting_one": "{{count}}টি এজেন্ট অনুমোদনের অপেক্ষায়",
+        "chip_awaiting_other": "{{count}}টি এজেন্ট অনুমোদনের অপেক্ষায়",
+        "chip_unresolved_one": "{{count}}টি এজেন্ট শুরু হয়েছে কিনা যাচাই চলছে",
+        "chip_unresolved_other": "{{count}}টি এজেন্ট শুরু হয়েছে কিনা যাচাই চলছে",
+        "chip_queued_one": "{{count}}টি এজেন্ট সারিতে",
+        "chip_queued_other": "{{count}}টি এজেন্ট সারিতে",
+        "chip_done_one": "{{count}}টি এজেন্ট সম্পন্ন",
+        "chip_done_other": "{{count}}টি এজেন্ট সম্পন্ন",
+        "chip_failed_one": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_failed_other": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_stopped_one": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "chip_stopped_other": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "chip_stalled_one": "{{count}}টি এজেন্ট সম্ভবত আটকে আছে",
+        "chip_stalled_other": "{{count}}টি এজেন্ট সম্ভবত আটকে আছে"
       },
       "subagentQueued": {
         "low_memory": "শুরু হওয়ার অপেক্ষায় — {{required}} ফাঁকা মেমোরি প্রয়োজন, এখন {{available}} ফাঁকা; চালিয়ে যেতে মেমোরি খালি করো",
@@ -12018,7 +12042,20 @@
         "open_subagents_panel": "সাবএজেন্ট প্যানেল খুলুন",
         "waiting": "অপেক্ষমাণ",
         "waiting_for_your_approval_to_start": "শুরু হওয়ার জন্য আপনার অনুমোদনের অপেক্ষায়",
-        "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
+        "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে",
+        "chip_awaiting_one": "{{count}}টি এজেন্ট অনুমোদনের অপেক্ষায়",
+        "chip_awaiting_other": "{{count}}টি এজেন্ট অনুমোদনের অপেক্ষায়",
+        "chip_done_one": "{{count}}টি এজেন্ট সম্পন্ন",
+        "chip_done_other": "{{count}}টি এজেন্ট সম্পন্ন",
+        "chip_failed_one": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_failed_other": "{{count}}টি এজেন্ট ব্যর্থ",
+        "chip_stopped_one": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "chip_stopped_other": "{{count}}টি এজেন্ট থামানো হয়েছে",
+        "state_running": "চলছে",
+        "state_awaiting": "অনুমোদনের অপেক্ষায়",
+        "state_failed": "ব্যর্থ",
+        "state_finished": "সম্পন্ন",
+        "state_queued": "সারিতে"
       },
       "taskProgressBar": {
         "all_tasks_complete": "সব টাস্ক সম্পূর্ণ",

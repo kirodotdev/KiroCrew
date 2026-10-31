@@ -5306,7 +5306,15 @@
         "open_in_the_subagents_panel": "Open in the Subagents panel",
         "panel": "Panel",
         "show_details": "Show details",
-        "stopped": "Stopped"
+        "stopped": "Stopped",
+        "chip_ok_one": "{{count}} agent succeeded",
+        "chip_ok_other": "{{count}} agents succeeded",
+        "chip_failed_one": "{{count}} agent failed",
+        "chip_failed_other": "{{count}} agents failed",
+        "chip_stopped_one": "{{count}} agent stopped",
+        "chip_stopped_other": "{{count}} agents stopped",
+        "state_some_failed": "Some failed",
+        "state_partial": "Partly delivered"
       },
       "subagentProgressBar": {
         "collapse_agent_list": "Collapse subagent list",
@@ -5320,7 +5328,23 @@
         "stop_all_failed": "Couldn't stop the subagents",
         "retry_failed_error": "Couldn't retry {{count}} of the failed subagents",
         "checking_whether_it_started": "Checking whether it started…",
-        "liveness_check_failed": "Couldn't check whether it started. Retrying…"
+        "liveness_check_failed": "Couldn't check whether it started. Retrying…",
+        "chip_running_one": "{{count}} agent running",
+        "chip_running_other": "{{count}} agents running",
+        "chip_awaiting_one": "{{count}} agent waiting for approval",
+        "chip_awaiting_other": "{{count}} agents waiting for approval",
+        "chip_unresolved_one": "{{count}} agent with start not confirmed",
+        "chip_unresolved_other": "{{count}} agents with start not confirmed",
+        "chip_queued_one": "{{count}} agent queued",
+        "chip_queued_other": "{{count}} agents queued",
+        "chip_done_one": "{{count}} agent done",
+        "chip_done_other": "{{count}} agents done",
+        "chip_failed_one": "{{count}} agent failed",
+        "chip_failed_other": "{{count}} agents failed",
+        "chip_stopped_one": "{{count}} agent stopped",
+        "chip_stopped_other": "{{count}} agents stopped",
+        "chip_stalled_one": "{{count}} agent possibly stalled",
+        "chip_stalled_other": "{{count}} agents possibly stalled"
       },
       "taskProgressBar": {
         "all_tasks_complete": "All tasks complete",
@@ -5516,7 +5540,20 @@
         "agent_queued_one": "{{count}} agent queued",
         "agent_queued_other": "{{count}} agents queued",
         "agent_running_one": "{{count}} agent running",
-        "agent_running_other": "{{count}} agents running"
+        "agent_running_other": "{{count}} agents running",
+        "chip_awaiting_one": "{{count}} agent waiting for approval",
+        "chip_awaiting_other": "{{count}} agents waiting for approval",
+        "chip_done_one": "{{count}} agent done",
+        "chip_done_other": "{{count}} agents done",
+        "chip_failed_one": "{{count}} agent failed",
+        "chip_failed_other": "{{count}} agents failed",
+        "chip_stopped_one": "{{count}} agent stopped",
+        "chip_stopped_other": "{{count}} agents stopped",
+        "state_running": "Running",
+        "state_awaiting": "Waiting for approval",
+        "state_failed": "Failed",
+        "state_finished": "Finished",
+        "state_queued": "Queued"
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} earlier step",
