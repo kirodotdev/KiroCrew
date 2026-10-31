@@ -18,7 +18,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
-``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
+``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``, ``turn_model``.
 
 Instance fields read: ``_agent_accepts_image``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_last_activity``, ``_liveness_oracle``,
 ``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
@@ -337,6 +337,8 @@ async def _prompt_loop(
         # clear the active turn's tracked consult and so allow a second walk
         # while the first is still pending.
         self._retire_liveness_state()
+        # A turn that ends without a PromptResponse must not inherit the last one's model.
+        self.turn_model = ""
         # A goose run id and the steers awaiting their echo belong to one
         # turn: the new prompt's run id is announced by a frame this loop
         # has not read yet, and a steer the last turn never echoed was

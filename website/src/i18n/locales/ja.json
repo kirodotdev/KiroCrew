@@ -6437,7 +6437,18 @@
       "attachment_removed": "{{file}} を添付から削除しました",
       "attachment_restored": "{{file}} を添付しました",
       "trusted_command_until": "「{{cmd}}」を {{time}} まで信頼します。その後は再度確認します",
-      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します"
+      "trusted_base_until": "任意の「{{base}}」コマンドを {{time}} まで信頼します。その後は再度確認します",
+      "agent_backend": "エージェントハーネス",
+      "gateway_tools": "{{productName}} のツール",
+      "gateway_tools_connected": "利用可能",
+      "gateway_tools_failed": "このセッションで {{productName}} のツールを起動できませんでした。新しいセッションを開始して再試行してください。",
+      "gateway_tools_sent": "送信済み・未確認",
+      "gateway_tools_not_sent": "このセッションには {{productName}} のツールが送信されていません。カスタマイズ → カスタムエージェント でこのエージェントのツールに @kirocrew-core を追加してから、新しいセッションを開始してください。",
+      "gateway_tools_no_tools": "このセッションで {{productName}} のツールは起動しましたが、ツールが提供されませんでした。別のサーバーが同じツール名を使っていることがよくある原因です。そのサーバーをオフにしてから、新しいセッションを開始してください。",
+      "gateway_tools_pending": "未報告",
+      "gateway_tools_missing": "このセッションには {{productName}} のツールがありません",
+      "gateway_tools_missing_short": "{{productName}} のツールなし",
+      "model_selected": "選択：{{name}}"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

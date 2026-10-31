@@ -13,7 +13,7 @@ Instance fields written: ``_advertised_models_changed``, ``_available_models``,
 ``_available_models_probe_confirmed``, ``_available_models_read_probe_at``,
 ``_config_options``, ``_kas_auto_fallback``, ``_mode_model_unjudged``, ``_model``,
 ``_read_refresh_task``, ``_resolved_model_id``, ``active_agent``, ``model_pin_partial``,
-``model_pin_refused``.
+``model_pin_refused``, ``turn_model``.
 
 Instance fields read: ``_runtime``, ``_session_id``, ``last_prompt_stats``,
 ``request_vault_identity``.
@@ -410,6 +410,8 @@ async def set_model(self: AcpSessionHandle, model_id: str) -> None:
             return
     self._model = resolved
     self.model_pin_refused = ""
+    # The last turn's report names the model before this switch.
+    self.turn_model = ""
     if getattr(self, "_mode_model_unjudged", False):
         # The session runs this model now, not the one an earlier set_mode
         # activation put it on, so that activation's frame is not judged.
@@ -624,6 +626,8 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     self.active_agent = (
         self._crew_agent_name(current_agent) if isinstance(current_agent, str) else ""
     )
+    # A new or reloaded session has not reported a turn yet.
+    self.turn_model = ""
     config_options = resp.get("configOptions")
     if isinstance(config_options, list):
         self._config_options = config_options

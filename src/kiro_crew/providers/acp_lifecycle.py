@@ -9,7 +9,7 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_disposable_work_dir``, ``_effort_per_model``,
-``_work_dir_claim_probe``.
+``_live_effort``, ``_work_dir_claim_probe``.
 
 Instance fields read: ``_client``, ``_configured_model``, ``essential_delivery``,
 ``member_context``, ``memory_mode``.
@@ -67,6 +67,8 @@ async def start(self: AcpProvider) -> None:
     # processes, and an acquire on the loop thread makes one attempt and
     # never waits, so a brief overlap would refuse the write.
     await asyncio.to_thread(self._apply_effort_overlay)
+    # The new process spawns at the overlay's level, not one pushed to the last.
+    self._live_effort = None
     await asyncio.to_thread(self._apply_tool_search_overlay)
 
     if self.is_acp_runtime_backend:

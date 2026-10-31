@@ -65,7 +65,7 @@ import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
 import { usePickerSource } from './dashboardPickerSource'
 import { useDictationControls, useHoldToTalk } from './chat-input/voice'
 import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/VoiceControls'
-import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
+import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, gatewayToolsMissing, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
@@ -239,6 +239,9 @@ function ChatInput({
   modelIsAutoChosen,
   modelIsJevRouted,
   agentSource,
+  sessionBackend,
+  gatewayTools,
+  modelSelected,
   modelName,
   onAgentClick,
   agentBadge,
@@ -494,6 +497,9 @@ function ChatInput({
   const [listHintDismissed, setListHintDismissed] = useState(() => safeGetItem(LIST_HINT_DISMISSED_KEY) === '1')
   const [listHintSaveError, setListHintSaveError] = useState<string | null>(null)
   const { shelfRef, shelfHeight, shelfCompact, shelfTiny } = useShelfMeasure()
+  // A spelled-out missing-tools warning keeps its width: where it does not fit
+  // beside the context and model chips (a phone), those wrap to a row below it.
+  const toolsWarningRow = !!onAgentClick && !!agentName && gatewayToolsMissing(gatewayTools)
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
   // previously discoverable is lost, and names the branch even when the label
@@ -1876,7 +1882,7 @@ function ChatInput({
           // to be present — the control is declared, mounted and unreachable.
           !!sessionControls?.length ||
           !!environmentSlot) && (
-        <div ref={shelfRef} data-testid="composer-context-shelf" className="glass-shelf pt-1 flex items-center gap-2 min-w-0" style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
+        <div ref={shelfRef} data-testid="composer-context-shelf" className={`glass-shelf pt-1 flex items-center gap-2 min-w-0 ${toolsWarningRow ? 'flex-wrap' : ''}`} style={{ ['--glass-shelf-h' as string]: `${shelfHeight}px` }}>
           {/* Where the session's files and commands live. Its own separated
               group, like the app session controls below, so neither crowds the
               agent/project chip group past `max-two-buttons-per-row`. */}
@@ -1897,10 +1903,14 @@ function ChatInput({
           {!!sessionControls?.length && (
             <SessionControlChips sessionControls={sessionControls} shelfCompact={shelfCompact} onSessionControlClick={onSessionControlClick} />
           )}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+          {/* `basis-full`, not `min-w-max`: both take the whole line so the context and
+              model chips wrap below, but max-content also refuses to shrink, and at 390px —
+              wide enough to keep the labels — a long crew and project name then ran past
+              the shelf's right edge, clipping the project and branch controls. */}
+          <div className={`flex items-center gap-2 min-w-0 ${toolsWarningRow ? 'basis-full' : 'flex-1'}`}>
           {!onAgentClick && agentBadge}
           {onAgentClick && agentName && (
-            <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
+            <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentMemory={agentMemory} agentSource={agentSource} gatewayTools={gatewayTools} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
           )}
           {!onProjectClick && sessionOnPeer && !!projectProp && (
             /* The same pill as a plain label: the folder is another machine's,
@@ -1967,12 +1977,12 @@ function ChatInput({
           </div>
           )}
           </div>
-          <div className="flex items-center shrink-0">
+          <div className={`flex items-center shrink-0 ${toolsWarningRow ? 'ml-auto' : ''}`}>
           {contextPct != null && (
-            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
+            <ContextUsageControl contextPct={contextPct} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} sessionBackend={sessionBackend} gatewayTools={gatewayTools} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (
-            <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
+            <ModelChip modelName={modelName} modelSelected={modelSelected} sessionBackend={sessionBackend} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
           )}
           </div>
         </div>

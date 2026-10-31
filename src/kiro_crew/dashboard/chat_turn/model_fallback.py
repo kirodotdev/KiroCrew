@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp_backends import backend_to_stored
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.dashboard.chat_utils import (
     _REFUSAL_FALLBACK_RESUME_MSG,
@@ -142,11 +143,33 @@ def _sync_served_model(slot: Any, client: Any) -> None:
     -- the AcpProvider wrapper resolves both client shapes and filters the
     ``auto`` sentinel to ``""`` (chip shows "auto", not a stale concrete id).
     getattr-guarded on both sides for the minimal slot/client test doubles.
+
+    The session's other reported facts (the model its harness said served the
+    last turn, its backend, the crew it runs as, the effort in force) are read
+    in the same pass, so every site that refreshes the model refreshes them
+    too: a model switch rebuilds the effort option, for one.
     """
     record = getattr(slot, "record_served_model", None)
     if record is None:
         return
     record(str(getattr(client, "served_model", "") or ""))
+    record_facts = getattr(slot, "record_session_facts", None)
+    if record_facts is None:
+        return
+    turn_model = getattr(client, "turn_model", "")
+    backend = getattr(getattr(client, "capabilities", None), "backend", None)
+    if isinstance(backend, str):
+        # The dashboard names harnesses in the config spelling, where kiro-cli is
+        # ``"kiro"`` rather than the runtime's ``""`` (see ``backend_to_stored``).
+        backend = backend_to_stored(backend)
+    agent = getattr(client, "session_agent", None)
+    effort = getattr(client, "applied_effort", None)
+    record_facts(
+        turn_model=turn_model if isinstance(turn_model, str) else "",
+        backend=backend if isinstance(backend, str) else None,
+        agent=agent if isinstance(agent, str) and agent else None,
+        effort=effort if isinstance(effort, str) else None,
+    )
 
 
 async def _fallback_swap_for_turn(slot: Any, client: Any) -> str | None:

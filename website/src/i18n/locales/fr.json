@@ -6665,7 +6665,18 @@
       "attachment_removed": "{{file}} retiré des pièces jointes",
       "attachment_restored": "{{file}} joint",
       "trusted_command_until": "Confiance accordée à « {{cmd}} » jusqu’à {{time}}, puis la demande réapparaît",
-      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît"
+      "trusted_base_until": "Confiance accordée à toute commande « {{base}} » jusqu’à {{time}}, puis la demande réapparaît",
+      "agent_backend": "Harness de l’agent",
+      "gateway_tools": "Outils de {{productName}}",
+      "gateway_tools_connected": "Disponibles",
+      "gateway_tools_failed": "Les outils de {{productName}} n’ont pas démarré dans cette session. Démarre une nouvelle session pour réessayer.",
+      "gateway_tools_sent": "Envoyés, non confirmés",
+      "gateway_tools_not_sent": "Les outils de {{productName}} n’ont pas été envoyés à cette session. Ajoute @kirocrew-core aux outils de cet agent dans Personnaliser → Agents personnalisés, puis démarre une nouvelle session.",
+      "gateway_tools_no_tools": "Les outils de {{productName}} ont démarré dans cette session mais ne lui ont fourni aucun outil, souvent parce qu’un autre serveur utilise les mêmes noms d’outils. Désactive ce serveur, puis démarre une nouvelle session.",
+      "gateway_tools_pending": "Pas encore signalés",
+      "gateway_tools_missing": "Cette session n’a pas les outils de {{productName}}",
+      "gateway_tools_missing_short": "Aucun outil de {{productName}}",
+      "model_selected": "Sélectionné : {{name}}"
     },
     "chatPane": {
       "agent_list": "Liste des agents",

@@ -6437,7 +6437,18 @@
       "attachment_removed": "{{file}} 첨부에서 제거됨",
       "attachment_restored": "{{file}} 첨부됨",
       "trusted_command_until": "‘{{cmd}}’을(를) {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
-      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다"
+      "trusted_base_until": "모든 ‘{{base}}’ 명령을 {{time}}까지 신뢰하며, 이후에는 다시 확인합니다",
+      "agent_backend": "에이전트 하네스",
+      "gateway_tools": "{{productName}} 도구",
+      "gateway_tools_connected": "사용 가능",
+      "gateway_tools_failed": "이 세션에서 {{productName}} 도구를 시작하지 못했습니다. 새 세션을 시작해 다시 시도하세요.",
+      "gateway_tools_sent": "전달됨, 확인 안 됨",
+      "gateway_tools_not_sent": "이 세션에는 {{productName}} 도구가 전달되지 않았습니다. 맞춤 설정 → 커스텀 에이전트에서 이 에이전트의 도구에 @kirocrew-core를 추가한 다음 새 세션을 시작하세요.",
+      "gateway_tools_no_tools": "이 세션에서 {{productName}} 도구가 시작되었지만 도구를 제공하지 않았습니다. 다른 서버가 같은 도구 이름을 쓰는 경우가 많습니다. 그 서버를 끈 다음 새 세션을 시작하세요.",
+      "gateway_tools_pending": "아직 보고 없음",
+      "gateway_tools_missing": "이 세션에는 {{productName}} 도구가 없습니다",
+      "gateway_tools_missing_short": "{{productName}} 도구 없음",
+      "model_selected": "선택됨: {{name}}"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

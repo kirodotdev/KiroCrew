@@ -841,6 +841,46 @@ def parse_prompt_token_usage(result: Any) -> tuple[int, int, int, int] | None:
     return _count(keys[0]), _count(keys[1]), _count(keys[2]), _count(keys[3])
 
 
+# A model id is agent-supplied text bound for logs, the dashboard and Slack, so it
+# is capped only after ``redact_backend_text`` has seen it whole.
+_TURN_MODEL_CAP = 200
+
+
+def parse_prompt_turn_model(result: Any) -> str:
+    """The model a PromptResponse reports serving its turn, or ``""``.
+
+    claude-agent-acp and codex-acp put ``_meta.quota.model_usage`` on the prompt
+    response: one row per model the turn spent tokens on, from the harness's own
+    accounting (claude: the SDK's ``result.modelUsage``), so it names the model
+    that ran even when that is not the one Crew selected. The row with the most
+    tokens is the turn's main model. kiro-cli's response carries only
+    ``stopReason``, and that, a malformed shape or nameless rows all answer ``""``.
+    """
+    if not isinstance(result, dict):
+        return ""
+    meta = result.get("_meta")
+    quota = meta.get("quota") if isinstance(meta, dict) else None
+    rows = quota.get("model_usage") if isinstance(quota, dict) else None
+    if not isinstance(rows, list):
+        return ""
+    best, best_tokens = "", -1
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model = row.get("model")
+        if not isinstance(model, str) or not model.strip() or not model.isprintable():
+            continue
+        counts = row.get("token_count")
+        total = _token_count(counts.get("totalTokens")) if isinstance(counts, dict) else None
+        tokens = int(total) if total is not None and total > 0 else 0
+        if tokens > best_tokens:
+            # Read through the owner module at call time, so a patch of the
+            # facade's ``redact_backend_text`` (which reaches the owner) applies.
+            redacted = _surfaced_text.redact_backend_text(model.strip())
+            best, best_tokens = redacted[:_TURN_MODEL_CAP], tokens
+    return best
+
+
 # This module is the facade of the dispatch owners in ``kiro_crew.acp._dispatch_parts``,
 # and every name is reached through it as ``kiro_crew.acp._dispatch.<name>``: a read is
 # served by the owner that binds the name, and a write -- ``monkeypatch.setattr``,

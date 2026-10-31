@@ -38,7 +38,7 @@ import { useJevAutoSend } from '../pages/chat/useJevAutoSend'
 import type { DisplayItem } from '../pages/chat/types'
 import { viewSubagentSlots } from '../lib/subagentReplayScope'
 import { useSlotActivity } from '../pages/members/useSlotActivity'
-import { agentOrDefaultLabel } from '../utils/agentLabel'
+import { sessionAgentLabel } from '../utils/agentLabel'
 import { sessionMemoryTag } from '../lib/agentMemorySource'
 import { SlotProvider } from '../providers/SlotContext'
 import { useProvider } from '../providers'
@@ -61,6 +61,7 @@ import { revealComposer } from '../pages/chat/composerFocus'
 import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
+import { gatewayToolsState } from '../lib/mcpSessionReport'
 import { slotApprovalMode } from '../utils/slotApprovalMode'
 import { isUntitledSession, sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { isComposerSendHeld } from '../utils/composerSendHolds'
@@ -514,7 +515,7 @@ export default function ChatPane({
   const pickerModels = useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch, dashCfg })
   const {
     installedAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, agentDD, selectionCapabilitiesQ, codexPairModels,
-    jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, effortSupported, defaultEffort, effectiveEffort,
+    jevRouteOn, modelDD, anchorAgentBtn, anchorModelBtn, shownModel, chipModel, modelSelected, effortSupported, effectiveEffort,
     chipDefault, modelMarker,
   } = pickerModels
 
@@ -1154,18 +1155,22 @@ export default function ChatPane({
           // SLOT's stored agent (not `paneAgentName`, which has already
           // collapsed empty->default) so an agent-less slot reads
           // `<default> · default` and a pinned one reads the bare alias (#8770).
-          agentLabel={agentOrDefaultLabel(paneSlot?.agent, defaultAgent, paneSlot?.agent_kind)}
+          // The live session's own report of what it runs as wins over both.
+          agentLabel={sessionAgentLabel(paneSlot?.agent, paneSlot?.served_agent, defaultAgent, paneSlot?.agent_kind)}
           agentIsInheritedDefault={!paneSlot?.agent && !!defaultAgent}
           // Same rows the pane's picker lists, so chip and picker agree on when
           // a same-name pair needs telling apart.
           agentMemory={sessionMemoryTag(paneSlot?.agent, paneSlot?.agent_kind, defaultAgent, agentChoices)}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
-          modelName={shownModel}
+          sessionBackend={paneSlot?.served_backend}
+          gatewayTools={gatewayToolsState(paneSlot?.mcp_report, paneSlot?.served_backend)}
+          modelSelected={modelSelected}
+          modelName={chipModel}
           reasoningEffort={effectiveEffort}
-          effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!defaultEffort}
+          effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!effectiveEffort}
           // Effort is edited inside the model picker below; the chip only
-          // names the level in force.
-          hasEffort={effortSupported}
+          // names the level in force, including a session-reported one (see ChatPage).
+          hasEffort={effortSupported || !!paneSlot?.served_effort}
           modelIsInheritedDefault={modelMarker === 'default'}
           modelIsAutoChosen={modelMarker === 'auto'}
           // See ComposerDockView: the slot's RAW model, because `shownModel` substitutes

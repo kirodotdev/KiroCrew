@@ -2207,7 +2207,18 @@
       "attachment_removed": "{{file}} removed from attachments",
       "attachment_restored": "{{file}} attached",
       "trusted_command_until": "Trusted “{{cmd}}” until {{time}}, then it asks again",
-      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again"
+      "trusted_base_until": "Trusted any “{{base}}” command until {{time}}, then it asks again",
+      "agent_backend": "Agent harness",
+      "gateway_tools": "{{productName}} tools",
+      "gateway_tools_connected": "Available",
+      "gateway_tools_failed": "{{productName}} tools failed to start in this session. Start a new session to try again.",
+      "gateway_tools_sent": "Sent, not confirmed",
+      "gateway_tools_not_sent": "{{productName}} tools were not sent to this session. Add @kirocrew-core to this agent's tools under Customize → Custom agents, then start a new session.",
+      "gateway_tools_no_tools": "{{productName}} tools started in this session but gave it no tools, often because another server uses the same tool names. Turn that server off, then start a new session.",
+      "gateway_tools_pending": "Not reported yet",
+      "gateway_tools_missing": "This session has no {{productName}} tools",
+      "gateway_tools_missing_short": "No {{productName}} tools",
+      "model_selected": "Selected: {{name}}"
     },
     "chatPane": {
       "crewmate_quiet": "{{name}} hasn't said anything to you yet.",

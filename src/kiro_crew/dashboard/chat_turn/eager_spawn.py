@@ -43,7 +43,11 @@ if TYPE_CHECKING:
         app_agent_binding_applies,
     )
     from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
-    from kiro_crew.dashboard.chat_turn.model_fallback import _app_allocation_kwargs
+    from kiro_crew.dashboard.chat_turn.mcp_session import _publish_session_mcp_report
+    from kiro_crew.dashboard.chat_turn.model_fallback import (
+        _app_allocation_kwargs,
+        _sync_served_model,
+    )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
     from kiro_crew.dashboard.chat_turn.turn_context import _require_session_memory_assignment
 
@@ -938,7 +942,7 @@ async def _spawn_admitted_prefetch(
         # will for the first real turn.
         _requested_model = slot.model or agent_model or ""
         try:
-            _, is_new, resumed = await sessions.get_or_create(
+            provider, is_new, resumed = await sessions.get_or_create(
                 session_key,
                 agent=kiro_agent or slot.agent or None,
                 # Canonical crew identity — the resolver's alias, which
@@ -1020,6 +1024,11 @@ async def _spawn_admitted_prefetch(
             sessions.allocation_requested_model(session_key) or _requested_model
         )
     _clear_eager_spawn_failures(slot)
+    # The live session already knows what it runs, so the composer names that
+    # from here on instead of the config prediction it shows until the first turn.
+    _sync_served_model(slot, provider)
+    _publish_session_mcp_report(state, slot, provider)
+    state.push_slots_update()
     logger.info(
         "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
         session_key,

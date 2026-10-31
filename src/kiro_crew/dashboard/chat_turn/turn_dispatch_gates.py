@@ -595,6 +595,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_cost_usd = _turn_cost_usd
     _turn_model = ""
     turn._turn_model = _turn_model
+    # What the reply footer names: the model the harness reported running,
+    # in its own spelling; the usage row and the metrics keep ``_turn_model``.
+    turn._footer_model = ""
     # Set once EVENT_COMPLETE has filled the four figures above.
     _turn_stats_captured = False
     turn._turn_stats_captured = _turn_stats_captured

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _slot_switch_session_lock,
         _subagents_attached_response,
         _switch_target_busy,
+        _sync_served_model,
         cap_effort_capability_levels,
         deny_app_slot_access,
         effective_session_key,
@@ -565,5 +566,11 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         # committed before its reset, and assigning again is a no-op).
         slot.reasoning_effort = effort
         normalized = normalize_legacy_model()
+        if (
+            isinstance(provider, AcpProvider)
+            and state.sessions.get_provider(session_key) is provider
+        ):
+            # The live push answered with the level the session now runs.
+            _sync_served_model(slot, provider)
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort, **normalized})

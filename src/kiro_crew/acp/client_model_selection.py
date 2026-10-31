@@ -13,7 +13,7 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``_available_models_captured_at``, ``_available_models_probe_confirmed``,
 ``_entitlement_probe_inflight``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_modes_advertised``, ``_resolved_model_id``,
-``model_pin_partial``, ``model_pin_refused``.
+``model_pin_partial``, ``model_pin_refused``, ``turn_model``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
 ``_derived_spec_snapshot``, ``_extra_env``, ``_mcp_gateway_overlay``,
@@ -224,6 +224,8 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         )
     self._model = model_id
     self.model_pin_refused = ""
+    # The last turn's report names the model before this switch.
+    self.turn_model = ""
     self._resolved_model_id = self._last_substitution_model or model_id
     if self._seeds_local_settings:
         # Re-seed the per-session settings file: a pooled runtime seeded it at
@@ -996,6 +998,8 @@ def _store_session_config(self: AcpClient, resp: dict) -> None:
     # Assigned unconditionally so a re-init that omits `modes` clears any
     # stale state rather than guarding on it.
     self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
+    # A new or reloaded session has not reported a turn yet.
+    self.turn_model = ""
 
 
 def _handle_config_option_update(self: AcpClient, msg: JsonRpcMessage) -> None:

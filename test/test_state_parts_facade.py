@@ -305,6 +305,13 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, withheld: 'bool | None') -> 'None'",
     ),
     "record_served_model": ("function", False, False, "(self, model_id: 'str | None') -> 'None'"),
+    "record_session_facts": (
+        "function",
+        False,
+        False,
+        "(self, *, turn_model: 'str', backend: 'str | None', agent: 'str | None', "
+        "effort: 'str | None') -> 'None'",
+    ),
     "register_approval": (
         "function",
         False,
@@ -686,6 +693,9 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "segment_raw_text": ("value", "''"),
     "segment_removed": ("value", "{}"),
     "segment_shown_sha": ("type", "_hashlib.HASH"),
+    "served_agent": ("value", "None"),
+    "served_backend": ("value", "None"),
+    "served_effort": ("value", "None"),
     "served_model": ("value", "''"),
     "tags": ("value", "[]"),
     "tags_revision": ("type", "builtins.str"),
@@ -693,6 +703,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "theme_consent_sha": ("value", "None"),
     "title": ("value", "'k'"),
     "total_messages": ("value", "0"),
+    "turn_model": ("value", "''"),
     "turn_timeout_secs": ("value", "None"),
     "workspace": ("value", "'default'"),
 }

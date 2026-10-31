@@ -27,7 +27,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``autocompact_pct``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
-``remote_slot``, ``served_model``, ``turn_timeout_secs``.
+``remote_slot``, ``served_agent``, ``served_backend``, ``served_effort``, ``served_model``,
+``turn_model``, ``turn_timeout_secs``.
 Reads only: ``model``.
 
 A function whose first parameter is ``self`` is a ``_ChatSlot`` method: the
@@ -190,6 +191,16 @@ def init_session_fields(self: _ChatSlot) -> None:
     # inheriting rather than pinning. "" = unknown. Written through
     # `record_served_model`.
     self.served_model = ""
+    # What the live session reports running, written through
+    # `record_session_facts`: the model its harness said served the last
+    # turn ("" = none reported), its backend id in the config spelling
+    # ("kiro" is kiro-cli), the crew or
+    # agent spec it runs as, and the effort in force ("" = the harness's own
+    # default). None = no live session has reported.
+    self.turn_model = ""
+    self.served_backend = None
+    self.served_agent = None
+    self.served_effort = None
     # Reasoning effort: "" = provider default, else one of
     # low/medium/high/xhigh/max (``EFFORT_LEVELS`` in ``effort.py``). A live
     # session applies it as ``session/set_config_option`` on the backends in
@@ -522,6 +533,29 @@ def record_served_model(self: _ChatSlot, model_id: str | None) -> None:
     self.served_model = model_id or ""
 
 
+def record_session_facts(
+    self: _ChatSlot,
+    *,
+    turn_model: str,
+    backend: str | None,
+    agent: str | None,
+    effort: str | None,
+) -> None:
+    """Record what the live session reports running, beside ``served_model``.
+
+    Each value is the session's own report, read through the provider's public
+    accessors, so the dashboard names what runs rather than what config says:
+    a config switch, a member-DM route or a refused pin moves only these. All
+    ``None`` (and ``turn_model`` ``""``) forgets them, as a teardown does.
+
+    DISPLAY only, like ``served_model``: never a write source.
+    """
+    self.turn_model = turn_model
+    self.served_backend = backend
+    self.served_agent = agent
+    self.served_effort = effort
+
+
 def latch_crew_log_previous(
     self: _ChatSlot, sid: str, *, undecided: bool | None = None, from_mapping: bool = False
 ) -> None:
@@ -662,8 +696,10 @@ def forget_session_model_state(self: _ChatSlot) -> None:
     the session that advertised the list, not the slot, so a teardown that
     forgets one and keeps the other labels the next session with the
     previous one's answer. Every teardown site calls this one method so a
-    site added later cannot drop half the pair.
+    site added later cannot drop half the pair. The other session facts go
+    with them for the same reason.
     """
     self.record_model_withheld(None)
     self._session_requested_model = None
     self.record_served_model(None)
+    self.record_session_facts(turn_model="", backend=None, agent=None, effort=None)

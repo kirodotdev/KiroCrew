@@ -132,6 +132,7 @@ class _ChatTurn:
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"
+    _footer_model: "str"
     _had_empty_response_verdict: "bool"
     _held_runs: "list[tuple[dict[str, Any], str, int | None, int]]"
     _incoming_message: "str"

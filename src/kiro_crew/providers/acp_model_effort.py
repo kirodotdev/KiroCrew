@@ -7,7 +7,7 @@ Each function here whose first parameter is ``self`` is an ``AcpProvider`` metho
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_effort_per_model``, ``_picker_probe_at``,
+Instance fields written: ``_effort_per_model``, ``_live_effort``, ``_picker_probe_at``,
 ``_unbound_effort``, ``_unbound_effort_drop_logged``.
 
 Instance fields read: ``_client``, ``_effort_defaults``.
@@ -21,6 +21,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from kiro_crew import model_registry
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpClient,
@@ -300,6 +301,53 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     )
 
 
+# The effort value claude-agent-acp reports when no level is set, so the model's own
+# default applies.
+_HARNESS_DEFAULT_EFFORT = "default"
+
+
+def _reported_effort(level: str) -> str | None:
+    """A harness-reported effort level the slot may retain, or ``None``.
+
+    The level rides every slots snapshot, so only one the effort-name check
+    accepts (short, lowercase) is kept; anything else reads as no level reported.
+    """
+    # circular import: chat_persistence → dashboard → session → providers.acp
+    from kiro_crew.dashboard.chat_persistence import cap_effort_capability_levels
+
+    return level if level and cap_effort_capability_levels([level], source="reported") else None
+
+
+def applied_effort(provider: AcpProvider) -> str | None:
+    """The reasoning effort *provider*'s session runs at (public — see LLMProvider).
+
+    Where the harness advertises an effort config option, it is that option's
+    value as the harness last reported it, so a level the adapter refused or
+    never got does not read as applied. A pair-id harness that advertises no
+    effort option carries the level in its current model id
+    (``<model>[<effort>]``). kiro-cli reports no level: it reads effort from the
+    ``cli.json`` overlay (``ACP_BACKENDS_EFFORT_OVERLAY``) at spawn and takes a
+    live change as ``/effort``, so there it is Crew's own record, the level last
+    pushed live, else the level written for the current model. ``""`` is the
+    harness's own default; ``None`` means this harness has no effort channel or
+    reported no level, or none that is an effort name.
+    """
+    backend = provider._client.backend
+    option_id = effort_config_option_id(backend)
+    for option in provider._client.acp_config_options:
+        if isinstance(option, dict) and option.get("id") == option_id:
+            value = option.get("currentValue")
+            if isinstance(value, str):
+                return "" if value == _HARNESS_DEFAULT_EFFORT else _reported_effort(value)
+    if backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS:
+        return _reported_effort(model_registry.split_effort_suffix(provider.served_model)[1])
+    if backend in ACP_BACKENDS_EFFORT_OVERLAY:
+        if provider._live_effort is not None:
+            return provider._live_effort
+        return provider._resolve_effort() or ""
+    return None
+
+
 async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     """Push an effort level over ``session/set_config_option``, stepping down
     on reject.
@@ -491,6 +539,7 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
+            self._live_effort = level
     except Exception:
         # Roll back to the prior state before propagating to the caller.
         if _prev is None:
@@ -575,6 +624,8 @@ async def set_model(self: AcpProvider, model: str) -> None:
     overrides = self._effort_per_model
     carried = overrides.get(self._effort_model, "")
     await self._client.set_model(model)
+    # The level pushed to the model left does not follow it.
+    self._live_effort = None
     try:
         own = overrides.get(self._client._model) or overrides.get(model, "")
         if own or not carried:
@@ -585,6 +636,7 @@ async def set_model(self: AcpProvider, model: str) -> None:
                 await self._set_effort_config_option(carried)
             elif self.capabilities.effort_via_slash_command:
                 await self._client.send_command("/effort", args={"level": carried})
+                self._live_effort = carried
     except Exception:
         # The model DID switch; failing here would make a fallback walk skip it.
         logger.warning("Effort re-apply after set_model(%s) failed", model, exc_info=True)
@@ -654,6 +706,7 @@ async def clear_effort(self: AcpProvider) -> bool | None:
             await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
+            self._live_effort = level
         logger.info("ACP effort cleared to workspace default %s (kiro)", level)
         return True
     # No default to push live — clear the overlay and let the caller reset

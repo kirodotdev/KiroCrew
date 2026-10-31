@@ -22,7 +22,7 @@ import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { inFlightSlotSwitchOutcome, performSlotSwitch, stagedSlotSwitchTarget } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
-import { displayModel, modelChipMarker } from '../lib/model'
+import { displayModel, modelChipMarker, normalizeModelKey, reportedModel, reportedModelMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
 import { i18nT } from '../i18n/t'
 import { slotRowByKey } from '../store/slotIndex'
@@ -138,13 +138,19 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
   const displayModels = codexPairModels
     ? filterInteractiveModels(availableModels, [], [], true)
     : availableModels
-  const shownModel = displayModel(
+  const _servedModel = codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || ''
+  const _turnModel = codexPairModels ? modelWithoutEffort(paneSlot?.turn_model || '') : paneSlot?.turn_model || ''
+  // What the live session reports running wins over the pin (see composerChips).
+  const session = reportedModel(_turnModel, _servedModel, displayModels)
+  const shownModel = session.selected || displayModel(
     codexPairModels ? modelWithoutEffort(paneSlot?.model || '') : paneSlot?.model || '',
     displayModels,
     _modelsDegraded,
     paneSlot?.model_withheld,
-    codexPairModels ? modelWithoutEffort(paneSlot?.served_model || '') : paneSlot?.served_model || '',
+    _servedModel,
   )
+  const chipModel = session.chip || shownModel
+  const modelSelected = normalizeModelKey(chipModel) !== normalizeModelKey(shownModel) ? shownModel : ''
   // An unknown effort verdict leaves the currently shown model to answer.
   const effortCaps = selectionCapabilities ?? selectionCapabilitiesQ.data
   const effortSupported = provider.capabilities.reasoningEffort && !selectionCapabilitiesFailed(selectionCapabilitiesQ) && (
@@ -159,9 +165,9 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     queryFn: () => provider.resolveDefaultEffort(readKirocrewConfig),
     enabled: provider.capabilities.reasoningEffort,
   })
-  const effectiveEffort = paneSlot?.reasoning_effort || legacyCodexEffort(
+  const effectiveEffort = paneSlot?.served_effort ?? (paneSlot?.reasoning_effort || legacyCodexEffort(
     paneSlot?.model || '', '', codexPairModels,
-  ) || defaultEffort
+  ) || defaultEffort)
   // What the pin alone would say; differing from `shownModel` means the chip
   // is naming the served default an inheriting slot runs on (see ChatPage).
   const _pinShownModel = displayModel(
@@ -175,19 +181,20 @@ export function useChatPanePickerModels({ slotKey, paneSlot, provider, dispatch,
     paneSlot && !paneSlot.model ? paneAgentName : '',
     codexPairModels,
   )
-  const modelMarker = modelChipMarker(
+  const _modelMarker = modelChipMarker(
     paneSlot?.model || '',
-    shownModel,
+    chipModel,
     _pinShownModel,
     chipDefault.settingsDefault,
     chipDefault.agentPinned,
   )
+  const modelMarker = session.chip ? reportedModelMarker(_modelMarker, paneSlot?.model_withheld) : _modelMarker
 
   return {
     installedAgents, agentChoices, defaultAgent, paneAgentName, queryClient, navigate, defaultAgentFailed, toggleDefaultAgent, agentDD,
     selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, codexPairModels, hiddenModelsQ, modelPickerConfigured, jevRouteOn, modelDD,
     attachModelList, modelListEdges, agentBtnRect, anchorAgentBtn, modelBtnRect, anchorModelBtn, shownModel,
-    effortSupported, effortLevelsOverride, defaultEffort, effectiveEffort, chipDefault, modelMarker,
+    chipModel, modelSelected, effortSupported, effortLevelsOverride, defaultEffort, effectiveEffort, chipDefault, modelMarker,
   }
 }
 

@@ -6665,7 +6665,18 @@
       "attachment_removed": "{{file}} removido dos anexos",
       "attachment_restored": "{{file}} anexado",
       "trusted_command_until": "“{{cmd}}” é confiável até {{time}}; depois disso, pergunta novamente",
-      "trusted_base_until": "Qualquer comando “{{base}}” é confiável até {{time}}; depois disso, pergunta novamente"
+      "trusted_base_until": "Qualquer comando “{{base}}” é confiável até {{time}}; depois disso, pergunta novamente",
+      "agent_backend": "Harness do agente",
+      "gateway_tools": "Ferramentas do {{productName}}",
+      "gateway_tools_connected": "Disponíveis",
+      "gateway_tools_failed": "As ferramentas do {{productName}} não iniciaram nesta sessão. Inicie uma nova sessão para tentar novamente.",
+      "gateway_tools_sent": "Enviadas, não confirmadas",
+      "gateway_tools_not_sent": "As ferramentas do {{productName}} não foram enviadas a esta sessão. Adicione @kirocrew-core às ferramentas deste agente em Personalizar → Agentes personalizados e depois inicie uma nova sessão.",
+      "gateway_tools_no_tools": "As ferramentas do {{productName}} iniciaram nesta sessão, mas não forneceram nenhuma ferramenta, muitas vezes porque outro servidor usa os mesmos nomes de ferramenta. Desative esse servidor e depois inicie uma nova sessão.",
+      "gateway_tools_pending": "Ainda sem relatório",
+      "gateway_tools_missing": "Esta sessão não tem as ferramentas do {{productName}}",
+      "gateway_tools_missing_short": "Sem ferramentas do {{productName}}",
+      "model_selected": "Selecionado: {{name}}"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",

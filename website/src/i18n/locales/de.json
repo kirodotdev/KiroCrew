@@ -6551,7 +6551,18 @@
       "attachment_removed": "{{file}} aus Anhängen entfernt",
       "attachment_restored": "{{file}} angehängt",
       "trusted_command_until": "„{{cmd}}“ ist bis {{time}} vertrauenswürdig, danach wird erneut gefragt",
-      "trusted_base_until": "Jedem „{{base}}“-Befehl wird bis {{time}} vertraut, danach wird erneut gefragt"
+      "trusted_base_until": "Jedem „{{base}}“-Befehl wird bis {{time}} vertraut, danach wird erneut gefragt",
+      "agent_backend": "Agent-Harness",
+      "gateway_tools": "{{productName}}-Tools",
+      "gateway_tools_connected": "Verfügbar",
+      "gateway_tools_failed": "Die {{productName}}-Tools konnten in dieser Sitzung nicht starten. Starte eine neue Sitzung, um es erneut zu versuchen.",
+      "gateway_tools_sent": "Übergeben, nicht bestätigt",
+      "gateway_tools_not_sent": "Die {{productName}}-Tools wurden dieser Sitzung nicht übergeben. Füge unter Anpassen → Benutzerdefinierte Agenten @kirocrew-core zu den Tools dieses Agenten hinzu und starte dann eine neue Sitzung.",
+      "gateway_tools_no_tools": "Die {{productName}}-Tools sind in dieser Sitzung gestartet, haben ihr aber keine Tools gegeben, oft weil ein anderer Server dieselben Tool-Namen verwendet. Schalte diesen Server aus und starte dann eine neue Sitzung.",
+      "gateway_tools_pending": "Noch nicht gemeldet",
+      "gateway_tools_missing": "Diese Sitzung hat keine {{productName}}-Tools",
+      "gateway_tools_missing_short": "Keine {{productName}}-Tools",
+      "model_selected": "Ausgewählt: {{name}}"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",

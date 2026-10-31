@@ -6779,7 +6779,18 @@
       "attachment_removed": "{{file}} удалён из вложений",
       "attachment_restored": "{{file}} прикреплён",
       "trusted_command_until": "Доверие к «{{cmd}}» действует до {{time}}, затем запрос появится снова",
-      "trusted_base_until": "Доверие к любой команде «{{base}}» действует до {{time}}, затем запрос появится снова"
+      "trusted_base_until": "Доверие к любой команде «{{base}}» действует до {{time}}, затем запрос появится снова",
+      "agent_backend": "Оболочка агента",
+      "gateway_tools": "Инструменты {{productName}}",
+      "gateway_tools_connected": "Доступны",
+      "gateway_tools_failed": "Инструменты {{productName}} не запустились в этой сессии. Начни новую сессию, чтобы повторить попытку.",
+      "gateway_tools_sent": "Переданы, без подтверждения",
+      "gateway_tools_not_sent": "Инструменты {{productName}} не переданы в эту сессию. Добавь @kirocrew-core в инструменты этого агента в разделе Кастомизация → Пользовательские агенты, затем начни новую сессию.",
+      "gateway_tools_no_tools": "Инструменты {{productName}} запустились в этой сессии, но не дали ей ни одного инструмента — часто потому, что другой сервер использует те же имена инструментов. Отключи этот сервер, затем начни новую сессию.",
+      "gateway_tools_pending": "Пока нет отчёта",
+      "gateway_tools_missing": "В этой сессии нет инструментов {{productName}}",
+      "gateway_tools_missing_short": "Нет инструментов {{productName}}",
+      "model_selected": "Выбрано: {{name}}"
     },
     "chatPane": {
       "agent_list": "Список агентов",

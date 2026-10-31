@@ -772,7 +772,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const displayMode = slotApprovalMode(approvalMode, currentSlot)
   // What the composer's model, effort and project chips show.
   const {
-    shownModel, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride,
+    shownModel, chipModel, modelSelected, _pinShownModel, chipDefault, modelMarker, effortSupported, effortLevelsOverride,
     _modelPinAgent, _modelPinActive, _modelPinPinned, pinModelToAgentMut,
     defaultEffort, effectiveEffort,
     _slotProject, projectGit, projectGitError, projectBranch,
@@ -1164,7 +1164,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               followupAddToSession={followupAddToSession} followupStartInNewChat={followupStartInNewChat} followupStartInWorktree={followupStartInWorktree} displayMode={displayMode}
               _modelPinActive={_modelPinActive} _modelPinAgent={_modelPinAgent} _modelPinPinned={_modelPinPinned} _pinShownModel={_pinShownModel} _slotProject={_slotProject}
               defaultEffort={defaultEffort} effectiveEffort={effectiveEffort} effortLevelsOverride={effortLevelsOverride} effortSupported={effortSupported} modelMarker={modelMarker}
-              pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel}
+              pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel} chipModel={chipModel} modelSelected={modelSelected}
               cardOwnsRecovery={cardOwnsRecovery} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}
               handleCancelQueued={handleCancelQueued} handleEditQueued={handleEditQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}

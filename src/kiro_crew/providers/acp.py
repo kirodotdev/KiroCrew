@@ -249,6 +249,9 @@ class AcpProvider(LLMProvider):
         # runtime so per-agent watchdog windows key off the crew, never off a
         # cross-namespace name match.
         self._crew_agent: str = crew_agent or ""
+        # The agent spec this session spawned with. Kept here because the kiro
+        # path replaces ``_client``, the only other holder of the name.
+        self._agent_name: str = agent or ""
         # F2 load-recovery: set True by _start_kiro_runtime_impl when a resume
         # falls back to a FRESH native session (the prior session's lock never
         # cleared). Signals SessionManager.get_or_create to replay KiroCrew's
@@ -273,6 +276,9 @@ class AcpProvider(LLMProvider):
         # and bound to that model on every (re)start (``_bind_unbound_effort``).
         self._unbound_effort: str = unbound_effort or ""
         self._unbound_effort_drop_logged: bool = False
+        # The level last pushed to this process with ``/effort``, which kiro-cli
+        # reports nowhere, so ``applied_effort`` can name it; ``None`` until one is.
+        self._live_effort: str | None = None
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
@@ -436,6 +442,26 @@ class AcpProvider(LLMProvider):
         else:
             model = str(getattr(client, "_resolved_model_id", "") or "").strip()
         return "" if model == DEFAULT_MODEL else model
+
+    @property
+    def turn_model(self) -> str:
+        """The model the harness reported serving the last turn (public — see LLMProvider).
+
+        Read off the prompt response's ``_meta.quota.model_usage``, so unlike
+        ``served_model`` it names what ran rather than what was selected. ``""``
+        until a turn reports one, and always on kiro-cli, which reports none.
+        """
+        return str(getattr(self._client, "turn_model", "") or "")
+
+    @property
+    def session_agent(self) -> str:
+        """The crew this session runs as, else the agent spec it spawned with."""
+        return self._crew_agent or self._agent_name
+
+    @property
+    def applied_effort(self) -> str | None:
+        """The reasoning effort this session runs at — see ``acp_model_effort.applied_effort``."""
+        return _acp_model_effort.applied_effort(self)
 
     @property
     def _effort_model(self) -> str:

@@ -493,6 +493,30 @@ class TestGetOrCreatePoolIntegration:
         assert args == ("test-key", "ch-1")
         assert kwargs["crew_agent"] == "pr-reviewer"
         assert isinstance(kwargs["watchdog"], WatchdogSettings)
+        # The provider was built for the pool with no crew; after the claim its
+        # session reports the claiming crew, as a cold start of it would.
+        assert AcpProvider.session_agent.fget(pooled) == "pr-reviewer"
+
+    @pytest.mark.asyncio
+    async def test_claim_with_no_crew_reports_the_pool_agent(self):
+        """With no crew to claim as, the session still reports its agent spec,
+        and a crew a previous claim left on the provider does not survive."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        mgr, _factory = _make_manager(pool_agent="kirocrew")
+        pooled = _make_provider()
+        pooled.__class__ = AcpProvider
+        pooled.client = MagicMock()
+        pooled.client.resumed = False
+        pooled.client._session_id = "fake-sid"
+        pooled._crew_agent = "stale-crew"
+        pooled._agent_name = "kirocrew"
+        mgr._drain_and_claim = AsyncMock(return_value=pooled)
+        mgr._schedule_replenish = MagicMock()
+
+        await mgr.get_or_create("test-key", agent="kirocrew", channel_id="ch-1")
+
+        assert AcpProvider.session_agent.fget(pooled) == "kirocrew"
 
     def test_capability_preparation_refuses_an_undeclared_canonical_member(self):
         from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime

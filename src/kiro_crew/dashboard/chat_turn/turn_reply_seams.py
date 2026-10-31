@@ -21,7 +21,7 @@ if TYPE_CHECKING:
         crew_log_emit,
         logger,
         provider_last_turn_usage,
-        read_turn_model,
+        read_reported_turn_model,
         save_slot_off_loop,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
@@ -263,7 +263,7 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
             turn,
             TurnUsage(credits=turn._turn_credits, cost_usd=turn._turn_cost_usd),
             turn._turn_elapsed_ms,
-            model=turn._turn_model,
+            model=turn._footer_model,
             ttft_ms=_ttft_visible.ms,
         )
         return stamped, None
@@ -325,7 +325,7 @@ def _attach_abnormal_turn_stats(
             elapsed_ms,
             float(usage.credits or 0.0),
             float(usage.cost_usd or 0.0),
-            (read_turn_model(turn.client) if model is None else model) or "",
+            (read_reported_turn_model(turn.client) if model is None else model) or "",
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:

@@ -47,12 +47,16 @@ if TYPE_CHECKING:
         provider_last_turn_usage,
         read_context_tokens,
         read_effective_agent,
+        read_reported_turn_model,
         read_turn_model,
         telemetry_channel_of,
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _turn_rows
     from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
-    from kiro_crew.dashboard.chat_turn.model_fallback import _backfill_canonical_model
+    from kiro_crew.dashboard.chat_turn.model_fallback import (
+        _backfill_canonical_model,
+        _sync_served_model,
+    )
     from kiro_crew.dashboard.chat_turn.native_cards import (
         NATIVE_SUBAGENT_INTERRUPTED_ERROR,
         _native_subagent_close_all,
@@ -201,7 +205,8 @@ def _attach_turn_stats(
     ``elapsed_ms`` is the turn wall clock (or the provider-reported duration
     when available); ``credits`` is kiro-cli's per-turn ``meteringUsage`` sum;
     ``cost_usd`` is claude_code's API-reported cost. ``model`` is what served
-    this turn (``read_turn_model``): a concrete id on a pinned session, or the
+    this turn (``read_reported_turn_model``): the id the harness reported, else
+    a concrete id on a pinned session, or the
     bare ``"auto"`` when the turn was handed to Auto and the backend disclosed
     no id for it — Auto's per-turn choice is not on the ACP wire, so ``"auto"``
     is the whole of what can be said truthfully. ``ttft_ms`` is the turn's
@@ -622,6 +627,12 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # unattributable turn stays "" and the footer omits the field.
     _turn_model = read_turn_model(client)
     turn._turn_model = _turn_model
+    # The footer names the model the harness reported running, in its
+    # own spelling; the usage row and the metrics keep the id above.
+    turn._footer_model = read_reported_turn_model(client)
+    # The prompt response just reported what served the turn, so
+    # the slot's session facts move with it.
+    _sync_served_model(slot, client)
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured
     # ── Turn outcome for this turn's histogram sample ──

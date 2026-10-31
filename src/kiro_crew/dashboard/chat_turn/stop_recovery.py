@@ -377,6 +377,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
 
 async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
     """A turn's end after the post-loop chain: footer, files, marker, save, landed budgets, consolidation."""
+    _footer_model = turn._footer_model
     _is_monitor_wake = turn._is_monitor_wake
     _l1_escalated = turn._l1_escalated
     _l1_interrupted = turn._l1_interrupted
@@ -394,7 +395,6 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
     _turn_cost_usd = turn._turn_cost_usd
     _turn_credits = turn._turn_credits
     _turn_elapsed_ms = turn._turn_elapsed_ms
-    _turn_model = turn._turn_model
     _turn_msg_boundary = turn._turn_msg_boundary
     _turn_start_mid = turn._turn_start_mid
     slot = turn.slot
@@ -411,7 +411,7 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             _turn_credits,
             _turn_cost_usd,
             turn_boundary=_turn_msg_boundary,
-            model=_turn_model,
+            model=_footer_model,
             ttft_ms=_ttft_visible.ms,
             turn_start_mid=_turn_start_mid,
             retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,

@@ -6551,7 +6551,18 @@
       "attachment_removed": "{{file}} সংযুক্তি থেকে সরানো হয়েছে",
       "attachment_restored": "{{file}} সংযুক্ত করা হয়েছে",
       "trusted_command_until": "«{{cmd}}» {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে",
-      "trusted_base_until": "যেকোনো «{{base}}» কমান্ড {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে"
+      "trusted_base_until": "যেকোনো «{{base}}» কমান্ড {{time}} পর্যন্ত বিশ্বস্ত, তারপর আবার জিজ্ঞাসা করবে",
+      "agent_backend": "এজেন্ট হারনেস",
+      "gateway_tools": "{{productName}} টুল",
+      "gateway_tools_connected": "উপলব্ধ",
+      "gateway_tools_failed": "এই সেশনে {{productName}} টুল চালু হয়নি। আবার চেষ্টা করতে নতুন সেশন শুরু করো।",
+      "gateway_tools_sent": "পাঠানো হয়েছে, নিশ্চিত হয়নি",
+      "gateway_tools_not_sent": "এই সেশনে {{productName}} টুল পাঠানো হয়নি। কাস্টমাইজ → কাস্টম এজেন্ট থেকে এই এজেন্টের টুলে @kirocrew-core যোগ করো, তারপর নতুন সেশন শুরু করো।",
+      "gateway_tools_no_tools": "এই সেশনে {{productName}} টুল চালু হয়েছে কিন্তু কোনো টুল দেয়নি, প্রায়ই কারণ অন্য একটি সার্ভার একই টুলের নাম ব্যবহার করে। সেই সার্ভারটি বন্ধ করো, তারপর নতুন সেশন শুরু করো।",
+      "gateway_tools_pending": "এখনও জানানো হয়নি",
+      "gateway_tools_missing": "এই সেশনে {{productName}} টুল নেই",
+      "gateway_tools_missing_short": "{{productName}} টুল নেই",
+      "model_selected": "নির্বাচিত: {{name}}"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",

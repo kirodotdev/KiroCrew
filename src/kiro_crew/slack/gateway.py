@@ -191,6 +191,7 @@ from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
     read_effective_agent,
+    read_reported_turn_model,
     read_turn_model,
 )
 from kiro_crew.dashboard.listener_guard import listener_guard_exit_code

@@ -6551,7 +6551,18 @@
       "attachment_removed": "{{file}} अनुलग्नकों से हटाया गया",
       "attachment_restored": "{{file}} संलग्न किया गया",
       "trusted_command_until": "«{{cmd}}» पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
-      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा"
+      "trusted_base_until": "किसी भी «{{base}}» कमांड पर {{time}} तक भरोसा, उसके बाद फिर से पूछा जाएगा",
+      "agent_backend": "एजेंट हार्नेस",
+      "gateway_tools": "{{productName}} टूल",
+      "gateway_tools_connected": "उपलब्ध",
+      "gateway_tools_failed": "इस सत्र में {{productName}} टूल शुरू नहीं हो सके। फिर से कोशिश करने के लिए नया सत्र शुरू करें।",
+      "gateway_tools_sent": "भेजे गए, पुष्टि नहीं हुई",
+      "gateway_tools_not_sent": "इस सत्र को {{productName}} टूल नहीं भेजे गए। कस्टमाइज़ → कस्टम एजेंट में इस एजेंट के टूल में @kirocrew-core जोड़ें, फिर नया सत्र शुरू करें।",
+      "gateway_tools_no_tools": "इस सत्र में {{productName}} टूल शुरू हुए पर कोई टूल नहीं दिया, अक्सर इसलिए कि कोई दूसरा सर्वर वही टूल नाम इस्तेमाल करता है। उस सर्वर को बंद करें, फिर नया सत्र शुरू करें।",
+      "gateway_tools_pending": "अभी रिपोर्ट नहीं हुई",
+      "gateway_tools_missing": "इस सत्र में {{productName}} टूल नहीं हैं",
+      "gateway_tools_missing_short": "{{productName}} टूल नहीं",
+      "model_selected": "चुना गया: {{name}}"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

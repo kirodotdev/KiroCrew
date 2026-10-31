@@ -62,3 +62,20 @@ export function builtinAgentDisplayName(name: string): string {
     default: return name
   }
 }
+
+/**
+ * `agentOrDefaultLabel` for a slot whose live session reports the crew (or,
+ * with no crew, the agent spec) it runs as. That report wins over the slot's
+ * stored selection, which a fallback or a not-yet-applied switch can leave
+ * naming an agent that is not running; an agent-less slot keeps its
+ * inherited-default marker, now on the agent it actually resolved to.
+ */
+export function sessionAgentLabel(
+  agent: string | undefined,
+  servedAgent: string | null | undefined,
+  defaultAgent: string,
+  kind?: string,
+): string {
+  if (!servedAgent || servedAgent === agent) return agentOrDefaultLabel(agent, defaultAgent, kind)
+  return agent ? servedAgent : agentOrDefaultLabel('', servedAgent)
+}
