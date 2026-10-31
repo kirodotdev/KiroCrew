@@ -77,8 +77,8 @@ def _session_tools() -> tuple[Tool, ...]:
                             "therefore gets a second conductor, which has no fs_write and "
                             "cannot do the work. Name the agent the child needs "
                             "explicitly \u2014 kirocrew-worker for a leaf work item. "
-                            "In a crewmate's own chat this field is not used: the "
-                            "session is always that crewmate's own worker."
+                            "In a Jam's own chat this field is not used: the "
+                            "session is always that Jam's own worker."
                         ),
                     },
                     "agent_kind": {
@@ -86,7 +86,7 @@ def _session_tools() -> tuple[Tool, ...]:
                         "enum": ["template"],
                         "description": (
                             "Pass 'template' to run the shared template `agent` names "
-                            "on YOUR OWN memory, even when a crew member carries the "
+                            "on YOUR OWN memory, even when a Jam carries the "
                             "same name. Omit for the usual name-first resolution (a "
                             "member wins, with its own memory). Always pass 'template' "
                             "for kirocrew-worker: a worker needs no memory of its own, "
@@ -110,7 +110,7 @@ def _session_tools() -> tuple[Tool, ...]:
                             "Model the new session starts on, pinned exactly as if the "
                             "person had picked it in the session's model dropdown: an id "
                             "from that same list, or 'auto'. If omitted: when YOU are a "
-                            "crewmate, the child gets a copy of your profile's worker model "
+                            "Jam, the child gets a copy of your profile's worker model "
                             "(or your own model when none is set), made at creation, so a "
                             "later profile change does not reach it; otherwise it uses the "
                             "agent's or the global default. A well-formed id the account "
@@ -125,9 +125,9 @@ def _session_tools() -> tuple[Tool, ...]:
                         "description": (
                             "Reasoning effort the new session starts at, one of the five "
                             "standard levels: 'low', 'medium', 'high', 'xhigh', 'max'. "
-                            "If omitted, it is filled the same way as `model`: a crewmate's "
+                            "If omitted, it is filled the same way as `model`: a Jam's "
                             "child gets a copy of the profile's worker effort (or the "
-                            "crewmate's own), made at creation; anyone else's child keeps "
+                            "Jam's own), made at creation; anyone else's child keeps "
                             "the model's default."
                         ),
                     },
@@ -454,7 +454,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "workers it created as their work changes. The new title is final, the "
                 "same as a manual rename: the automatic titler stops refreshing that "
                 "session. Metadata only; the transcript, model and any running turn "
-                "are untouched. A crew member or an agent-created session may rename "
+                "are untouched. A Jam or an agent-created session may rename "
                 "only itself and sessions it created; a scheduled run may rename only "
                 "sessions it created, never its own session. ARCHIVED (history) "
                 "sessions are not addressable."
@@ -551,7 +551,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "session_send, session_read_message, chat_folder_move_session and "
                 "chat_tag_assign all work on it afterwards. A session that is already "
                 "open is refused with its live key — just use that. Only dashboard "
-                "sessions in the caller's own workspace are addressable; a crew member "
+                "sessions in the caller's own workspace are addressable; a Jam "
                 "or agent-created session may revive only a session it created itself, verified against "
                 "the gateway's crew-log lineage (on by default; refused ownership_unverified "
                 "when the log is off, unseeded, or predates the session)."
@@ -602,7 +602,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "reviving, e.g. when asked to reopen last week's investigation in a "
                 "folder. Only sessions session_revive would accept for this caller "
                 "are listed: same workspace, not incognito or temporary, not "
-                "app-scoped or channel-linked; a crew member or agent-created "
+                "app-scoped or channel-linked; a Jam or agent-created "
                 "session sees only sessions it created itself (the same crew-log "
                 "lineage check session_revive applies). Live sessions are not here; "
                 "chat_folder_tree lists those."
@@ -924,7 +924,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "`not_creator`. A fenced caller takes direct management back only "
                 "with the chain on, by handing the session to itself while it still "
                 "manages the new manager; with it off, no fenced caller can. "
-                "Fenced means a session an agent created, a crewmate, a scheduled "
+                "Fenced means a session an agent created, a Jam, a scheduled "
                 "run, a channel session, or the Conductor while "
                 "`agent.session_control` is off. An agent in a person's own tab is "
                 "not fenced for send, read, stop, close and adopt; "

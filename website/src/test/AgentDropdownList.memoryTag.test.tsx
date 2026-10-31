@@ -27,7 +27,7 @@ const PAIR: AgentItem[] = [
 ]
 
 function rowOf(kind: 'member' | 'template', name: string): HTMLElement {
-  const group = screen.getByRole('group', { name: kind === 'member' ? 'Mates' : 'Custom agents' })
+  const group = screen.getByRole('group', { name: kind === 'member' ? 'Jams' : 'Custom agents' })
   const row = within(group).getAllByRole('option').find(o => o.textContent?.includes(name))
   if (!row) throw new Error(`no ${kind} row for ${name}`)
   return row

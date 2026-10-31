@@ -62,7 +62,7 @@ def _no_file() -> web.Response:
     return _deny(
         409,
         "no_crewmate_file",
-        "this crewmate has no worker settings of its own yet, so nothing can be added to it",
+        "this Jam has no worker settings of its own yet, so nothing can be added to it",
     )
 
 
@@ -153,8 +153,8 @@ async def api_member_self_capabilities(request: web.Request) -> web.Response:
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, OP_FIND_CAPABILITIES, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can read this")
+        _audit(sk, OP_FIND_CAPABILITIES, "denied", "not a Jam thread")
+        return _deny(403, "not_a_crewmate", "only a Jam, in its own chat, can read this")
     member, _store = who
     if not await asyncio.to_thread(crewmate_dynamic_capabilities.enabled_for, member):
         # The crewmate-driven capability path, this crewmate's own preview
@@ -324,7 +324,7 @@ async def additions_to_draft(
     if not await asyncio.to_thread(_is_mate, member):
         raise catalog_mod.AdditionError(
             "no_crewmate_file",
-            "this crewmate has no worker settings of its own yet, so nothing can be added",
+            "this Jam has no worker settings of its own yet, so nothing can be added",
         )
     catalog = await asyncio.to_thread(_service(app)._mate_catalog, member)
     spec = await asyncio.to_thread(catalog_mod.worker_spec, member)

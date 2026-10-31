@@ -139,7 +139,7 @@ describe('createMatesProvider — matching', () => {
   it('marks the interpolated identity, not the same letters earlier in the phrase', async () => {
     // The case the `alerts-bot` fixture above cannot catch: the offsets were shifted by
     // `gloss.indexOf(identity)`, which finds where the identity's CHARACTERS first appear
-    // in the rendered prose rather than where the template put the value. A mate named
+    // in the rendered prose rather than where the template put the value. A Jam named
     // `cal` glosses to "also called cal", whose first `cal` is inside "called" -- so the
     // highlight marked the catalog's own word and left the name bare. `al`, `ed`, `so`
     // and `led` are the other names that land on it in English, and a locale whose phrase

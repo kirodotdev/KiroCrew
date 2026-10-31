@@ -84,7 +84,7 @@ def _publish(state: Any, slot_key: str, text: str, member: dict[str, str]) -> No
         payload.group_key = slot_key
         state.notification_bus.push(payload)
     except NotificationValidationError:
-        logger.warning("could not publish a crewmate message note for slug=%r", member.get("slug"))
+        logger.warning("could not publish a Jam message note for slug=%r", member.get("slug"))
 
 
 async def _resolve_and_publish(state: Any, slot_key: str, text: str) -> None:
@@ -94,7 +94,7 @@ async def _resolve_and_publish(state: Any, slot_key: str, text: str) -> None:
         if member is not None:
             _publish(state, slot_key, text, member)
     except Exception:  # noqa: BLE001 -- a note must never surface into the turn
-        logger.debug("crewmate message note failed", exc_info=True)
+        logger.debug("Jam message note failed", exc_info=True)
 
 
 def post_turn_reply(state: Any, slot: Any, reply_mids: Iterable[str]) -> None:
@@ -120,7 +120,7 @@ def post_turn_reply(state: Any, slot: Any, reply_mids: Iterable[str]) -> None:
                 post_member_message(state, slot.key, row)
                 return
     except Exception:  # noqa: BLE001 -- a note must never surface into the turn
-        logger.debug("crewmate turn note failed", exc_info=True)
+        logger.debug("Jam turn note failed", exc_info=True)
 
 
 def post_member_message(state: Any, slot_key: str, msg: dict[str, Any]) -> None:

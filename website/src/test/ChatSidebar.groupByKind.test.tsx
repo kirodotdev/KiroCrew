@@ -1,7 +1,7 @@
 /**
  * Chat sidebar -- the filter menu's "Group by kind" option. Off by default, and
  * then the list is exactly as before. On, each list splits into Crew Mode / Normal
- * / From Mates sections; pinned rows, folders and the filters keep working.
+ * / From Jams sections; pinned rows, folders and the filters keep working.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, fireEvent, screen, waitFor } from '@testing-library/react'
@@ -158,11 +158,11 @@ describe('Group by kind', () => {
     expect(drawn(container)).toEqual([
       '# Ultra Mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
-      '# From Mates', 'mate chat', 'mate child',
+      '# From Jams', 'mate chat', 'mate child',
     ])
     expect(screen.queryByText('crew worker')).toBeNull()
     // Headers are headings, so assistive tech can jump between sections.
-    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['Ultra Mode', 'Normal', 'From Mates'])
+    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['Ultra Mode', 'Normal', 'From Jams'])
   })
 
   it('the menu row toggles it, reports its state, and the choice persists across a remount', async () => {
@@ -198,7 +198,7 @@ describe('Group by kind', () => {
     expect(order.slice(1)).toEqual([
       '# Ultra Mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
-      '# From Mates', 'mate chat', 'mate child',
+      '# From Jams', 'mate chat', 'mate child',
     ])
   })
 
@@ -238,7 +238,7 @@ describe('Group by kind', () => {
     const { container } = renderSidebar(slots, folders)
     const lane = await screen.findByTestId('flat-view-lane')
     await waitFor(() => expect(screen.queryByText('filed crew')).not.toBeNull())
-    expect(drawn(container, lane)).toEqual(['# Ultra Mode', 'filed crew', '# Normal', 'filed normal', '# From Mates', 'mate chat'])
+    expect(drawn(container, lane)).toEqual(['# Ultra Mode', 'filed crew', '# Normal', 'filed normal', '# From Jams', 'mate chat'])
   })
 })
 
@@ -267,7 +267,7 @@ describe('Group by kind and sleeping sessions', () => {
     expect(drawn(container, region)).toEqual([
       '# Ultra Mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
-      '# From Mates', 'mate chat',
+      '# From Jams', 'mate chat',
     ])
   })
 })
@@ -283,7 +283,7 @@ describe('Group by kind and the roster', () => {
     // A session switch empties `installedAgents`; `rowAgents` keeps the last roster.
     const { container } = renderSidebar(slots, [], { rowAgents: [{ name: 'ava', source: 'builtin', selection_kind: 'member' }] })
     await waitFor(() => expect(screen.queryByText('mate chat')).not.toBeNull())
-    expect(drawn(container)).toEqual(['# Normal', 'normal one', '# From Mates', 'mate chat'])
+    expect(drawn(container)).toEqual(['# Normal', 'normal one', '# From Jams', 'mate chat'])
   })
 })
 
@@ -306,7 +306,7 @@ describe('Group by kind in the conductor lane', () => {
       'pinned mate',
       '# Ultra Mode', 'crew chat',
       '# Normal', 'normal one',
-      '# From Mates', 'mate chat',
+      '# From Jams', 'mate chat',
     ])
   })
 })

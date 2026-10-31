@@ -190,7 +190,7 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         )
     if member not in cfg.agents:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Jam for this slug", "code": "member_not_found"}, status=404
         )
     colliding = _member_names_for_slug(cfg, slug)
     if colliding != [member]:

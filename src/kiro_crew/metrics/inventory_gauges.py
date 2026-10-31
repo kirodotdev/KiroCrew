@@ -894,7 +894,7 @@ def register_inventory_gauges(meter: "Meter") -> None:
             GAUGE_MEMBERS,
             callbacks=[_observations(PROBE_MEMBERS, read_members)],
             unit="1",
-            description="Crewmates the person created on this install",
+            description="Jams the person created on this install",
         )
         meter.create_observable_gauge(
             GAUGE_PROBE_FAILURES,

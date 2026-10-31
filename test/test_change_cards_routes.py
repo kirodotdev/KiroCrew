@@ -816,10 +816,10 @@ def test_crewmate_delete_memory_line_uses_the_display_name():
     text = catalog.describe_manual_change(
         ("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, "PR跟进"
     )
-    assert text == "deleted mate “PR跟进”"
+    assert text == "deleted Jam “PR跟进”"
     assert (
         catalog.describe_manual_change(("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, None)
-        == "deleted mate “pr”"
+        == "deleted Jam “pr”"
     )
 
 

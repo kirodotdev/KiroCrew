@@ -151,11 +151,11 @@ PACKAGE_REFUSALS: Final[dict[str, str]] = {
 #: create one, tell a human, stop reaching for it.
 _PACKAGE_REMEDIES: Final[dict[str, str]] = {
     "empty": (
-        "this crewmate has no dashboard package yet, so it has no field to write: "
+        "this Jam has no dashboard package yet, so it has no field to write: "
         "create one with a Model that declares this field, then write it"
     ),
     "error": (
-        "this crewmate's dashboard package has a Model that does not load, so there is "
+        "this Jam's dashboard package has a Model that does not load, so there is "
         "nothing to check a write against -- ask the human to repair or replace the "
         "package"
     ),
@@ -411,7 +411,7 @@ def check_write(
         raise WriteRefused(
             "no_instance",
             field,
-            "this crewmate has no dashboard yet, so it has no field to write: adopt a "
+            "this Jam has no dashboard yet, so it has no field to write: adopt a "
             "template first, then write its agentic fields",
         )
     writable = agentic_fields(instance.manifest)

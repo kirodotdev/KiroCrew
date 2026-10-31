@@ -225,7 +225,7 @@ async def session_folder_principal(caller_history_key: str) -> str:
 
 def _clean_name(display_name: str, fallback: str) -> str:
     name = (display_name or "").strip()[:100]
-    return name or fallback.strip()[:100] or "Mate"
+    return name or fallback.strip()[:100] or "Jam"
 
 
 def display_name_for_principal(principal: str) -> str:

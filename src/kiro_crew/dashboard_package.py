@@ -266,7 +266,7 @@ def _from_bound_package(member: str, record: object) -> PackageRead:
         # key in the ``session:`` scope needs the lookup to use that scope rather than
         # prefix it, and that belongs to the change that introduces the key.
         logger.warning(
-            "dashboard package: %r is not a crewmate binding, so no package can be "
+            "dashboard package: %r is not a Jam binding, so no package can be "
             "bound to it; falling through to the template instance: %s",
             member,
             exc,

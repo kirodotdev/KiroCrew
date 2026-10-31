@@ -110,7 +110,7 @@ async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     except MemberSlugError:
         return _bad("member_slug_mismatch", "member does not match slug")
     if member not in cfg.agents:
-        return _bad("member_not_found", "no crew member for this slug", status=404)
+        return _bad("member_not_found", "no Jam for this slug", status=404)
     if _member_names_for_slug(cfg, slug) != [member]:
         return _bad(
             "dashboard_slug_ambiguous",
@@ -1079,7 +1079,7 @@ async def api_member_dashboard_lock(request: web.Request) -> web.Response:
     agent = _refuse_agent_caller(
         request,
         "members.dashboard_lock",
-        "only the person can lock or unlock a dashboard, from the crewmate's Profile card",
+        "only the person can lock or unlock a dashboard, from the Jam's Profile card",
     )
     if agent is not None:
         return agent

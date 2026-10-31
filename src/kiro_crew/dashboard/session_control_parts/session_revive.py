@@ -537,7 +537,7 @@ async def revive_session(
                 _bounded_folder_id(meta.get("folder_id")),
             )
         except MateHomeLockedError:
-            raise deny("this folder belongs to a mate", "mate_home_locked", status=403) from None
+            raise deny("this folder belongs to a Jam", "mate_home_locked", status=403) from None
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller

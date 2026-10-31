@@ -326,7 +326,7 @@ describe('FolderConfigModal', () => {
       open({ installedAgents: PAIR })
       await openAgentPopup()
       const rows = screen.getAllByRole('option').map(o => o.textContent)
-      expect(rows).toContain('jira-ticket · Mates')
+      expect(rows).toContain('jira-ticket · Jams')
       expect(rows).toContain('jira-ticket · Custom agents')
       expect(rows.join('|')).not.toContain('Jira ticket')
     })
@@ -343,13 +343,13 @@ describe('FolderConfigModal', () => {
 
     it('names the mate in the closed picker after it is picked', async () => {
       open({ installedAgents: PAIR })
-      await pick('Mates')
-      expect(agentTrigger()).toHaveTextContent('jira-ticket · Mates')
+      await pick('Jams')
+      expect(agentTrigger()).toHaveTextContent('jira-ticket · Jams')
     })
 
     it('saves the mate key when the mate row is picked', async () => {
       const { onSubmit } = open({ installedAgents: PAIR })
-      await pick('Mates')
+      await pick('Jams')
       expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'Jira ticket' }))
     })
 

@@ -553,7 +553,7 @@
       "label": "Default Model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.default-model",
-      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Mates, or pick one inside a session to override it there.",
+      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Jams, or pick one inside a session to override it there.",
       "hint": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open."
     },
     {
@@ -1024,11 +1024,11 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
-      "id": "developer.agent-harness-per-mate",
-      "label": "Agent harness per mate",
+      "id": "developer.agent-harness-per-jam",
+      "label": "Agent harness per Jam",
       "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-per-mate",
-      "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
+      "route": "/settings/developer/feature-previews?highlight=developer.agent-harness-per-jam",
+      "description": "Adds an Agent harness setting to each Jam's profile, so one Jam can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default."
     },
     {
       "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
@@ -1116,11 +1116,11 @@
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
-      "id": "developer.reply-threads-on-mate-chat-messages",
-      "label": "Reply threads on mate chat messages",
+      "id": "developer.reply-threads-on-jam-chat-messages",
+      "label": "Reply threads on Jam chat messages",
       "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.reply-threads-on-mate-chat-messages",
-      "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
+      "route": "/settings/developer/feature-previews?highlight=developer.reply-threads-on-jam-chat-messages",
+      "hint": "Let any message in a Jam's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
     },
     {
       "id": "developer.run-a-local-gateway",

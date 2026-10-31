@@ -333,7 +333,7 @@ async def create_session(
             raise SessionControlError("folder cap reached", code="folder_cap_reached") from None
         except MateHomeLockedError:
             raise SessionControlError(
-                "this folder belongs to a mate", status=403, code="mate_home_locked"
+                "this folder belongs to a Jam", status=403, code="mate_home_locked"
             ) from None
     if folder_id:
         folder_snapshot = await state.read_folders(
@@ -387,8 +387,8 @@ async def create_session(
         # come from the record, so without one the child would be the worker on
         # the shared store with no crewmate, which no turn of it can run.
         raise SessionControlError(
-            "this chat has no memory record, so its crewmate's worker cannot be "
-            "opened from it; open a new chat with the crewmate",
+            "this chat has no memory record, so its Jam's worker cannot be "
+            "opened from it; open a new chat with the Jam",
             code="conductor_record_missing",
         )
     if own_worker:
@@ -1564,7 +1564,7 @@ def _inherited_pin_foreign_to_child(
     except CrewmateHarnessUnavailable:
         # The crewmate's own harness stopped being startable (a policy narrowed
         # it): the model it chose there is stale, dropped like any stale pin.
-        return "the crewmate's model pin was chosen for a harness this gateway cannot start"
+        return "the Jam's model pin was chosen for a harness this gateway cannot start"
     member_namespace = capabilities_for(own_backend).model_id_namespace
     if not validated_for_worker and child_namespace != member_namespace:
         pin = crewmate_pin_for(cfg, crew)
@@ -1572,11 +1572,11 @@ def _inherited_pin_foreign_to_child(
             pin.display_stored if pin is not None else (cfg.agent.member_acp_backend or "default")
         )
         return (
-            f"the crewmate's model pin was chosen for its own harness ({setting}), "
+            f"the Jam's model pin was chosen for its own harness ({setting}), "
             f"and the worker runs on {child_backend or 'the default backend'}"
         )
     if not model_scope.pin_applies(model_name, child_namespace):
-        return "the crewmate's model pin is not served by the harness the worker runs on"
+        return "the Jam's model pin is not served by the harness the worker runs on"
     return None
 
 

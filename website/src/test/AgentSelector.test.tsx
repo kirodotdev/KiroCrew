@@ -49,14 +49,14 @@ describe('AgentSelector', () => {
 
 describe('crewDisplayName', () => {
   it('names the first mate by its localized label on any template; default keeps its name', () => {
-    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Mate')
+    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Jam')
     // A label of the user's own wins.
     expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew', display_name: 'Ada' })).toBe('Ada')
     // The reserved default member is presented exactly as before.
     expect(crewDisplayName({ name: 'default', kiro_agent: 'kirocrew' })).toBe('default')
     expect(crewDisplayName({ name: 'default' })).toBe('default')
     // The first crewmate is its key, whatever template it runs.
-    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Mate')
+    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Jam')
     expect(crewDisplayName({ name: 'helper', kiro_agent: 'kirocrew' })).toBe('helper')
   })
 })

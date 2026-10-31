@@ -905,7 +905,7 @@ def rebuild_agent_config(
         try:
             first_crewmate.create_first_crewmate_once()
         except Exception:
-            logger.warning("First crewmate creation failed", exc_info=True)
+            logger.warning("First Jam creation failed", exc_info=True)
 
         # Install kirocrew-heartbeat agent (used by HeartbeatService for unattended polling)
         try:

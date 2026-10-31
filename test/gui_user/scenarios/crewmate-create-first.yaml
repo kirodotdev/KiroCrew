@@ -5,12 +5,12 @@
 # The target boots once for the whole run with the seeded roster (see
 # scripts/gui-user-test/boot.sh), so the page may already list mates when
 # this scenario starts. The steps therefore describe BOTH entry points to the
-# same dialog: the "New mate" button in the empty-page hero, and the plus
-# menu's "New mate" row at the top of the mate list when the roster is
+# same dialog: the "New Jam" button in the empty-page hero, and the plus
+# menu's "New Jam" row at the top of the mate list when the roster is
 # not empty. The same boot also serves this scenario's retry, which finds the
 # mate attempt 1 made: the name is "Radar{attempt_suffix}" (attempt 1
 # "Radar", attempt 2 "Radar 2"), so the retry is not refused as a duplicate and
-# leaves no refused, dirty "New mate" form for the next scenario to land on.
+# leaves no refused, dirty "New Jam" form for the next scenario to land on.
 # On those older builds the Feature Previews card is titled "Mates", "Crew
 # Members" or "Crew Members and Crew Mode"; the steps list all three.
 name: crewmate-create-first
@@ -30,12 +30,12 @@ steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
   - If the Feature Previews list has a preview whose title starts with "Mates" (or "Crew Members", or "Crew Members and Crew Mode"), make sure it is ON -- click it once if it is off. Current builds have no such preview because Mates is always on; then go straight on. Ignore the Webhooks preview.
   - Open the Mates page. A "Mates" item is in the left rail, directly under Sessions; click it.
-  - If the page shows the heading "No mates yet", click the "New mate" button below it. Otherwise the page already lists mates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens (its one row reads "New mate"), click "New mate". Either way a dialog titled "New mate" opens.
+  - If the page shows the heading "No Jams yet", click the "New Jam" button below it. Otherwise the page already lists mates; click the small plus button at the top of that list (its tooltip reads "Add…") and, in the small menu that opens (its one row reads "New Jam"), click "New Jam". Either way a dialog titled "New Jam" opens.
   - In the dialog, type exactly "Radar{attempt_suffix}" in the "Name" field.
   - In the field labelled "Goal" (marked optional), type exactly "Keep release notes up to date". Leave the Advanced section as it is.
-  - Click the "Create mate" button and wait about three seconds.
+  - Click the "Create Jam" button and wait about three seconds.
 expectations:
-  - The "New mate" dialog is closed.
+  - The "New Jam" dialog is closed.
   - A chat conversation is open and "Radar{attempt_suffix}" is visible in its header or on the selected mate card.
   - Without you typing anything, the conversation shows a reply bubble from the mate (on this test build it reads "pong from the fake ACP backend"). The mate speaks first; the note that starts it is hidden, so no bubble from you is expected above it.
 max_steps: 18

@@ -133,7 +133,7 @@ describe('crew-member-mark.svg line weight', () => {
 describe('Crew Members nav icon', () => {
   it('uses the Crew Member mark', () => {
     const surface = getBuiltinSurface('members')
-    expect(surface?.label).toBe('Mates')
+    expect(surface?.label).toBe('Jams')
     expect((surface?.icon as ReactElement).type).toBe(CrewMemberMark)
   })
 })

@@ -223,7 +223,7 @@ function pressEscape() {
 
 /** A roster card, addressed by the accessible name the card exposes. */
 function crewCard(name: string) {
-  return screen.getByRole('button', { name: `Edit mate ${name}` })
+  return screen.getByRole('button', { name: `Edit Jam ${name}` })
 }
 
 /** The open crewmate editor, or null. It is the shared editor the Crewmates
@@ -243,7 +243,7 @@ async function openEditor(name: string): Promise<HTMLElement> {
  *  uses — not the full editor sheet — so it is titled "New crewmate". */
 async function openCreate(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
-  return await screen.findByRole('dialog', { name: 'New mate' })
+  return await screen.findByRole('dialog', { name: 'New Jam' })
 }
 
 /**
@@ -339,28 +339,28 @@ describe('crew roster — memory ownership notice', () => {
 describe('crew roster — filtering', () => {
   it('narrows the visible cards', async () => {
     await renderRoster()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Filter mates…' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter Jams…' }), {
       target: { value: 'oncall' },
     })
     await waitFor(() => expect(screen.getAllByTestId('crew-card')).toHaveLength(1))
     expect(crewCard('oncall')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit mate kirocrew' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit Jam kirocrew' })).not.toBeInTheDocument()
   })
 
   it('shows the filter empty state when nothing matches', async () => {
     await renderRoster()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Filter mates…' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter Jams…' }), {
       target: { value: 'no-such-crew' },
     })
     await waitFor(() => expect(screen.queryAllByTestId('crew-card')).toHaveLength(0))
-    expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No mates match your filter')
+    expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No Jams match your filter')
   })
 
   it('shows the zero-crew empty state when there are no crews at all', async () => {
     mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: '' })
     renderPage()
     await waitFor(() =>
-      expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No mates yet'),
+      expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No Jams yet'),
     )
     // Distinct copy from the filter case — a first run is not a failed search.
     expect(screen.getByTestId('empty-state-title')).not.toHaveTextContent('match your filter')
@@ -448,12 +448,12 @@ describe('crew roster — description', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
-    const row = screen.getByRole('button', { name: 'Edit mate oncall' }).closest('tr')!
+    const row = screen.getByRole('button', { name: 'Edit Jam oncall' }).closest('tr')!
     expect(within(row).getByText('No description')).toBeInTheDocument()
 
     // And the default crew keeps its own hint in BOTH views, rather than one
     // view explaining why it matters and the other calling it undescribed.
-    const defaultRow = screen.getByRole('button', { name: 'Edit mate kirocrew' }).closest('tr')!
+    const defaultRow = screen.getByRole('button', { name: 'Edit Jam kirocrew' }).closest('tr')!
     expect(within(defaultRow).getByText('Used for all new chats')).toBeInTheDocument()
   })
 })
@@ -484,7 +484,7 @@ describe('crew roster — view toggle', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
-    const row = screen.getByRole('button', { name: 'Edit mate oncall' }).closest('tr')!
+    const row = screen.getByRole('button', { name: 'Edit Jam oncall' }).closest('tr')!
     expect(within(row).getByText('oncall-agent')).toBeInTheDocument()
     expect(within(row).getByText(i18nT('pages.kiroCrewAgentsPage.memory_label_shared'))).toBeInTheDocument()
     expect(within(row).getByText('claude-opus-5')).toBeInTheDocument()
@@ -495,7 +495,7 @@ describe('crew roster — view toggle', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit mate oncall' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Jam oncall' }))
     expect(await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })).toBeInTheDocument()
   })
 
@@ -506,7 +506,7 @@ describe('crew roster — view toggle', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
-    const nameControl = screen.getByRole('button', { name: 'Edit mate oncall' })
+    const nameControl = screen.getByRole('button', { name: 'Edit Jam oncall' })
     fireEvent.click(nameControl)
     await screen.findByTestId('crew-editor-next-dialog', {}, { timeout: EDITOR_OPEN_TIMEOUT_MS })
     // A second dialog would mean the row handler fired on top of the control's.
@@ -537,7 +537,7 @@ describe('crew roster — view toggle', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'List' }))
     await screen.findByRole('table')
 
-    const row = screen.getByRole('button', { name: 'Edit mate oncall' }).closest('tr')!
+    const row = screen.getByRole('button', { name: 'Edit Jam oncall' }).closest('tr')!
     // Memory is doubled; the workspaces are distinct, so exactly one marker.
     expect(within(row).getAllByText('shared')).toHaveLength(1)
   })
@@ -546,7 +546,7 @@ describe('crew roster — view toggle', () => {
     mockApi.kirocrewAgents.mockResolvedValue({ agents: [], default_agent: '' })
     renderPage()
     await waitFor(() =>
-      expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No mates yet'),
+      expect(screen.getByTestId('empty-state-title')).toHaveTextContent('No Jams yet'),
     )
     expect(screen.queryByRole('radio', { name: 'List' })).not.toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Cards' })).not.toBeInTheDocument()
@@ -566,7 +566,7 @@ describe('crew editor — opening', () => {
     expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
   })
 
-  it('opens the simple New mate dialog from "New mate"', async () => {
+  it('opens the simple New Jam dialog from "New Jam"', async () => {
     await renderRoster()
     const sheet = await openCreate()
     // The create door opens the Crewmates page's own dialog, not the full
@@ -574,7 +574,7 @@ describe('crew editor — opening', () => {
     // Advanced settings are already unfolded in the same card.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
     // Unfolded, the card ends its Advanced settings with a second Create too.
-    expect(within(sheet).getAllByRole('button', { name: 'Create mate' })).toHaveLength(2)
+    expect(within(sheet).getAllByRole('button', { name: 'Create Jam' })).toHaveLength(2)
     expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     expect(within(sheet).getByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(within(sheet).queryByRole('combobox', { name: 'Built from' })).toBeNull()
@@ -640,7 +640,7 @@ describe('crew editor — Mate identity', () => {
     const mate = { name: 'mate', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, mate] })
     await renderRoster(3)
-    const sheet = await openEditor('Mate')
+    const sheet = await openEditor('Jam')
     renameTo(sheet, 'Skipper')
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
@@ -707,9 +707,9 @@ describe('crew editor — delete', () => {
     // First press arms the confirm; it must NOT delete. A one-click destructive
     // button in a slide-in panel was the flagged regret risk.
     gotoPane(sheet, 'danger')
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Delete mate' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Delete Jam' }))
     expect(mockApi.deleteKirocrewAgent).not.toHaveBeenCalled()
-    expect(within(sheet).getByText(/Delete mate oncall\?/)).toBeInTheDocument()
+    expect(within(sheet).getByText(/Delete Jam oncall\?/)).toBeInTheDocument()
 
     fireEvent.click(within(sheet).getByTestId('next-confirm-delete-crew'))
     await waitFor(() => expect(mockApi.deleteKirocrewAgent).toHaveBeenCalledWith('oncall'))
@@ -720,7 +720,7 @@ describe('crew editor — delete', () => {
     const sheet = await openEditor('oncall')
 
     gotoPane(sheet, 'danger')
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Delete mate' }))
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Delete Jam' }))
     fireEvent.click(within(sheet).getByTestId('next-cancel-delete-crew'))
     expect(within(sheet).queryByTestId('next-confirm-delete-crew')).not.toBeInTheDocument()
     expect(mockApi.deleteKirocrewAgent).not.toHaveBeenCalled()
@@ -732,7 +732,7 @@ describe('crew editor — delete', () => {
 
     // The backend refuses to delete the default crew, so the affordance is not
     // offered rather than offered-then-rejected.
-    expect(within(sheet).queryByRole('button', { name: 'Delete mate' })).not.toBeInTheDocument()
+    expect(within(sheet).queryByRole('button', { name: 'Delete Jam' })).not.toBeInTheDocument()
     expect(within(sheet).queryByTestId('next-rail-danger')).not.toBeInTheDocument()
   })
 
@@ -740,10 +740,10 @@ describe('crew editor — delete', () => {
     const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
     mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
     await renderRoster(3)
-    const sheet = await openEditor('Mate')
+    const sheet = await openEditor('Jam')
     expect(within(sheet).getByTestId('next-rail-danger')).toBeEnabled()
     gotoPane(sheet, 'danger')
-    expect(within(sheet).getByRole('button', { name: 'Delete mate' })).toBeInTheDocument()
+    expect(within(sheet).getByRole('button', { name: 'Delete Jam' })).toBeInTheDocument()
   })
 })
 
@@ -1281,7 +1281,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
   it('deep link ?new=1 opens the create dialog directly, then strips the param', async () => {
     renderPage('/capabilities?tab=crews&new=1')
     // A "New crew" deep link with no origin opens this page's create dialog.
-    await screen.findByRole('dialog', { name: 'New mate' })
+    await screen.findByRole('dialog', { name: 'New Jam' })
     // Consumed: closing the form must not re-open it on the next render, and
     // Back must not land on a form the user already left.
     await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent(/^\?tab=crews$/))

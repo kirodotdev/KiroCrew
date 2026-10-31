@@ -1987,7 +1987,7 @@
       "title": "Reply in thread on a mate's bubble opens the thread panel and the bubble gains a replies footer",
       "user_story": "As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Mates > enable Reply threads on mate chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
+      "entry_path": "Settings > Developer > Mates > enable Reply threads on Jam chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
       "preconditions": {
         "seed": "rich",
         "members": [

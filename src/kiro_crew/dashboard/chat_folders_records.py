@@ -478,7 +478,7 @@ class FolderMateHomeLockedError(FolderOwnershipError):
 
     def __init__(self) -> None:
         FolderCreateError.__init__(
-            self, "this folder belongs to a mate and is managed for you", "mate_home_locked"
+            self, "this folder belongs to a Jam and is managed for you", "mate_home_locked"
         )
 
 

@@ -270,13 +270,13 @@ def _crewmate_binding_refusal(cfg: Any, slug: str) -> str | None:
     owners = _member_names_for_slug(cfg, slug)
     if not owners:
         return _refuse_binding(
-            f"bound_to 'crewmate:{slug}' names no crew member, so nothing can ever "
-            "render this package: a crewmate's dashboard is resolved from the roster "
-            "by that slug. Create the crewmate first, or bind to an existing one"
+            f"bound_to 'Jam:{slug}' names no Jam, so nothing can ever "
+            "render this package: a Jam's dashboard is resolved from the roster "
+            "by that slug. Create the Jam first, or bind to an existing one"
         )
     if len(owners) > 1:
         return _refuse_binding(
-            f"bound_to 'crewmate:{slug}' is ambiguous: {len(owners)} crew members "
+            f"bound_to 'Jam:{slug}' is ambiguous: {len(owners)} Jams "
             "resolve to that slug, so this page would belong to none of them and every "
             "read of it is refused 'dashboard_slug_ambiguous'. Ask the human to rename "
             "one of them"

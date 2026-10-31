@@ -704,9 +704,9 @@ def test_hidden_turn_language_reads_the_configured_dashboard_language(
 @pytest.mark.parametrize(
     ("change", "outcome"),
     [
-        ("turn", "skipped: the mate is busy"),
-        ("queue", "skipped: the mate is busy"),
-        ("reopen", "skipped: the mate's thread is not open"),
+        ("turn", "skipped: the Jam is busy"),
+        ("queue", "skipped: the Jam is busy"),
+        ("reopen", "skipped: the Jam's thread is not open"),
     ],
     ids=["a-turn-started", "a-message-queued", "the-thread-was-reopened"],
 )

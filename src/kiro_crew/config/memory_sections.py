@@ -641,9 +641,7 @@ class MemoryStoreConfig:
     )
     owner_member: str = field(
         default="",
-        metadata=_meta(
-            "Owner Member", "Display label of the Crew Member owning this memory store."
-        ),
+        metadata=_meta("Owner Member", "Display label of the Jam owning this memory store."),
     )
     memory_version: int = field(
         default=1,

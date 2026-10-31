@@ -100,7 +100,7 @@ DASHBOARD_MANAGER_AGENT_NAME = DASHBOARD_MANAGER_AGENT_FILENAME[: -len(".json")]
 # may change.
 ASSISTANT_MEMBER_NAME = "mate"
 #: The label the first crewmate shows while its ``display_name`` is empty.
-ASSISTANT_DEFAULT_DISPLAY_NAME = "Mate"
+ASSISTANT_DEFAULT_DISPLAY_NAME = "Jam"
 
 
 #: Agent names a chat session treats as "the kirocrew default" for context

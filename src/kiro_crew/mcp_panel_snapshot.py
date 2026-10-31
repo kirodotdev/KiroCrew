@@ -29,7 +29,7 @@ READ_TIMEOUT_SECS: Final[float] = 30.0
 TOOL_DEFINITION: Final[dict[str, Any]] = {
     "name": TOOL_NAME,
     "description": (
-        "LOOK at your crewmate's own Dashboard page as the person sees it: the gateway "
+        "LOOK at your Jam's own Dashboard page as the person sees it: the gateway "
         "draws the page in force once, over your real data, in the same offline browser "
         "run dashboard_save uses, and hands back a PNG FILE PATH. Open that file with your "
         "file-read tool to see it, and judge both what it says and how it looks. One "
@@ -52,7 +52,7 @@ SHOT_NOTE: Final[str] = (
     "  ({width}x{height} png, {size}) -- drawn just now over your real data, in the "
     "Dashboard's default light look: the person's own theme pack or dark mode can show "
     "other colours. Open the file with your file-read tool to look at it. It holds your "
-    "crewmate's real values: leave it where it is."
+    "Jam's real values: leave it where it is."
 )
 
 NO_IMAGE: Final[str] = (

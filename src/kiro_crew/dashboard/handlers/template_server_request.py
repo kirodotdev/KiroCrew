@@ -101,7 +101,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Jam asks for its worker's servers with request_capabilities",
         )
     try:
         execution = read_session_execution(slot_history_key(slot))
@@ -119,7 +119,7 @@ def _caller_template(state: Any, slot_key: str, sk: str) -> tuple[str, str, str]
         return (
             "",
             "crewmate_caller",
-            "a crewmate asks for its worker's servers with request_capabilities",
+            "a Jam asks for its worker's servers with request_capabilities",
         )
     return template, "", ""
 

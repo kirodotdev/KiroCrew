@@ -60,7 +60,7 @@ describe('NotificationsPanel channels section', () => {
 
   it('names the crewmate-message channel in words, not by its id', async () => {
     renderPanel()
-    expect(await screen.findByText('Mate messages')).toBeTruthy()
+    expect(await screen.findByText('Jam messages')).toBeTruthy()
     expect(screen.queryByText('member')).toBeNull()
   })
 

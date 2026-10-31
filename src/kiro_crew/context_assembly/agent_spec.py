@@ -573,7 +573,7 @@ def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> s
     except (WorkerKitUnreadable, AgentSpecUnreadable):
         # The session itself is refused where its spec is projected; the
         # contract keeps the worker's base rather than failing the turn's assembly.
-        logger.warning("worker session %s: crewmate prompt unreadable", session_key)
+        logger.warning("worker session %s: Jam prompt unreadable", session_key)
         return worker_base
     merged = merged if isinstance(merged, str) else ""
     addition = merged[len(disk_prompt) :].strip() if merged.startswith(disk_prompt) else ""

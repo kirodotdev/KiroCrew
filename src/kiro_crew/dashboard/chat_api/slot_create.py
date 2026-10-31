@@ -109,7 +109,7 @@ def _mate_home_locked_response() -> web.Response:
     """The 403 for a create that would file a chat into, or out of, a mate's home."""
     return web.json_response(
         {
-            "error": "this folder belongs to a mate and is managed for you",
+            "error": "this folder belongs to a Jam and is managed for you",
             "code": "mate_home_locked",
         },
         status=403,
@@ -186,8 +186,7 @@ async def _check_new_slot_assignment(
             member_store_ownership_holds, cfg, selected, store
         ):
             raise UnknownMemoryStore(
-                f"Crew Member {selected!r} does not own its private memory store; "
-                "no session was created"
+                f"Jam {selected!r} does not own its private memory store; " "no session was created"
             )
 
     chosen = await asyncio.to_thread(

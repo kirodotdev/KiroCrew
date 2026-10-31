@@ -832,7 +832,7 @@ describe('StartupVideoModal — the Meet your Mates intro, a rendered component 
     ...clip,
     id: 'crewmates',
     feature: 'crewmates',
-    title: 'Meet your Mates.',
+    title: 'Meet your Jams.',
     description: 'They find the work, do it, and ask only when they need you.',
     src: '',
     poster: '',

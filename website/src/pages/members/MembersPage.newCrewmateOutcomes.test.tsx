@@ -459,7 +459,7 @@ describe('New mate dialog', () => {
     await rosterRow('oncall')
     await openDialog()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByText('Give your mate a name.')).toBeInTheDocument()
+    expect(await screen.findByText('Give your Jam a name.')).toBeInTheDocument()
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
     // A hint is validation, not a failed request: no error notice renders.
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
@@ -483,7 +483,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the Jam. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/lock held/)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
   })
@@ -504,7 +504,7 @@ describe('New mate dialog', () => {
     // Radix item takes no pointer events, so a title would never show).
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: 'Retry or dismiss the notice about radar before adding another mate.',
+      reason: 'Retry or dismiss the notice about radar before adding another Jam.',
     })
     // The retry lands: the record clears and the + is a + again.
     membersMock.mockResolvedValueOnce({
@@ -535,7 +535,7 @@ describe('New mate dialog', () => {
     // why: a second create here could overwrite the first one's retry.
     expect(await probeAddCrewmate()).toEqual({
       held: true,
-      reason: "Finishing alpha's first message before adding another mate.",
+      reason: "Finishing alpha's first message before adding another Jam.",
     })
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // Alpha's thread confirms: the follow-up is over and the + is a + again.
@@ -574,7 +574,7 @@ describe('New mate dialog', () => {
     await waitFor(() => expect(membersMock).toHaveBeenCalledTimes(2))
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another mate.")
+      expect(cta).toHaveAttribute('title', "Finishing alpha's first message before adding another Jam.")
     }
     // Both hero doors: the Advanced link is held with the primary.
     for (const adv of screen.getAllByTestId('crewmate-empty-advanced')) expect(adv).toBeDisabled()
@@ -694,7 +694,7 @@ describe('New mate dialog', () => {
     await openDialog()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: '   ' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your mate a name.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('Give your Jam a name.')
     expect(screen.getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
     expect(api.createKirocrewAgent).not.toHaveBeenCalled()
   })
@@ -746,7 +746,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the Jam. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/lock held/)
   })
 
@@ -770,7 +770,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'aws_secret_access_key' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the mate is.')
+    expect(notice).toHaveTextContent('That name looks like a credential or a URL carrying one. Pick a name that says who the Jam is.')
     expect(notice).not.toHaveTextContent(/aws_secret_access_key/)
     expect(notice).not.toHaveTextContent(/try again/)
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
@@ -819,7 +819,7 @@ describe('New mate dialog', () => {
     expect(notice).not.toHaveTextContent(/Invalid Crew Member name|non-canonical|line breaks or tabs|at most 500|only of periods/)
     expect(notice).not.toHaveTextContent(/Rada|Radar|\.\.\./)
     // Not the credential-shaped copy, and not the generic "nothing was created".
-    expect(notice).not.toHaveTextContent(/credential|says who the mate is/)
+    expect(notice).not.toHaveTextContent(/credential|says who the Jam is/)
     expect(notice).not.toHaveTextContent('Nothing was created')
     expect(screen.queryByTestId('crewmate-create-name-hint')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
@@ -847,7 +847,7 @@ describe('New mate dialog', () => {
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     // Validation, not a failed request: the hint under the field, no ErrorNotice.
     const hint = await screen.findByTestId('crewmate-create-name-hint')
-    expect(hint).toHaveTextContent('A mate named oncall already exists.')
+    expect(hint).toHaveTextContent('A Jam named oncall already exists.')
     expect(screen.queryByTestId('crewmate-create-error')).toBeNull()
     // No request left the browser; nothing else moved — the one thread POST
     // is the arrival auto-open, no roster re-read, no greeting.
@@ -868,7 +868,7 @@ describe('New mate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A mate named radar already exists.')
+    expect(notice).toHaveTextContent('A Jam named radar already exists.')
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -941,7 +941,7 @@ describe('New mate dialog', () => {
     const retry = screen.getByTestId('member-post-create-retry')
     // The label names the list, never the crewmates themselves or a message.
     expect(retry).toHaveTextContent(/^Refresh the list$/)
-    expect(retry).not.toHaveTextContent(/send|again|message|greet|mates?\b/i)
+    expect(retry).not.toHaveTextContent(/send|again|message|greet|Jams?\b/i)
     const creates = createMock.mock.calls.length
     const reads = membersMock.mock.calls.length
     const greets = (api.memberGreet as ReturnType<typeof vi.fn>).mock.calls.length
@@ -1032,7 +1032,7 @@ describe('New mate dialog', () => {
     // With the roster back and radar's chat open, the roster stays hidden
     // below md for the usual reason (a chat is open), never for the notice.
     await waitFor(() => expect(api.memberThread).toHaveBeenCalledWith('radar'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 mate')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 Jam')
   })
 
   it('a first create over a default-only roster whose re-read fails is not dismissable either: the built-in default is not a mate', async () => {
@@ -1057,7 +1057,7 @@ describe('New mate dialog', () => {
     expect(screen.queryByTestId('member-add')).toBeNull()
     for (const cta of screen.getAllByTestId('crewmate-empty-cta')) {
       expect(cta).toBeDisabled()
-      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another mate.')
+      expect(cta).toHaveAttribute('title', 'Refresh the list for radar before adding another Jam.')
     }
     // The retry is the way off it: the roster lands with radar, the chat
     // opens and asks for its greeting.

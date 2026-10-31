@@ -362,8 +362,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Crew member ACP backend",
-      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Crewmates run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
+      "label": "Jam ACP backend",
+      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Jams run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
@@ -1410,7 +1410,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Session Control",
-      "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec, except crew member DM sessions and the Conductor in your own dashboard tab, which keep dispatching workers unless Member Dispatch is also off. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a crew member, a scheduled run, or a Conductor admitted with this off reaches only sessions it created itself.",
+      "help": "Let one chat session open a new session, and stop, read or send to another session of yours. Reading returns a transcript tail, stopping cancels an in-flight turn, a created session starts empty for you to type into, and a send runs text as the target's next turn. On by default, because the grant that decides who can do this is the agent config: the tools come from the kirocrew-dashboard MCP server, so an agent that does not mount it never has them, exactly like any other MCP server. Turn this off to withdraw the capability from every agent at once without editing each spec, except Jam DM sessions and the Conductor in your own dashboard tab, which keep dispatching workers unless Member Dispatch is also off. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable, and a Jam, a scheduled run, or a Conductor admitted with this off reaches only sessions it created itself.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1438,7 +1438,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Member Dispatch",
-      "help": "Let a crew member's DM session, and the Conductor in your own dashboard tab, open and drive worker sessions they create, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers and the Conductor back under the Session Control switch, so an operator who withdrew session control keeps them chat-only without disabling them. When on, their reach is still bounded to sessions they created themselves (creator ownership), the same fence that binds a member when Session Control is on.",
+      "help": "Let a Jam's DM session, and the Conductor in your own dashboard tab, open and drive worker sessions they create, even when Session Control is off. On by default, because dispatching work into workers is the crew-member operating model, not an opt-in: this is the zero-configuration contract. Turn this off to put member callers and the Conductor back under the Session Control switch, so an operator who withdrew session control keeps them chat-only without disabling them. When on, their reach is still bounded to sessions they created themselves (creator ownership), the same fence that binds a member when Session Control is on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1452,7 +1452,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Crew Dashboard",
-      "help": "Let a crew member publish its own webview, shown in that member's drawer on the Crew page. A member sends a JSON object and names a template that renders it, so a long-running crew can say what it is holding, which worker is stuck and what needs a decision, to someone who is not reading its transcript. On by default, because a crew that cannot be watched is the thing this surface exists to fix. The tools come from the kirocrew-panel MCP server, so the grant follows the same rule as every other MCP server: an agent that does not mount it never has them. Turn this off to withdraw the capability from every member at once without editing each spec, and the withdrawal is immediate: the publish route reads this switch on every call, so a member whose session was already running loses the panel too. A member writes only its OWN panel: the server resolves the publishing crew from the calling session and takes no crew or session argument, and a subagent has no panel to write.",
+      "help": "Let a Jam publish its own webview, shown in that member's drawer on the Crew page. A member sends a JSON object and names a template that renders it, so a long-running crew can say what it is holding, which worker is stuck and what needs a decision, to someone who is not reading its transcript. On by default, because a crew that cannot be watched is the thing this surface exists to fix. The tools come from the kirocrew-panel MCP server, so the grant follows the same rule as every other MCP server: an agent that does not mount it never has them. Turn this off to withdraw the capability from every member at once without editing each spec, and the withdrawal is immediate: the publish route reads this switch on every call, so a member whose session was already running loses the panel too. A member writes only its OWN panel: the server resolves the publishing crew from the calling session and takes no crew or session argument, and a subagent has no panel to write.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -8481,8 +8481,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Reply threads on mate chat messages",
-      "help": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
+      "label": "Reply threads on Jam chat messages",
+      "help": "Let any message in a Jam's chat carry its own reply thread, opened in the side panel while the main chat stays visible. Off by default: the thread routes answer not-found, no thread frame is sent, and the dashboard draws no Reply in thread control. Takes effect on the next request; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -8495,8 +8495,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Mates in the chat agent picker",
-      "help": "List mates in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a mate (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
+      "label": "Jams in the chat agent picker",
+      "help": "List Jams in the chat composer's agent picker, beside the agent templates, so a chat can be switched onto a Jam (and its own workspace and memory) without opening it from the Crew page. Off by default: the picker lists templates plus any Jam no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9567,8 +9567,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Mates Onboarded",
-      "help": "Whether the user has finished or dismissed the first-run Meet Mates flow (the four-step introduction that creates the first mate). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Mates page.",
+      "label": "Jams Onboarded",
+      "help": "Whether the user has finished or dismissed the first-run Meet Jams flow (the four-step introduction that creates the first Jam). Server-backed like the other first-run flags so a second machine does not replay it. Also set when the flow is re-run from the Jams page.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10341,7 +10341,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Model",
-      "help": "Model for the sessions this mate dispatches through session_create when the call names none. Empty copies the mate's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a mate on a costly model keeps its workers cheap. An explicit model on the call wins.",
+      "help": "Model for the sessions this Jam dispatches through session_create when the call names none. Empty copies the Jam's model pin when set; with both fields empty, no session model is pinned and the worker's own agent or the global default decides. Unlike 'model', 'auto' is a real pin here: workers run on the backend's own default, which is how a Jam on a costly model keeps its workers cheap. An explicit model on the call wins.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -10355,7 +10355,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Worker Reasoning Effort",
-      "help": "Reasoning effort for the sessions this mate dispatches through session_create when the call names none. Empty means: while the workers run the mate's own model (worker_model empty and no model on the call) they take the mate's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a mate, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
+      "help": "Reasoning effort for the sessions this Jam dispatches through session_create when the call names none. Empty means: while the workers run the Jam's own model (worker_model empty and no model on the call) they take the Jam's own effort (the field above); under any other model no level is pinned and the worker's agent decides as usual (its own crew pin if it runs as a Jam, else agent.reasoning_effort, else the model default). Set, one of the five standard levels. An explicit effort on the call wins.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -10369,7 +10369,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Harness",
-      "help": "Agent harness for this crewmate's own chat and the worker sessions it opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty inherits agent.member_acp_backend. A harness this gateway cannot start refuses the session with the reason instead of running another one. The model and worker_model pins are judged against this harness.",
+      "help": "Agent harness for this Jam's own chat and the worker sessions it opens, spelled as agent.acp_backend (kiro, kas, claude, ...). Empty inherits agent.member_acp_backend. A harness this gateway cannot start refuses the session with the reason instead of running another one. The model and worker_model pins are judged against this harness.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -10383,7 +10383,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Dynamic capabilities",
-      "help": "Preview, per crewmate: this crewmate can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this crewmate's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the crewmate's next session.",
+      "help": "Preview, per Jam: this Jam can find new skills or tools for its worker and ask for them on a card in its chat. Off (the default): only you add them, in this Jam's advanced settings, and it tells you when its worker lacks one. Read per request, so a change reaches the Jam's next session.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10397,7 +10397,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Approval Mode",
-      "help": "Tool approval for this mate's own Mates-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
+      "help": "Tool approval for this Jam's own Jams-page thread: normal, trust_reads or trust. Empty means the user never chose one, and the thread opens in trust.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -10467,7 +10467,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Starred",
-      "help": "Marks this crew as a favourite on the Crew Members page. Purely a roster preference: the page's star filter shows only starred crews, so the dozens of package-installed crews the agent sync writes here can be collapsed behind the few you actually drive. Never read by routing, spawning, or the orchestrator.",
+      "help": "Marks this crew as a favourite on the Jams page. Purely a roster preference: the page's star filter shows only starred crews, so the dozens of package-installed crews the agent sync writes here can be collapsed behind the few you actually drive. Never read by routing, spawning, or the orchestrator.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10565,7 +10565,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Imported",
-      "help": "Provenance stamp of a mate imported from a .crewmate file: {'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty for a mate made here. The sender label is self-declared; nothing reads the stamp to reach the sender.",
+      "help": "Provenance stamp of a Jam imported from a .crewmate file: {'format_version', 'sender_label', 'sha256', 'imported_at'}. Empty for a Jam made here. The sender label is self-declared; nothing reads the stamp to reach the sender.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -10691,7 +10691,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Owner Member",
-      "help": "Display label of the Crew Member owning this memory store.",
+      "help": "Display label of the Jam owning this memory store.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

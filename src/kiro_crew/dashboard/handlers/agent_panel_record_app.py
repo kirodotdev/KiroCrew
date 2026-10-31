@@ -165,7 +165,7 @@ async def _resolve_app_writer(
             request,
             app_name,
             "member_not_found",
-            "no crewmate has this slug",
+            "no Jam has this slug",
             404,
             operation=_RECORD_OPERATION,
         )
@@ -174,7 +174,7 @@ async def _resolve_app_writer(
             request,
             app_name,
             "ambiguous_slug",
-            "two crewmates share this slug, so the record has no single log to land in",
+            "two Jams share this slug, so the record has no single log to land in",
             409,
             operation=_RECORD_OPERATION,
         )

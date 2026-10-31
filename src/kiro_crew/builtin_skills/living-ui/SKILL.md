@@ -6,7 +6,7 @@ description: "Use when building an animated or interactive widget, explainer or 
 # Living UI
 
 These rules make a live figure easy to follow in its first second. A live figure
-is an inline `<mcwidget>` explainer, a crewmate's Dashboard page, or a standalone
+is an inline `<mcwidget>` explainer, a Jam's Dashboard page, or a standalone
 HTML artifact. The rules say how motion feels, where the eye goes, where words go
 and how to check the result.
 

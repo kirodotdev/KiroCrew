@@ -194,7 +194,7 @@ async def sync_schedule(crons: Any, slug: str, label: str, schedules: dict[str, 
         await crons.add_managed_job_async(
             managed_key(slug, cadence),
             name=name,
-            message=f"{_NAMES[cadence]} for {label}. It runs in the mate's own chat.",
+            message=f"{_NAMES[cadence]} for {label}. It runs in the Jam's own chat.",
             cron_expr=cron_expr_for(cadence, schedules),
             timezone=tz,
             silent=True,
@@ -645,9 +645,9 @@ def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
         or getattr(slot, "agent", "") != member
         or getattr(slot, "executor", "") == "remote"
     ):
-        return None, "skipped: the mate's thread is not open"
+        return None, "skipped: the Jam's thread is not open"
     if slot.running or getattr(slot, "_queue", None):
-        return None, "skipped: the mate is busy"
+        return None, "skipped: the Jam is busy"
     return slot, ""
 
 
@@ -669,12 +669,12 @@ async def fire(state: Any, job: Any) -> str:
         members_mod.validate_slug(slug)
         binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
     except (members_mod.MemberSlugError, OSError):
-        return "skipped: no mate thread"
+        return "skipped: no Jam thread"
     if not binding:
-        return "skipped: no mate thread"
+        return "skipped: no Jam thread"
     member = binding.get("member")
     if not isinstance(member, str) or not member:
-        return "skipped: no mate thread"
+        return "skipped: no Jam thread"
     try:
         rec = await asyncio.to_thread(member_goals.read_goals, slug, member)
     except member_goals.GoalsUnreadable:
@@ -701,7 +701,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the crewmate's thread is not open"
+            return "skipped: the Jam's thread is not open"
     if cadence in member_goals.REPORT_KINDS:
         finished = await asyncio.to_thread(finished_tasks, slot_key, cadence)
         # A turn (a cron notification, a user message) can start while the
@@ -710,7 +710,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Jam's thread is not open"
     if cadence == member_goals.CADENCE_HEARTBEAT:
         has_tools = await asyncio.to_thread(member_has_session_tools, member)
         waiting = await milestones_card_waiting(state, slot_key)
@@ -722,7 +722,7 @@ async def fire(state: Any, job: Any) -> str:
         if skip:
             return skip
         if again is not slot:
-            return "skipped: the mate's thread is not open"
+            return "skipped: the Jam's thread is not open"
         if _monitor_loop_drives(slot_key):
             return LOOP_SKIP
         prompt = heartbeat_prompt(rec, has_session_tools=has_tools, milestones_waiting=waiting)
@@ -739,7 +739,7 @@ async def fire(state: Any, job: Any) -> str:
     if skip:
         return skip
     if again is not slot:
-        return "skipped: the mate's thread is not open"
+        return "skipped: the Jam's thread is not open"
     dispatch_hidden_turn(
         state, slot, with_language(prompt, language, in_thread=True), human_seen=False
     )

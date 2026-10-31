@@ -138,7 +138,7 @@ the learned cost. So the sampler special-cases them:
 - **Dedicated** (per-process) spawns keep the per-PID subtree sampling above.
   A spawn takes that path when it sets `model`, `reasoning_effort`,
   `allowed_tools`, `bare`, `backend`, or `keep: true`; when `agent.role_models["subagent"]`
-  or `agent.role_efforts["subagent"]` is pinned; when it runs as a crew member;
+  or `agent.role_efforts["subagent"]` is pinned; when it runs as a Jam;
   when `agent.session_sharing` is off; when there is no parent session; or when
   the parent is not ACP/kiro-backed (e.g. a Claude-Code parent).
 

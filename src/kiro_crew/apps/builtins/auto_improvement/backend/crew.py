@@ -120,10 +120,10 @@ def ensure_team() -> dict[str, str]:
                     raise
                 existing = member
             if existing.source != store.APP_NAME or existing.kiro_agent != spec.template:
-                raise ValueError(f"Crew Member {spec.name!r} already belongs to another purpose")
+                raise ValueError(f"Jam {spec.name!r} already belongs to another purpose")
             require_member_memory_store(config, spec.name)
             if not existing.member_id:
-                raise ValueError(f"Crew Member {spec.name!r} has no private member identity")
+                raise ValueError(f"Jam {spec.name!r} has no private member identity")
             identities[role] = existing.member_id
             store.write_json_atomic(_team_path(), identities)
         return identities

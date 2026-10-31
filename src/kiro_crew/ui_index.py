@@ -725,7 +725,7 @@ AREAS: dict[str, _Area] = {
         related=("sessions",),
     ),
     "crewmates": _Area(
-        "mates: the Mates page and the Mates and Custom agents tabs of Customize",
+        "Jams: the Jams page and the Jams and Custom agents tabs of Customize",
         title="page.members",
         anchors=("page.members", "tab.capabilities.crews", "tab.capabilities.templates"),
     ),
@@ -751,7 +751,7 @@ AREAS: dict[str, _Area] = {
         related=("settings",),
     ),
     "customize": _Area(
-        "the Customize page: mates, connections, skills, hooks, knowledge, prompts, steering, workflows",
+        "the Customize page: Jams, connections, skills, hooks, knowledge, prompts, steering, workflows",
         title="page.capabilities",
         anchors=("page.capabilities",),
         related=("settings",),

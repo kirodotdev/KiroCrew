@@ -127,8 +127,8 @@ describe('private member memory lifecycle', () => {
 
     await screen.findByRole('heading', { name: `Memory for ${LEGACY_STORE}` })
     expect(screen.getByText('Memory V1', { exact: true })).toBeVisible()
-    const guidance = screen.getByText(/This mate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new mate\./)
-    expect(guidance).toHaveTextContent(/^This mate keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new mate\.$/)
+    const guidance = screen.getByText(/This Jam keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new Jam\./)
+    expect(guidance).toHaveTextContent(/^This Jam keeps its current memory \(V1\)\. Its own memory \(V2\) is only available when creating a new Jam\.$/)
     expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
     expect(screen.queryByText('Member memory · V2')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Copy memories' })).toBeNull()

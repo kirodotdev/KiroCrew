@@ -22,7 +22,7 @@ beforeEach(() => {
 // same `data-setting-key` anchor the real row does.
 vi.mock('../pages/overview', () => ({
   KiroCrewCfgTab: () => (
-    <div data-testid="default-crewmate-row" data-setting-key="default-crewmate" data-setting-label="Default mate" />
+    <div data-testid="default-crewmate-row" data-setting-key="default-crewmate" data-setting-label="Default Jam" />
   ),
   AgentCfgTab: () => <div />,
 }))
@@ -83,7 +83,7 @@ describe('default-crewmate deep link', () => {
     expect(DEFAULT_CREWMATE_PATH).toBe('/settings/developer/config?highlight=key%3Adefault-crewmate')
   })
 
-  it('rings the Default mate row', async () => {
+  it('rings the Default Jam row', async () => {
     renderAt(DEFAULT_CREWMATE_PATH)
     await expectRinged()
   })

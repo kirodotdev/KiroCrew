@@ -54,7 +54,7 @@ declares more than the free space where it extracts.
 | crons | `crons.json` |
 | config | `config.json`, `config.local.json`, `session_map.json`, `hooks.json`, `ui-prefs.json` (the dashboard's browser-held settings), `notification_settings.json` (notification mutes and priorities), `project_dir`, `workspace_dir` |
 | skills | `skills/` directory |
-| crew-teams | `crew-teams/teams.json` (the mate team list) |
+| crew-teams | `crew-teams/teams.json` (the Jam team list) |
 | workspace | `workspace/`, `plan_memory/` directories |
 | notifications | `notifications.jsonl` |
 | security | `telemetry_salt` |

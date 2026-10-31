@@ -301,7 +301,7 @@ CATALOG: tuple[VideoEntry, ...] = (
         feature="crewmates",
         # The dashboard shows translated copy for this id (StartupVideoModal's
         # INTRO_COPY); keep the two English texts the same.
-        title="Meet your Mates.",
+        title="Meet your Jams.",
         description="They find the work, do it, and ask only when they need you.",
         src="",
         poster="",

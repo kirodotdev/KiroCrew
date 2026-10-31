@@ -642,7 +642,7 @@ class TestMemberDispatchEndToEnd:
                 operation="send",
             )
         assert exc.value.code == "not_creator"
-        assert "crew member" in exc.value.message
+        assert "Jam" in exc.value.message
 
 
 class TestMemberChildExecutionContext:

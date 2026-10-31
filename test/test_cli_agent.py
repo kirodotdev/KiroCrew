@@ -253,7 +253,7 @@ class TestAgentCreate:
 
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
-        assert "Mates start from the built-in worker" in captured.err
+        assert "Jams start from the built-in worker" in captured.err
         assert "Created agent" not in captured.out
         assert cfg_path.read_text(encoding="utf-8") == before
         assert not (data_home() / "workspace-member-research").exists()
@@ -281,7 +281,7 @@ class TestAgentCreate:
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
-        assert "Mates start from the built-in worker" not in err
+        assert "Jams start from the built-in worker" not in err
         assert "a template is already named 'research'" in err
         assert cfg_path.read_text(encoding="utf-8") == before
 
@@ -310,7 +310,7 @@ class TestAgentCreate:
 
         assert exc_info.value.code != 0
         error = capsys.readouterr().err
-        assert "invalid Crew Member name" in error
+        assert "invalid Jam name" in error
         assert name not in error
 
 

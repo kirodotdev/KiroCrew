@@ -46,7 +46,7 @@ NOT_RUNNING = "not_running"
 GONE = "gone"
 
 _NOTICE = (
-    "Session reloaded so it picks up capabilities added to this crewmate's worker. "
+    "Session reloaded so it picks up capabilities added to this Jam's worker. "
     "The conversation is kept."
 )
 
@@ -117,7 +117,7 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
             notice=_NOTICE,
         )
     except Exception:  # noqa: BLE001 - a missed reload leaves the next spawn to read it
-        logger.warning("crewmate reload of %s failed", key, exc_info=True)
+        logger.warning("Jam reload of %s failed", key, exc_info=True)
         return GONE
     if response.status == 409:
         _mark(state, slot, True)
@@ -125,7 +125,7 @@ async def reload_if_idle(state: Any, slot: Any) -> str:
     if response.status >= 400:
         return GONE
     _mark(state, slot, False)
-    logger.info("crewmate session %s reloaded onto its updated spec", key)
+    logger.info("Jam session %s reloaded onto its updated spec", key)
     return RELOADED
 
 
@@ -163,7 +163,7 @@ async def reload_workers(state: Any, member: str) -> dict[str, str]:
     try:
         workers = await asyncio.to_thread(_workers_of, state, member)
     except Exception:  # noqa: BLE001 - no roster names no worker
-        logger.debug("crewmate reload: workers of %s unreadable", member, exc_info=True)
+        logger.debug("Jam reload: workers of %s unreadable", member, exc_info=True)
         return {}
     return {slot.key: await reload_if_idle(state, slot) for slot in workers}
 

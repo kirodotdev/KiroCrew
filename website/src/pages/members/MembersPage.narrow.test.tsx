@@ -424,7 +424,7 @@ describe('MembersPage default member, memory and URL', () => {
       expect(toggle.querySelector('.pi-pane')).not.toBeNull()
       expect(toggle.querySelector('.lucide-arrow-left')).toBeNull()
       // A screen reader hears a toggle too, not "Back", in either state.
-      expect(toggle).toHaveAccessibleName('Toggle mates')
+      expect(toggle).toHaveAccessibleName('Toggle Jams')
       expect(toggle).toHaveAttribute('aria-expanded', 'false')
       fireEvent.click(toggle)
       await screen.findByTestId('roster-drawer')

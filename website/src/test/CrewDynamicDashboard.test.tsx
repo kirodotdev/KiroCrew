@@ -321,7 +321,7 @@ describe('CrewDynamicDashboard', () => {
     )
     mount()
     const notice = await screen.findByTestId('crew-dashboard-owner-only')
-    expect(notice).toHaveTextContent("Only this mate's owner can see its dashboard.")
+    expect(notice).toHaveTextContent("Only this Jam's owner can see its dashboard.")
     expect(screen.queryByTestId('crew-dashboard-error')).toBeNull()
     expect(screen.queryByTestId('crew-dashboard-error-retry')).toBeNull()
   })

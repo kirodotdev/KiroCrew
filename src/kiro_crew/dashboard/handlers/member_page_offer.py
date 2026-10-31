@@ -36,7 +36,7 @@ async def api_member_page_offer(request: web.Request) -> web.Response:
     if isinstance(who, web.Response):
         return who
     if request.get(REQ_CARD_PAGE_OFFER_APPLY) is not True:
-        return _deny(403, "card_only", "this runs only from the crewmate's page-offer card")
+        return _deny(403, "card_only", "this runs only from the Jam's page-offer card")
     slug, member, _cfg = who
     # The asked-once record was written before the card was shown; the yes only marks
     # it pending until the wake starts, best effort, so this step has no write that

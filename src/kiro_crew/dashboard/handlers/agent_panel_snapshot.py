@@ -239,8 +239,7 @@ async def api_dashboard_snapshot(request: web.Request) -> web.Response:
         )
     if not crew_name:
         return _no_image(
-            "a root session's Dashboard is a template page, and only a crewmate's own page "
-            "is drawn"
+            "a root session's Dashboard is a template page, and only a Jam's own page " "is drawn"
         )
     try:
         package, package_slug, version = await asyncio.to_thread(_page_in_force, slug)

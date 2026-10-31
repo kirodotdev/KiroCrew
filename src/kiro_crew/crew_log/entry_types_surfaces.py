@@ -309,7 +309,7 @@ TYPES: tuple[EntryType, ...] = (
     # -- dashboard ----------------------------------------------------------- #
     EntryType(
         DASHBOARD_INSTANCE_ENTRY_TYPE,
-        "One accepted change to a crewmate's own dynamic dashboard.",
+        "One accepted change to a Jam's own dynamic dashboard.",
         (
             Field(
                 "slug",
@@ -318,7 +318,7 @@ TYPES: tuple[EntryType, ...] = (
                 note=(
                     "Whose dashboard changed. Carried on the entry because two crew names "
                     "can resolve to one DM slot, so a reader of one entry must be able to "
-                    "say which crewmate's instance this is without resolving the slot."
+                    "say which Jam's instance this is without resolving the slot."
                 ),
             ),
             Field(
@@ -355,7 +355,7 @@ TYPES: tuple[EntryType, ...] = (
                 required=True,
                 note=(
                     "The template version that was copied, frozen at adopt. An edit does "
-                    "not move it: editing a copy does not make the crewmate the template's "
+                    "not move it: editing a copy does not make the Jam the template's "
                     "author."
                 ),
             ),
@@ -381,7 +381,7 @@ TYPES: tuple[EntryType, ...] = (
             Field("at_ms", JSON_INT, note="When the change was accepted, epoch milliseconds."),
         ),
         note=(
-            "One entry per accepted change, appended to the crewmate's own DM session log, "
+            "One entry per accepted change, appended to the Jam's own DM session log, "
             "and the instance's history is a fold over them. The entry carries what CHANGED "
             "and never the page: the page is kept per version under the member's own space, "
             "so this entry is bounded by construction and can never be refused for size. "
@@ -392,7 +392,7 @@ TYPES: tuple[EntryType, ...] = (
     # -- the dynamic dashboard ----------------------------------------------- #
     EntryType(
         DASHBOARD_AGENTIC_ENTRY_TYPE,
-        "One agentic dashboard value the crewmate wrote, already type-checked.",
+        "One agentic dashboard value the Jam wrote, already type-checked.",
         (
             Field(
                 "field",
@@ -452,12 +452,12 @@ TYPES: tuple[EntryType, ...] = (
             ),
         ),
         note=(
-            "One entry per accepted agentic write, appended to the crewmate's own DM "
+            "One entry per accepted agentic write, appended to the Jam's own DM "
             "session log and folded under its slot -- the same slot the panel entry folds "
-            "under, so a crewmate's dashboard, its values and its mistake book all answer "
-            "for one crewmate. Each write replaces that one FIELD and leaves the others "
+            "under, so a Jam's dashboard, its values and its mistake book all answer "
+            "for one Jam. Each write replaces that one FIELD and leaves the others "
             "alone, unlike the panel entry's whole-document replacement: the fields are "
-            "independent cells, and a crewmate that learns one number should not have to "
+            "independent cells, and a Jam that learns one number should not have to "
             "restate the rest to report it."
         ),
     ),
@@ -515,7 +515,7 @@ TYPES: tuple[EntryType, ...] = (
         ),
         note=(
             "One entry per refused write AND one per write that corrected an earlier "
-            "refusal, appended to the crewmate's own DM session log and folded under its "
+            "refusal, appended to the Jam's own DM session log and folded under its "
             "slot. Written on the REFUSAL path, which no other entry type covers: every "
             "other type records something that happened, and this one records something "
             "that was prevented. Best-effort like the publish entry -- the refusal is "
@@ -633,7 +633,7 @@ TYPES: tuple[EntryType, ...] = (
     # -- a crewmate's own record ------------------------------------------- #
     EntryType(
         GOAL_ENTRY_TYPE,
-        "A crewmate's goal record after a change: its goals and its milestones.",
+        "A Jam's goal record after a change: its goals and its milestones.",
         (
             Field(
                 "goals",
@@ -650,18 +650,18 @@ TYPES: tuple[EntryType, ...] = (
                 item_type=JSON_OBJECT,
                 fields=(
                     Field("text", JSON_STRING, note="What the milestone measures."),
-                    Field("target", JSON_STRING, note="The target, as the crewmate set it."),
+                    Field("target", JSON_STRING, note="The target, as the Jam set it."),
                     Field(
                         "current",
                         JSON_STRING,
-                        note="The reading the crewmate last recorded, its own status for it.",
+                        note="The reading the Jam last recorded, its own status for it.",
                     ),
                     Field("at", JSON_STRING, note="When the latest reading was taken, ISO 8601."),
                 ),
                 note=(
                     "Each milestone as {text, target, current, at}: current is the "
-                    "reading the crewmate last recorded with key_result_progress and at "
-                    "its time; whether the target is reached is the crewmate's own word "
+                    "reading the Jam last recorded with key_result_progress and at "
+                    "its time; whether the target is reached is the Jam's own word "
                     "in that reading, not judged by the gateway. At most "
                     "CREWMATE_ROW_LIMIT rows; the totals count the rest."
                 ),
@@ -672,14 +672,14 @@ TYPES: tuple[EntryType, ...] = (
             ),
         ),
         note=(
-            "Appended by the gateway to the crewmate's own DM session log whenever the "
+            "Appended by the gateway to the Jam's own DM session log whenever the "
             "goal record changes (a goal set, milestones applied, a reading recorded), "
             "and folded under its slot as the goal fold."
         ),
     ),
     EntryType(
         WAITING_ENTRY_TYPE,
-        "What a crewmate waits on the person for, after that list changed.",
+        "What a Jam waits on the person for, after that list changed.",
         (
             Field(
                 "items",
@@ -718,7 +718,7 @@ TYPES: tuple[EntryType, ...] = (
             ),
         ),
         note=(
-            "Appended by the gateway to the crewmate's own DM session log when the "
+            "Appended by the gateway to the Jam's own DM session log when the "
             "list it reads off the thread changes: a question asked, answered by a "
             "reply or an [OPTIONS] chip, or a card raised or pressed. Folded under its "
             "slot as the waiting fold."
@@ -727,7 +727,7 @@ TYPES: tuple[EntryType, ...] = (
     # -- custom records a script writes for a crewmate's page ---------------- #
     EntryType(
         CUSTOM_ENTRY_TYPE,
-        "One custom record a script cron wrote for its crewmate, stamped with who wrote it.",
+        "One custom record a script cron wrote for its Jam, stamped with who wrote it.",
         (
             Field(
                 "type",
@@ -765,7 +765,7 @@ TYPES: tuple[EntryType, ...] = (
                 "member",
                 JSON_STRING,
                 note=(
-                    "The slug of the crewmate the writer is bound to, stamped by the gateway "
+                    "The slug of the Jam the writer is bound to, stamped by the gateway "
                     "from the same identity. Carried so a reader of one entry can say whose "
                     "record it is without resolving the slot."
                 ),
@@ -774,15 +774,15 @@ TYPES: tuple[EntryType, ...] = (
                 "crew_key",
                 JSON_STRING,
                 note=(
-                    "Digest of that crewmate's EXACT name, for the reason the agentic value "
+                    "Digest of that Jam's EXACT name, for the reason the agentic value "
                     "carries one: a slot can hold two crews, and one crew's records must "
                     "not fill the other's page."
                 ),
             ),
         ),
         note=(
-            "Appended by the gateway to the crewmate's own DM session log when a script "
-            "cron bound to that crewmate calls ctx.crew_log_append, and folded under its "
+            "Appended by the gateway to the Jam's own DM session log when a script "
+            "cron bound to that Jam calls ctx.crew_log_append, and folded under its "
             "slot as the custom fold, which keeps the latest record per type. The entry's "
             "src is gateway like every gateway write; the provenance is the writer and "
             "member cells, which the route stamps and the body cannot set. The data is a "

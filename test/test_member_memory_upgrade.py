@@ -315,8 +315,8 @@ class TestTheUpgradeRefusesWhatItCannotAttribute:
     @pytest.mark.parametrize(
         ("bound", "reason"),
         [
-            ((), "no Crew Member is bound to it"),
-            (("reviewer", "auditor"), "2 Crew Members are bound to it: auditor, reviewer"),
+            ((), "no Jam is bound to it"),
+            (("reviewer", "auditor"), "2 Jams are bound to it: auditor, reviewer"),
         ],
     )
     def test_zero_or_two_bound_members_skip_with_one_warning(self, bound, reason, caplog) -> None:
@@ -599,7 +599,7 @@ class TestDoctorReportsWhatTheUpgradeLeftAlone:
 
         output = capsys.readouterr().out
         assert f"store {STORE!r}: no member identity and not upgradable" in output
-        assert "2 Crew Members are bound to it" in output
+        assert "2 Jams are bound to it" in output
         assert LEGACY_MEMBER_STORE_REMEDY in output
         assert f"member memory store without identity: {STORE!r}" in issues
         # Doctor only reports; the document and the member's binding are untouched.

@@ -947,7 +947,7 @@ def _not_creator_reason(
     elif precomputed_ownership_fenced is not None:
         return "this session can only control sessions it created itself"
     elif _member_caller(state, caller_key):
-        return "a crew member can only control worker sessions it created itself"
+        return "a Jam can only control worker sessions it created itself"
     elif _conductor_fenced(state, caller_key):
         return (
             "with agent.session_control off, the Conductor can only control worker "

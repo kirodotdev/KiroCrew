@@ -242,7 +242,7 @@ def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(mem
 
     output = capsys.readouterr().out
     assert "Crew Member Names" in output
-    assert "1 stored Crew Member name" in output
+    assert "1 stored Jam name" in output
     assert "Open Crew Manager" in output
     assert "make the replacement the default" in output
     assert "delete the old member" in output
@@ -250,7 +250,7 @@ def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(mem
     assert "not transferred automatically" in output
     assert name not in output
     assert members_mod.slug_for_name(name) not in output
-    assert issues == ["stored Crew Member names are not dispatchable"]
+    assert issues == ["stored Jam names are not dispatchable"]
     assert writes == []
 
 

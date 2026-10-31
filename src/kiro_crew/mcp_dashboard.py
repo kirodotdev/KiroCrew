@@ -137,7 +137,7 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "chat_folder_move_session. An app agent may create at the top level "
                 "inside a folder it created itself, or directly inside the folder "
                 "its own session is filed in; the new folder belongs to it. Creating "
-                "anywhere else in the person's folders is refused. A crew member "
+                "anywhere else in the person's folders is refused. A Jam "
                 "follows the same rule. An existing same-name folder of yours is "
                 "reused; one that is not yours is refused, never duplicated."
             ),
@@ -184,7 +184,7 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "agent may move only a folder it created itself, "
                 "and only to the top level or under another of its own; positioning "
                 "is refused outright when it would renumber siblings the app does "
-                "not own. A crew member is bound by the same own-folders-only rule."
+                "not own. A Jam is bound by the same own-folders-only rule."
             ),
             schema={
                 "type": "object",
@@ -238,7 +238,7 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "filed in the folder, which is the person's call in the folder "
                 "settings, not an agent's. To ask for a steering_dirs change, "
                 "propose_change(kind='folder.steering') puts a card in front of "
-                "the person. An app agent or crew member may update "
+                "the person. An app agent or Jam may update "
                 "only a folder it created. Refused in a session linked to a channel "
                 "(a resumed channel conversation, a channel mirror or a linked Slack "
                 "thread)."
@@ -283,7 +283,7 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "(chat_folder_create makes one). Metadata only: the session keeps its "
                 "transcript, model, and any running turn. ARCHIVED (history) sessions "
                 "cannot be moved — bring one back with session_revive first, then call this. "
-                "An app agent may file only its own sessions; a crew member may file "
+                "An app agent may file only its own sessions; a Jam may file "
                 "only a session it owns or created."
             ),
             schema={
@@ -320,7 +320,7 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "Also refused unless it holds no subfolders, no live sessions and "
                 "no archived (history) sessions; the dashboard checks all of this "
                 "in the same step as the removal, and never unfiles a session or "
-                "lifts a subfolder. An app agent or a crew member is refused."
+                "lifts a subfolder. An app agent or a Jam is refused."
             ),
             schema={
                 "type": "object",
@@ -405,7 +405,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "``status`` marks it a status tag (one a Trello-style column can "
                 "filter on). Create only — rename, recolor or reflag with chat_tag_update; "
                 "this server can never delete a tag, so nothing here can lose a label "
-                "the person put on a session. An app agent and a crew member cannot "
+                "the person put on a session. An app agent and a Jam cannot "
                 "write the shared vocabulary at all (a coined tag has no owner in the "
                 "person's list); they read it with chat_tag_list and assign existing "
                 "tags with chat_tag_assign."
@@ -439,7 +439,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "and columns filtering on it keep filtering on it — a rename changes "
                 "the label people see, nothing else. This server can create and "
                 "update tags but never delete one, so nothing here can lose a label "
-                "the person put on a session. An app agent and a crew member cannot "
+                "the person put on a session. An app agent and a Jam cannot "
                 "write the shared vocabulary; they assign existing tags with "
                 "chat_tag_assign instead."
             ),
@@ -476,7 +476,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "retry. Metadata only: the transcript, model and any running turn are "
                 "untouched. ARCHIVED (history) sessions cannot be tagged — bring one back "
                 "with session_revive first. An app agent may tag only its own sessions; "
-                "a crew member may tag only a session it owns or created. The agent "
+                "a Jam may tag only a session it owns or created. The agent "
                 "tag-grants policy applies the same way it does to the chat_tag "
                 "set_state directive: a tag the person RESERVED (a protected grant row "
                 "with policy 'none', or 'add-only' when you try to remove it) is refused "
@@ -526,7 +526,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "``[pinned]``. Metadata only: the transcript, model and any running "
                 "turn are untouched. ARCHIVED (history) sessions cannot be pinned — "
                 "bring one back with session_revive first. An app agent may pin only its own "
-                "sessions; a crew member may pin only a session it owns or created."
+                "sessions; a Jam may pin only a session it owns or created."
             ),
             schema={
                 "type": "object",
@@ -564,7 +564,7 @@ def _tag_tools() -> tuple[Tool, ...]:
                 "only in their browser). "
                 "It only reorders: it does not pin, unpin or move a session between "
                 "folders. The pinned order is the person's own sidebar preference, "
-                "so an app agent or a crew member cannot change it."
+                "so an app agent or a Jam cannot change it."
             ),
             schema={
                 "type": "object",
@@ -625,7 +625,7 @@ def _board_tools() -> tuple[Tool, ...]:
                 "calling this again is a safe no-op. Create only: this server can "
                 "never delete a column or change what one filters on, because the "
                 "board is the person's own layout. Place the new column with "
-                "chat_tag_column_move. An app agent and a crew member cannot write "
+                "chat_tag_column_move. An app agent and a Jam cannot write "
                 "the board; they read it with chat_tag_column_list."
             ),
             schema={
@@ -653,7 +653,7 @@ def _board_tools() -> tuple[Tool, ...]:
                 "``before`` / ``after`` names the column to place it next to; each is "
                 "a column id or exact name (see chat_tag_column_list). Every other "
                 "column keeps its relative order, and nothing a column filters on "
-                "changes. An app agent and a crew member cannot write the board."
+                "changes. An app agent and a Jam cannot write the board."
             ),
             schema={
                 "type": "object",
@@ -693,7 +693,7 @@ def _board_tools() -> tuple[Tool, ...]:
                 "set_state apply: the column's status must be one an agent may both "
                 "add and remove, so a status the person reserved or made add-only "
                 "is refused (tag_policy_denied). An "
-                "app agent may move only its own sessions; a crew member only a "
+                "app agent may move only its own sessions; a Jam only a "
                 "session it owns or created."
             ),
             schema={

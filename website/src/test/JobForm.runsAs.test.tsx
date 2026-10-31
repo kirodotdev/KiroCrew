@@ -62,8 +62,8 @@ describe('cron JobForm "Runs as" switch', () => {
     vi.mocked(api.createCron).mockResolvedValue({})
     const onSaved = vi.fn()
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={onSaved} layout="vertical" />)
-    fireEvent.click(segment('Mate'))
-    expect(segment('Mate')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(segment('Jam'))
+    expect(segment('Jam')).toHaveAttribute('aria-checked', 'true')
     // The stock `kirocrew` crew shares memory, so it never becomes a crewmate job.
     expect(optionNames()).toEqual(['radar', 'scout'])
     fireEvent.click(screen.getByLabelText('Switch agent'))
@@ -81,7 +81,7 @@ describe('cron JobForm "Runs as" switch', () => {
     vi.mocked(api.createCron).mockResolvedValue({})
     const onSaved = vi.fn()
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={onSaved} layout="vertical" />)
-    fireEvent.click(segment('Mate'))
+    fireEvent.click(segment('Jam'))
     fireEvent.click(segment('Custom agent'))
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'daily' } })
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'run' } })
@@ -93,8 +93,8 @@ describe('cron JobForm "Runs as" switch', () => {
   it('holds a template job on Custom agent when editing, and says why in text', () => {
     renderWithProviders(<JobForm job={job('kiro-review')} agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
     expect(segment('Custom agent')).toHaveAttribute('aria-checked', 'true')
-    expect(segment('Mate')).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText("A job can't switch between custom agent and mate after it's created.")).toBeVisible()
+    expect(segment('Jam')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText("A job can't switch between custom agent and Jam after it's created.")).toBeVisible()
     expect(optionNames()).toEqual(['kiro-review', 'kiro-lite'])
   })
 
@@ -122,10 +122,10 @@ describe('cron JobForm "Runs as" switch', () => {
 
   it('clicking Mate again keeps the mate picked', () => {
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
-    fireEvent.click(segment('Mate'))
+    fireEvent.click(segment('Jam'))
     fireEvent.click(screen.getByLabelText('Switch agent'))
     fireEvent.click(within(screen.getByRole('listbox')).getByText('scout'))
-    fireEvent.click(segment('Mate'))
+    fireEvent.click(segment('Jam'))
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('scout')
   })
 
@@ -144,8 +144,8 @@ describe('cron JobForm "Runs as" switch', () => {
   it('greys out Mate when there are no mates', async () => {
     const templatesOnly = catalog.filter(a => a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={templatesOnly} defaultAgent="" onSaved={() => {}} layout="vertical" />)
-    expect(await screen.findByRole('radio', { name: 'Mate' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No mates yet. Add one on the Mates page.')).toBeVisible()
+    expect(await screen.findByRole('radio', { name: 'Jam' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('No Jams yet. Add one on the Jams page.')).toBeVisible()
     // Barrier: let the form's mount-time reads settle inside the test.
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
@@ -155,8 +155,8 @@ describe('cron JobForm "Runs as" switch', () => {
     // custom-agent job; offering it under Crewmate would make the hint false.
     const defaultOnly = catalog.filter(a => a.name === 'kirocrew' || a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={defaultOnly} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
-    expect(await screen.findByRole('radio', { name: 'Mate' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No mates yet. Add one on the Mates page.')).toBeVisible()
+    expect(await screen.findByRole('radio', { name: 'Jam' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('No Jams yet. Add one on the Jams page.')).toBeVisible()
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
 

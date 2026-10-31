@@ -282,7 +282,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                 )
     if not member_name:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Jam for this slug", "code": "member_not_found"}, status=404
         )
 
     slot = state._slots.get(slot_key)

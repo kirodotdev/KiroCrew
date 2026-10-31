@@ -233,7 +233,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "dashboard_save",
             "description": (
-                "SAVE a draft of your crewmate's Dashboard page. dashboard_apply "
+                "SAVE a draft of your Jam's Dashboard page. dashboard_apply "
                 "puts it live separately. A page has three declarations; this saves all "
                 "three at once: a "
                 "`model` naming the fields the page holds and where each value "
@@ -260,7 +260,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "version you were on -- a template version brings the template "
                 "page back."
                 " A page you write as `view.html` is RUN once by the gateway over a "
-                "SYNTHETIC copy of your crewmate's current data (the same shape with "
+                "SYNTHETIC copy of your Jam's current data (the same shape with "
                 "invented values, so a page never sees the record; a key is kept only if "
                 "your page spells it out or the dashboard type catalog lists it), and the "
                 "reply carries a `verification` block: `passed`, `failed` with each script "
@@ -327,7 +327,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "dashboard_templates",
             "description": (
                 "List or SEARCH the dashboard pages this gateway can give your "
-                "crewmate, and say which one it is on now. Pass `query` to "
+                "Jam, and say which one it is on now. Pass `query` to "
                 "search; it matches a template's name and description AND the "
                 "fold paths its fields read, so asking for `cost` finds the page "
                 "that shows a usage number whether or not its author used that "
@@ -384,7 +384,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "dashboard_apply",
             "description": (
-                "Put a page live on your crewmate's Dashboard, now, as a new "
+                "Put a page live on your Jam's Dashboard, now, as a new "
                 "version -- there is no preview step. Pass a `template_id` from "
                 "dashboard_templates to use a shipped or operator page, or pass "
                 "nothing to put live the page you saved with dashboard_save. Every "
@@ -410,7 +410,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "dashboard_rollback",
             "description": (
-                "Go BACK to an earlier version of your crewmate's page -- the "
+                "Go BACK to an earlier version of your Jam's page -- the "
                 "answer to the person saying 'go back'. A version can be a template "
                 "page or a page you saved with dashboard_save, and the one you "
                 "restore is the one that draws. dashboard_fields lists the "
@@ -678,7 +678,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             else f"template `{d.get('template_id')}`"
         )
         return redact(
-            f"LIVE: your crewmate's page is now version {d.get('instance_version')}, "
+            f"LIVE: your Jam's page is now version {d.get('instance_version')}, "
             f"{shown}. dashboard_rollback goes back to any earlier version." + _guide_tail(d)
         )
 
@@ -733,9 +733,7 @@ _ERROR_LABELS = {
 
 
 #: What the agent is told the page ran over, when it ran over anything.
-_SYNTHETIC = (
-    "a synthetic copy of your crewmate's current data (the same shape with invented values)"
-)
+_SYNTHETIC = "a synthetic copy of your Jam's current data (the same shape with invented values)"
 
 
 def _error_lines(verification: dict[str, Any]) -> list[str]:
@@ -769,7 +767,7 @@ def _render_verification(verification: Any) -> list[str]:
     if not isinstance(verification, dict):
         return []
     status = verification.get("status")
-    ran_over = _SYNTHETIC if verification.get("data") == "synthetic" else "your crewmate's data"
+    ran_over = _SYNTHETIC if verification.get("data") == "synthetic" else "your Jam's data"
     if status == "passed":
         lines = [
             f"verification: passed -- the page ran once over {ran_over} and raised no script errors."
@@ -842,7 +840,7 @@ def _render_saved(
             lines.extend(f"  - {line}" for line in warned if isinstance(line, str))
     lines.append("")
     lines.append(
-        "Next: call dashboard_apply with no arguments to put it on your crewmate's "
+        "Next: call dashboard_apply with no arguments to put it on your Jam's "
         "Dashboard as a new version."
     )
     return "\n".join(lines)
@@ -875,7 +873,7 @@ def _render_templates(payload: dict[str, Any]) -> str:
     lines.append(
         f"{len(rows)} dashboard template{'' if len(rows) == 1 else 's'}"
         + (f" matching {query!r}" if query else "")
-        + (f"; your crewmate is on `{current}`." if current else ".")
+        + (f"; your Jam is on `{current}`." if current else ".")
     )
     for row in rows:
         if not isinstance(row, dict):

@@ -24,7 +24,7 @@ const IDS = readdirSync(BUILTIN, { withFileTypes: true })
 const CJK = /[\u3000-\u9fff\uff00-\uffef]/
 
 /**
- * The app's zh-CN catalog calls a crewmate \u961f\u53cb and credits \u989d\u5ea6. A
+ * The app's zh-CN catalog calls a crewmate  Jam  and credits \u989d\u5ea6. A
  * template that says it another way puts two words for one thing on one screen.
  */
 const OFF_CATALOG: Record<string, string> = {
@@ -50,21 +50,21 @@ const PROBES: Record<string, { en: string; zh: string }> = {
     zh: '\u6682\u65e0\u5de5\u4f5c\u6d41\u3002\u6ca1\u6709\u5f85\u4f60\u5904\u7406\u7684\u4e8b\uff0c\u4e5f\u6ca1\u6709\u4efb\u4f55\u82b1\u8d39\u3002',
   },
   office: {
-    en: 'The record carries no board for this mate yet, so there is nothing to review.',
-    zh: '\u8fd9\u4f4d\u961f\u53cb\u7684\u8bb0\u5f55\u4e2d\u8fd8\u6ca1\u6709\u770b\u677f\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u5ba1\u6838\u7684\u5185\u5bb9\u3002',
+    en: 'The record carries no board for this Jam yet, so there is nothing to review.',
+    zh: '\u8fd9\u4e2a Jam \u7684\u8bb0\u5f55\u4e2d\u8fd8\u6ca1\u6709\u770b\u677f\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u5ba1\u6838\u7684\u5185\u5bb9\u3002',
   },
   'org-chart': {
-    en: 'No board has reached this mate\u2019s record yet, so there is nobody to chart.',
-    zh: '\u5c1a\u65e0\u770b\u677f\u8fdb\u5165\u8fd9\u4f4d\u961f\u53cb\u7684\u8bb0\u5f55\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u7ed8\u5236\u7684\u5bf9\u8c61\u3002',
+    en: 'No board has reached this Jam\u2019s record yet, so there is nobody to chart.',
+    zh: '\u5c1a\u65e0\u770b\u677f\u8fdb\u5165\u8fd9\u4e2a Jam \u7684\u8bb0\u5f55\uff0c\u56e0\u6b64\u6ca1\u6709\u53ef\u7ed8\u5236\u7684\u5bf9\u8c61\u3002',
   },
   'work-kanban': { en: 'This board carries no item yet.', zh: '\u6b64\u770b\u677f\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002' },
   timeline: {
-    en: 'No board has reached this mate\u2019s record yet.',
-    zh: '\u8fd8\u6ca1\u6709\u770b\u677f\u8fdb\u5165\u8fd9\u4f4d\u961f\u53cb\u7684\u8bb0\u5f55\u3002',
+    en: 'No board has reached this Jam\u2019s record yet.',
+    zh: '\u8fd8\u6ca1\u6709\u770b\u677f\u8fdb\u5165\u8fd9\u4e2a Jam \u7684\u8bb0\u5f55\u3002',
   },
   'pr-watch': {
-    en: 'No lane reading yet. The mate has not written one.',
-    zh: '\u8fd8\u6ca1\u6709\u68c0\u67e5\u8bfb\u6570\u3002\u961f\u53cb\u5c1a\u672a\u5199\u5165\u3002',
+    en: 'No lane reading yet. The Jam has not written one.',
+    zh: '\u8fd8\u6ca1\u6709\u68c0\u67e5\u8bfb\u6570\u3002Jam \u5c1a\u672a\u5199\u5165\u3002',
   },
   flow: { en: 'No item on this board yet.', zh: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u4f55\u4e8b\u9879\u3002' },
   standup: { en: 'no headline written', zh: '\u672a\u5199\u5165\u8981\u70b9' },
@@ -130,7 +130,7 @@ describe('built-in dashboard templates pick their words by the reader locale', (
 
   for (const id of IDS) {
     describe(id, () => {
-      it('uses the app catalog words for mate and credits', () => {
+      it('uses the app catalog words for Jam and credits', () => {
         const text = decoded(id)
         for (const [word, means] of Object.entries(OFF_CATALOG)) {
           expect(text.includes(word), `${id} says ${means} as ${word}`).toBe(false)

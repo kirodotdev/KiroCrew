@@ -35,7 +35,7 @@ def test_a_crewmate_file_by_a_service_name_is_refused(mates, name):
 
     generated = {"name": name, "prompt": "generated"}
     (mates / f"{name}.json").write_text(json.dumps(generated), "utf-8")
-    with pytest.raises(MateConfigError, match="no crewmate may own"):
+    with pytest.raises(MateConfigError, match="no Jam may own"):
         write_mate_spec(name, {"name": name, "prompt": "crewmate"})
     assert json.loads((mates / f"{name}.json").read_text("utf-8")) == generated
     assert has_mate_config(name) is False

@@ -17,6 +17,6 @@ describe('mateAbilitiesLabel', () => {
   it('is a generic mate label, not a template provenance', () => {
     // A mate's abilities are the sum of its base plus additions, not one
     // template, so it is named generically rather than by a "built from".
-    expect(mateAbilitiesLabel()).toBe('Mate')
+    expect(mateAbilitiesLabel()).toBe('Jam')
   })
 })

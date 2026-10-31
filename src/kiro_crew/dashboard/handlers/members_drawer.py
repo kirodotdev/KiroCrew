@@ -149,7 +149,7 @@ async def api_member_projections(request: web.Request) -> web.Response:
         )
     if member not in cfg.agents:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Jam for this slug", "code": "member_not_found"}, status=404
         )
     # Two rows folding to one slug is the case the roster blanks for BOTH of them,
     # and it has to blank here too: neither member can be told apart in a slug-keyed
@@ -455,7 +455,7 @@ async def api_member_briefing(request: web.Request) -> web.Response:
         )
     if member not in cfg.agents:
         return web.json_response(
-            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+            {"error": "no Jam for this slug", "code": "member_not_found"}, status=404
         )
     if _member_names_for_slug(cfg, slug) != [member]:
         return web.json_response(

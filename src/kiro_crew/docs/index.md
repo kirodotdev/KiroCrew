@@ -43,7 +43,7 @@ over and what changes.
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
 | [Chat Channels](#chat-channels) | DM-based chat with tool approval on ten messaging platforms; the list and per-channel guides are under [Chat Channels](#chat-channels) below |
 | [Agents](agents.md) | Switch between specialized agents per conversation, thread, or cron job |
-| [Crew Members](crew-members.md) | Keep named mates — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
+| [Jams](crew-members.md) | Keep named Jams — each with its own workspace, memory, template and model — talk to each in a standing thread, and route work to one |
 | [Remote Crew](remote-crew.md) | Reach other machines running their own Kiro Crew gateway from one hub — switch panes, run a session on one, and search every connected machine's history |
 | [Skills](skills.md) | Drop-in markdown knowledge packs for domain-specific workflows |
 | [Steering, Prompts & Hooks](steering-and-hooks.md) | Standing markdown conventions the agent reads every session, saved prompts you call up by name, and shell commands that fire on chat lifecycle events |

@@ -777,7 +777,7 @@ _FOLDS: Final[dict[str, _Fold]] = {
         lazy_reason=(
             "a part of ``workers``, read only when that fold is read: every session's "
             "turns carry its types, so folding it eagerly would fold for every session "
-            "while only a crewmate's workers are ever read"
+            "while only a Jam's workers are ever read"
         ),
     ),
     # The TREE-keyed fold, the third key kind, argued where

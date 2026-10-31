@@ -466,15 +466,15 @@ def result_summary(
                     IMPORT_STEP_CRON: "its schedules",
                 }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
                 return (
-                    f"Created mate “{name}” without {part} or anything after it. "
-                    "Undo removes the mate and what was saved"
+                    f"Created Jam “{name}” without {part} or anything after it. "
+                    "Undo removes the Jam and what was saved"
                 )
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
-                return f"Created mate “{name}”, but its goal{rest} was not saved"
+                return f"Created Jam “{name}”, but its goal{rest} was not saved"
             if failed_step == CREWMATE_CREATE_SCHEDULE_STEP:
-                return f"Created mate “{name}”, but its schedule was not saved"
+                return f"Created Jam “{name}”, but its schedule was not saved"
         return f"Partly applied: {title}"
     if status == "undone":
         return f"Restored: {title}"
@@ -518,12 +518,12 @@ def describe_manual_change(
     if route == ("PUT", "/api/members/{slug}/goals/key-results"):
         raw_items = b.get("items")
         count = len(raw_items) if isinstance(raw_items, list) else 0
-        return f"set {count} key results for mate {s(b.get('member'))}"
+        return f"set {count} key results for Jam {s(b.get('member'))}"
     if route == ("PUT", "/api/members/{slug}/goals/long-term"):
-        return f"set the goal of mate {s(b.get('member'))} to {s(b.get('long_term'))}"
+        return f"set the goal of Jam {s(b.get('member'))} to {s(b.get('long_term'))}"
     if route == ("PUT", "/api/members/{slug}/goals/schedules"):
         fields = ", ".join(s(k) for k in CHECK_IN_FIELDS if k in b)
-        return f"set the check-ins of mate {s(b.get('member'))} ({fields or 'none'})"
+        return f"set the check-ins of Jam {s(b.get('member'))} ({fields or 'none'})"
     if route == ("PUT", "/api/dashboard/config"):
         prior = before if isinstance(before, dict) else {}
         parts = []
@@ -543,12 +543,12 @@ def describe_manual_change(
     if route == ("DELETE", "/api/crons/{job_id}"):
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
-        return f"created mate “{s(b.get('name'))}”"
+        return f"created Jam “{s(b.get('name'))}”"
     if route == ("PUT", "/api/agents/{name}"):
-        return f"updated mate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+        return f"updated Jam {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
         shown = before if isinstance(before, str) and before else name
-        return f"deleted mate “{s(shown)}”"
+        return f"deleted Jam “{s(shown)}”"
     if route == ("PUT", "/api/agents/{name}/capabilities"):
         raw_ops = b.get("operations")
         ops: list[Any] = raw_ops if isinstance(raw_ops, list) else []

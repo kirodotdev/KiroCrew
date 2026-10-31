@@ -723,7 +723,7 @@ async def _eager_spawn(
                 # Do not pre-register the resolver's Global fallback first;
                 # doing so would leave an unrelated provider behind the error.
                 logger.info(
-                    "Eager spawn: Crew Member %r is unresolved; leaving to first turn",
+                    "Eager spawn: Jam %r is unresolved; leaving to first turn",
                     slot.agent,
                 )
                 return

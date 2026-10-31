@@ -282,5 +282,5 @@ def test_an_unrecoverable_view_tells_the_user_to_pick_again_or_start_new():
     assert "Pick the agent for this chat again, or start a new chat" in message
     assert "Crew Member" not in message and "restore it" not in message
     assert unavailable_agent_message(AGENT) == (
-        f"Crew Member '{AGENT}' is unavailable; restore it or choose a member"
+        f"Jam '{AGENT}' is unavailable; restore it or choose a member"
     )

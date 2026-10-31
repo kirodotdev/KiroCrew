@@ -448,7 +448,7 @@ describe('MembersPage roster', () => {
     const heroes = await screen.findAllByTestId('crewmate-empty-hero')
     expect(heroes).toHaveLength(2)
     for (const title of screen.getAllByTestId('crewmate-empty-title')) {
-      expect(title).toHaveTextContent('No mates yet')
+      expect(title).toHaveTextContent('No Jams yet')
     }
     expect(screen.getAllByText(/Give it a job; it keeps working while you are away/i)).toHaveLength(2)
     // The roster's old one-line copy and in-list button are gone: one call to
@@ -493,7 +493,7 @@ describe('MembersPage roster', () => {
     await renderPage([defaultRow(), row({ name: 'mate', slug: 'mate', kiro_agent: 'kirocrew', has_dm_message: true }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 50 })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     // The first crewmate is shown by its label, on whatever template it runs.
-    fireEvent.click(await rosterRow('Mate'))
+    fireEvent.click(await rosterRow('Jam'))
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     await waitFor(() => expect(api.memberGreet).toHaveBeenCalledWith('mate'))
     expect(api.memberGreet).toHaveBeenCalledTimes(1)
@@ -515,9 +515,9 @@ describe('MembersPage roster', () => {
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
-    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your mates/i)
+    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your Jams/i)
     const column = screen.getByTestId('member-column-load-error')
-    expect(column).toHaveTextContent(/Could not load your mates/i)
+    expect(column).toHaveTextContent(/Could not load your Jams/i)
     expect(column.className).toMatch(/\bmd:flex\b/)
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // No roster to count: the header says so with a dash, never "0 members"
@@ -532,7 +532,7 @@ describe('MembersPage roster', () => {
     // read the dialog cannot refuse a name that clashes with an unseen
     // crewmate (ONCALL beside oncall would share one slug and its chat could
     // never open). New team, which has no part in that check, stays live.
-    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your mates.' })
+    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your Jams.' })
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
     fireEvent.click(screen.getByTestId('member-column-load-retry'))
     expect(await rosterRow('oncall')).toBeInTheDocument()
@@ -569,7 +569,7 @@ describe('MembersPage roster cache (React Query)', () => {
     utils.rerender(page)
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(roster().getByText('research')).toBeInTheDocument()
-    expect(screen.queryByText(/No mates yet/i)).toBeNull()
+    expect(screen.queryByText(/No Jams yet/i)).toBeNull()
     // The roster carries its own 30s staleTime (membersRosterQuery), which
     // wins over the test client's 0: a return inside that window is served
     // from cache with NO refetch — that is the request the user stopped
@@ -671,7 +671,7 @@ describe('MembersPage roster cache (React Query)', () => {
     expect(await rosterRow('research')).toBeInTheDocument()
     // In place: the row that was already there never left the screen.
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/No mates yet/i)).toBeNull()
+    expect(screen.queryByText(/No Jams yet/i)).toBeNull()
   })
 
   it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
@@ -683,7 +683,7 @@ describe('MembersPage roster cache (React Query)', () => {
     })
     await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not load your mates/i)).toBeNull()
+    expect(screen.queryByText(/Could not load your Jams/i)).toBeNull()
   })
 })
 
@@ -707,7 +707,7 @@ describe('MembersPage thread', () => {
     })
     const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
     const notice = await screen.findByTestId('member-thread-error', undefined, PANE_READY)
-    expect(notice).toHaveTextContent(/Could not open this mate's chat/i)
+    expect(notice).toHaveTextContent(/Could not open this Jam's chat/i)
     expect(notice).not.toHaveTextContent('Private memory database is unreadable')
     expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
       slot_key: '', failed: true, errorReport: report,
@@ -798,7 +798,7 @@ describe('MembersPage thread', () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
-      await screen.findByText(/Could not open this mate's chat/i, undefined, PANE_READY),
+      await screen.findByText(/Could not open this Jam's chat/i, undefined, PANE_READY),
     ).toBeInTheDocument()
     // Non-API exceptions have no journal report; do not invent a diagnostic
     // object or leak an unredacted thrown message into the localized banner.

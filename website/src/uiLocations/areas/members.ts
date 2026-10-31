@@ -16,10 +16,11 @@ import type { UiLocationArea } from '../types'
 
 const CREATE_TERMS = {
   en: [
-    'create a crewmate', 'make a crewmate', 'add a crewmate', 'new agent', 'add a new agent',
+    'create a crewmate', 'make a crewmate', 'add a crewmate', 'new agent', 'add a new agent', 'create a Jam', 'make a Jam', 'add a Jam',
+    'new mate', 'create a new mate',
     'create an agent', 'make an agent', 'add an agent', 'new teammate', 'add a teammate',
   ],
-  'zh-CN': ['创建队友', '新建代理', '创建代理', '添加代理', '新建智能体', '创建智能体'],
+  'zh-CN': ['创建队友', '新建队友', '添加队友', '新建代理', '创建代理', '添加代理', '新建智能体', '创建智能体'],
   ja: ['クルーメイトを作成', 'エージェントを作成'],
   ko: ['크루메이트 만들기', '에이전트 만들기'],
   es: ['crear un agente', 'añadir un agente'],
@@ -31,8 +32,8 @@ const CREATE_TERMS = {
 } as const
 
 const ADVANCED_TERMS = {
-  en: ['advanced crewmate setup', 'full crewmate form', 'all crewmate options'],
-  'zh-CN': ['高级队友设置', '高级创建队友', '完整的队友表单'],
+  en: ['advanced crewmate setup', 'full crewmate form', 'all crewmate options', 'advanced Jam setup', 'full Jam form', 'all Jam options'],
+  'zh-CN': ['高级队友设置', '高级创建队友', '完整的队友表单', '添加队友'],
 } as const
 
 const ON_PAGE = { surface: 'members', parent: 'page.members' } as const
@@ -65,7 +66,7 @@ export const LOCATIONS = {
   'members.empty.import': {
     kind: 'button',
     terms: {
-      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate', 'import a Jam', 'open a Jam file', 'add a shared Jam'],
       'zh-CN': ['导入队友', '打开队友文件'],
     },
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'no_crewmates' }] }],
@@ -95,7 +96,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['back to the crewmate list', 'all my crewmates', 'crewmate roster'],
+      en: ['back to the crewmate list', 'all my crewmates', 'crewmate roster', 'back to the Jam list', 'all my Jams', 'Jam roster'],
       'zh-CN': ['所有队友', '队友名单'],
     },
     placements: [{
@@ -109,7 +110,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'title', key: 'pages.membersPage.switch_crewmate' },
     terms: {
-      en: ['other crewmates', 'show all crewmates', 'crewmate list', 'find a crewmate by name', 'search crewmates'],
+      en: ['other crewmates', 'show all crewmates', 'crewmate list', 'find a crewmate by name', 'search crewmates', 'other Jams', 'show all Jams', 'Jam list', 'find a mate by name', 'find a Jam by name', 'search Jams'],
       'zh-CN': ['其他队友', '队友列表', '按名字找队友', '搜索队友'],
     },
     placements: [{
@@ -122,7 +123,7 @@ export const LOCATIONS = {
     label: { from: 'text', key: 'pages.membersPage.roster_show' },
     aliasKeys: ['pages.membersPage.roster_hide'],
     terms: {
-      en: ['show the roster', 'show the crewmate list', 'roster column'],
+      en: ['show the roster', 'show the crewmate list', 'roster column', 'show the Jam list'],
       'zh-CN': ['显示完整列表', '显示队友列表'],
     },
     placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
@@ -134,7 +135,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'title', key: 'pages.membersPage.unread_message' },
     terms: {
-      en: ['unread crewmate', 'who has unread messages', 'crewmate with a new message', 'unread pill'],
+      en: ['unread crewmate', 'who has unread messages', 'crewmate with a new message', 'unread pill', 'unread Jam', 'Jam with a new message'],
       'zh-CN': ['未读队友', '谁有未读消息', '有新消息的队友'],
     },
     placements: [{
@@ -146,7 +147,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'title', key: 'pages.membersPage.switch_crewmate' },
     terms: {
-      en: ['more unread crewmates', 'other unread crewmates'],
+      en: ['more unread crewmates', 'other unread crewmates', 'more unread Jams', 'other unread Jams'],
       'zh-CN': ['更多未读队友'],
     },
     placements: [{
@@ -173,7 +174,7 @@ export const LOCATIONS = {
     kind: 'menu-item',
     label: { from: 'text', key: 'pages.membersPage.import_from_file' },
     terms: {
-      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate', 'import a Jam', 'open a Jam file', 'add a shared Jam'],
       'zh-CN': ['导入队友', '打开队友文件'],
     },
     placements: [{ surface: 'members', parent: 'members.add-menu', entry: 'menu' }],
@@ -182,7 +183,7 @@ export const LOCATIONS = {
   'members.switcher.import': {
     kind: 'menu-item',
     terms: {
-      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate'],
+      en: ['import a crewmate', 'open a crewmate file', 'add a shared crewmate', 'import a Jam', 'open a Jam file', 'add a shared Jam'],
       'zh-CN': ['导入队友', '打开队友文件'],
     },
     placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
@@ -193,7 +194,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'title' },
     terms: {
-      en: ['edit my crewmate', 'change my crewmate', 'crewmate settings', 'edit an agent', 'change agent settings'],
+      en: ['edit my crewmate', 'change my crewmate', 'crewmate settings', 'edit an agent', 'change agent settings', 'edit my Jam', 'change my Jam', 'Jam settings'],
       'zh-CN': ['修改队友', '编辑队友', '队友设置', '编辑代理', '修改代理设置'],
     },
     placements: [{ ...ON_PAGE, entry: 'content', requires: [{ kind: 'condition', id: 'crewmate_selected' }] }],
@@ -204,7 +205,7 @@ export const LOCATIONS = {
   'members.profile-tab': {
     kind: 'tab',
     terms: {
-      en: ["my crewmate's profile", 'what my crewmate is about', "the crewmate's memory and workspace"],
+      en: ["my crewmate's profile", 'what my crewmate is about', "the crewmate's memory and workspace", "my Jam's profile", 'what my Jam is about', "the Jam's memory and workspace"],
       'zh-CN': ['队友资料', '队友简介', '队友的记忆和工作区'],
     },
     placements: [{
@@ -220,7 +221,7 @@ export const LOCATIONS = {
   'members.schedule-tab': {
     kind: 'tab',
     terms: {
-      en: ["my mate's schedules", 'what wakes my mate', 'turn on heartbeat', "my mate's check-ins"],
+      en: ["my mate's schedules", 'what wakes my mate', 'turn on heartbeat', "my mate's check-ins", "my Jam's schedules", 'what wakes my Jam', "my Jam's check-ins"],
       'zh-CN': ['队友的定时任务', '什么会唤醒队友', '打开心跳'],
     },
     placements: [{
@@ -236,7 +237,7 @@ export const LOCATIONS = {
   'members.goals-tab': {
     kind: 'tab',
     terms: {
-      en: ["my mate's goal", "my mate's milestones", 'goals and milestones', "what my mate is working toward"],
+      en: ["my mate's goal", "my mate's milestones", 'goals and milestones', "what my mate is working toward", "my Jam's goal", "my Jam's milestones", "what my Jam is working toward"],
       'zh-CN': ['队友的目标', '队友的里程碑', '目标和里程碑'],
     },
     placements: [{
@@ -256,7 +257,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate settings', 'my crewmate\'s model', 'change the crewmate\'s model', 'lock the dashboard layout'],
+      en: ['crewmate settings', 'my crewmate\'s model', 'change the crewmate\'s model', 'lock the dashboard layout', 'Jam settings', 'my Jam\'s model', 'change the Jam\'s model'],
       'zh-CN': ['队友设置', '队友的模型', '锁定仪表板布局'],
       ja: ['クルーメイトの設定'],
       ko: ['크루메이트 설정'],
@@ -282,7 +283,7 @@ export const LOCATIONS = {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate permissions', 'what a crewmate may do'],
+      en: ['crewmate permissions', 'what a crewmate may do', 'Jam permissions', 'what a Jam may do'],
       'zh-CN': ['队友权限', '队友能做什么'],
       ja: ['クルーメイトの権限'],
       ko: ['크루메이트 권한'],
@@ -310,7 +311,7 @@ export const LOCATIONS = {
     kind: 'toggle',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's dashboard", "my mate's files"],
+      en: ['crewmate details', 'crewmate info', 'side panel', 'show crewmate details', "my mate's dashboard", "my mate's files", 'Jam details', 'Jam info', 'show Jam details', "my Jam's dashboard", "my Jam's files"],
       'zh-CN': ['队友详情', '队友信息', '侧边面板', '队友的仪表板', '队友的文件'],
     },
     placements: [{
@@ -349,7 +350,7 @@ export const LOCATIONS = {
     kind: 'field',
     label: { from: 'attr', attr: 'aria-label' },
     terms: {
-      en: ["change a crewmate's model", "crewmate's default model", 'which model a crewmate uses', "change an agent's model"],
+      en: ["change a crewmate's model", "crewmate's default model", 'which model a crewmate uses', "change an agent's model", "change a Jam's model", "Jam's default model", 'which model a Jam uses'],
       'zh-CN': ['给队友换模型', '队友的默认模型', '修改队友模型', '换代理的模型'],
     },
     placements: [{ surface: 'capabilities', parent: 'agents.section-model', entry: 'tab' }],
@@ -373,7 +374,7 @@ export const LOCATIONS = {
   'agents.edit-avatar': {
     kind: 'button',
     terms: {
-      en: ["change my crewmate's avatar", 'change the avatar', 'crewmate picture', 'change the face', 'avatar'],
+      en: ["change my crewmate's avatar", 'change the avatar', 'crewmate picture', 'change the face', 'avatar', "change my Jam's avatar", 'Jam picture'],
       'zh-CN': ['修改头像', '更换头像', '换头像', '队友头像', '改代理的头像', '改代理头像', '更换代理头像'],
     },
     placements: [{ surface: 'capabilities', parent: 'agents.section-model', entry: 'tab' }],
@@ -383,7 +384,7 @@ export const LOCATIONS = {
   'agents.delete': {
     kind: 'button',
     terms: {
-      en: ['remove a crewmate', 'delete an agent', 'remove an agent', 'get rid of a crewmate'],
+      en: ['remove a crewmate', 'delete an agent', 'remove an agent', 'get rid of a crewmate', 'remove a Jam', 'get rid of a Jam', 'delete a mate', 'remove a mate'],
       'zh-CN': ['移除队友', '删除代理', '删除智能体', '去掉队友', '删除 crewmate', '删除成员'],
     },
     // The Danger zone's own notice above the button: deleting unbinds, it keeps

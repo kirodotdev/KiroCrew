@@ -459,7 +459,7 @@ def slot_directions(spec: dict[str, Any], base: dict[str, Any] | None, name: str
             spec, agent_id=name, agents_dir=paths_mod.mate_agents_dir()
         )
     except agent_specs.AgentSpecUnreadable:
-        logger.warning("crewmate %s: prompt unreadable; reading it raw", name, exc_info=True)
+        logger.warning("Jam %s: prompt unreadable; reading it raw", name, exc_info=True)
         text = raw
     return _directions_of({"prompt": text}, base)
 

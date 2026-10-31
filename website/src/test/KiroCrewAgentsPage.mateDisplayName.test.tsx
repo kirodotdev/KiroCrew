@@ -8,7 +8,7 @@ const ordinary = { name: 'pr-buddy', kiro_agent: 'kirocrew', display_name: '' } 
 
 describe('Mate display name in the crew editor', () => {
   it('falls back to the default Mate name, never the member key', () => {
-    expect(displayNameFallback(mate, 'mate')).toBe('Mate')
+    expect(displayNameFallback(mate, 'mate')).toBe('Jam')
     expect(displayNameFallback(ordinary, 'pr-buddy')).toBe('pr-buddy')
     expect(displayNameFallback(undefined, 'pr-buddy')).toBe('pr-buddy')
   })
@@ -17,7 +17,7 @@ describe('Mate display name in the crew editor', () => {
     const { container } = render(
       <DisplayNameField value="" onChange={() => {}} fallback={displayNameFallback(mate, 'mate')} />,
     )
-    expect(screen.getByTestId('display-name-input')).toHaveAttribute('placeholder', 'Mate')
+    expect(screen.getByTestId('display-name-input')).toHaveAttribute('placeholder', 'Jam')
     expect(container.textContent).not.toContain('mate')
   })
 

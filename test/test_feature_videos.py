@@ -158,7 +158,7 @@ class TestShippedCatalog:
     def test_crewmates_copy_matches_the_dashboard_catalog(self) -> None:
         """StartupVideoModal's INTRO_COPY shows the bundle's translation of these."""
         entry = next(e for e in fv.CATALOG if e.id == "crewmates")
-        assert entry.title == "Meet your Mates."
+        assert entry.title == "Meet your Jams."
         assert entry.description == ("They find the work, do it, and ask only when they need you.")
 
     def test_a_component_intro_naming_media_is_a_catalog_mistake(self) -> None:

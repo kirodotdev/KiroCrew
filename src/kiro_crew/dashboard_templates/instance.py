@@ -1065,7 +1065,7 @@ def _check(manifest: Any, html: str) -> dict[str, Any]:
             f"a {parsed.source!r} template cannot be adopted: only a page that shipped "
             "with the product, or one the operator placed in the panel-templates "
             "folder, was put there by a person, and a rendered page runs its own "
-            "script against this crewmate's task titles and summaries"
+            "script against this Jam's task titles and summaries"
         )
     return dict(manifest)
 
@@ -1457,10 +1457,10 @@ EDITED_PAGE_REFUSAL: Final[str] = (
     "a dashboard's page cannot be edited. The stored record carries the page AND the "
     "`source` label that says where the page came from, so replacing one while "
     "keeping the other would make the record vouch for bytes nobody reviewed -- and "
-    "the page is what runs, against this crewmate's own task titles and summaries. "
+    "the page is what runs, against this Jam's own task titles and summaries. "
     "The manifest alone may be edited. To change the PAGE, preview a template from "
     "dashboard_templates and apply it, or dashboard_rollback to a version this "
-    "crewmate already had"
+    "Jam already had"
 )
 
 
@@ -1503,7 +1503,7 @@ def edit(
     with _locked(instance_dir(slug)):
         current = read(slug)
         if current.instance_version == 0:
-            raise InstanceRefused("this mate has no dashboard yet; adopt a template first")
+            raise InstanceRefused("this Jam has no dashboard yet; adopt a template first")
         new_html = current.html
         new_manifest = dict(current.manifest) if manifest is None else dict(manifest)
         checked = _check(new_manifest, new_html)
@@ -1535,7 +1535,7 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
     with _locked(instance_dir(slug)):
         current = read(slug)
         if current.instance_version == 0:
-            raise InstanceRefused("this mate has no dashboard yet; adopt a template first")
+            raise InstanceRefused("this Jam has no dashboard yet; adopt a template first")
         if to_version == current.instance_version:
             raise InstanceRefused(f"instance version {to_version} is already the current one")
         if to_version > current.instance_version:

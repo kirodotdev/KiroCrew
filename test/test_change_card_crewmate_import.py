@@ -186,7 +186,7 @@ def test_import_shares_the_create_state_read_and_partial_line():
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
         line
-        == "Created mate “Q” without its goal or anything after it. Undo removes the mate and what was saved"
+        == "Created Jam “Q” without its goal or anything after it. Undo removes the Jam and what was saved"
     )
 
 

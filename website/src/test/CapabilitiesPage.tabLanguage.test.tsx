@@ -49,7 +49,7 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     await i18next.changeLanguage('en')
     wrap(<CapabilitiesPage />)
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Mates' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Jams' })).toBeTruthy(),
     )
 
     await i18next.changeLanguage('ja')
@@ -57,8 +57,8 @@ describe('CapabilitiesPage — the tab rail follows the active language', () => 
     // The Japanese label for the same tab. Without the language in the memo's
     // dependencies the rail keeps rendering "Crewmates" here.
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'クルーメイト' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Jam' })).toBeTruthy(),
     )
-    expect(screen.queryByRole('button', { name: 'Mates' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Jams' })).toBeNull()
   })
 })

@@ -1140,7 +1140,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate', 'Import from file'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New Jam', 'Import from file'])
   })
 
   it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
@@ -1168,7 +1168,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByRole('textbox', { name: 'Goal' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('New Jam')
     expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('crewmate-create-form'))
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })

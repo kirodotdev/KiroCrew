@@ -68,15 +68,15 @@ describe('CrewmateSwitcher closed chip', () => {
     // rest; it slides open on hover, focus or while the list is open. The
     // button is named by aria-label, so the fold changes nothing spoken.
     const label = screen.getByTestId('crewmate-switcher-label')
-    expect(label).toHaveTextContent('Mates')
+    expect(label).toHaveTextContent('Jams')
     expect(label.className).toContain('grid-cols-[0fr]')
     expect(label.className).toContain('group-hover:grid-cols-[1fr]')
     expect(label.className).toContain('group-focus-visible:grid-cols-[1fr]')
     expect(label.className).toContain('group-data-[state=open]:grid-cols-[1fr]')
     expect(label.className).toContain('motion-reduce:transition-none')
     expect((label.firstElementChild as HTMLElement).className).toContain('overflow-hidden')
-    expect(chip()).toHaveAccessibleName('Mates')
-    expect(chip()).toHaveAttribute('title', 'Switch mate')
+    expect(chip()).toHaveAccessibleName('Jams')
+    expect(chip()).toHaveAttribute('title', 'Switch Jam')
     expect(chip()).toHaveAttribute('aria-expanded', 'false')
   })
 
@@ -149,8 +149,8 @@ describe('CrewmateSwitcher open list', () => {
     const list = await open()
     const search = screen.getByTestId('crewmate-switcher-search')
     // Same words as the roster column's search over the same roster (#24448).
-    expect(search).toHaveAccessibleName('Search mates…')
-    expect(search).toHaveAttribute('placeholder', 'Search mates…')
+    expect(search).toHaveAccessibleName('Search Jams…')
+    expect(search).toHaveAttribute('placeholder', 'Search Jams…')
 
     fireEvent.change(search, { target: { value: 'radar' } })
     // Matches the display name AND the agent template ("radar-template").
@@ -161,7 +161,7 @@ describe('CrewmateSwitcher open list', () => {
 
     fireEvent.change(search, { target: { value: 'nobody' } })
     expect(within(list).queryAllByRole('option')).toHaveLength(0)
-    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No mate matches')
+    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No Jam matches')
     // The create door is still offered under an empty result.
     expect(screen.getByTestId('crewmate-switcher-create')).toBeInTheDocument()
   })
@@ -335,7 +335,7 @@ describe('CrewmateSwitcher live signals', () => {
     setup()
     const list = await open()
     expect(within(options(list)[0]).getByTestId('crewmate-switcher-row-presence-dot')).toBeInTheDocument()
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Jams')
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
   })
 
@@ -345,7 +345,7 @@ describe('CrewmateSwitcher live signals', () => {
     )
     expect(screen.getByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
     expect(chip()).toHaveAttribute('data-needs-you', 'true')
-    expect(chip()).toHaveAccessibleName('Mates, Needs your approval or answer')
+    expect(chip()).toHaveAccessibleName('Jams, Needs your approval or answer')
     unmount()
 
     // Only the OPEN crewmate needs you: its thread is on screen, so the chip
@@ -355,7 +355,7 @@ describe('CrewmateSwitcher live signals', () => {
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
     expect(chip()).not.toHaveAttribute('data-needs-you')
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Jams')
   })
 
   it('working and unread elsewhere do not light the chip — only needs-you does', () => {
@@ -363,7 +363,7 @@ describe('CrewmateSwitcher live signals', () => {
       <CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} signals={signalsBy({ oncall: { running: true, unread: true } })} />,
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
-    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAccessibleName('Jams')
   })
 })
 

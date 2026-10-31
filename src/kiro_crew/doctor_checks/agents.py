@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 #: the blocking issue, so these sections say "not checked" and move on instead
 #: of aborting the report -- or double-counting the same issue.
 _MEMBER_NAMES_NOT_CHECKED = (
-    "  ⚠️  not checked: the platform did not compose, so stored Crew Member names "
+    "  ⚠️  not checked: the platform did not compose, so stored Jam names "
     "cannot be vetted (see the Platform section above)"
 )
 
@@ -62,12 +62,12 @@ def _doctor_member_dispatchability(cfg: KiroCrewConfig, issues: list[str]) -> No
         return
     noun = "name" if count == 1 else "names"
     print("\nCrew Member Names")
-    print(f"  count:       {count} stored Crew Member {noun} cannot reach a model")
+    print(f"  count:       {count} stored Jam {noun} cannot reach a model")
     print("               Open Crew Manager and create a replacement with a safe name.")
     print("               If needed, make the replacement the default. Then delete the old member.")
     print("               The replacement gets a new member identity. The old member's DM")
     print("               history stays under its old key and is not transferred automatically.")
-    issues.append("stored Crew Member names are not dispatchable")
+    issues.append("stored Jam names are not dispatchable")
 
 
 def _missing_v1_store_remedy(cfg: KiroCrewConfig, member: str, store: object) -> str:
@@ -151,7 +151,7 @@ def _doctor_member_memory_bindings(cfg: KiroCrewConfig, issues: list[str]) -> No
                 # default crewmate onto its own memory knows where it applies.
                 print(
                     "               plain sessions use the default template on Global "
-                    "memory; this store is used only in this crewmate's DM and in "
+                    "memory; this store is used only in this Jam's DM and in "
                     "chats where you pick it"
                 )
     for store, reason in legacy.items():

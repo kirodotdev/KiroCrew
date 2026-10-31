@@ -4,7 +4,7 @@
   "model": {
     "types": {
       "decided": {
-        "description": "how many approvals the crewmate's current session has had answered",
+        "description": "how many approvals the Jam's current session has had answered",
         "label": "Answered",
         "source": {
           "fold": "approvals",
@@ -31,7 +31,7 @@
         "type": "array"
       },
       "requested": {
-        "description": "how many approvals the crewmate's current session has asked for",
+        "description": "how many approvals the Jam's current session has asked for",
         "label": "Asked",
         "source": {
           "fold": "approvals",

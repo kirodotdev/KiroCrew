@@ -419,9 +419,7 @@ def record_self_change(state: Any, change: dict[str, Any]) -> None:
         )
         _append_row(slot, f"{change.get('member') or ''} changed its {changed[0]}", meta)
     except Exception:
-        logger.warning(
-            "could not record a crewmate's self-change in its conversation", exc_info=True
-        )
+        logger.warning("could not record a Jam's self-change in its conversation", exc_info=True)
 
 
 def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
@@ -437,7 +435,7 @@ def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
         if status and row_status != status:
             _patch_row(state, slot, row, {"status": status})
     except Exception:
-        logger.warning("could not record a crewmate's self-change outcome", exc_info=True)
+        logger.warning("could not record a Jam's self-change outcome", exc_info=True)
 
 
 # ── lessons ──

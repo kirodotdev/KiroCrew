@@ -195,7 +195,7 @@ class TestShippedScenarios:
                     for i, step in enumerate(sc.steps)
                     if any(label in step for label in labels)
                     and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
-                    and "Search mates" not in step
+                    and "Search Jams" not in step
                 ),
                 None,
             )
@@ -203,7 +203,7 @@ class TestShippedScenarios:
                 continue
             checked += 1
             searched = any(
-                "Search mates" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                "Search Jams" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
                 for step in sc.steps[:click_at]
             )
             assert (

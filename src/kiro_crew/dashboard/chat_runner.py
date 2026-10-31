@@ -461,31 +461,31 @@ from kiro_crew.widget_artifacts import register_widgets_off_loop
 #: The dashboard shows its own localized copy and fix button per code.
 _SESSION_START_REFUSAL_TEXT = {
     "materialization_changed": (
-        "This crew member's agent file changed outside the Capabilities page. "
+        "This Jam's agent file changed outside the Capabilities page. "
         "Open Capabilities, review the change and save it, then start a new chat."
     ),
     "parent_identity_changed": (
-        "This crew member's parent template was moved or replaced. Open "
+        "This Jam's parent template was moved or replaced. Open "
         "Capabilities and stop following the parent, or put the parent back, "
         "then start a new chat."
     ),
     "foreign_private_copy": (
-        "This crew member uses another member's private agent. Open the crew "
+        "This Jam uses another member's private agent. Open the crew "
         "member and pick a different agent under Built from, then start a new chat."
     ),
     "project_identity_changed": (
-        "This crew member's saved capabilities belong to the project {project}. "
+        "This Jam's saved capabilities belong to the project {project}. "
         "Start the chat in {project}."
     ),
     "private_template_shadowed": (
         "Rename or remove {file} in the .kiro/agents folder of {project}, then "
-        "start a new chat. That project file hides this crew member's own agent file."
+        "start a new chat. That project file hides this Jam's own agent file."
     ),
 }
 #: ``project_identity_changed`` when the member saved with no project to name.
 _PROJECT_CHANGED_OTHER_TEXT = (
-    "This crew member's saved capabilities belong to another project. "
-    "Start the chat in the crew member's own project."
+    "This Jam's saved capabilities belong to another project. "
+    "Start the chat in the Jam's own project."
 )
 
 logger = logging.getLogger(__name__)

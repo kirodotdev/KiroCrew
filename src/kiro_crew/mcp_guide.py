@@ -224,7 +224,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "list_change_kinds",
             "description": (
                 "List the change-card kinds you can propose (settings, schedules, "
-                "crewmates, capabilities, templates, MCP servers, connections, "
+                "Jams, capabilities, templates, MCP servers, connections, "
                 "secrets, app trust, denied commands, saved workflows), each with "
                 "its params schema and which fields the user may edit on the card."
             ),
@@ -257,7 +257,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "get_member_capabilities",
             "description": (
-                "Read one crewmate's current tools, tool approvals, MCP servers and "
+                "Read one Jam's current tools, tool approvals, MCP servers and "
                 "skills in exactly the shape a crewmate.capabilities draft takes: "
                 "rows {section, id, label, state, editable}, its template, and "
                 "whether the draft needs enroll=true. Call it before proposing "
@@ -415,7 +415,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "gate_off (a setting such as a feature preview is off; setting_id "
                 "names it, or is null when no setting turns it on), "
                 "needs_selection (the user must first open one item, e.g. a "
-                "crewmate, named in selection), "
+                "Jam, named in selection), "
                 "predicate_unmet (something the path needs is not true in their "
                 "tab, named in predicates; see conditions for what each means), "
                 "hidden_in_scope (a sidebar, menu or panel on the path is closed, "

@@ -108,8 +108,8 @@ async def test_member_session_names_the_crew_member(agents_dir, tmp_path, monkey
         await _start("worker", tmp_path, session_key="member-scout")
 
     assert str(caught.value) == (
-        f'Crew member "scout" comes from the {LABEL} app, which is disabled. '
-        f"Enable {LABEL} in Apps \u203a Library to use this crew member."
+        f'Jam "scout" comes from the {LABEL} app, which is disabled. '
+        f"Enable {LABEL} in Apps \u203a Library to use this Jam."
     )
 
 

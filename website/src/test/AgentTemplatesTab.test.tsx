@@ -141,16 +141,16 @@ describe('AgentTemplatesTab roster', () => {
     renderTab()
     await screen.findByRole('option', { name: /^reviewer/ })
     const groups = screen.getAllByRole('group').map(g => g.getAttribute('aria-label'))
-    expect(groups).toEqual(['Mine', 'Mates with their own copy', 'From packages', 'Built-in'])
+    expect(groups).toEqual(['Mine', 'Jams with their own copy', 'From packages', 'Built-in'])
     expect(within(screen.getByRole('group', { name: 'Mine' })).getByRole('option', { name: /^reviewer/ })).toBeInTheDocument()
     // The own-copy group is glossed, and its row is described in the tab's
     // own word rather than the fork-written "private copy" sentence.
-    const overrides = screen.getByRole('group', { name: 'Mates with their own copy' })
-    expect(within(overrides).getByText(/One mate’s edited version/)).toBeInTheDocument()
-    expect(within(overrides).getByRole('option', { name: /^pr-bot/ })).toHaveTextContent('Mate pr-bot’s own copy of reviewer')
+    const overrides = screen.getByRole('group', { name: 'Jams with their own copy' })
+    expect(within(overrides).getByText(/One Jam’s edited version/)).toBeInTheDocument()
+    expect(within(overrides).getByRole('option', { name: /^pr-bot/ })).toHaveTextContent('Jam pr-bot’s own copy of reviewer')
     // One fact, one phrase: the count badge uses the same own-copy term as
     // the group heading and the banner.
-    expect(within(screen.getByRole('group', { name: 'Mine' })).getByText('1 mate with its own copy')).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Mine' })).getByText('1 Jam with its own copy')).toBeInTheDocument()
     expect(within(screen.getByRole('group', { name: 'From packages' })).getByRole('option', { name: /atlas/ })).toBeInTheDocument()
     // The first row is auto-selected and its detail read fires.
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
@@ -164,11 +164,11 @@ describe('AgentTemplatesTab roster', () => {
     expect(within(row).getAllByRole('button')).toHaveLength(2)
     let items = await openMore()
     expect(items.map(i => i.textContent)).toEqual([
-      expect.stringContaining('Enroll as mate'), 'Duplicate', 'Delete',
+      expect.stringContaining('Enroll as Jam'), 'Duplicate', 'Delete',
     ])
     // The enroll item says what enrolling starts. `pr-bot` runs this template
     // under its own name, so a crewmate NAMED reviewer can still be enrolled.
-    expect(items[0]).toHaveTextContent('Adds a mate with its own memory')
+    expect(items[0]).toHaveTextContent('Adds a Jam with its own memory')
     expect(items[0]).not.toHaveAttribute('data-disabled')
     fireEvent.keyDown(items[0], { key: 'Escape' })
 
@@ -176,7 +176,7 @@ describe('AgentTemplatesTab roster', () => {
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('atlas'))
     items = await openMore()
     expect(items.map(i => i.textContent)).toEqual([
-      expect.stringContaining('Adds a mate with its own memory'), 'Duplicate to edit',
+      expect.stringContaining('Adds a Jam with its own memory'), 'Duplicate to edit',
     ])
     fireEvent.keyDown(items[0], { key: 'Escape' })
     // The read-only banner carries the reason once and the remedy beside it;
@@ -213,7 +213,7 @@ describe('AgentTemplatesTab roster', () => {
     // The usage line names every holder kind the guard counts, up front, and
     // each is a drill-in to where that holder lives. One fact, one phrasing:
     // the line says "Runs 1 crewmate" exactly as the list badge does.
-    expect(screen.getAllByText(/Runs 1 mate/).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText(/Runs 1 Jam/).length).toBeGreaterThanOrEqual(2)
     expect(screen.queryByText(/Runs as/)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '1 chat folder' }))
     expect(mockNavigate).toHaveBeenLastCalledWith('/chat')
@@ -222,7 +222,7 @@ describe('AgentTemplatesTab roster', () => {
     fireEvent.click(screen.getByRole('button', { name: '1 webhook' }))
     expect(mockNavigate).toHaveBeenLastCalledWith('/webhooks')
     const items = await openMore()
-    expect(items[0]).toHaveTextContent('Already enrolled as a mate.')
+    expect(items[0]).toHaveTextContent('Already enrolled as a Jam.')
     expect(items[0]).toHaveAttribute('data-disabled')
     fireEvent.click(items.find(i => i.textContent === 'Delete')!)
     // The row already shows holders, so the "nothing points at it" confirm is
@@ -235,7 +235,7 @@ describe('AgentTemplatesTab roster', () => {
     // A private copy is named by the copy with its crew as a gloss, and links to
     // that crew's pane -- it is not a dead end.
     expect(within(dialog).getByText('pr-bot-copy')).toBeInTheDocument()
-    expect(within(dialog).getByText('mate pr-bot')).toBeInTheDocument()
+    expect(within(dialog).getByText('Jam pr-bot')).toBeInTheDocument()
     fireEvent.click(within(dialog).getAllByRole('button', { name: /Open/ }).at(-1)!)
     expect(mockNavigate).toHaveBeenCalledWith('/members?member=pr-bot')
   })
@@ -245,7 +245,7 @@ describe('AgentTemplatesTab roster', () => {
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
     fireEvent.click(option('atlas'))
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('atlas'))
-    expect((await screen.findAllByText('No mate runs this')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('No Jam runs this')).length).toBeGreaterThan(0)
   })
 
   it('sends a private copy to its mate instead of offering Duplicate to edit', async () => {
@@ -256,9 +256,9 @@ describe('AgentTemplatesTab roster', () => {
     expect(screen.queryByRole('button', { name: /Duplicate to edit/ })).toBeNull()
     // Said as what it is, not as a template nobody enrolled -- in the list row
     // and again in the detail's usage line.
-    expect(screen.getAllByText('Mate pr-bot’s own copy of reviewer')).toHaveLength(2)
-    expect(screen.queryByText('No mate runs this')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Open mate/ }))
+    expect(screen.getAllByText('Jam pr-bot’s own copy of reviewer')).toHaveLength(2)
+    expect(screen.queryByText('No Jam runs this')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Open Jam/ }))
     expect(mockNavigate).toHaveBeenCalledWith('/members?member=pr-bot')
     expect(mockLeave).toHaveBeenLastCalledWith(expect.any(Function), '/members?member=pr-bot')
   })
@@ -344,7 +344,7 @@ describe('AgentTemplatesTab editing', () => {
     await qc.invalidateQueries({ queryKey: ['agent-templates'] })
     await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledTimes(2))
     expect(screen.getByRole('textbox', { name: 'Prompt' })).toHaveValue('still typing')
-    expect(screen.getByText(/Unsaved changes · affects 1 mate/)).toBeInTheDocument()
+    expect(screen.getByText(/Unsaved changes · affects 1 Jam/)).toBeInTheDocument()
     // No restart control on Customize: the hint names the limit and points at
     // the remedy where it now lives (Apply & Restart on Connections) instead of
     // at a header button here.
@@ -986,7 +986,7 @@ describe('AgentTemplatesTab — the default custom agent bar (#18411)', () => {
     // Opens with the failed action, then names what still starts: the select
     // snaps back to it, so the sentence must not read as if reviewer had been
     // the default.
-    expect(err).toHaveTextContent(/^Couldn’t switch to reviewer: it’s a mate’s private copy\. New sessions still use kirocrew\.$/)
+    expect(err).toHaveTextContent(/^Couldn’t switch to reviewer: it’s a Jam’s private copy\. New sessions still use kirocrew\.$/)
   })
 
   it('lets the reader put a refusal away, and keeps the read failure without a dismiss', async () => {
@@ -1135,6 +1135,6 @@ describe('AgentTemplatesTab — the default custom agent bar (#18411)', () => {
     renderTab()
     await waitFor(() => expect(trigger()).toHaveTextContent('kirocrew'))
     // The fixture roster carries a private copy, so the note shows.
-    expect(screen.getByText('Not offered here: mates’ own copies, scheduled-job-only agents, agents an app installed. Agents under “From packages” can be picked.')).toBeInTheDocument()
+    expect(screen.getByText('Not offered here: Jams’ own copies, scheduled-job-only agents, agents an app installed. Agents under “From packages” can be picked.')).toBeInTheDocument()
   })
 })

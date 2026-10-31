@@ -167,19 +167,19 @@ describe('MembersPage filters', () => {
     // The menu trigger is the sidebar's 24px filter button, docked in the field.
     const trigger = screen.getByTestId('member-filter-menu')
     expect(trigger.className).toMatch(/\bw-6\b/)
-    expect(trigger.getAttribute('aria-label')).toBe('Sort and filter mates')
+    expect(trigger.getAttribute('aria-label')).toBe('Sort and filter Jams')
   })
 
   it('header reads "N of M" while a filter narrows the list, plain count otherwise', async () => {
     await renderPage()
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 Jams')
     await openFilters()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 5 Jams')
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     // The search box is not a "filter" for this purpose: it is transient.
     fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
-    expect(screen.getByTestId('member-count')).toHaveTextContent('5 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('5 Jams')
   })
 
   it('starred-only keeps just the starred rows and persists the toggle', async () => {
@@ -250,7 +250,7 @@ describe('MembersPage filters', () => {
     fireEvent.click(screen.getByTestId('member-filter-source-package'))
     expect(names()).toEqual([])
     expect(screen.getByTestId('member-filtered-out')).toBeInTheDocument()
-    expect(screen.queryByText(/No mates yet/i)).toBeNull()
+    expect(screen.queryByText(/No Jams yet/i)).toBeNull()
     fireEvent.click(screen.getByTestId('member-filters-clear'))
     expect(names()).toHaveLength(5)
     expect(localStorage.getItem('mc-members-starred-only')).toBe('0')
@@ -279,7 +279,7 @@ describe('MembersPage filters', () => {
     // A second status widens the set (OR), so a member in either state shows.
     fireEvent.click(screen.getByTestId('member-filter-status-unread'))
     expect(names()).toEqual(['conductor', 'pkg-a'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('2 of 4 Jams')
     fireEvent.click(screen.getByTestId('member-filter-status-working'))
     // Only "unread" left and nothing is unread: the filters, not the roster, emptied the list.
     expect(names()).toEqual([])
@@ -381,7 +381,7 @@ describe('MembersPage star', () => {
     const notice = await screen.findByTestId('member-star-error')
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'false')
     // Localized copy, not the raw server text.
-    expect(notice).toHaveTextContent("Could not update this mate's star.")
+    expect(notice).toHaveTextContent("Could not update this Jam's star.")
     expect(notice).not.toHaveTextContent('Forbidden')
     // The journaled report is recovered from the THROWN message (not the
     // localized one) and handed to ErrorNotice explicitly, so the agent
@@ -392,7 +392,7 @@ describe('MembersPage star', () => {
       .filter((props) => props.testId === 'member-star-error' && props.report)
       .at(-1)
     expect(noticeProps?.report).toEqual(FAKE_REPORT)
-    expect(noticeProps?.message).toBe("Could not update this mate's star.")
+    expect(noticeProps?.message).toBe("Could not update this Jam's star.")
     // A later successful toggle clears the stale notice.
     fireEvent.click(screen.getByTestId('member-star-pkg-b'))
     await waitFor(() => expect(screen.queryByTestId('member-star-error')).toBeNull())
@@ -419,7 +419,7 @@ describe('MembersPage hides unlisted mates', () => {
   it('lists rows whose thread holds a message and starred rows; the count says how many are listed', async () => {
     await renderPage(MIXED)
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('3 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('3 Jams')
     // Not "filtered out": hidden rows are unlisted, so no chip and no notice.
     expect(screen.queryByTestId('member-filter-chips')).toBeNull()
     expect(screen.queryByTestId('member-filtered-out')).toBeNull()
@@ -432,7 +432,7 @@ describe('MembersPage hides unlisted mates', () => {
     ])
     await waitFor(() => expect(names()).toContain('nova-sky'))
     expect(names()).not.toContain('pkg-tool')
-    expect(screen.getByTestId('member-count')).toHaveTextContent('4 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('4 Jams')
     expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent('legacy-aim and pkg-tool')
   })
 
@@ -449,7 +449,7 @@ describe('MembersPage hides unlisted mates', () => {
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
     expect(names()).toEqual(['pkg-tool'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('4 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('4 Jams')
     fireEvent.click(screen.getByTestId('member-search-clear'))
     expect(names()).toEqual(['radar', 'kirocrew', 'oncall'])
   })
@@ -461,7 +461,7 @@ describe('MembersPage hides unlisted mates', () => {
   it('ends the list by naming the mates the rule hides and saying the search finds them', async () => {
     await renderPage(MIXED)
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
-    expect(screen.getByTestId('member-count')).toHaveTextContent('3 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('3 Jams')
     expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent(
       "legacy-aim and pkg-tool are hidden because you haven't used them yet, and aren't counted above. Search to find them.",
     )
@@ -497,7 +497,7 @@ describe('MembersPage hides unlisted mates', () => {
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     // The whole line: the counted form names no action.
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "legacy-aim, pkg-three, pkg-tool and 1 more mate you haven't used yet are hidden and aren't counted above.",
+      "legacy-aim, pkg-three, pkg-tool and 1 more Jam you haven't used yet are hidden and aren't counted above.",
     )
   })
 
@@ -513,7 +513,7 @@ describe('MembersPage hides unlisted mates', () => {
     ])
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "Zebra Notes, legacy-aim, pkg-three and 2 more mates you haven't used yet are hidden and aren't counted above.",
+      "Zebra Notes, legacy-aim, pkg-three and 2 more Jams you haven't used yet are hidden and aren't counted above.",
     )
   })
 
@@ -526,7 +526,7 @@ describe('MembersPage hides unlisted mates', () => {
     ])
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "legacy-aim, pkg-four, pkg-three and 2 more mates you haven't used yet are hidden and aren't counted above.",
+      "legacy-aim, pkg-four, pkg-three and 2 more Jams you haven't used yet are hidden and aren't counted above.",
     )
   })
 
@@ -555,7 +555,7 @@ describe('MembersPage hides unlisted mates', () => {
     expect(within(screen.getByTestId('member-filter-source-builtin')).getByText('1')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     expect(names()).toEqual(['oncall'])
-    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 3 mates')
+    expect(screen.getByTestId('member-count')).toHaveTextContent('1 of 3 Jams')
   })
 
   it('a team whose every mate is hidden keeps its header, so the team stays reachable', async () => {

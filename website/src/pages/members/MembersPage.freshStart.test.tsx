@@ -63,7 +63,7 @@ async function openAlpha() {
 async function pressAndAsk(button: HTMLElement) {
   fireEvent.click(button)
   const dialog = await screen.findByRole('dialog')
-  expect(within(dialog).getByText('Give this mate a fresh start?')).toBeTruthy()
+  expect(within(dialog).getByText('Give this Jam a fresh start?')).toBeTruthy()
   expect(within(dialog).getByText(/messages stay here/i)).toBeTruthy()
   return dialog
 }

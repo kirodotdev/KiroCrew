@@ -318,7 +318,7 @@ describe('CrewProfileSettings permission', () => {
 
   it('saves nothing while the thread is still being confirmed', async () => {
     setup(member(), null, true)
-    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this mate is open.')
+    expect(within(group()).getByTestId('crew-profile-settings-waiting')).toHaveTextContent('These unlock once the chat with this Jam is open.')
     const p = open('approval_mode')
     expect(p).toHaveAttribute('aria-busy', 'true')
     expect(within(p).getByRole('radio', { name: /Normal/ })).toHaveAttribute('aria-disabled', 'true')

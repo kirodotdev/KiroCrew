@@ -210,7 +210,7 @@ async def _owner_member(
         if member not in cfg.agents or members_mod.member_slug(member, cfg) != slug:
             raise members_mod.MemberSlugError(str(member))
     except members_mod.MemberSlugError:
-        return _deny(404, "member_not_found", "no crew member for this slug")
+        return _deny(404, "member_not_found", "no Jam for this slug")
     return slug, str(member), body, cfg
 
 
@@ -240,7 +240,7 @@ async def api_member_export(request: web.Request) -> web.Response:
         return _deny(400, exc.code, exc.message)
     except (members_mod.MemberRulesUnreadable, member_goals.GoalsUnreadable):
         logger.warning("export: a record of %r is unreadable", slug, exc_info=True)
-        return _deny(500, "record_unreadable", "a record of this crewmate cannot be read")
+        return _deny(500, "record_unreadable", "a record of this Jam cannot be read")
     if body.get("preview") is True:
         # Serialising and hashing every carried file is megabytes of CPU work: off the loop.
         return web.json_response(await asyncio.to_thread(export_mod.preview, plan))
@@ -271,10 +271,10 @@ _DRAFT_LESSONS_CAP = 24_000
 
 def _draft_prompt(name: str, lessons: str) -> str:
     return (
-        f"You are helping the crewmate '{name}' pass on what it has learned. "
+        f"You are helping the Jam '{name}' pass on what it has learned. "
         "Below are its lessons. Distill them into ONE skill file in Markdown: a short "
         "title line, one sentence on when the skill applies, then the lessons as "
-        "plain, general bullet points another crewmate can follow. Drop anything "
+        "plain, general bullet points another Jam can follow. Drop anything "
         "specific to one person, machine, path, account, credential or secret.\n\n"
         "<LESSONS>\n"
         f"{lessons}\n"
@@ -410,14 +410,14 @@ async def api_member_export_lessons_draft(request: web.Request) -> web.Response:
             require_member_memory_store, cfg, member, require_directory=False
         )
     except UnknownMemoryStore:
-        return _deny(409, "no_private_memory", "this crewmate has no memory of its own")
+        return _deny(409, "no_private_memory", "this Jam has no memory of its own")
     try:
         lessons = await _member_lessons(store)
     except Exception:
         logger.warning("lessons draft: the memory of %r is unavailable", slug, exc_info=True)
-        return _deny(503, "memory_unavailable", "this crewmate's memory cannot be read now")
+        return _deny(503, "memory_unavailable", "this Jam's memory cannot be read now")
     if lessons is None:
-        return _deny(409, "no_private_memory", "this crewmate has no memory of its own")
+        return _deny(409, "no_private_memory", "this Jam has no memory of its own")
     if not lessons.strip():
         return web.json_response({"text": ""})
     try:

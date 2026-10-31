@@ -390,10 +390,9 @@ def _refuse_mate_home_chat_folder(
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
     error = (
-        "This schedule's runs are filed in a mate's folder, and only that mate can "
-        "move them out."
+        "This schedule's runs are filed in a Jam's folder, and only that Jam can " "move them out."
         if moving_out
-        else "That chat folder belongs to a mate, so this schedule's runs cannot be "
+        else "That chat folder belongs to a Jam, so this schedule's runs cannot be "
         "filed there. Pick another folder, or choose not to file runs."
     )
     return web.json_response({"error": error, "code": "mate_home_locked"}, status=403)

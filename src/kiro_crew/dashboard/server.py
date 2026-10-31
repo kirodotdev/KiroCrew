@@ -1533,7 +1533,7 @@ async def start_dashboard(
     try:
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
-        logger.warning("mate-owned-config migration failed", exc_info=True)
+        logger.warning("jam-owned-config migration failed", exc_info=True)
 
     await _restore_dashboard_sessions(state, cfg)
 

@@ -127,7 +127,7 @@ def _not_writable(sk: str, operation: str) -> web.Response:
     # The crewmate's row cannot be published from here, e.g. one declared only
     # in ``config.local.json``: a refusal the model can say, never a 500.
     _audit(sk, operation, "denied", "member_not_writable")
-    return _deny(409, "member_not_writable", "this mate's settings cannot be changed from the chat")
+    return _deny(409, "member_not_writable", "this Jam's settings cannot be changed from the chat")
 
 
 async def api_member_self_update(request: web.Request) -> web.Response:
@@ -152,8 +152,8 @@ async def api_member_self_update(request: web.Request) -> web.Response:
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, OP_UPDATE_SELF, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can change itself")
+        _audit(sk, OP_UPDATE_SELF, "denied", "not a Jam thread")
+        return _deny(403, "not_a_crewmate", "only a Jam, in its own chat, can change itself")
     member, thread_store = who
     fields = body.get("fields")
     if not isinstance(fields, dict) or not fields:
@@ -224,8 +224,8 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
         return _refusal(exc)
     who = _caller_member(request, slot_key)
     if who is None:
-        _audit(sk, OP_PROPOSE_SELF, "denied", "not a crewmate thread")
-        return _deny(403, "not_a_crewmate", "only a crewmate, in its own chat, can ask this")
+        _audit(sk, OP_PROPOSE_SELF, "denied", "not a Jam thread")
+        return _deny(403, "not_a_crewmate", "only a Jam, in its own chat, can ask this")
     member, _store = who
     name = body.get("request")
     if not isinstance(name, str) or name not in SELF_PROPOSALS:
@@ -624,7 +624,7 @@ async def api_member_self_undo(request: web.Request) -> web.Response:
         status = 403 if exc.code == "not_a_crewmate" else 409
         return _deny(status, exc.code, str(exc))
     except (UnknownMemoryStore, MemberAlreadyExists, MemberApprovalConflict):
-        return _deny(409, "member_not_writable", "this mate's settings cannot be changed here")
+        return _deny(409, "member_not_writable", "this Jam's settings cannot be changed here")
     undone = member_self_changes.mark_undone(change_id) or {**rec, "status": "undone"}
     state = request.app["state"]
     await chat_cards.load_conversation_window(state, undone)

@@ -249,9 +249,9 @@ def _migrate_atlas_and_orbit(monkeypatch, tmp_path):
 def test_the_notice_names_the_path_to_the_worker_tabs_as_the_dashboard_shows_it():
     """The worker's kit lives in the crewmate editor's Abilities section, opened by
     the pencil. The notice names that path as the dashboard shows it today."""
-    for words in ("pencil button (Edit mate)", "Abilities"):
+    for words in ("pencil button (Edit Jam)", "Abilities"):
         assert words in notice.NOTICE_PROMPT
-    assert "crewmate page" not in notice.NOTICE_PROMPT
+    assert "Jam page" not in notice.NOTICE_PROMPT
     # The retired editor language must not come back.
     assert "Built From" not in notice.NOTICE_PROMPT
     assert "Worker's extra kit" not in notice.NOTICE_PROMPT

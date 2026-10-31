@@ -725,7 +725,7 @@ class TestMemberRoutes:
         with _patched_config(["mate"], default="mate"):
             async with TestClient(TestServer(_make_members_app(state))) as client:
                 assert (await client.post("/api/members/mate/thread")).status == 200
-        assert state._slots["member-mate"].title == "Mate"
+        assert state._slots["member-mate"].title == "Jam"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("private", [False, True])
@@ -1399,7 +1399,7 @@ class TestPinEnforcement:
         assert len(errors) == 1
         assert (
             errors[0]["content"]
-            == "This thread's crew name cannot be dispatched. Rename or recreate the Crew Member."
+            == "This thread's crew name cannot be dispatched. Rename or recreate the Jam."
         )
         logs = "\n".join(caplog.messages)
         assert credential not in logs

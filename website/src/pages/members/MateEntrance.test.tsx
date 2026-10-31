@@ -37,7 +37,7 @@ function mount(opts: { reduceMotion?: boolean; target?: DOMRect | null; text?: s
     <MateEntrance
       crewmate={{ name: 'mate', label: 'Mate' }}
       slotKey="member-mate"
-      text={opts.text ?? "Hi! I'm your first Mate."}
+      text={opts.text ?? "Hi! I'm your first Jam."}
       stageRef={{ current: stage }}
       targetRef={{ current: target }}
       reduceMotion={!!opts.reduceMotion}
@@ -69,7 +69,7 @@ describe('MateEntrance', () => {
     expect(face.querySelector('img')).toHaveAttribute('data-seed', 'mate')
     expect(face.querySelector('img')).toHaveAttribute('width', String(ENTRANCE_FACE_PX))
     // The line is a status, so a screen reader hears it once.
-    expect(screen.getByRole('status')).toHaveTextContent("Hi! I'm your first Mate.")
+    expect(screen.getByRole('status')).toHaveTextContent("Hi! I'm your first Jam.")
     expect(onLanded).not.toHaveBeenCalled()
     expect(onDone).not.toHaveBeenCalled()
   })
@@ -95,7 +95,7 @@ describe('MateEntrance', () => {
     const { onLanded, onDone } = mount({ reduceMotion: true })
     expect(screen.getByTestId('mate-entrance')).toHaveAttribute('data-reduced-motion', '')
     expect(screen.queryByTestId('mate-entrance-face')).toBeNull()
-    expect(screen.getByTestId('mate-entrance-bubble')).toHaveTextContent("Hi! I'm your first Mate.")
+    expect(screen.getByTestId('mate-entrance-bubble')).toHaveTextContent("Hi! I'm your first Jam.")
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
     // Nothing landed, because nothing flew: the host's slot face was never hidden.
     expect(onLanded).not.toHaveBeenCalled()

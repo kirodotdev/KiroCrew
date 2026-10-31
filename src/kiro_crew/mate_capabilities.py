@@ -66,7 +66,7 @@ def binding_is_mate(member: str) -> bool:
     try:
         binding = KiroCrewConfig.load().agents.get(member)
     except Exception:
-        logger.debug("config unreadable deciding mate-ness of %r", member, exc_info=True)
+        logger.debug("config unreadable deciding jam-ness of %r", member, exc_info=True)
         return False
     if binding is None:
         return False
@@ -495,7 +495,7 @@ def worker_summary(member: str, catalog: dict[str, str]) -> dict[str, list[dict]
                 file_spec, _worker_base_or_none(), _path.stem if _path else member
             )
         except Exception:  # noqa: BLE001 - a summary is display only
-            logger.debug("crewmate directions unreadable; no directions row", exc_info=True)
+            logger.debug("Jam directions unreadable; no directions row", exc_info=True)
     if directions:
         # The one behaviour-directions slot an add fills, as the worker merge reads
         # it: only the text beyond the worker's own prompt, so a file copying the
@@ -650,5 +650,5 @@ def put(member: str, body: Any, catalog: dict[str, str]) -> dict:
             resources=member,
         )
     except Exception:
-        logger.debug("SEL audit unavailable for the mate edit", exc_info=True)
+        logger.debug("SEL audit unavailable for the Jam edit", exc_info=True)
     return get(member, catalog)

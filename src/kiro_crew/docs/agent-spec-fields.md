@@ -533,7 +533,7 @@ own entry, unless that entry declares only a restriction, `disabled` /
 |---|---|---|
 | `kirocrew` (default), `kirocrew-worker` | not covered: the default spec already holds every server installed through the MCP page and the worker mirrors it, so the record refuses both (`DEFAULT_REASON`) | — |
 | the conductors (`kirocrew-conductor` and its `kirocrew-ledger-conductor` alias, `kirocrew-pipeline-conductor`, `kirocrew-security-conductor`) | `conductor_agents._merge_template_additions`, right after `_conductor_mcp_servers` | every harness that runs a spec's servers (not pi, whose projection is broker-only); the alias reads and writes its successor's record |
-| every other template Kiro Crew writes (the heartbeat, the background agents, a crewmate's own service templates) | not covered: refused (`BUILT_IN_REASON`, `CREWMATE_REASON`) | — |
+| every other template Kiro Crew writes (the heartbeat, the background agents, a Jam's own service templates) | not covered: refused (`BUILT_IN_REASON`, `CREWMATE_REASON`) | — |
 | any template Kiro Crew does not write (third-party, hand-written) | at spawn, never into its file (`merge_at_spawn`): `harness.kas.resolve_projected_spec` and `session_mcp._session_spec_and_snapshot_for` | only `ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN` (KAS, claude, codex). **Not kiro-cli**: it loads `--agent` from disk with no per-session channel for a whole spec, and Crew never writes a spec it does not own, so `addition_support` answers unsupported with a reason the card shows |
 
 `kirocrew doctor` lists each template's additions (`mcp additions:` rows).
@@ -641,7 +641,7 @@ On kiro-cli, a workspace that
 sets `chat.disableInheritingDefaultResources` gets none, and so does an agent that
 excludes or disables `skill_search`.
 
-Every other spec Kiro Crew generates for itself, except a crewmate's conductor and worker
+Every other spec Kiro Crew generates for itself, except a Jam's conductor and worker
 (`is_kirocrew_default_agent`), is a `custom` row, so a generated agent
 whose prompt names a skill must MAP that skill — the row above is why, and
 `agent_materialization/skill_resources.py` is how. `map_prompt_skills` renders one
@@ -705,7 +705,7 @@ every other mirrored harness.
 
 Kiro Crew owns and rewrites these thirteen filenames in `~/.kiro/agents/`
 (`src/kiro_crew/agent_files.py`, `OWNED_KIRO_AGENT_FILES`); this table is that
-list's one copy in the docs. The two mate specs (`kirocrew-mate-conductor.json`,
+list's one copy in the docs. The two Jam specs (`kirocrew-mate-conductor.json`,
 `kirocrew-mate-worker.json`) stay on that list so a leftover copy is still
 recognised, but Crew writes and reads them in `~/.kiro/mates/agents/`.
 
@@ -756,9 +756,9 @@ not resurrected on the next boot.
 | `kirocrew-security-conductor.json` | generated; your `allowedTools` entries are carried forward | every gateway start |
 | `kirocrew-knowledge.json` | generated | every gateway start, and before every knowledge worker spawn when the file is not the template (any other content is rewritten) |
 | `kirocrew-research.json` | generated from the template and `agent.json`; NOT derived from `kirocrew.json`, so servers, app registrations and the model added there stay off it | every gateway start |
-| `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a crewmate hands page work to) |
-| `kirocrew-mate-conductor.json` | generated into `~/.kiro/mates/agents/`, not here, so kiro-cli does not list it; an earlier build's copy here is removed at start; (the default template under its own name, with only Crew's own platform MCP servers, `includeMcpJson` off, the default built-ins, and no sub-agent, `task_run` or `workflow_run`; your own servers reach a crewmate's worker, never this chat) | every gateway start (what a crewmate's own chat runs on) |
-| `kirocrew-mate-worker.json` | generated into `~/.kiro/mates/agents/`, not here, so kiro-cli does not list it; an earlier build's copy here is removed at start; (the default template under its own name) | every gateway start (what a crewmate's worker sessions run on; on KAS the crewmate's own `~/.kiro/mates/agents/<id>.json` adds its `prompt`, servers, skills and those servers' approvals at session start, under the governance ceiling) |
+| `kirocrew-dashboard-manager.json` | generated | every gateway start (the subagent a Jam hands page work to) |
+| `kirocrew-mate-conductor.json` | generated into `~/.kiro/mates/agents/`, not here, so kiro-cli does not list it; an earlier build's copy here is removed at start; (the default template under its own name, with only Crew's own platform MCP servers, `includeMcpJson` off, the default built-ins, and no sub-agent, `task_run` or `workflow_run`; your own servers reach a Jam's worker, never this chat) | every gateway start (what a Jam's own chat runs on) |
+| `kirocrew-mate-worker.json` | generated into `~/.kiro/mates/agents/`, not here, so kiro-cli does not list it; an earlier build's copy here is removed at start; (the default template under its own name) | every gateway start (what a Jam's worker sessions run on; on KAS the Jam's own `~/.kiro/mates/agents/<id>.json` adds its `prompt`, servers, skills and those servers' approvals at session start, under the governance ceiling) |
 | `kirocrew-heartbeat.json` | DERIVED from `kirocrew.json` (its `kirocrew-core` entry, `autoApprove` included) | every gateway start, and re-checked before every heartbeat session |
 | an app's generated agent | the App Kit | regenerated on app refresh; containment fields are framework-owned |
 | your own `<name>.json` / `<name>.md` | yours | `model` / `skills` via the Template pane and `toolAliases` on rebuild; nothing else. `.md` is read-only to Crew entirely |
@@ -869,7 +869,7 @@ warning saying nothing behind it was carried: that is what puts a loadable spec
 back.)
 
 
-`kirocrew.json`, and every spec derived from it (the worker, every mate
+`kirocrew.json`, and every spec derived from it (the worker, every Jam
 built from it), mounts Crew's platform guide server `kirocrew-guide` (where-is
 and how-to answers through `find_ui` and `search_docs`, dashboard guides, and
 change cards). The conductor specs and the background agents (knowledge,
@@ -885,30 +885,30 @@ sent from the dashboard and refuse with one line anywhere else, a message from
 Slack or another channel included; `find_ui` and `search_docs` still answer
 there.
 
-The same specs mount the mate's own-record server `kirocrew-mate`, on the
+The same specs mount the Jam's own-record server `kirocrew-mate`, on the
 same terms: always emitted, no `autoApprove`, and exactly the tools in
 `agent._MATE_AUTO_GRANTS` as exact `allowedTools` grants (`update_self`, which
-writes the calling mate's name, description or ghost face on the user's word
+writes the calling Jam's name, description or ghost face on the user's word
 and leaves one undoable row in its chat; `set_model`, `set_approval_mode`,
 `request_capabilities`, `set_goal`, `set_key_results` and `set_check_ins`, which only offer a
-change card; `find_capabilities`, which reads what the crewmate's worker has and
+change card; `find_capabilities`, which reads what the Jam's worker has and
 could be given; `goal_read`, `key_result_progress` and `save_goal_report`, which
 read and write the calling
-crewmate's own goal record directly; `save_notes`, which replaces its own
+Jam's own goal record directly; `save_notes`, which replaces its own
 briefing). An existing spec gains
 the ref and those grants once
-(`mate_platform_granted.json`). Every tool acts on the calling crewmate alone
-and refuses outside its own dashboard turn. A crewmate created on a template
+(`mate_platform_granted.json`). Every tool acts on the calling Jam alone
+and refuses outside its own dashboard turn. A Jam created on a template
 that lacks the server still has it: its conductor and its worker are built by
-the gateway with it, so nothing is written into the crewmate's own file
+the gateway with it, so nothing is written into the Jam's own file
 (`member_mate_tools.grant_mate_tools_to_new_member` answers `platform_provided`).
 
-`rebuild_agent_config` creates the first mate (`mate`, shown as
-Mate) once, bound to the same template a mate you create gets, with its
+`rebuild_agent_config` creates the first Jam (`mate`, shown as
+Jam) once, bound to the same template a Jam you create gets, with its
 own private memory store; the reserved `default` member is never changed. The
 `mate_member_created.json` sidecar keeps the creation one-time, so a first
-mate you delete is not created again. It is an ordinary mate you may
-rename, rebind and delete. The first-mate creation lives in
+Jam you delete is not created again. It is an ordinary Jam you may
+rename, rebind and delete. The first-jam creation lives in
 `src/kiro_crew/agent_materialization/first_crewmate.py`. The one-time guide grant
 lives in `src/kiro_crew/agent_materialization/guide_platform.py`; the grant tuple lives in
 `src/kiro_crew/agent_parts/spec_grants.py`.
@@ -923,7 +923,7 @@ What you may safely hand-edit: a spec you authored yourself; a conductor spec's
 Frontmatter keys map one-to-one onto the JSON fields above; nesting works
 (`mcpServers`, `permissions`). What differs is who may write the file.
 
-| Field | Built from pane (Customize → Mates) |
+| Field | Built from pane (Customize → Jams) |
 |---|---|
 | `model` | editable |
 | `resources` `skill://` entries | editable, via the Skills section |
@@ -960,7 +960,7 @@ fence requirement, the JSON-twin precedence, and which backends run the form.
 | the default spec's locked write | `src/kiro_crew/agent_materialization/default_spec_commit.py` |
 | derived specs — lite, guest, knowledge, research; the conductors; the worker | `src/kiro_crew/agent_materialization/service_agents.py`, `conductor_agents.py`, `worker_agent.py`; their prompts and grant tuples live in `src/kiro_crew/agent_parts/spec_prompts.py` and `spec_grants.py` (the knowledge and research prompts stay in `src/kiro_crew/agent.py`), and the heartbeat installer in `src/kiro_crew/agent_parts/spec_rebuild.py` |
 | the one-time guide grant on an existing default spec | `src/kiro_crew/agent_materialization/guide_platform.py` |
-| the first mate, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
+| the first Jam, created once | `src/kiro_crew/agent_materialization/first_crewmate.py` |
 | the fork refresh | `src/kiro_crew/agent_materialization/fork_refresh.py` |
 | writing a spec file: the atomic write, the spec lock, the agents directory and the specs it must hold | `src/kiro_crew/agent_parts/spec_files.py` |
 | the `command` of Crew's own managed servers: the `kirocrew` launcher, and first-run setup | `src/kiro_crew/agent_parts/kirocrew_launcher.py` |

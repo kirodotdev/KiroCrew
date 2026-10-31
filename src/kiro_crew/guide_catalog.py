@@ -382,12 +382,12 @@ ACTIONS: dict[str, ActionDef] = {
     ),
     ACTION_CREWMATE_CREATE: ActionDef(
         id=ACTION_CREWMATE_CREATE,
-        title="Create a mate",
+        title="Create a Jam",
         description=(
-            "Open the New mate card with an optional name and goal "
+            "Open the New Jam card with an optional name and goal "
             "pre-filled, then point at its Create button. Nothing is created "
             "until the user clicks Create; completion reports the new "
-            "mate's id."
+            "Jam's id."
         ),
         steps=(StepDef("create", STEP_COMMIT),),
         params_schema={
@@ -442,7 +442,7 @@ ACTIONS: dict[str, ActionDef] = {
                     "type": "string",
                     "maxLength": _FIND_LABEL_MAX_CHARS,
                     "description": (
-                        "Optional: the name of the one item the user named (crewmate "
+                        "Optional: the name of the one item the user named (Jam "
                         "'Helper', job 'Morning summary') when the guide first has them "
                         "choose one; the tab outlines only that item."
                     ),

@@ -1002,7 +1002,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
-    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Mates, or pick one inside a session to override it there.",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Jams, or pick one inside a session to override it there.",
     "hint": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
     "tab": "chat",
     "type": "select",
@@ -1784,10 +1784,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
   },
   {
-    "id": "developer.agent-harness-per-mate",
-    "label": "Agent harness per mate",
+    "id": "developer.agent-harness-per-jam",
+    "label": "Agent harness per Jam",
     "labelKey": "pages.developer.featurePreviewsTab.crewmate_harness",
-    "description": "Adds an Agent harness setting to each mate's profile, so one mate can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
+    "description": "Adds an Agent harness setting to each Jam's profile, so one Jam can run on a different AI coding tool, such as Claude Code, with that tool's models, while the rest keep the default.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -1941,10 +1941,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.reply-threads-on-mate-chat-messages",
-    "label": "Reply threads on mate chat messages",
+    "id": "developer.reply-threads-on-jam-chat-messages",
+    "label": "Reply threads on Jam chat messages",
     "labelKey": "pages.settings.crewmatesSection.reply_threads",
-    "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
+    "hint": "Let any message in a Jam's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

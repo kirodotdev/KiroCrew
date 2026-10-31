@@ -591,7 +591,7 @@ describe('MembersPage create links open the New mate card', () => {
     const utils = await renderPage([defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', display_name: 'Oncall Sentinel' })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     const title = screen.getByTestId('member-title-row')
-    expect(title).toHaveTextContent('Mate')
+    expect(title).toHaveTextContent('Jam')
     expect(within(title).queryByTestId('member-pill-id')).toBeNull()
     expect(title).not.toHaveTextContent(/\bassistant\b/)
     utils.unmount()
@@ -632,7 +632,7 @@ describe('MembersPage create links open the New mate card', () => {
       // The user picks alpha mid-create and agrees to leave the card.
       fireEvent.click(await rosterRow('alpha'))
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
-      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
+      expect(confirm).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the Jam is being created\?/))
       const membersMock = api.members as ReturnType<typeof vi.fn>
       membersMock.mockResolvedValue({
         members: [...assistantAndAlpha(), row({ name: 'radar', slug: 'radar', dashboard_created: true })],
@@ -691,7 +691,7 @@ describe('MembersPage create links open the New mate card', () => {
       await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha'), PANE_READY)
       await act(async () => { fail(new ApiError(500, 'boom')) })
       const notice = await screen.findByTestId('member-left-create-failed', undefined, PANE_READY)
-      expect(notice).toHaveTextContent("Couldn't create the mate.")
+      expect(notice).toHaveTextContent("Couldn't create the Jam.")
       expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-alpha')
       fireEvent.click(within(notice).getByRole('button'))
       await waitFor(() => expect(screen.queryByTestId('member-left-create-failed')).toBeNull())

@@ -80,10 +80,10 @@ async def _eager_copy_mate_config(name: str) -> str:
             # publishes the file so the crewmate's first chat is on the conductor.
             return await _drained_to_thread(adopt_own_file, name)
     except MateConfigError:
-        logger.warning("crewmate %s: mate config copy failed; kept source pointer", name)
+        logger.warning("Jam %s: Jam config copy failed; kept source pointer", name)
         return "copy_failed"
     except Exception:
-        logger.warning("crewmate %s: mate config copy errored; kept source pointer", name)
+        logger.warning("Jam %s: Jam config copy errored; kept source pointer", name)
         return "errored"
 
 
@@ -388,7 +388,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         validate_member_name(name)
     except MemberNameError as exc:
         return web.json_response(
-            {"error": f"Invalid Crew Member name: {exc}", "code": "invalid_member_name"},
+            {"error": f"Invalid Jam name: {exc}", "code": "invalid_member_name"},
             status=400,
         )
     # The template pointer must be EXPLICIT. Defaulting it to "kirocrew" would
@@ -545,7 +545,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     if memory_store not in ("", DEFAULT_MEMORY_STORE):
         return web.json_response(
             {
-                "error": "A new Crew Member receives its own empty member memory automatically",
+                "error": "A new Jam receives its own empty member memory automatically",
                 "code": "member_memory_required",
             },
             status=400,
@@ -725,7 +725,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     # pointing at the source template (the pre-RFC shared-pointer model), and the
     # grant below then skips (``mate_file_missing``) rather than minting a fork.
     mate_copy = await _eager_copy_mate_config(name)
-    logger.info("new crewmate %s: mate-owned config %s", name, mate_copy)
+    logger.info("new Jam %s: jam-owned config %s", name, mate_copy)
     # A template without the crewmate's own tools gets them on the member's OWNED
     # config file (member_mate_tools edits ``mates/agents/<name>.json`` in place --
     # no fork, no enroll, no ``crew-`` draft); the create stands whatever the
@@ -735,7 +735,7 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
     async with _get_config_lock():
         mate_tools = await _drained_to_thread(grant_mate_tools_to_new_member, name)
     if mate_tools != "template_has_it":
-        logger.info("new crewmate %s: mate tools %s", name, mate_tools)
+        logger.info("new Jam %s: Jam tools %s", name, mate_tools)
     # A crew APPEARING changes what the effort chain resolves even with no pin of
     # its own: the factory's captured config does not know the crew, so it cannot
     # read the binding the role default keys on, and a scheduled or messaging

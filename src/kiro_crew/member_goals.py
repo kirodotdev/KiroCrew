@@ -703,7 +703,7 @@ def _mutate(slug: str, member: str, fn: Any) -> Any:
         if data is not None and not _owned_by(data, slug, member):
             # Another exact name's record under a colliding slug: never written
             # over from here. The owner's routes refuse ambiguous slugs first.
-            raise GoalError("slug_collision", "another crewmate's goal is stored under this name")
+            raise GoalError("slug_collision", "another Jam's goal is stored under this name")
         rec = _normalize(data) if data is not None else empty_record()
         result = fn(rec)
         if _fit(slug, member, rec) and isinstance(result, dict) and "record" in result:

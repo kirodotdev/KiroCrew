@@ -193,20 +193,20 @@ per-harness capability matrix.
 Set a registered value with, for example,
 `kirocrew config set agent.acp_backend kiro`. `agent.member_acp_backend`, the
 harness for crew-member DM sessions, reads the same values, except that `kiro`
-there selects KAS: crewmates run on KAS as their Kiro backend, because their
+there selects KAS: Jams run on KAS as their Kiro backend, because their
 work-dispatch tools need a backend that takes them per session.
 
-One crewmate can run on its own harness: `agents.<name>.acp_backend` takes the
+One Jam can run on its own harness: `agents.<name>.acp_backend` takes the
 same values as `agent.acp_backend` (`kiro` here means kiro-cli, and runs through
 KAS once Kiro Crew confirms your kiro-cli offers v3, as it does there) and applies to
-that crewmate's chat and the worker sessions it opens. Empty inherits
+that Jam's chat and the worker sessions it opens. Empty inherits
 `agent.member_acp_backend`. A harness this gateway cannot start refuses the
-crewmate's session with `crewmate_harness_unavailable` rather than running it on
-another harness, and the crewmate's `model` and `worker_model` are judged against
+Jam's session with `crewmate_harness_unavailable` rather than running it on
+another harness, and the Jam's `model` and `worker_model` are judged against
 the pinned harness when they change or the harness does, so an edit to another
 field still saves while the pinned harness cannot start. The dashboard shows the
-setting as **Agent harness** on a crewmate's profile Settings page once Settings >
-Developer > Feature Previews > Agent harness per mate is on; a saved pin applies
+setting as **Agent harness** on a Jam's profile Settings page once Settings >
+Developer > Feature Previews > Agent harness per Jam is on; a saved pin applies
 whether or not that preview is on.
 
 ## Key Settings
@@ -359,10 +359,10 @@ whether or not that preview is on.
 | `dashboard.title_refresh_every_turns` | Re-examine an auto-generated session title every N user turns (N, 2N, 3N, ...) and rename the session when the topic moved. `0` keeps the built-in schedule (turns 8 and 24 only); either way, a title that began as a bare link or ticket key also gets one refresh after the first turn. 1-3 is raised to 4; ceiling 1000. Each refresh is one background LLM call. Turns are counted over the messages held for the session. A session reloaded by a gateway restart or reopened from History holds its latest 500 plus the new ones, and the cadence continues from the restored count; if the reload keeps fewer user turns than the latest built-in turn the session had already reached (the first turn, 8 or 24), the cadence resumes after that turn instead. Once 10,000 are held, the oldest drop off as new ones arrive, so refreshes slow down or stop until the next reload. A title renamed by hand is never refreshed. Also set in Settings → Chat → Sessions → **Auto-title refresh interval (turns)**, a stepper whose readout shows "Default" for `0` | `0` |
 | `dashboard.title_ticket_prefix` | Lead an auto-generated session title with the ticket key the opening message names: a tracker key such as `PROJ-1234` (upper-case project key, at least two digits) or a GitHub `#123`, as `PROJ-1234: Increase regression shards`. The model still writes only the summary; the key is copied from the message. The first key in the opening message is used, a title that already names the key is left alone, and a refresh keeps the key the title already leads with. Off by default because standard names like `SHA-256` have the same shape. A title renamed by hand is never changed | `false` |
 | `dashboard.link_previews` | Fetch and render HTTP(S) link metadata in assistant messages. Off by default because each linked site receives a request from this machine | `false` |
-| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Off turns off every clip except the built-in Meet your Mates intro (a dialog the dashboard draws, not a clip); set `dashboard.crewmates_onboarded: true` to turn that one off. See [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
+| `dashboard.feature_videos_enabled` | Play a short intro clip for a feature this install has not used yet. Off turns off every clip except the built-in Meet your Jams intro (a dialog the dashboard draws, not a clip); set `dashboard.crewmates_onboarded: true` to turn that one off. See [Feature Videos](feature-videos.md). Off until real clips ship | `false` |
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
-| `dashboard.crewmates_in_agent_picker` | List mates in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any mate no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
+| `dashboard.crewmates_in_agent_picker` | List Jams in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Jam no listed template already covers; the default agent stays even when covered, unless a template shares its name. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
 | `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crewmate_harness`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `webhooks`). The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 

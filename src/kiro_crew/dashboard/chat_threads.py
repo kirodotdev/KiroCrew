@@ -159,10 +159,10 @@ _NO_TEXT_FALLBACK_NO_TOOLS = (
 #: One sentence per failure. A retry line only where a retry can succeed.
 _FAILED_FALLBACK = "The reply didn't go through. Try again."
 _UNREADABLE_FALLBACK = "This chat's threads can't be read right now, so the reply was not kept."
-_NO_SPEC_FALLBACK = "This mate can't reply in threads right now. Ask in the main chat."
+_NO_SPEC_FALLBACK = "This Jam can't reply in threads right now. Ask in the main chat."
 _CREWMATE_GONE_FALLBACK = (
-    "This mate is no longer available, so the reply was not answered. "
-    "Restore the mate or choose another one."
+    "This Jam is no longer available, so the reply was not answered. "
+    "Restore the Jam or choose another one."
 )
 _FULL_FALLBACK = "This thread is full. Ask in the main chat instead."
 _SIDECAR_FULL_FALLBACK = (
@@ -444,7 +444,7 @@ def _resolve_slot(
     if slot.mode != DM_SLOT_MODE:
         return None, web.json_response(
             {
-                "error": "Threads live on a mate's chat.",
+                "error": "Threads live on a Jam's chat.",
                 "code": "not_crewmate_chat",
             },
             status=409,
@@ -661,7 +661,7 @@ async def api_chat_thread_reply(request: web.Request) -> web.Response:
     if flight_key in _in_flight:
         return web.json_response(
             {
-                "error": f"{slot.agent or 'Your mate'} is still replying. Wait for that reply.",
+                "error": f"{slot.agent or 'Your Jam'} is still replying. Wait for that reply.",
                 "code": "thread_turn_in_flight",
             },
             status=409,
@@ -1013,7 +1013,7 @@ async def _thread_turn_body(
                 # a stranger's words under the crewmate's name, with no marker.
                 # The main chat refuses this state; so does the thread.
                 logger.warning(
-                    "Thread turn: crewmate %r no longer resolves for slot=%s; not replying",
+                    "Thread turn: Jam %r no longer resolves for slot=%s; not replying",
                     slot_agent,
                     slot.key,
                 )
