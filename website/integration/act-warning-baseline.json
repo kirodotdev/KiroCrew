@@ -82,7 +82,6 @@
   "src/test/BottomTerminalPanel.hydrateGate.test.tsx",
   "src/test/BottomTerminalPanel.popout.test.tsx",
   "src/test/BottomTerminalPanel.rename.test.tsx",
-  "src/test/CapabilitiesPage.tabLanguage.test.tsx",
   "src/test/CfgTabCoverage.test.tsx",
   "src/test/ChannelFolderBackfill.test.tsx",
   "src/test/ChatFooter.test.tsx",
