@@ -1121,7 +1121,7 @@ class ModelStore:
         and refuses that one load.
         """
         path = model_path(model)
-        if not path.is_file():
+        if not await asyncio.to_thread(path.is_file):
             return False
         actual = await asyncio.to_thread(_sha256_verified_file, path)
         if actual == model.sha256:
