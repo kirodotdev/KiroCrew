@@ -1409,38 +1409,35 @@ expression, so the revert has to edit the expectation on purpose.
 
 **The PR-time sites reach the group by LABEL instead, because they can execute
 somewhere the group does not exist.** `client-py.yml`'s `test`,
-`crew-image-build.yml`'s `build`, `fork-pr-label.yml`'s `label` and
-`internal-content-scan.yml`'s `scan` use
+`crew-image-build.yml`'s `build` and `fork-pr-label.yml`'s `label` use
 `runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}`
 rather than `group:`. A fork running its own copy of one of these files on
-`push`, `schedule` or `workflow_dispatch`, and for `internal-content-scan.yml`
-any repository that onboards the shared gate by copying
-`internal-content-scan-gate.yml`, cannot reach an organization runner group; a
-job asking for a label no runner it can see carries waits out GitHub's pending
+`push`, `schedule` or `workflow_dispatch` cannot reach an organization runner
+group; a job asking for a label no runner it can see carries waits out
+GitHub's pending
 limit before being cancelled, which is strictly worse than the shared pool, so
 the `ubuntu-latest` branch is load-bearing rather than defensive. The rename
-exposure that group targeting avoids therefore applies to these four lines:
+exposure that group targeting avoids therefore applies to these three lines:
 rename the definition and they must move with it.
 
-**Two of the four can hold merges.** `internal-content-scan.yml`'s `scan` is the
-reusable job behind `internal-content-scan-gate.yml`, whose `Internal Content
-Scan` check sits in `pr-readiness.yml`'s same-repo `workflow_specs` and in
-`merge-queue-readiness.yml`'s polled set, so a run waiting for a runner keeps
-the required `PR Readiness` status pending exactly as a review lane does -- it is
-the highest-queue-sensitivity site of the four. `client-py.yml` is polled by
+`internal-content-scan.yml`'s `scan` took this form too and now takes the
+merge-group fleet routing expression, reaching this group's label on its
+actor-miss leg instead. Its rollback is therefore the fleet-preserving one: drop
+the fleet leg and keep the label-then-hosted tail, rather than the plain
+whole-line replacement the three above take. It adds no fork-pull-request
+occupancy either way, because `internal-content-scan-gate.yml`'s job-level `if`
+skips its `uses:` call when the head is a fork, GitHub issuing a fork head no
+OIDC token, and `fork-internal-content-scan.yml` covers those PRs instead.
+
+**One of the three can hold merges.** `client-py.yml` is polled by
 `merge-queue-readiness.yml` but not by `pr-readiness.yml`, so it holds a merge
 group and not a pull request. `crew-image-build.yml` and `fork-pr-label.yml` are
-polled by neither and hold nothing. All four fire at pull-request time (three on
+polled by neither and hold nothing. All three fire at pull-request time (two on
 `pull_request`, `fork-pr-label.yml` on `pull_request_target`), so unlike a
 scheduled or tag-triggered site they add occupancy exactly when the review lanes
-are competing for the cap **Capacity** below describes. Size that occupancy for a
-FORK pull request at three sites, not four: `internal-content-scan-gate.yml`'s
-job-level `if` skips its `uses:` call when the head is a fork, because GitHub
-issues a fork head no OIDC token, so the `scan` job never asks for the label and
-`fork-internal-content-scan.yml` covers those PRs instead. Rollback is the plain
-whole-line replacement, since
-these four carry no fleet route to preserve: restore `runs-on: ubuntu-latest` on
-the affected line.
+are competing for the cap **Capacity** below describes. Rollback is the plain
+whole-line replacement, since these three carry no fleet route to preserve:
+restore `runs-on: ubuntu-latest` on the affected line.
 
 **The `ci.yml` lanes reach the group by LABEL too, for the same reason.** Jobs
 in `ci.yml` that were pinned to a default hosted runner now reach the

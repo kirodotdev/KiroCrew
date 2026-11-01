@@ -284,6 +284,9 @@ _EXPECTED_ROUTED_JOBS = {
     ("dependency-vulnerability.yml", "audit-production-dependencies"),
     ("sensitive-change-review.yml", "sensitive-change-review"),
     ("pr-readiness.yml", "readiness"),
+    # The reusable OIDC content scan. Its caller carries no `runs-on` of its
+    # own, so this route is the whole lane's destination.
+    ("internal-content-scan.yml", "scan"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -297,12 +300,21 @@ _READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
-# merge_group-triggered workflows with no fleet route: the queue's required
-# check (a poll), the OIDC content scan (a reusable-workflow call) and the Python
-# client suite. "No fleet route" is what this list means, and it is the only
-# thing it means: the poll and the client suite both carry the
+# Fleet-routed `workflow_call` callees that take the SAME expression without
+# declaring any trigger of their own. A callee's `github.event_name` is the
+# caller's, so its event set is the caller's: internal-content-scan-gate.yml
+# fires on merge_group, pull_request and push, which is exactly the merge-group
+# routing policy. Kept apart from the set above because the trigger-parity check
+# reads declared triggers, and a callee declares none.
+_MERGE_GROUP_CALLEE_WORKFLOWS = {"internal-content-scan.yml"}
+# merge_group-triggered workflows with no fleet route of their own: the queue's
+# required check (a poll), the OIDC content scan's caller and the Python client
+# suite. "No fleet route IN THIS FILE" is what this list means, and it is the
+# only thing it means. The poll and the client suite both carry the
 # `kirocrew-runners` group's label in this repository, so a group label does not
-# remove an entry from this list.
+# remove an entry. The content scan's caller is a bare `uses:` job with no
+# `runs-on` at all; the route for that lane lives in the callee it names, which
+# _MERGE_GROUP_CALLEE_WORKFLOWS pins.
 _MERGE_GROUP_HOSTED_WORKFLOWS = {
     "merge-queue-readiness.yml",
     "internal-content-scan-gate.yml",
@@ -368,7 +380,7 @@ def _expected_inline_expression(workflow_name: str) -> str:
         return _CANONICAL_DISPATCH_EXPR
     if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:
         return _CANONICAL_DISPATCH_MERGE_GROUP_EXPR
-    if workflow_name in _MERGE_GROUP_WORKFLOWS:
+    if workflow_name in _MERGE_GROUP_WORKFLOWS | _MERGE_GROUP_CALLEE_WORKFLOWS:
         return _CANONICAL_MERGE_GROUP_ROUTING_EXPR
     return _CANONICAL_ROUTING_EXPR
 
