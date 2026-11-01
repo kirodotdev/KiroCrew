@@ -528,12 +528,13 @@ comes after a record, never instead of one:
    a member of the project, so after three
    green-age re-syncs on one PR it stops being your judgement call. Each re-sync
    discards a green the PR had already earned, which is the cost the cap exists to
-   bound. **The count is a total for the PR's lifetime and nothing resets it**, so
-   31 is permanent once reached: a later loop on the same PR gets 31 on its first
-   real overlap. That is deliberate — a PR that has needed three re-syncs wants a
-   person deciding, not a fresh budget — and the way back is a human's, by
-   splitting the PR, narrowing what it touches, or opening a new one. Do not clear
-   it by deleting the comments; they are the record the count is read from.
+   bound. **The way back is a member of the project commenting `Re-sync budget
+   reset`**, which restarts the count and grants another three. The PR's author
+   cannot: the loop drives a PR as its author, so a budget it could re-arm bounds
+   nothing. The account you run as may be such a member, so **ask for the reset,
+   never post one** — one you wrote is the cap deciding nothing. Do not clear the
+   count by deleting the `Rebased: main moved in` comments either; they are the
+   record it is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
