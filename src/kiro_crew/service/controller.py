@@ -205,7 +205,15 @@ def uninstall_service() -> int:
             print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
         return 1 if report.incomplete else 0
     if plat == Platform.LAUNCHD:
-        macos.uninstall()
+        held_by = macos.uninstall()
+        if held_by:
+            print(
+                f"❌ launchd did not unload {LAUNCHD_LABEL}: it is still loaded in {held_by}.\n"
+                f"   Its plist and launcher were removed. Unload it by hand:\n"
+                f"   launchctl bootout {held_by}/{LAUNCHD_LABEL}",
+                file=sys.stderr,
+            )
+            return 1
         print("✅ kirocrew service stopped and removed.")
         return 0
     _unsupported_message()
