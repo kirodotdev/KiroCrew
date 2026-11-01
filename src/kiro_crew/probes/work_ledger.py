@@ -520,14 +520,21 @@ def person_wait_fingerprint(
             for item in open_items
         ):
             return None
-        if any(item.worker_instance_id for item in open_items):
-            # A remote worker's reports reach this board only when the conductor
-            # reads it (the hub pulls on read), so its fields here can be older than
-            # the peer's. Holding the patrol on them could hold it past the report
-            # that moves the item; the patrol runs instead.
+        remote = [item for item in open_items if item.worker_instance_id]
+        if remote and not (
+            work_preview.remote_dispatch()
+            and all(work_ledger.remote_pull_fresh(conductor_key, item) for item in remote)
+        ):
+            # A remote worker's reports reach this board through the hub's
+            # background puller (``remote_puller``), every
+            # ``REMOTE_PULL_INTERVAL_SECS``. While its last pull is fresh the fields
+            # here stand for the peer's and a new report moves the fingerprint like
+            # a local one. A stale, failed or missing pull, or the switch off (no
+            # puller), could hold the patrol past the report that moves the item,
+            # so the patrol runs instead: the liveness fallback.
             return None
         closed = worker_closed or _always_open
-        if any(closed(item.worker_session_key or "") for item in open_items):
+        if any(_worker_gone(conductor_key, item, closed) for item in open_items):
             return None
         # A worker whose report the harness never delivered has news the report
         # fields do not carry, so its record joins the fingerprint: a new failure
@@ -545,6 +552,18 @@ def person_wait_fingerprint(
     except Exception:  # noqa: BLE001 - a read fault must never hold a patrol
         logger.debug("work-ledger probe: person-wait read failed for %s", conductor_key)
         return None
+
+
+def _worker_gone(
+    conductor_key: str, item: work_ledger.WorkItem, closed: Callable[[str], bool]
+) -> bool:
+    """Whether *item*'s worker session is gone. A remote item answers from its stored
+    pull record (``remote_liveness``), never from this gateway's slot table, where
+    the peer's key names nothing."""
+    remote = work_ledger.remote_liveness(conductor_key, item)
+    if remote is not None:
+        return remote[1]
+    return closed(item.worker_session_key or "")
 
 
 def _conductor_key(raw: object) -> str:

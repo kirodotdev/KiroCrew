@@ -136,6 +136,15 @@ class StubCrew:
         )
 
 
+@pytest.fixture(autouse=True)
+def _no_background_puller(_floor_monkeypatch):
+    """These tests drive the read path's own pull; the background puller has its
+    own tests (``test_remote_dispatch_puller``) and must not race these."""
+    from kiro_crew.dashboard.handlers import remote_puller
+
+    _floor_monkeypatch.setattr(remote_puller, "ensure_running", lambda state: None)
+
+
 @pytest.fixture
 def peer(monkeypatch) -> StubCrew:
     stub = StubCrew()
@@ -773,8 +782,14 @@ def test_a_pull_cancelled_while_filing_still_remembers_what_it_filed(recorded, p
     asyncio.run(go())
 
 
-def test_a_board_with_a_remote_worker_never_holds_its_patrol_for_a_person(recorded, peer):
+def test_a_remote_board_never_holds_its_patrol_while_the_probe_reads_the_switch_off(
+    recorded, peer, monkeypatch
+):
+    # The probe reads the switch off: no puller keeps the hub copy fresh. The on side
+    # is pinned in test_remote_dispatch_puller.
     from kiro_crew.probes.work_ledger import person_wait_fingerprint
+
+    monkeypatch.setattr("kiro_crew.work_preview.remote_dispatch", lambda: False)
 
     async def go() -> None:
         await _remote_item(peer)

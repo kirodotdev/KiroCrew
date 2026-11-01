@@ -1,11 +1,12 @@
 """Hooks for the gateway-scoped services an entrypoint wires before ``runner.setup()``.
 
-The pull-request status-delta sink, and the shutdown of the Kiro prerequisite and KAS
-login services.
+The pull-request status-delta sink, the shutdown of the Kiro prerequisite and KAS
+login services, and the start and stop of the remote-dispatch report puller.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -58,3 +59,22 @@ def _register_kiro_service_shutdown(app: web.Application) -> None:
             await service.close()
 
     app.on_cleanup.append(_kas_login_shutdown)
+
+
+async def _start_remote_puller(state: DashboardState) -> None:
+    """Post-bind: start the hub's background report puller when remote dispatch is on.
+
+    Run as a fire-and-forget task after the listener is up, so the module is never
+    imported on the boot path; with ``work_ledger.remote_dispatch`` off it starts
+    nothing.
+    """
+    from kiro_crew.dashboard.handlers import remote_puller
+
+    await remote_puller.start_if_enabled(state)
+
+
+async def _stop_remote_puller(_app: web.Application) -> None:
+    """Cleanup: stop the puller. Imports nothing when it was never loaded."""
+    module = sys.modules.get("kiro_crew.dashboard.handlers.remote_puller")
+    if module is not None:
+        await module.stop()

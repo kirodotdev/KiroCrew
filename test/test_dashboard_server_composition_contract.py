@@ -400,7 +400,7 @@ _LAZY_IMPORTS = {
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
     ),
     "kiro_crew.enterprise_boot": "require_kiro_login",
-    "kiro_crew.dashboard.handlers": "wf_handlers work_ledger",
+    "kiro_crew.dashboard.handlers": "remote_puller wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
     "kiro_crew.dashboard.handlers.ask_question": (
         "api_agent_ask_open api_agent_ask_wait api_agent_ask_withdraw "
@@ -474,7 +474,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 116
+    assert len(expected) == 117
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
