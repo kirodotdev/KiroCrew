@@ -923,7 +923,7 @@ class TestPackProgramsArePinnedForEveryRemote:
 
         def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
@@ -965,7 +965,7 @@ class TestPackProgramsArePinnedForEveryRemote:
 
         def _run(*args: str, cwd: Path = work) -> None:
             subprocess.run(
-                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60
             )
 
         _run("init", "-q", "--bare", "-b", "main", str(upstream), cwd=tmp_path)
@@ -1066,7 +1066,7 @@ class TestGitProxyCannotExecuteACommand:
                 [git, *args],
                 cwd=project,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8",
                 timeout=60,
                 env={**os.environ, **(env or {})},
             )
@@ -1164,7 +1164,7 @@ class TestGitattributesCannotNameAProgram:
 
         def _run(*args: str) -> str:
             return subprocess.run(
-                [git, *args], cwd=project, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=project, capture_output=True, text=True, encoding="utf-8", timeout=60
             ).stdout
 
         _run("init", "-q", ".")
@@ -1252,7 +1252,7 @@ class TestGitattributesCannotNameAProgram:
 
         def _run(*args: str) -> int:
             return subprocess.run(
-                [git, *args], cwd=project, capture_output=True, text=True, timeout=60
+                [git, *args], cwd=project, capture_output=True, text=True, encoding="utf-8", timeout=60
             ).returncode
 
         assert _run("init", "-q", ".") == 0
