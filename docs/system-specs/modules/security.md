@@ -3128,7 +3128,8 @@ the actionable internal paths without changing what they deny: `unix_peer_unveri
 means the Unix-socket peer could not be confirmed as the gateway user;
 `peer_session_mismatch` means the verified peer belongs to a different session than
 its declared `X-Session-Key`; `caller_record_missing` means the current cron or
-subagent registry record no longer exists. `mcp_core._http_error_body` maps those
+subagent registry record no longer exists. The sentence for each code lives in one
+table, `auth_refusal_text.AUTH_REFUSAL_TEXT`. `mcp_core._http_error_body` maps those
 codes to the matching recovery step: restart the gateway and recreate the session,
 restart or replace the mismatched session, or start a new session, respectively. The
 existing `internal_auth_mismatch` mapping remains the wrong-instance diagnostic, and
@@ -3140,7 +3141,10 @@ an enforced-harness child is withheld this credential by design, and explicitly
 does not diagnose a second gateway. Unknown codes and uncoded `Forbidden`
 responses keep the backend wording, so a real permission denial is never
 relabelled as an identity failure. Every branch keeps its existing HTTP status,
-deny decision, ordering, and SEL audit.
+deny decision, ordering, and SEL audit. The CLI commands that send the internal
+secret and print the gateway's refusal (`kirocrew spawn list`/`run`, `kirocrew
+artifact`, and doctor's adaptive-controller read) show the same sentence from the same
+table instead of the bare `Forbidden`, under the same rule: a known code only.
 
 Subagent caller lookup uses the original run record when present. If it is
 absent after eviction or gateway restart, exactly one active, non-queued run
