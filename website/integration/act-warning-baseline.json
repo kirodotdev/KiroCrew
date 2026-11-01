@@ -342,7 +342,6 @@
   "src/test/PapyrusPageCoverage.test.tsx",
   "src/test/PasteHoverLayer.test.tsx",
   "src/test/PendingQuestionCard.test.tsx",
-  "src/test/PierreEditor.fallbackClassName.test.tsx",
   "src/test/PopoutFrameCov80.test.tsx",
   "src/test/PrivacyPanel.test.tsx",
   "src/test/ProjectDetailPage.test.tsx",
