@@ -49,7 +49,6 @@ src/apps/ops-mission-control/api.ts 42.4   # 36/85
 src/apps/papyrus/ProjectList.tsx 48.6   # 36/74
 src/apps/papyrus/api.ts 9.8   # 6/61
 src/apps/personal-shopper/HistoryTab.tsx 0.0   # 0/45
-src/apps/personal-shopper/PersonalShopperPage.tsx 0.0   # 0/19
 src/apps/personal-shopper/SitesTab.tsx 0.0   # 0/49
 src/apps/personal-shopper/api.ts 5.3   # 1/19
 src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
