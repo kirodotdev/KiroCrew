@@ -808,6 +808,17 @@ that never installed it, and a dead HTTP entry there broke EVERY kiro session, n
 just the app's. Kiro Crew sessions read only the agent config (`includeMcpJson` is
 pinned False in `agent.py`), so the narrower target is also sufficient.
 
+**Every writer exposes what it declares.** kiro-cli connects every `mcpServers`
+entry but gives the agent tools only from servers its `tools` list references. The
+agent rebuild adds `@<app>:<server>` (`agent_materialization/mcp_sources.py`), and
+the lifecycle writers (`_register_mcp_servers`, `_deregister_mcp_servers`, the
+stale-server prune in `register_app`) keep the app's refs in step through
+`_sync_app_tool_refs`: a declared server gets its ref, a removed one loses it, other
+apps' and the owner's refs are untouched. Without this an app enabled after the last
+rebuild ran its server in the main agent while none of its tools were callable, and
+a skill that told the main agent to use them could not keep its promise until a
+restart.
+
 **Migration is finished at boot, not at disable.** `reconcile_enabled_app_resources`
 scrubs the app's entries out of the legacy shared file for every ENABLED app on
 every gateway start. Scrubbing only on deregister meant an already-enabled app
