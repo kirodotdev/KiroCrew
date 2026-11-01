@@ -13201,6 +13201,8 @@
       "run_in_terminal_shell_alive_error": "La commande n’a pas été envoyée au nouveau terminal, mais son shell fonctionne : l’onglet est resté ouvert pour que tu puisses y exécuter la commande.",
       "run_in_terminal_dispatch_rolled_back_error": "La commande n’a pas été envoyée au nouveau terminal, donc ce terminal a été fermé.",
       "delivery_removed_delivered": "Un message que tu as retiré a finalement été livré. Vide la zone de saisie pour ne pas l’envoyer deux fois.",
+      "delivery_recovered_after_reload": "Un message envoyé avant le rechargement de la page n’a jamais été confirmé, son texte est donc de retour dans la zone de saisie.",
+      "delivery_recovered_delivered": "Un message envoyé avant le rechargement de la page a finalement été livré. Vide la zone de saisie pour ne pas l’envoyer deux fois.",
       "delivery_remove": "Retirer le message, garder le texte",
       "delivery_unconfirmed_resend": "Livraison non confirmée — le renvoyer pourrait l’envoyer deux fois.",
       "delivery_unconfirmed_dismiss_note": "Ton texte revient dans la zone de saisie, et cet onglet te prévient si le message est quand même arrivé.",

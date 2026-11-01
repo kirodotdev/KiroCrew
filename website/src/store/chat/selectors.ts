@@ -40,14 +40,18 @@ export const selectSlotTurnFromWake = (state: RootState, slot: string): boolean 
   }
   return false
 }
+/** Whether row `m` stands for `sendId`. A queue drain that merged several sends keeps the last in
+ *  `meta.sendId` and names every one in `meta.sendIds`. */
+const rowCarriesSend = (m: ChatMessage, sendId: string): boolean =>
+  m.meta?.sendId === sendId || (Array.isArray(m.meta?.sendIds) && (m.meta.sendIds as unknown[]).includes(sendId))
 /** Only a server-confirmed row for THIS send proves delivery, even if the POST
  *  subsequently fails. An optimistic bubble or identical text proves nothing. */
 export const selectSendConfirmed = (state: RootState, slot: string, sendId: string): boolean =>
-  selectSlotMessages(state, slot).some(m => m.role === 'user' && m.meta?.sendId === sendId && !m.meta?.optimistic)
+  selectSlotMessages(state, slot).some(m => m.role === 'user' && rowCarriesSend(m, sendId) && !m.meta?.optimistic)
 /** Queue custody is confirmed acceptance, but does not prove a turn started. */
 export const selectSendAccepted = (state: RootState, slot: string, sendId: string): boolean =>
   selectSendConfirmed(state, slot, sendId) || selectSlotMessages(state, slot).some(m =>
-    m.role === 'queued' && m.meta?.sendId === sendId && !m.meta?.optimistic)
+    m.role === 'queued' && rowCarriesSend(m, sendId) && !m.meta?.optimistic)
 export const selectSlotStreamState = (state: RootState, slot: string): SlotState =>
   slot === state.chat.activeSlot ? state.chat.slotState : (state.chat.slotRun[slot]?.state ?? 'idle')
 /** The turn-start count for `slot` (see `ChatState.runEpoch`): the identity a

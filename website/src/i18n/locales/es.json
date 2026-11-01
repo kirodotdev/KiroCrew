@@ -13201,6 +13201,8 @@
       "run_in_terminal_shell_alive_error": "El comando no se envió al nuevo terminal, pero su shell está en ejecución: la pestaña se dejó abierta para que puedas ejecutar el comando allí.",
       "run_in_terminal_dispatch_rolled_back_error": "El comando no se envió al nuevo terminal, por lo que ese terminal se cerró.",
       "delivery_removed_delivered": "Un mensaje que quitaste se entregó de todos modos. Vacía el redactor para no enviarlo dos veces.",
+      "delivery_recovered_after_reload": "Un mensaje de antes de recargar la página nunca se confirmó, así que su texto está de nuevo en el redactor.",
+      "delivery_recovered_delivered": "Un mensaje de antes de recargar la página se entregó de todos modos. Vacía el redactor para no enviarlo dos veces.",
       "delivery_remove": "Eliminar mensaje, conservar el texto",
       "delivery_unconfirmed_resend": "Entrega sin confirmar: reenviarlo podría enviarlo dos veces.",
       "delivery_unconfirmed_dismiss_note": "Tu texto vuelve al redactor, y esta pestaña te avisa si el mensaje llegó de todos modos.",

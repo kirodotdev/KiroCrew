@@ -12759,6 +12759,8 @@
       "run_in_terminal_shell_alive_error": "命令未发送到新终端，但终端进程正在运行，标签页已保持打开，可在其中运行该命令。",
       "run_in_terminal_dispatch_rolled_back_error": "命令未发送到新终端，因此该终端已关闭。",
       "delivery_removed_delivered": "你移除的一条消息其实已经送达。请清空输入框，以免重复发送。",
+      "delivery_recovered_after_reload": "页面重新加载前的一条消息始终未确认，因此其内容已放回输入框。",
+      "delivery_recovered_delivered": "页面重新加载前的一条消息其实已经送达。请清空输入框，以免重复发送。",
       "delivery_remove": "移除该消息，保留文字",
       "delivery_unconfirmed_resend": "送达未确认 — 重新发送可能会发送两次。",
       "delivery_unconfirmed_dismiss_note": "文字会回到输入框；如果消息其实已送达，此标签页会提示你。",

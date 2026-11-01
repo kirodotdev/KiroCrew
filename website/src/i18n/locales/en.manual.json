@@ -6065,6 +6065,8 @@
       "run_in_terminal_shell_alive_error": "The command wasn't sent to the new terminal, but its shell is running — the tab was left open so you can run the command there.",
       "run_in_terminal_dispatch_rolled_back_error": "The command wasn't sent to the new terminal, so that terminal was closed.",
       "delivery_removed_delivered": "A message you removed was delivered after all. Clear the composer to avoid sending it twice.",
+      "delivery_recovered_after_reload": "A message from before the page reloaded was never confirmed, so its text is back in the composer.",
+      "delivery_recovered_delivered": "A message from before the page reloaded was delivered after all. Clear the composer to avoid sending it twice.",
       "delivery_remove": "Remove message, keep the text",
       "delivery_unconfirmed_resend": "Delivery unconfirmed — resending may send it twice.",
       "delivery_unconfirmed_dismiss_note": "Your text returns to the composer, and this tab tells you if the message arrived anyway.",

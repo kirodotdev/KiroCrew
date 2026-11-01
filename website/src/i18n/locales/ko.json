@@ -12759,6 +12759,8 @@
       "run_in_terminal_shell_alive_error": "새 터미널로 명령이 전송되지 않았지만 셸은 실행 중입니다. 거기서 명령을 실행할 수 있도록 탭을 열어 두었습니다.",
       "run_in_terminal_dispatch_rolled_back_error": "새 터미널로 명령이 전송되지 않아 해당 터미널을 닫았습니다.",
       "delivery_removed_delivered": "제거한 메시지가 실제로는 전송되었습니다. 중복 전송을 피하려면 입력창을 비우세요.",
+      "delivery_recovered_after_reload": "페이지를 새로고침하기 전의 메시지가 확인되지 않아 내용을 입력창에 되돌렸습니다.",
+      "delivery_recovered_delivered": "페이지를 새로고침하기 전의 메시지가 실제로는 전송되었습니다. 중복 전송을 피하려면 입력창을 비우세요.",
       "delivery_remove": "메시지 제거, 텍스트는 유지",
       "delivery_unconfirmed_resend": "전송 미확인 — 다시 보내면 중복 전송될 수 있습니다.",
       "delivery_unconfirmed_dismiss_note": "텍스트는 입력창으로 돌아가며, 메시지가 실제로 도착했다면 이 탭에서 알려 드립니다.",
