@@ -12031,6 +12031,8 @@
         "shared_runtime_restarting": "此聊天共用的智能体进程反复重启{{detail}}，请重试。",
         "empty_turn_give_up": "模型本轮未返回任何内容。重新发送你的消息即可继续。",
         "empty_turn_after_recovery": "模型本轮未返回任何内容（已尝试自动恢复）。重新发送你的消息即可继续。",
+        "empty_turn_give_up_silent_failure": "模型本轮未返回任何内容。重新发送你的消息即可继续。注意：{{harness}} 报告失败轮次的方式与空轮次相同，因此这可能是提供商或凭证错误。重试前请先查看 {{harness}} 的会话日志。",
+        "empty_turn_after_recovery_silent_failure": "模型本轮未返回任何内容（已尝试自动恢复）。重新发送你的消息即可继续。注意：{{harness}} 报告失败轮次的方式与空轮次相同，因此这可能是提供商或凭证错误。重试前请先查看 {{harness}} 的会话日志。",
         "empty_turn_after_work": "本轮结束时没有给出最终回复。发送一条消息即可从中断处继续，已完成的步骤不会重新运行。",
         "empty_turn_continuing": "模型连续两次未返回任何内容，将自动继续一次。",
         "empty_turn_continuing_counted": "模型未返回任何内容，正在自动继续（第 {{n}} 次恢复，共 {{max}} 次）。",

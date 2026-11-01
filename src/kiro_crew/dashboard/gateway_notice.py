@@ -46,6 +46,12 @@ GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING = "shared_runtime_restarting"
 # ``messaging.empty_turn_copy``, shared with the channel driver.
 GATEWAY_NOTICE_EMPTY_TURN = "empty_turn_give_up"
 GATEWAY_NOTICE_EMPTY_TURN_AFTER_RECOVERY = "empty_turn_after_recovery"
+# The two non-productive cards above, for a harness in
+# ``ACP_BACKENDS_SILENT_TURN_FAILURE``: the same copy plus the note that the
+# turn may be a provider or credential failure. Separate tokens because the
+# dashboard renders the token's copy, never ``content``; ``harness`` arg.
+GATEWAY_NOTICE_EMPTY_TURN_SILENT_FAILURE = "empty_turn_give_up_silent_failure"
+GATEWAY_NOTICE_EMPTY_TURN_AFTER_RECOVERY_SILENT_FAILURE = "empty_turn_after_recovery_silent_failure"
 GATEWAY_NOTICE_EMPTY_TURN_AFTER_WORK = "empty_turn_after_work"
 GATEWAY_NOTICE_EMPTY_TURN_CONTINUING = "empty_turn_continuing"
 GATEWAY_NOTICE_EMPTY_TURN_CONTINUING_AFTER_WORK = "empty_turn_continuing_after_work"

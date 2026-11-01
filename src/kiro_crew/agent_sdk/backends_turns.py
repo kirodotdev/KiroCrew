@@ -711,6 +711,32 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
+# Backends whose FAILED turn arrives indistinguishable from an empty one.
+#
+# Membership is a statement about the WIRE, not about reliability: pi-acp 0.0.33
+# answers ``session/prompt`` with ``stopReason: end_turn`` and no content when the
+# turn's provider call FAILED, writes nothing to stderr, and records the reason
+# (measured: ``Region is missing``, ``Could not load credentials from any
+# providers``) only in pi's own session file -- which ``session_map.py``
+# deliberately never reads, and which membership here does not start reading. So
+# ``classify_empty_turn`` can only answer ``provider_empty``, the empty-response
+# ladder spends its whole budget re-asking a question that will fail identically,
+# and the give-up card tells the operator to send the message again. The one thing
+# Crew can honestly do is SAY so, which is what the card reads this set for.
+#
+# Deliberately NOT derived from anything: it cannot be inferred from usage (pi
+# forwards no ``usage_update``, so ``EmptyTurnActivity.billed`` is False on a good
+# turn too) nor from a stop reason (identical on both outcomes), which is precisely
+# why the fact has to be declared. A harness leaves this set when its adapter maps
+# a failed turn onto an ACP error or a visible message -- the fix belongs upstream,
+# and membership is the honest interim.
+#
+# Every other harness is absent because its failures are OBSERVED to arrive as
+# something a consumer can act on: an ACP error, a ``failed`` tool call, a refusal
+# with a reason, or (codex) the unattributed text chunk above. Absence is the
+# default and costs nothing -- the card keeps the wording it has always had.
+ACP_BACKENDS_SILENT_TURN_FAILURE = frozenset({ACP_BACKEND_PI})
+
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
 # turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
 # Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``

@@ -302,6 +302,11 @@ describe('the other gateway status-row families', () => {
       'The model returned nothing — auto-continuing (recovery 2 of 3).',
     )
     expect(resolveGatewayNotice(noticeRow('empty_turn_continuing'), [], 0)?.text).toBe(GN.empty_turn_continuing)
+    // A silent-failure harness's give-up card shows its note: the card renders
+    // the token's copy, never the row's English content.
+    expect(resolveGatewayNotice(noticeRow('empty_turn_give_up_silent_failure', { harness: 'pi' }), [], 0)?.text).toBe(
+      GN.empty_turn_give_up_silent_failure.replaceAll('{{harness}}', 'pi'),
+    )
     expect(resolveGatewayNotice(noticeRow('model_access_fallback', { rejected: 'big', model: 'small' }), [], 0)).toEqual({
       card: 'notice',
       text: 'Your account cannot use model big — running on small instead.',
@@ -401,7 +406,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(61)
+    expect(backend).toHaveLength(63)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 

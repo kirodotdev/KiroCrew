@@ -6999,6 +6999,8 @@
         "shared_runtime_restarting": "The agent process this chat shares kept restarting{{detail}} — please retry.",
         "empty_turn_give_up": "The model returned nothing this turn. Just send your message again to continue.",
         "empty_turn_after_recovery": "The model returned nothing this turn (automatic recovery was attempted). Just send your message again to continue.",
+        "empty_turn_give_up_silent_failure": "The model returned nothing this turn. Just send your message again to continue. Note: {{harness}} reports a failed turn the same way as an empty one, so this may be a provider or credential error. Check the {{harness}} session log before retrying.",
+        "empty_turn_after_recovery_silent_failure": "The model returned nothing this turn (automatic recovery was attempted). Just send your message again to continue. Note: {{harness}} reports a failed turn the same way as an empty one, so this may be a provider or credential error. Check the {{harness}} session log before retrying.",
         "empty_turn_after_work": "The turn ended without a closing reply. Send a message to continue from where it stopped — completed steps will not re-run.",
         "empty_turn_continuing": "The model returned nothing twice — auto-continuing once.",
         "empty_turn_continuing_counted": "The model returned nothing — auto-continuing (recovery {{n}} of {{max}}).",

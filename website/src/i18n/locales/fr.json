@@ -12455,6 +12455,8 @@
         "shared_runtime_restarting": "Le processus d’agent partagé par cette discussion a redémarré à plusieurs reprises{{detail}} — réessaie.",
         "empty_turn_give_up": "Le modèle n’a rien renvoyé pendant ce tour. Renvoie simplement ton message pour continuer.",
         "empty_turn_after_recovery": "Le modèle n’a rien renvoyé pendant ce tour (une récupération automatique a été tentée). Renvoie simplement ton message pour continuer.",
+        "empty_turn_give_up_silent_failure": "Le modèle n’a rien renvoyé pendant ce tour. Renvoie simplement ton message pour continuer. Remarque : {{harness}} signale un tour échoué comme un tour vide. Il peut donc s’agir d’une erreur de fournisseur ou d’identifiants. Consulte le journal de session de {{harness}} avant de réessayer.",
+        "empty_turn_after_recovery_silent_failure": "Le modèle n’a rien renvoyé pendant ce tour (une récupération automatique a été tentée). Renvoie simplement ton message pour continuer. Remarque : {{harness}} signale un tour échoué comme un tour vide. Il peut donc s’agir d’une erreur de fournisseur ou d’identifiants. Consulte le journal de session de {{harness}} avant de réessayer.",
         "empty_turn_after_work": "Le tour s’est terminé sans réponse finale. Envoie un message pour reprendre là où il s’est arrêté — les étapes terminées ne seront pas relancées.",
         "empty_turn_continuing": "Le modèle n’a rien renvoyé deux fois — poursuite automatique une fois.",
         "empty_turn_continuing_counted": "Le modèle n’a rien renvoyé — poursuite automatique (récupération {{n}} sur {{max}}).",
