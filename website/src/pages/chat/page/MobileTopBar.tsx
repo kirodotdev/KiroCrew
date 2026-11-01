@@ -94,9 +94,10 @@ export default function MobileTopBar({
   return (
     <>
     {/* Phone: this page's share of the shell's single top bar. Leading cell:
-        [sessions toggle][session title][session menu]. The title is first and
-        the menu chevron trails it, as on the approved mock — one control the
-        eye reads as "the session, and its menu". Rendered whenever the slot
+        [sessions toggle][session menu chevron + session title]. The chevron
+        leads the title, as in the desktop header, so the control sits on the
+        same side on both — one control the eye reads as "the session, and
+        its menu". Rendered whenever the slot
         exists, so the sessions toggle is in the bar even with no session open
         (ChatPaneChrome's fixed corner button stands down); the title half needs a
         session and is not drawn in split view, whose grid names each pane. */}
@@ -106,8 +107,8 @@ export default function MobileTopBar({
         {activeSlot && !(splitMode && splitFeatureEnabled) && (
           <div className="group/header flex min-w-0 flex-1 items-center gap-0.5" data-testid="mobile-topbar-title">
             {/* ONE control for title + menu: the session menu's trigger carries
-                the title text with the chevron flush after its last character
-                (the approved mock), so the bar's centre holds two controls --
+                the title text with the chevron flush before its first
+                character (the desktop order), so the bar's centre holds two controls --
                 the sessions toggle and this -- and the title has one tap
                 target, not a rename tap beside a menu tap. Rename lives in the
                 menu (`onRename`) and swaps this trigger for the shared title
