@@ -28,6 +28,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     TOOL_CALL_CACHE_MAX_ENTRIES,
     TOOL_CALL_CACHE_MAX_PAYLOAD_CHARS,
@@ -108,6 +109,13 @@ async def approve_tool(
         reason: str | None = permission_floor.REASON_NO_EVENT
     else:
         reason = await asyncio.to_thread(permission_floor.refusal_for, gate_event)
+        if reason is None:
+            # The opt-in batch write guard, as in ``AcpClient.approve_tool``.
+            guard_reason = await batch_guard.screen_approval(self, gate_event)
+            if guard_reason is not None:
+                return await batch_guard.reject(
+                    self, gate_event, request_id, guard_reason, session_key=self._session_key or ""
+                )
     if reason is not None:
         # Same as ``AcpClient.approve_tool``: drop any earlier grant for this call
         # id now, since ``reject_tool`` below finds the gate event already popped.

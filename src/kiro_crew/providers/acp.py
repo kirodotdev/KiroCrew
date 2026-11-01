@@ -928,6 +928,10 @@ class AcpProvider(LLMProvider):
             request_id, always=always, deadline=deadline, **withdrawal
         )
 
+    def take_batch_refusal(self, request_id: str | int) -> str | None:
+        """The client's batch-guard refusal reason for *request_id*, taken once."""
+        return self._client.take_batch_refusal(request_id)
+
     async def reject_tool(self, request_id: str | int) -> None:
         await self._client.reject_tool(request_id)
 

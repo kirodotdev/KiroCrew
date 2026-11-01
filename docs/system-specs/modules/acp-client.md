@@ -1338,6 +1338,68 @@ providers declare the keyword with the class attribute `approval_withdrawable`;
 `tool_permission.AcpWire` passes a sub-agent's stop predicate (`Policy.stopping`)
 only to a provider type that declares it.
 
+### Batch write guard in `approve_tool` (`batch_guard.py`)
+
+Opt-in through `hooks.batch_write_guard` (default `false`; only a JSON `true`
+turns it on). After the floor allows a request, both `approve_tool` methods call
+`batch_guard.screen_approval`, which refuses a write-class call that shares its
+parallel tool batch with a read-class call: the model wrote the write's arguments
+before it saw the read's result. Each transport keeps a `BatchWindow` of the
+current batch, fed where it already tracks calls in flight (`AcpClient`:
+`_extract_tool_event`, a terminal `_extract_tool_call_update`,
+`_read_new_tool_results`; `AcpSessionHandle`: `_handle_update`) and reset at each
+prompt turn. A `tool_call` that arrives while no call is open starts a new batch;
+one that arrives while any call is open joins it; a member stays one after it
+settles, until the next batch starts. So membership means overlap in TIME, not
+one model step: on a harness that runs a step's calls one at a time the guard
+never fires. A member stops counting as open at its terminal update, when the
+guard refuses it (a refused call never runs, and its own terminal may never
+arrive), or `OPEN_MEMBER_TTL_SECS` (600 s) after its `tool_call`, whichever comes
+first; the bound keeps a lost terminal from holding every later write of the
+turn in a stale batch, and can only miss a refusal, never add one. A write the
+window never saw is not judged. `batch_guard.classify` reads the harness-stamped identity (never the
+title) against explicit tables: file-write built-ins and Kiro Crew's own
+ledger, report and send tools are writes, file-read built-ins and Kiro Crew's own
+read tools are reads, and EVERY shell command outside the write table is a read
+peer, mutating ones included (`rm`, `sed -i`, `mkdir`, `npm publish`): an
+`fs_write` next to `mkdir -p` is refused and the notice counts the `mkdir` as a
+read. A shell command (its first 8 KiB, split into segments
+on separators outside quotes and escapes, with a word-initial `#` comment
+dropped up to its newline and a here-document body dropped up to its
+terminator, each judged by its program and subcommand words, never by
+argument text) is a write only for `gh pr|issue
+merge/create/review/comment/...`, `git push|commit`, a non-read `aws`
+operation, and a command starting with one of the operator's own prefixes in
+`hooks.batch_write_guard_commands` (empty by default; matched whole words and
+read at approval time, where it applies to the call being approved and to its
+shell peers, whose bounded commands the window keeps); `gh api` counts as a
+write with a mutating `-X`/`--method`, or with `-f`/`-F`/`--input` and no
+explicit method (a GraphQL call only for a `mutation`). Each approval also
+refreshes the approved call's own member from its permission request, so a
+peer whose frame named only its server is judged by the tool the request
+names. Any other tool is neither, so it is never refused and never
+causes a refusal. A refusal steers its reason into the running turn with cause
+`DENY_CAUSE_BATCH_READ_WRITE` while the request is still unanswered, then
+`batch_guard.reject` answers it: it logs `approve_tool: batch guard refused`,
+writes its own SEL row (`source=batch_guard`, `outcome=rejected_batch_guard`,
+`mechanism=batch_write_guard`, never the floor's row), calls `reject_tool` and
+returns `False`. The reason is kept per request id (`batch_guard.take_refusal`,
+at most 64, bounded keys), so `tool_permission` settles that `False` as a host
+refusal with cause `DENY_CAUSE_BATCH_READ_WRITE` rather than a bare
+`floor_refused`, writes no `floor_refused` approval row for it, and a subagent
+turn's refusal recovery carries it. Consumers that write their own row when
+`approve_tool` returns `False` still label it `rejected_transport_floor`; the
+guard's row for the same `request_id` is the one that says why.
+
+Coverage: the tables name kiro-cli and KAS built-ins and Kiro Crew's own MCP
+tools, so the guard is expected to work on the kiro-cli and KAS harnesses. On a
+harness whose tool names are not in those tables most calls are neither class
+and the guard rarely fires. Calls an agent spec pre-approves through
+`allowedTools` raise no permission request, so the guard cannot refuse them;
+they still count as peers. It has been tested only at the transport level; do
+one live run on the target harness before turning it on. Pinned by
+`test_batch_write_guard.py`.
+
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
 permission for the same call therefore retains the fact that a non-shell MCP tool
