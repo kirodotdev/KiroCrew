@@ -314,7 +314,7 @@ foreign host this repository has ever carried, and its price is visible today as
 
 The registration seam is coherent: `ProviderRegistry.register_acp_backends` /
 `create_factory` (`platform/interfaces.py:66-90`), a documented no-op default
-(`platform/defaults.py:41-48`), one wiring site (`platform/bootstrap.py:220-229`),
+(`platform/defaults.py::DefaultProviderRegistry`), one wiring site (`platform/bootstrap.py::bootstrap_context`),
 and an explicit rule that the core never imports the companion. Everything below
 it is not — the *behaviour* the companion must supply is delivered through three
 kinds of undeclared hole:
@@ -1759,7 +1759,7 @@ reopens it.
    subagent-related events.
    Measured rather than assumed. Outside `acp/` and `providers/`, the three
    fields have **10 references across 4 files**: `_on_permission_request` in `dashboard/chat_turn/tool_approval.py`; `subagent.py`;
-   `messaging/driver.py:468`; plus two comment lines. `mcp_identity_ambiguous`
+   `messaging/driver.py::TurnDriver.run`; plus two comment lines. `mcp_identity_ambiguous`
    has **zero** external readers. The 466-usage figure in §2.1 counts the whole
    `EVENT_*` / `STOP_REASON_*` vocabulary; almost none of it reads attribution.
    *Rationale:* at 10 sites the cleaner shape costs nothing, and
