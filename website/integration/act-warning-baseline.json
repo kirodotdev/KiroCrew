@@ -362,7 +362,6 @@
   "src/test/SessionActionsMenu.folderOrder.test.tsx",
   "src/test/SessionColorSwatches.test.tsx",
   "src/test/SessionGridViewCoverage.test.tsx",
-  "src/test/SessionPulseSurveyCard.test.tsx",
   "src/test/SessionTitleControl.test.tsx",
   "src/test/SessionsTab.renderLoop.test.tsx",
   "src/test/SettingsBotChannelPanelCov80.test.tsx",
