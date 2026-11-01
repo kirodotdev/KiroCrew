@@ -49,7 +49,6 @@
   "src/test/ChatPage.chipUndo.test.tsx",
   "src/test/ChatPage.dirStaging.test.tsx",
   "src/test/ChatPage.embedded.test.tsx",
-  "src/test/ChatPage.lazyHistoryFetch.test.tsx",
   "src/test/ChatPage.navFarJump.test.tsx",
   "src/test/ChatPage.previewExpandSessions.test.tsx",
   "src/test/ChatPage.sessionControls.test.tsx",
