@@ -30,7 +30,6 @@
   "src/test/BottomTerminalPanel.hydrateGate.test.tsx",
   "src/test/BottomTerminalPanel.popout.test.tsx",
   "src/test/BottomTerminalPanel.rename.test.tsx",
-  "src/test/CfgTabCoverage.test.tsx",
   "src/test/ChatFooter.test.tsx",
   "src/test/ChatInput.agentChipDefaultMarker.test.tsx",
   "src/test/ChatInput.approval.test.tsx",
