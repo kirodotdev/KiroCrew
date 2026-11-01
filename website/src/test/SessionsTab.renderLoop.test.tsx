@@ -21,8 +21,8 @@
 // render — plus the loading-state fix. That the `autoResetPageIndex` option gates
 // the `resetPageIndex` queue at all is proven from table-core 8.21.3's own source,
 // not from this file.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
+import { act, render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { useRef, type MutableRefObject } from 'react'
@@ -104,7 +104,12 @@ describe('SessionsTab render stability', () => {
     vi.spyOn(api, 'sessionsMemory').mockResolvedValue({ error: 'token expired' } as never)
 
     mount()
-    await new Promise(r => setTimeout(r, 600))
+    // The payload lands first. The clock is faked only now, after the last real-timer
+    // wait, so the 600ms window that follows runs inside act() and still has to pass.
+    await waitFor(() => expect(screen.getByPlaceholderText(/Filter sessions/)).toBeTruthy())
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
 
     expect(renders).toBeLessThan(RENDER_CEILING)
   })
