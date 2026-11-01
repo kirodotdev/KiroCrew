@@ -549,48 +549,19 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             pass
     message, _ = redact_exfiltration_urls(message)
     message, _ = redact_credentials(message)
-    if code == "internal_auth_mismatch":
+    # In-function: a module-scope import would be served on the mcp_core facade.
+    from kiro_crew.auth_refusal_text import auth_refusal_text
+
+    explained = auth_refusal_text(code)
+    if explained:
         # Every internal tool receives the auth layer's bare "Forbidden", which
         # reads as a permission decision about the tool's own subject and sends
-        # the reader after the wrong bug. It is an instance mix-up: the credential
-        # this client read does not belong to the gateway generation that owns the
-        # port it dialled. Rewritten HERE because all tool call sites already flow
-        # through this decoder, so one mapping covers them instead of one branch
-        # per tool -- and it is keyed on the CODE, since a genuine permission
-        # denial produces the same body and must not be given this explanation.
-        message = (
-            "this client authenticated against the wrong Kiro Crew instance. "
-            "The credential it read does not match the gateway now serving that "
-            "port, usually because a second gateway started on this machine and "
-            "replaced the shared credential file. Restart the gateway (or target "
-            "the instance you meant) and retry; the gateway's security event log "
-            "records both credential fingerprints for the mismatch."
-        )
-    elif code == "internal_secret_missing":
-        message = (
-            "the gateway received no internal credential from this client. A "
-            "sandbox or harness mask that withholds it, or a desynchronized "
-            "credential listener, are possible causes. This is not a "
-            "second-gateway mix-up. The gateway's security event log marks "
-            "these denials as received=absent."
-        )
-    elif code == "caller_record_missing":
-        message = (
-            "this session's cron or subagent record no longer exists; start a new "
-            "session before retrying the tool."
-        )
-    elif code == "unix_peer_unverified":
-        message = (
-            "the gateway could not verify this Unix-socket caller as the same local "
-            "user. Restart the gateway and start a new session; if the error persists, "
-            "make sure the client and gateway run as the same OS user."
-        )
-    elif code == "peer_session_mismatch":
-        message = (
-            "this Unix-socket caller is bound to a different session than the "
-            "X-Session-Key it declared. Restart the affected session, or start a new "
-            "one, before retrying the tool."
-        )
+        # the reader after the wrong bug. Rewritten HERE because all tool call
+        # sites already flow through this decoder, so one lookup covers them
+        # instead of one branch per tool -- and it is keyed on the CODE, since a
+        # genuine permission denial produces the same body and must not be given
+        # this explanation. The CLI reads the same table.
+        message = explained
     out: dict = {"error": message}
     if counted:
         out["counted"] = True
