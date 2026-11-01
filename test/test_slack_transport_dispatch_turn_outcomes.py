@@ -693,6 +693,35 @@ class TestTransportPartialProgressRescue:
             if r.get("role") == "assistant" and PARTIAL_TURN_MARKER in r.get("content", "")
         ], "a finished reply must never be flagged as cut off"
 
+    def test_finalized_turn_suppresses_spurious_error_reply(self, monkeypatch, tmp_path):
+        """A decorative step faulting AFTER the answer finalized must not post the
+        terminal "Something went wrong" over a reply the reader already has.
+
+        ``on_done`` sets ``SlackRenderer.turn_finalized`` only after the
+        answer-carrying delivery, so an exception reaching the dispatcher's
+        ``except`` past that point came from decoration (the 30s progress-card
+        refresh, a footer or seal). The error MESSAGE is gated on
+        ``turn_finalized`` exactly as the partial-reply rescue is; the thread
+        STATUS clear still runs.
+        """
+        rows, slack = self._run_dying_turn(
+            monkeypatch,
+            tmp_path,
+            streamed="Verdict: the fix is good to ship.",
+            finish_first=True,
+        )
+        assert not [
+            kw
+            for method, kw in slack.transcript
+            if method == "post_message" and "Something went wrong" in kw.get("text", "")
+        ], "a finalized, delivered turn must not post the spurious transport error"
+        # The status clear is unconditional — only the error message is gated.
+        assert any(
+            kw.get("status") == ""
+            for method, kw in slack.transcript
+            if method == "set_thread_status"
+        )
+
     def test_the_rescued_row_keeps_its_slack_user_provenance(self, monkeypatch, tmp_path):
         """The rescue must record WHO asked, like every success-path write.
 
