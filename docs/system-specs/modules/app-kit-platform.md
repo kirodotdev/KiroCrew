@@ -4926,6 +4926,62 @@ Writers: `apps/routes.py`, `apps/routes_lifecycle.py`, `apps/routes_proxy.py`,
 `apps/routes_install.py`, `apps/routes_uninstall.py`, `apps/routes_enable.py`,
 `apps/routes_registry.py`.
 
+## 30. A marketplace app installs disabled and is trusted by its listing
+
+A Kiro Space marketplace app version is one zip of the app folder.
+`apps/marketplace_install.py` is the gateway's only path for it, in two calls.
+`prepare_market_install(client, ref, version)` resolves the version through a
+`MarketClient`, downloads the zip from the signed URL into a fresh folder under
+`<data home>/market-staging/`, and refuses it unless its SHA-256 equals the
+resolved one; the download's own hash must match the resolved hash before the
+fetch. Only then is the zip unpacked, into a new `mkdtemp` folder, after every
+entry passed the archive rules: at most 25 MiB zipped, 100 MiB and 2,000
+entries unpacked (the entry cap through `zip_vet.vet_zip_inventory`, before
+`ZipFile` parses the central directory), 25 MiB and 100:1 per entry (counted on the bytes actually
+written, not the header), 16 segments and 240 bytes per path; no absolute name,
+drive letter, colon anywhere (a later `D:` segment re-roots a Windows join,
+`x:y` is an alternate data stream), backslash, control character, `.` or `..`
+segment, or two names
+equal after NFC and case folding; regular files and directories only (a link,
+device, FIFO or socket refuses), no setuid, setgid or sticky bit, no encrypted
+or spanned archive. Files are created with `O_EXCL | O_NOFOLLOW` and modes
+reduced to 0644 or 0755. Bundled component hashes are recomputed. Any refusal
+deletes the staging folder. A version that `requires` other listings is
+refused until their kinds have installers. The unpacked `app.json` is then
+parsed with `AppManifest`, and its own crons, MCP servers and agents are
+listed in the confirm data (`inFolder`). Each must be named by the resolved
+permissions (a cron as `cron: <name>` in `background`, a server in
+`mcpServers`, an agent path in `agents`); one that is not refuses the install
+as `market_undeclared_capability`, so the person never approves a list shorter
+than what the folder holds.
+
+The confirm data carries the publisher, versions, SHA-256 prefix, the declared
+permissions under "declared by the publisher, not enforced" and the label
+"Community, not reviewed by Kiro Space". `complete_market_install(prepared,
+confirmed=True)` then calls `install_app(<folder>, expected_name=<listing
+name>, market_source=..., source_commit=...)` directly, never the dashboard
+local-path route (which registers the app and starts its backend after a fresh
+install). `install_app` writes `origin = "local"`, `source =
+"market:<ref>@<n>"` and `sourceCommit = <zip SHA-256>` in its FIRST record
+write, still `enabled = False`, so no record ever names the staging folder
+(which a local-folder grant would admit), and its install-time trust check
+compares against `market:<ref>`. A malformed `market_source` is refused as
+`market_source_invalid`. Nothing is registered or started; that happens only
+at enable. The staging folder is deleted whatever the outcome. The listing
+server is reached only through `MarketClient`, and a signed URL that is not
+`https://` is refused before any fetch.
+
+`resolve_installed_trust_repository` maps a `market:<ref>@<n>` source to the
+coordinate `market:<ref>` (`apps/market_source.py`), so the trust dialog binds
+the grant to that listing in `agent.apps_trusted_repositories`. A grant kept in
+`agent.apps_trusted_local` never covers it: enabling a marketplace app with only
+a local grant returns `app_execution_denied` and the dialog asks again. A
+malformed `market:` source resolves to nothing and cannot be granted.
+
+Writers: `apps/marketplace_install.py`, `apps/market_source.py`,
+`apps/manager_install.py` (`install_app`, `market_source` / `source_commit`),
+`apps/registry_pipeline/catalog.py` (`resolve_installed_trust_repository`).
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

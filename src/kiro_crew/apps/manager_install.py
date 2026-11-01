@@ -131,6 +131,8 @@ def install_app(
     *,
     expected_name: str | None = None,
     source_repository: str = "",
+    market_source: str = "",
+    source_commit: str = "",
 ) -> AppResult:
     """Install an app from a local directory path.
 
@@ -140,7 +142,25 @@ def install_app(
 
     Resource registration (agents, skills, crons) is handled separately
     by the bridge module — this function only manages files.
+
+    ``market_source`` (``market:<ref>@<n>``) marks a marketplace install. It is
+    written by the FIRST durable record write, with ``origin = "local"`` and
+    ``sourceCommit = source_commit``, so no record ever names the staging folder
+    as the source of marketplace code; a local-folder grant would admit that.
+    The install-time trust check then compares against the listing coordinate.
     """
+    market_coordinate = ""
+    if market_source:
+        # Imported here so the manager facade's star import gains no new names.
+        from kiro_crew.apps.market_source import market_trust_coordinate
+
+        market_coordinate = market_trust_coordinate(market_source)
+        if not market_coordinate or source_repository:
+            return AppResult(
+                ok=False,
+                error="invalid marketplace source",
+                error_code="market_source_invalid",
+            )
     source = Path(source).expanduser().resolve()
     if not source.is_dir():
         sel().log_api_access(
@@ -231,7 +251,9 @@ def install_app(
         )
 
     source_repository = _effective_source_repository(source_repository)
-    trust_denied = repository_bound_grant_denied(name, repository=source_repository)
+    trust_denied = repository_bound_grant_denied(
+        name, repository=market_coordinate or source_repository
+    )
     if trust_denied:
         sel().log_api_access(
             caller="app_install",
@@ -408,12 +430,14 @@ def install_app(
         sessionApprovalConsentPending=bool(manifest.permissions.sessionApproval),
         approvedGrantsStored=True,
         installedAt=_now_iso(),
-        source=str(source),
+        source=market_source or str(source),
+        origin="local" if market_source else InstalledApp.origin,
         # Persist the server-resolved repository at the first durable metadata
         # write.  The registry's richer set_app_provenance bookkeeping happens
         # later and may fail after the copied app is already the live occupant;
         # runtime admission must still remain bound to what was installed.
         sourceUrl=source_repository.strip(),
+        sourceCommit=source_commit if market_source else "",
     )
     # Installing is the consent moment for everything the manifest declares.
     # Written before the record, so no record ever sits beside a missing set.
