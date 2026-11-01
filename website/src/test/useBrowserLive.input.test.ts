@@ -155,6 +155,12 @@ describe('touch typing', () => {
     expect(keys(diffToEvents('\u200bteh', '\u200bthe '))).toEqual(['down:Backspace', 'up:Backspace', 'down:Backspace', 'up:Backspace', 't:he '])
     // An emoji is one character to delete.
     expect(keys(diffToEvents('\u200ba\u{1F600}', '\u200ba'))).toEqual(['down:Backspace', 'up:Backspace'])
+    // So is a ZWJ family (seven code points): Chromium deletes it in one press,
+    // and six more would erase the text before it.
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}'
+    expect(keys(diffToEvents(`\u200bhi${family}`, '\u200bhi'))).toEqual(['down:Backspace', 'up:Backspace'])
+    // A combining accent still goes on its own, as Chromium's Backspace removes it.
+    expect(keys(diffToEvents('\u200be\u0301', '\u200be'))).toEqual(['down:Backspace', 'up:Backspace'])
     expect(keys(diffToEvents('', 'a\nb'))).toEqual(['t:a', 'down:Enter', 'up:Enter', 't:b'])
     expect(diffToEvents('same', 'same')).toEqual([])
   })

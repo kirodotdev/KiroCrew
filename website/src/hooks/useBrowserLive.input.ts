@@ -319,11 +319,13 @@ function namedKey(key: string, code: string): BrowserInputEvent[] {
  * (no `insertText` until the word ends), iOS predictive text and autocorrect
  * replace a word they already typed, a pinyin IME swaps letters for
  * characters. All of them end as "the text went from A to B", and A to B is
- * all the page needs. Compared by code point, so an emoji is one Backspace.
+ * all the page needs. Compared in the units Chromium's Backspace deletes: a
+ * code point, except that an emoji sequence (ZWJ family, flag, keycap, skin
+ * tone) is one unit, so deleting one never erases the text before it.
  */
 export function diffToEvents(prev: string, next: string): BrowserInputEvent[] {
-  const a = Array.from(prev)
-  const b = Array.from(next)
+  const a = deletionUnits(prev)
+  const b = deletionUnits(next)
   let k = 0
   while (k < a.length && k < b.length && a[k] === b[k]) k += 1
   const out: BrowserInputEvent[] = []
@@ -333,6 +335,29 @@ export function diffToEvents(prev: string, next: string): BrowserInputEvent[] {
     if (i > 0) out.push(...namedKey('Enter', 'Enter'))
     out.push(...textToEvents(line))
   })
+  return out
+}
+
+const EMOJI_CLUSTER = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20E3/u
+
+let graphemes: Intl.Segmenter | null | undefined
+
+/**
+ * The text as Chromium's Backspace removes it: one code point at a time (a
+ * combining accent goes on its own), but a whole emoji sequence at once.
+ */
+export function deletionUnits(text: string): string[] {
+  if (graphemes === undefined) {
+    graphemes = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+      ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      : null
+  }
+  if (!graphemes) return Array.from(text)
+  const out: string[] = []
+  for (const { segment } of graphemes.segment(text)) {
+    if (EMOJI_CLUSTER.test(segment)) out.push(segment)
+    else out.push(...Array.from(segment))
+  }
   return out
 }
 
