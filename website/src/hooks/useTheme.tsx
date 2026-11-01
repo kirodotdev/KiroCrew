@@ -870,6 +870,12 @@ function useThemeState(): ThemeContextValue {
   const [overridesDropReport, setOverridesDropReport] = useState<OverridesDropReport | null>(null)
   // Timestamp of the current switch, for the ~150ms minimum-visible guard.
   const switchStartRef = useRef(0)
+  // The two values above as last written, so the overrides settle writes only a
+  // change. A same-value write is not free: React 18 skips it only while the
+  // fiber and its alternate have no pending work, so the settle's unconditional
+  // `null` / `false` re-rendered the provider just after mount.
+  const switchingRef = useRef(false)
+  const dropReportRef = useRef<OverridesDropReport | null>(null)
   // Current colorTheme, read synchronously in setColorTheme (via a ref so its
   // identity stays stable) to no-op a same-value re-select.
   const colorThemeRef = useRef(colorTheme)
@@ -1084,6 +1090,10 @@ function useThemeState(): ThemeContextValue {
     staleTime: Infinity,  // only need it once on mount
     retry: false,         // if server unavailable, fall back to localStorage silently
   })
+  // A read that failed has nothing to apply, so the boot is done the moment it
+  // settles. Set the flag while rendering (React re-runs this component before it
+  // commits) instead of from the effect below, a second commit that changed nothing.
+  if (themeBootFetched && !bootData && !themeBootReady) setThemeBootReady(true)
 
   useEffect(() => {
     if (!themeBootFetched) return
@@ -1158,8 +1168,8 @@ function useThemeState(): ThemeContextValue {
           }
         }
       }
+      setThemeBootReady(true)
     }
-    setThemeBootReady(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootData, themeBootFetched])
 
@@ -1294,6 +1304,7 @@ function useThemeState(): ThemeContextValue {
     )
     if (installed) {
       switchStartRef.current = Date.now()
+      switchingRef.current = true
       setThemeSwitching(true)
     }
     setColorThemeState(t)
@@ -1351,13 +1362,17 @@ function useThemeState(): ThemeContextValue {
         // Publish (or clear) the drop report for the ACTIVE theme only — a
         // resolve from a superseded switch is filtered by the generation check,
         // and applyThemeOverrides itself returns null for a superseded token.
-        if (!superseded()) setOverridesDropReport(report)
+        if (superseded() || (report === null && dropReportRef.current === null)) return
+        dropReportRef.current = report
+        setOverridesDropReport(report)
       })
       .finally(() => {
-        if (superseded()) return
+        if (superseded() || !switchingRef.current) return
         const remaining = Math.max(0, 150 - (Date.now() - switchStartRef.current))
         window.setTimeout(() => {
-          if (!superseded()) setThemeSwitching(false)
+          if (superseded()) return
+          switchingRef.current = false
+          setThemeSwitching(false)
         }, remaining)
       })
   }, [colorTheme, customThemeDataMap])
