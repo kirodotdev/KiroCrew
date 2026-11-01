@@ -221,7 +221,9 @@ class WeixinTransport(MessagingTransport):
     ) -> str:
         ctx_token = self._ctx.get(self._account_id, conversation_id)
         last = ""
-        for i, part in enumerate(_chunk(content, WEIXIN_CAPABILITIES.max_message_chars)):
+        # OFF the loop, like the renderer's own send: the split grades credential seams.
+        parts = await asyncio.to_thread(_chunk, content, WEIXIN_CAPABILITIES.max_message_chars)
+        for i, part in enumerate(parts):
             if i:
                 await asyncio.sleep(0.3)  # avoid iLink rate-limit drops
             client_id = uuid.uuid4().hex

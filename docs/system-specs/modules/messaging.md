@@ -4584,20 +4584,17 @@ task so the receive loop keeps breathing during long turns. Outbound is REST
 (`POST/PUT/DELETE /v1/messages`) with a single 429 `Retry-After` back-off; an
 email-shaped conversation id maps onto `toPersonEmail` (opens/reuses the 1:1
 space server-side). Outbound markdown is bounded in UTF-8 BYTES, not
-characters — Webex's limit is 7439 bytes. The renderer's own final answer is
-chunked by `messaging/split.py::chunk_utf8_bytes`, which is byte-exact and **lossless**:
-the concatenation of its chunks equals its input. That is the property the table
-path requires, because an oversized safe-raw grid is chunked here and must
-reassemble exactly, and a line-oriented splitter cannot promise it — it consumes
-the boundary whitespace (pinned by
-`test_channel_table_rendering.py::TestDeliveryFraming`). The accepted cost is that
-`chunk_utf8_bytes` carries no fence state, so a code fence spanning a chunk boundary
-lands unbalanced; trading the grid's exact reassembly for that is the worse of the
-two. The fence-safe `messaging.split.split_markdown_bytes` — shared splitter
-against a character budget, shrunk until every chunk measures under Webex's byte
-cap, with the `chunk_utf8_bytes` primitive for a fragment admitting no clean cut —
-is what Webex gets through `chunk_for_transport` on the mirror and proactive legs,
-which carry no grid. Single sends are tail-guarded by `truncate_utf8` as a last
+characters — Webex's limit is 7439 bytes. Every Webex leg — the renderer's own
+final answer, the mirror and the proactive sends — is chunked by the byte path of
+`chunk_for_transport`: the fence-safe `messaging.split.split_markdown_bytes`
+(the shared splitter against a character budget, shrunk until every chunk measures
+under Webex's byte cap, with the `chunk_utf8_bytes` primitive for a fragment
+admitting no clean cut), graded for credential seams. A code fence spanning a cut
+is sealed in one chunk and reopened in the next, and a line is cut only when it
+cannot fit a chunk at all. Each chunk is its own message, so the blank line a cut
+lands on is consumed rather than shipped as empty space; an oversized safe-raw grid
+keeps every row, which `test_channel_table_rendering.py::TestDeliveryFraming` pins
+with the same content-preserving check Teams uses. Single sends are tail-guarded by `truncate_utf8` as a last
 resort, so a multibyte-heavy reply is never rejected wholesale by the platform.
 Redelivery is handled at the
 frame: each processed activity is acknowledged (``{"type": "ack", ...}``) and its

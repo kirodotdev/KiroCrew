@@ -146,6 +146,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Capture-side as well: redacts thread replies as they are READ from
         # Slack, for the model's fenced thread-replies block. No output of its own.
         "slack/thread_replies.py",
+        # Seam grading only: `_redact_all` is the grader `render_chunks` hands the
+        # shared splitter, so a cut cannot leave a key's halves in two adjacent
+        # messages. The Weixin answer's display redaction happens before it, at
+        # the registered "Weixin steer receipts" sink's `redact_for_target` call in
+        # `weixin/turn_renderer.py`, after the driver's stream redactor.
+        "weixin/renderer.py",
         # Gate-side audit hygiene: the tool gate clips and redacts the tool labels
         # and refusal reason of each permission decision before writing them to
         # the SEL audit log. That is a local audit record, not an output bound for

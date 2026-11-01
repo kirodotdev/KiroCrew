@@ -192,6 +192,41 @@ def test_render_chunks_splits_oversized_content_within_the_limit():
     assert all(len(c) <= WEIXIN_CHUNK_LIMIT for c in out)
 
 
+def _fence_lines(chunk: str) -> int:
+    return sum(line.startswith("```") for line in chunk.split("\n"))
+
+
+def test_render_chunks_reopens_a_code_block_cut_across_chunks():
+    # Each chunk is its own bubble: one that opens a fence must close it, and the
+    # next must reopen it with the same info string, or its code renders as prose.
+    code = "\n".join(f"value_{i} = compute({i})  # step {i}" for i in range(300))
+    text = f"intro\n\n```python\n{code}\n```\n\nouttro"
+    out = render_chunks(text)
+    assert len(out) > 1
+    assert all(_fence_lines(c) % 2 == 0 for c in out)
+    assert all(len(c) <= WEIXIN_CHUNK_LIMIT for c in out)
+    assert out[1].startswith("```python\n")
+
+
+def test_render_chunks_never_cuts_a_line_mid_way():
+    code = "\n".join(f"value_{i} = compute({i})  # step {i}" for i in range(300))
+    text = f"```python\n{code}\n```"
+    source_lines = set(text.split("\n"))
+    for chunk in render_chunks(text):
+        assert all(line in source_lines for line in chunk.split("\n"))
+
+
+def test_render_chunks_holds_the_limit_when_a_fence_line_admits_no_clean_cut():
+    # A line no cut can split cleanly is placed whole with its fence scaffolding
+    # on top; iLink's limit is the channel's own, so it still binds every chunk.
+    limit = 200
+    text = "```" + "a" * 40 + "\n" + "\n".join(["`" * (limit - 5)] * 3) + "\n```"
+    out = render_chunks(text, limit)
+    assert all(len(c) <= limit for c in out)
+    # Nothing is dropped to meet the limit: every source backtick still arrives.
+    assert "".join(out).count("`") >= text.count("`")
+
+
 def test_render_chunks_hard_splits_a_single_oversized_block():
     out = render_chunks("y" * (WEIXIN_CHUNK_LIMIT * 2 + 10))
     assert len(out) == 3

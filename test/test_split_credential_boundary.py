@@ -69,6 +69,7 @@ KNOWN_DELIVERY_MODULES = frozenset(
         "telegram/renderer.py",
         "webex/renderer.py",
         "wecom/renderer.py",
+        "weixin/renderer.py",
         "whatsapp/renderer.py",
     }
 )
