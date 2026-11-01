@@ -169,6 +169,16 @@ def _no_background_launch(provider: LLMProvider) -> tuple[float, str] | None:
     return None
 
 
+def _default_unanswered_turn_age(key: str) -> float | None:
+    """Default unanswered-turn detector: no unanswered turn reported."""
+    return None
+
+
+def _default_mark_turn_failed(key: str) -> None:
+    """Default mark-turn-failed hook: no-op."""
+    return None
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -307,6 +317,13 @@ class CleanupDeps:
     provider_background_launch: Callable[[LLMProvider], tuple[float, str] | None] = (
         _no_background_launch
     )
+    # Age in seconds of an unanswered real user prompt on *key*, or None if
+    # answered/empty. Looked up during idle sweep before reset.
+    unanswered_turn_age: Callable[[str], float | None | Awaitable[float | None]] = (
+        _default_unanswered_turn_age
+    )
+    # Marks an unanswered turn as failed after successful idle reset.
+    mark_turn_failed: Callable[[str], None | Awaitable[None]] = _default_mark_turn_failed
 
 
 class SessionCleanup:
@@ -348,6 +365,7 @@ class SessionCleanup:
     # passes ``state.idle_timeout``, so the timeout decides WHEN a session is
     # stale and the interval only decides how often the question is asked.
     MAX_TICK_INTERVAL_SECS = 300.0
+    _UNANSWERED_TURN_PROBE_TIMEOUT_SECS = 5.0
 
     def __init__(
         self,
@@ -986,6 +1004,28 @@ class SessionCleanup:
                 exc_info=True,
             )
             return True
+
+    async def _probe_unanswered_turn_age(self, key: str) -> float | None:
+        """Evaluate unanswered prompt age, handling sync or async answers."""
+        try:
+            res = self._deps.unanswered_turn_age(key)
+            if isinstance(res, Awaitable):
+                res = await asyncio.wait_for(res, timeout=self._UNANSWERED_TURN_PROBE_TIMEOUT_SECS)
+            if isinstance(res, (int, float)):
+                return float(res)
+        except Exception:
+            self._deps.logger.debug("unanswered_turn_age probe failed for %s", key, exc_info=True)
+            return None
+        return None
+
+    async def _apply_mark_turn_failed(self, key: str) -> None:
+        """Mark an unanswered turn failed, awaiting if awaitable."""
+        try:
+            res = self._deps.mark_turn_failed(key)
+            if isinstance(res, Awaitable):
+                await res
+        except Exception:
+            self._deps.logger.debug("mark_turn_failed hook failed for %s", key, exc_info=True)
 
     async def _has_attached_subagents(self, key: str) -> bool:
         """Fail-closed wrapper around the injected work probes.
@@ -1767,6 +1807,7 @@ class SessionCleanup:
             # here (and firing on_session_expire ahead of the reset) discards
             # the children's work. Fail-closed: a probe that cannot answer keeps
             # the session.
+            unanswered_age = await self._probe_unanswered_turn_age(key)
             if await self._has_attached_subagents(key):
                 self._deps.logger.info(
                     "Idle sweep: %s looks %s but still has sub-agent work - left running",
@@ -1983,3 +2024,17 @@ class SessionCleanup:
                     self._deps.get_session_idle_expired_event(),
                     {"turn_active": turn_active, "orphaned": bool(is_orphan)},
                 )
+                if unanswered_age is not None:
+                    self._deps.logger.error(
+                        "Idle sweep: session %s expired with unanswered turn (age: %.1fs)",
+                        key,
+                        unanswered_age,
+                    )
+                    try:
+                        await self._apply_mark_turn_failed(key)
+                    except Exception:
+                        self._deps.logger.warning(
+                            "Failed to mark unanswered turn failed for %s",
+                            key,
+                            exc_info=True,
+                        )
