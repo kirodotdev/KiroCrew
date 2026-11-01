@@ -392,6 +392,20 @@ def test_a_non_json_peer_reply_is_refused(env):
     assert (status, body["code"]) == (502, "proxy_content_type_refused")
 
 
+def test_a_plain_404_from_a_route_the_crew_does_not_serve_is_still_a_404():
+    """A crew with the preview off answers its work-item route as aiohttp's plain
+    404; the hub sees the status, so its 404 branches run."""
+    peer = StubPeer()
+    peer.content_type = "text/plain"
+    path = "api/chat/slots/chat-1/work-item"
+    peer.reply("GET", path, 404, "404: Not Found")
+    assert asyncio.run(crew.peer_call(peer, INSTANCE, "GET", path)) == (404, None)
+    peer.reply("GET", path, 200, "ok")
+    with pytest.raises(crew.CrewCallError) as err:
+        asyncio.run(crew.peer_call(peer, INSTANCE, "GET", path))
+    assert err.value.code == "proxy_content_type_refused"
+
+
 # ── redaction ────────────────────────────────────────────────────────────────
 
 

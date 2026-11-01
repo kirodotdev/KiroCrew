@@ -1225,6 +1225,14 @@
       "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
+      "id": "developer.remote-dispatch",
+      "label": "Remote dispatch",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=key%3Awork_ledger.remote_dispatch",
+      "description": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+      "configKey": "work_ledger.remote_dispatch"
+    },
+    {
       "id": "developer.reply-threads-on-mate-chat-messages",
       "label": "Reply threads on mate chat messages",
       "tab": "developer",
