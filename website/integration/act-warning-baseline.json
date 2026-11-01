@@ -376,7 +376,6 @@
   "src/test/SettingsVoicePanelCoverage.test.tsx",
   "src/test/SettingsWebexPanelCoverage.test.tsx",
   "src/test/SideChat.imeEnter.test.tsx",
-  "src/test/SideChat.steerQueue.test.tsx",
   "src/test/SideChat.thinking.test.tsx",
   "src/test/SidePanelGlyph.test.tsx",
   "src/test/SlotTagPopover.test.tsx",
