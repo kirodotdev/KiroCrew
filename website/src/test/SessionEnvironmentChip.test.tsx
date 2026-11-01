@@ -321,7 +321,37 @@ describe('SessionEnvironmentChip', () => {
     await waitFor(() => expect(card).toHaveTextContent('Running'), { timeout: 5000 })
     expect(card).toHaveTextContent('crewenv-devuser-abc')
     expect(card).toHaveTextContent('aarch64')
-    expect(screen.getAllByRole('progressbar', { name: 'Memory' })[0]).toHaveAttribute('aria-valuenow', '25')
+    const memory = screen.getAllByRole('progressbar', { name: 'Memory' })[0]
+    expect(memory).toHaveAttribute('aria-valuenow', '25')
+    // Plain headings, load read against the core count, the provider's own
+    // mark, and a healthy meter left uncoloured.
+    expect(card).toHaveTextContent('Workspace status')
+    expect(card).toHaveTextContent('Workspace name')
+    expect(card).toHaveTextContent('Busy cores (1, 5, 15 min)')
+    expect(card).toHaveTextContent('0.1 · 0.2 · 0.3 of 2')
+    expect(within(card).getByTestId('provider-mark-coder')).toBeInTheDocument()
+    expect(memory.firstElementChild).toHaveClass('bg-muted')
+    expect(card).not.toHaveTextContent('Memory is low.')
+  })
+
+  it('advises on low memory and colours only a warning meter', async () => {
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue({ ...envResponse('dev'), locked: true })
+    vi.spyOn(api, 'chatSlotEnvironmentHealth').mockResolvedValue({
+      state: 'running',
+      stats: {
+        arch: 'x86_64', cpus: 4,
+        memory: { total_bytes: 4_000_000_000, available_bytes: 600_000_000 },
+        disk: { total_bytes: 20_000_000_000, free_bytes: 15_000_000_000 },
+      },
+    })
+    const u = userEvent.setup()
+    wrap(<SessionEnvironmentChip slot="chat-1" />)
+    await u.hover(await screen.findByTestId('composer-environment-chip'))
+    const card = await screen.findByTestId('environment-health-card')
+    // 85% used, past the 80% line: the warning tone and the advice line show.
+    await waitFor(() => expect(card).toHaveTextContent('Memory is low. Heavy builds may fail.'), { timeout: 5000 })
+    expect(screen.getAllByRole('progressbar', { name: 'Memory' })[0].firstElementChild).toHaveClass('bg-warn')
+    expect(screen.getAllByRole('progressbar', { name: 'Disk' })[0].firstElementChild).toHaveClass('bg-muted')
   })
 
   it('keeps the hover-opened card open when the fixed chip is then clicked', async () => {
@@ -474,6 +504,11 @@ describe('SessionEnvironmentChip', () => {
     await act(async () => { await qc.invalidateQueries({ queryKey: slotEnvironmentQueryKey('chat-1') }) })
     // Bound remote, so the locked chip is the health-card trigger even while the pick waits.
     await waitFor(() => expect(chipEl().tagName).toBe('BUTTON'))
+    // It names the bound environment, never the refused pick's target.
+    expect(chipEl()).toHaveTextContent('Coder MicroVM')
+    expect(chipEl()).not.toHaveTextContent('This machine')
+    expect(chipEl()).toHaveAccessibleName('Runs on Coder MicroVM. Fixed for this chat.')
+    expect(within(chipEl()).getByTestId('provider-mark-coder')).toBeInTheDocument()
     await act(async () => { refuse(new ApiError(409, 'environment_locked', '{"code":"environment_locked"}')) })
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(/Couldn't switch to This machine, so this chat still runs on Coder MicroVM\./)
