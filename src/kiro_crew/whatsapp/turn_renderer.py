@@ -39,8 +39,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import deque
 from typing import TYPE_CHECKING, Any, Callable
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import NOTICE_STATE_MAX
 from kiro_crew.constants import (
     OPTIONS_RE_TRAILER,
     relocate_glued_tail_marker,
@@ -196,6 +198,9 @@ class WhatsAppRenderer(Renderer):
         #: against this. Bounded by one message: only the message a new one sits
         #: under can rejoin anything with it.
         self._sent_tail = ""
+        self._note_below_live: str | None = None
+        self._pending_notices: deque[str] = deque(maxlen=NOTICE_STATE_MAX)
+        self._pending_notice_drops = 0
         self._flush_task: asyncio.Task[None] | None = None
         self._last_edit_at = 0.0
         #: The approval prompt's own message id, kept so a timeout can resolve the
@@ -293,7 +298,6 @@ class WhatsAppRenderer(Renderer):
             )
             sealed = repaired if repaired is not None else chunks[index]
             await self._seal_chunk(sealed)
-            self._sent_tail = sealed.strip()
         tail = chunks[-1]
         if not self._live_id and len(tail) < _MIN_FIRST_FLUSH_CHARS and not self._sealed_count:
             return  # too early to be worth a bubble
@@ -405,7 +409,16 @@ class WhatsAppRenderer(Renderer):
             # Past the window every edit is refused, so stop asking. The fresh
             # bubble's own window starts at its send (``_open_live`` restamps it).
             await self._close_live()
+        predecessor = self._note_below_live
+        if predecessor is not None:
+            repaired = await asyncio.to_thread(
+                repaired_after_a_sent_tail, predecessor, text, _redact_all
+            )
+            text = repaired if repaired is not None else text
         await self._open_live(text)
+        if predecessor is not None:
+            self._sent_tail = predecessor
+            self._note_below_live = None
         return True
 
     async def _seal_chunk(self, text: str) -> None:
@@ -420,6 +433,7 @@ class WhatsAppRenderer(Renderer):
         index = self._sealed_count
         try:
             await self._show(text)
+            self._record_sent(self._live_text)
         except Exception:
             # Counted but NOT delivered. Remembered so the final pass can reopen
             # from here; re-raised so the flush wrapper still logs it.
@@ -537,6 +551,33 @@ class WhatsAppRenderer(Renderer):
         except Exception:  # noqa: BLE001: the tool is already denied
             logger.warning("whatsapp: could not deliver the approval timeout", exc_info=True)
 
+    async def on_notice(self, text: str) -> None:
+        if self.suppressed:
+            return
+        if self._unprompted and not self._finalized:
+            if len(self._pending_notices) == self._pending_notices.maxlen:
+                self._pending_notice_drops += 1
+            self._pending_notices.append(text)
+            return
+        await self._cancel_flush()
+        predecessor = self._note_below_live or self._live_text or self._sent_tail
+        repaired = await asyncio.to_thread(
+            repaired_after_a_sent_tail, predecessor, text, _redact_all
+        )
+        safe = repaired if repaired is not None else text
+        await self._transport.send_message(self._chat, safe)
+        if self._live_id:
+            self._note_below_live = safe
+        else:
+            self._sent_tail = safe.strip()
+            self._note_below_live = None
+
+    def _record_sent(self, sealed: str) -> None:
+        if self._note_below_live is not None:
+            sealed = self._note_below_live
+        self._sent_tail = sealed.strip()
+        self._note_below_live = None
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         logger.debug("whatsapp: compaction status %.0f%%", context_usage_pct)
 
@@ -551,14 +592,30 @@ class WhatsAppRenderer(Renderer):
         ok = stop_reason != "error"
         self.failed = not ok
         body = self.text()
+        if self._pending_notice_drops:
+            logger.warning(
+                "whatsapp: dropped %d provider notices from the full queue",
+                self._pending_notice_drops,
+            )
+            self._pending_notice_drops = 0
         if self._unprompted and (not body or body == SILENCE_SENTINEL):
             # The model chose silence (or produced nothing): deliver nothing.
             # Nothing was streamed either: _schedule_flush never arms for an
             # unprompted turn, precisely because a streamed prefix cannot be
             # unsent once the model turns out to have chosen silence.
             self.suppressed = True
+            self._pending_notices.clear()
             logger.debug("whatsapp: unprompted group turn suppressed")
             return
+        while self._pending_notices:
+            notice = self._pending_notices.popleft()
+            try:
+                await self.on_notice(notice)
+            except Exception:
+                logger.warning(
+                    "whatsapp: provider notice delivery failed (answer will continue)",
+                    exc_info=True,
+                )
         if not body:
             body = "..." if ok else _ERROR_TEXT
 
@@ -598,11 +655,11 @@ class WhatsAppRenderer(Renderer):
             # recover a chunk that did not land -- which is exactly what ``_show``
             # is responsible for, and why the count advances only after it.
             await self._show(chunk)
+            shipped.append(self._live_text)
+            self._record_sent(self._live_text)
             if not is_last:
                 await self._close_live()
             self._sealed_count += 1
-            self._sent_tail = chunk.strip()
-            shipped.append(chunk)
         # The notice counts the text that SHIPPED, repair included: a repair
         # introduces a placeholder of its own, and a reply whose only redaction came
         # from one would otherwise announce none.

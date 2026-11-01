@@ -207,6 +207,7 @@ from kiro_crew.dashboard.chat_turn.regenerate_swap import (  # noqa: F401
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_turn.segment_flush import (
+    _flush_provider_notices,
     _flush_segment,
     _turn_settle_answer,
 )
@@ -405,6 +406,7 @@ from kiro_crew.name_grant import (  # noqa: F401
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_ELICITATION_REQUEST,
+    EVENT_NOTICE,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -1070,7 +1072,13 @@ async def _run_chat(
                     event.kind,
                 )
 
-            if event.kind == EVENT_TEXT_CHUNK:
+            if event.kind == EVENT_NOTICE:
+                if len(turn._provider_notices) == turn._provider_notices.maxlen:
+                    turn._provider_notice_drops += 1
+                turn._provider_notices.append(event)
+                if not turn.assistant_text:
+                    _flush_provider_notices(turn)
+            elif event.kind == EVENT_TEXT_CHUNK:
                 await _on_text_chunk(turn, event)
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)

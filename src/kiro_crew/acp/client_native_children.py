@@ -47,7 +47,9 @@ from kiro_crew.acp.session_handle_native_children import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_CLIENT_CAPABILITIES,
+    ACP_CLIENT_CAPABILITIES_SESSION_NOTICES,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
     UPDATE_AGENT_MESSAGE_CHUNK,
@@ -79,12 +81,17 @@ UPDATE_SESSION_MESSAGE = "session_message"
 #: child-addressed frames the adapter re-routes once it is declared. JetBrains AIR's
 #: own ``_meta`` opt-in is never sent: it switches the adapter into that client's
 #: draft form and its other client-specific branches.
-CLAUDE_CLIENT_CAPABILITIES: dict = {**ACP_CLIENT_CAPABILITIES, "subagents": {}}
+CLAUDE_CLIENT_CAPABILITIES: dict = {
+    **ACP_CLIENT_CAPABILITIES,
+    "subagents": {},
+    "session": {"notices": {}},
+}
 
 #: ``clientCapabilities`` per ``AcpClient`` backend; a backend with no row declares
 #: the shared :data:`ACP_CLIENT_CAPABILITIES` unchanged.
 CLIENT_CAPABILITIES_BY_BACKEND: dict[str, dict] = {
     ACP_BACKEND_CLAUDE: CLAUDE_CLIENT_CAPABILITIES,
+    ACP_BACKEND_CODEX: ACP_CLIENT_CAPABILITIES_SESSION_NOTICES,
 }
 
 #: The ``idle`` stop reasons that mean the child finished its work.

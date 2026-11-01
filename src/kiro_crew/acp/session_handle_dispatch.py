@@ -13,7 +13,7 @@ Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``
 ``_mcp_sign_in_completed``, ``_oauth_emitted_servers``, ``_prompt_or_tool_seen``,
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
-Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
+Instance fields read: ``_session_notices``, ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_ingress_seq``, ``_kas_compact_turn``, ``_keepalive_parked``,
 ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``, ``_tool_call_diff_path``,
@@ -145,7 +145,10 @@ async def _dispatch_events(
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
+
     try:
+        for notice in self._session_notices.take_pending(self._session_id):
+            yield notice
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

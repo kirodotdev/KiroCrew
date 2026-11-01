@@ -125,7 +125,11 @@ def _text(events: list[AcpEvent]) -> str:
 
 
 def test_claude_declares_subagents_on_top_of_the_shared_capabilities() -> None:
-    assert CLAUDE_CLIENT_CAPABILITIES == {**ACP_CLIENT_CAPABILITIES, "subagents": {}}
+    assert CLAUDE_CLIENT_CAPABILITIES == {
+        **ACP_CLIENT_CAPABILITIES,
+        "subagents": {},
+        "session": {"notices": {}},
+    }
     assert "_meta" not in CLAUDE_CLIENT_CAPABILITIES
     params = _client()._initialize_params()
     assert params["clientCapabilities"] == CLAUDE_CLIENT_CAPABILITIES
@@ -143,7 +147,7 @@ def test_claude_declares_subagents_on_top_of_the_shared_capabilities() -> None:
 )
 def test_every_other_client_backend_keeps_the_shared_capabilities(backend: str) -> None:
     params = _client(backend)._initialize_params()
-    assert params["clientCapabilities"] is ACP_CLIENT_CAPABILITIES
+    assert params["clientCapabilities"] == ACP_CLIENT_CAPABILITIES
     assert "subagents" not in ACP_CLIENT_CAPABILITIES
 
 

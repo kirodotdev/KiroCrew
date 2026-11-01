@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.feishu.renderer import FeishuRenderer
+from kiro_crew.messaging.display_safety import canonicalize_display
+from kiro_crew.messaging.renderer import _default_redactor
 from kiro_crew.messaging.transport import TransportCapabilities
 
 
@@ -22,6 +24,46 @@ class FakeClient:
         # returning None would silently exercise the failure path.
         self.replies.append((message_id, text))
         return self.send_ok
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["notice", "answer"])
+async def test_provider_notice_grades_both_delivery_directions(first):
+    client = FakeClient()
+    renderer = _renderer(client)
+    head = "Authorization: Bear"
+    tail = "er opaque-notice-token and useful detail."
+    if first == "notice":
+        await renderer.on_notice(head)
+        await renderer.on_text_chunk(tail)
+        await renderer.on_done()
+    else:
+        await renderer.on_text_chunk(head)
+        await renderer.on_done()
+        await renderer.on_notice(tail)
+    assert len(client.replies) >= 2
+    joined = "".join(canonicalize_display(text) for _, text in client.replies)
+    assert _default_redactor(joined) == joined
+    assert "opaque-notice-token" not in joined
+    assert "REDACTED" in client.replies[1][1]
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_notice_keeps_the_delivered_predecessor():
+    client = FakeClient()
+    renderer = _renderer(client)
+    await renderer.on_notice("Authorization: Bear")
+    client.send_ok = False
+    with pytest.raises(RuntimeError, match="refused provider notice"):
+        await renderer.on_notice("A notice that never lands")
+    assert renderer._sent_tail == "Authorization: Bear"
+    client.send_ok = True
+    await renderer.on_text_chunk("er opaque-notice-token and useful detail.")
+    await renderer.on_done()
+    joined = canonicalize_display(client.replies[0][1] + client.replies[2][1])
+    assert _default_redactor(joined) == joined
+    assert "opaque-notice-token" not in joined
+    assert "REDACTED" in client.replies[2][1]
 
 
 # Feishu v1 declares max_buttons=0 (no interactive widgets).

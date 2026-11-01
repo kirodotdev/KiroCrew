@@ -8,7 +8,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``_bound_workspace_fd``, ``_buffer``,
+Instance fields written: ``_session_notices``, ``_background_launches``, ``_between_turn_credits``, ``_bound_workspace_fd``, ``_buffer``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import platform_compat
 from kiro_crew.acp import runtime_process_tree, seed_provenance
-from kiro_crew.acp._dispatch import BackgroundLaunchRecord
+from kiro_crew.acp._dispatch import BackgroundLaunchRecord, SessionNoticeState
 from kiro_crew.acp.client_spawn_env import KIRO_CLI_BIN
 from kiro_crew.acp.client_timeouts import (
     _CANCEL_GRACE_SECS,
@@ -715,6 +715,7 @@ def _reset_state(self: AcpClient) -> None:
     # grace — on behalf of work that is already dead. "Never reset per
     # turn" (see __init__) is a statement about turns, not processes.
     self._background_launches = BackgroundLaunchRecord()
+    self._session_notices = SessionNoticeState()
     # The cost baseline is deliberately left as it is. What the replacement
     # process's counter starts from depends on how its session opens:
     # session/new starts a fresh ledger at zero (begin_cost_session), while a

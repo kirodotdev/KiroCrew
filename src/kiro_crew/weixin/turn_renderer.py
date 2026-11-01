@@ -22,6 +22,7 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     redaction_notice,
     render_options_as_text,
+    repaired_after_a_sent_tail,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.weixin.client import TYPING_START, TYPING_STOP
@@ -73,6 +74,7 @@ class WeixinRenderer(Renderer):
         self._pending_chip = ""
         self._started = False
         self._finalized = False
+        self._sent_tail = ""
         self._typing_task: asyncio.Task[None] | None = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -141,6 +143,9 @@ class WeixinRenderer(Renderer):
         # safe no-op to satisfy the Renderer contract.
         logger.debug("weixin: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        await self._send(text)
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # Mid-turn text would land as its own bubble; the dispatcher surfaces
         # threshold notices post-turn instead.
@@ -155,6 +160,8 @@ class WeixinRenderer(Renderer):
         body = self.text()
         if not body:
             body = "…" if ok else _ERROR_TEXT
+        repaired = repaired_after_a_sent_tail(self._sent_tail, body, self.redact_for_target)
+        body = repaired if repaired is not None else body
         await self._send(body)
         cred_count, url_count = count_redaction_tags(body)
         if cred_count or url_count:
@@ -207,6 +214,8 @@ class WeixinRenderer(Renderer):
         screen; this is the same send-boundary scrub every markdown channel does.
         """
         body = self.redact_for_target(body)
+        repaired = repaired_after_a_sent_tail(self._sent_tail, body, self.redact_for_target)
+        body = repaired if repaired is not None else body
         ctx_token = self._ctx.get(self._account_id, self._to)
         chunks = render_chunks(body, self.capabilities.max_message_chars)
         for i, part in enumerate(chunks):
@@ -227,6 +236,7 @@ class WeixinRenderer(Renderer):
                     exc_info=True,
                 )
                 raise
+            self._sent_tail = part.strip()
 
     async def _hold_typing(self) -> None:
         """Keep the native typing indicator alive for the duration of the turn."""

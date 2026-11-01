@@ -300,3 +300,50 @@ async def test_send_and_print_prints_a_finished_or_cancelled_turn(stop_reason, c
     out, err = capsys.readouterr()
     assert "partial answ" in out
     assert "timed out" not in err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("severity", "label"), [("warning", "warning"), ("future", "info")])
+async def test_provider_notice_uses_stderr_and_preserves_stdout_answer(capsys, severity, label):
+    from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_NOTICE, EVENT_TEXT_CHUNK, AcpEvent
+
+    class Provider:
+        async def stream(self, message):
+            yield AcpEvent(
+                kind=EVENT_NOTICE, title="Warning", text="Detail", notice_severity=severity
+            )
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="Answer")
+            yield AcpEvent(kind=EVENT_COMPLETE)
+
+    await cli_chat._send_and_print(Provider(), "question")
+    captured = capsys.readouterr()
+    assert captured.out == "Answer\n"
+    assert f"[{label}] Warning\nDetail" in captured.err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("padding", ["", "x" * 260])
+async def test_provider_notice_redacts_credentials_split_between_fields(capsys, padding):
+    from kiro_crew.acp._dispatch import parse_session_update
+    from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent
+
+    (event,) = parse_session_update(
+        {
+            "sessionUpdate": "notice",
+            "title": padding + "Authorization: Bearer",
+            "description": "opaque-notice-token",
+            "severity": "warning",
+        }
+    )
+    assert "opaque-notice-token" not in event.text
+
+    class Provider:
+        async def stream(self, message):
+            yield event
+            yield AcpEvent(kind=EVENT_COMPLETE)
+
+    await cli_chat._send_and_print(Provider(), "question")
+    captured = capsys.readouterr()
+    assert "opaque-notice-token" not in captured.err
+    assert "REDACTED" in captured.err
+    assert captured.out == "\n"

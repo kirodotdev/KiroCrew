@@ -32,6 +32,7 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     redaction_notice,
     render_options_as_text,
+    repaired_after_a_sent_tail,
 )
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import (
@@ -88,6 +89,7 @@ class IMessageRenderer(Renderer):
         self._last_typing = 0.0
         self._started = False
         self._finalized = False
+        self._sent_tail = ""
 
     # -- lifecycle ----------------------------------------------------------
     async def on_turn_start(self) -> None:
@@ -131,6 +133,13 @@ class IMessageRenderer(Renderer):
         # reached -- kept as a safe no-op per the Renderer contract.
         logger.debug("imessage: prompt_choice ignored (no interactive buttons)")
 
+    async def on_notice(self, text: str) -> None:
+        safe = redact_for_display(to_plaintext(text), _default_redactor)[0]
+        repaired = repaired_after_a_sent_tail(self._sent_tail, safe, _default_redactor)
+        safe = repaired if repaired is not None else safe
+        await self._client.send(self._handle, safe)
+        self._sent_tail = safe.strip()
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # The dispatcher surfaces threshold notices as separate messages.
         logger.debug("imessage: compaction status %.0f%%", context_usage_pct)
@@ -141,6 +150,8 @@ class IMessageRenderer(Renderer):
         self._finalized = True
         ok = stop_reason != "error"
         content = self.delivery_text() or ("…" if ok else _ERROR_TEXT)
+        repaired = repaired_after_a_sent_tail(self._sent_tail, content, _default_redactor)
+        content = repaired if repaired is not None else content
         chunks = chunk_plaintext(content, self.capabilities.max_message_chars) or ["…"]
         for index, chunk in enumerate(chunks):
             try:

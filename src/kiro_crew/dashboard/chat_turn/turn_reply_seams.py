@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
     from kiro_crew.dashboard.chat_turn.segment_flush import (
         _cleared_segment_text,
+        _flush_provider_notices,
         _flush_segment,
         _give_back_run,
         _hold_segment_tail,
@@ -142,6 +143,9 @@ async def _persist_partial_reply(turn, reason: str = "") -> None:
             text=_redacted,
             interrupted=True,
         )
+        rows_changed = True
+    if turn._provider_notices:
+        _flush_provider_notices(turn)
         rows_changed = True
     # The footer goes on before the shutdown save below, so a restart shows
     # it too. It takes the turn's one billing read, which the usage row at
@@ -464,8 +468,10 @@ def _cut_segment(turn, *, broadcast: bool = True) -> None:
         if not _wsred.discarding:
             _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=broadcast)
+        _flush_provider_notices(turn)
     else:
         row = _flush_segment(state, slot, kept, broadcast=broadcast)
+        _flush_provider_notices(turn)
         turn._held_runs.append((row, own, row.get("variant_idx"), turn._crew_log_step))
     turn.assistant_text = _cleared_segment_text(slot)
 
@@ -559,6 +565,7 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
             quiet_persist=True,
             interrupted=interrupted,
         )
+        _flush_provider_notices(turn)
         # The flushed segment IS visible output. Every other mid-turn site
         # that resets assistant_text (compaction, clear, agent switch,
         # /compact) sets this flag too; without it, a turn that streamed

@@ -348,3 +348,82 @@ class TestRedactionNotice:
         await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
         await r.on_done()  # must not raise: the answer above already landed
         assert any("[REDACTED: credential]" in m for m in client.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", ["absent", "edited", "refused"])
+async def test_provider_notice_repairs_the_next_fresh_answer(progress):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.messaging.renderer import _default_redactor
+
+    client = _FakeClient()
+    renderer = _renderer(client)
+    if progress != "absent":
+        renderer._progress_id = "progress-1"
+        client.update_message = AsyncMock(return_value=progress == "edited")
+    await renderer.on_notice("Provider context: Authorization: Bear")
+    await renderer.on_text_chunk("er opaque-notice-token and useful detail.")
+    await renderer.on_done()
+    if progress == "edited":
+        assert client.update_message.call_args.args[2].endswith("useful detail.")
+        assert len(client.sent) == 1
+    else:
+        joined = "".join(client.sent)
+        assert _default_redactor(joined) == joined
+        assert "opaque-notice-token" not in joined
+        assert "useful detail." in joined
+        assert "REDACTED" in joined
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_notice_keeps_the_delivered_predecessor():
+    from unittest.mock import AsyncMock
+
+    client = _FakeClient()
+    renderer = _renderer(client)
+    await renderer.on_notice("Authorization: Bear")
+    send = client.send_message
+    client.send_message = AsyncMock(side_effect=TeamsSendError("notice failed"))
+    with pytest.raises(TeamsSendError):
+        await renderer.on_notice("This notice never lands")
+    client.send_message = send
+    await renderer.on_text_chunk("er opaque-notice-token and useful detail.")
+    await renderer.on_done()
+    assert "opaque-notice-token" not in "".join(client.sent)
+    assert "useful detail." in "".join(client.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", [False, True])
+async def test_provider_notice_is_repaired_after_a_delivered_answer(progress):
+    from unittest.mock import AsyncMock
+
+    client = _FakeClient()
+    renderer = _renderer(client)
+    if progress:
+        renderer._progress_id = "progress-1"
+        client.update_message = AsyncMock(return_value=True)
+    await renderer.on_text_chunk("Authorization: Bear")
+    await renderer.on_done()
+    await renderer.on_notice("er opaque-notice-token and useful detail.")
+    assert "opaque-notice-token" not in "".join(client.sent)
+    assert "useful detail." in "".join(client.sent)
+
+
+@pytest.mark.asyncio
+async def test_progress_opened_below_notice_grades_successful_answer_edit():
+    from unittest.mock import AsyncMock
+
+    client = _FakeClient()
+    client.update_message = AsyncMock(return_value=True)
+    renderer = _renderer(client)
+    await renderer.on_notice("Authorization: Bearer")
+    await renderer.on_tool_call("mcp", "tool")
+    assert renderer._progress_id
+    await renderer.on_text_chunk("opaque-progress-token and useful detail.")
+    await renderer.on_done()
+    edited = client.update_message.call_args.args[2]
+    assert "opaque-progress-token" not in edited
+    assert "useful detail." in edited
+    assert "REDACTED" in edited

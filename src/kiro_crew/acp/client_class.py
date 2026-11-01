@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
     BackgroundLaunchRecord,
     InFlightIdSet,
+    SessionNoticeState,
 )
 from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_start import CLIENT_NAME
@@ -409,6 +410,7 @@ class AcpClient:
         # per spawn, cleared with the process. See ``process_instance``.
         self._process_instance: str = ""
         self._session_id: str | None = None
+        self._session_notices = SessionNoticeState()
         self._next_id = 1
         self._buffer: deque[JsonRpcMessage] = deque(maxlen=100)
         self._mcp_notifications: list[JsonRpcMessage] = []

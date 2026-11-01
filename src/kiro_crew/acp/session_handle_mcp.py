@@ -12,7 +12,7 @@ Instance fields written: ``_config_options``, ``_mcp_launches``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
 
-Instance fields read: ``_mcp_report``, ``_queue``, ``_runtime``, ``_session_id``,
+Instance fields read: ``_session_notices``, ``_mcp_report``, ``_queue``, ``_runtime``, ``_session_id``,
 ``_watchdog``.
 """
 
@@ -771,6 +771,7 @@ def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
 
 def _apply_init_notification(self: AcpSessionHandle, msg: JsonRpcMessage, action: str) -> None:
     """Initialization side effects shared by the drain and readiness barrier."""
+    self._session_notices.accept(msg, self._session_id, stage=True)
     self._note_mcp_sign_in_status(msg, offer=False)
     params = msg.params if isinstance(msg.params, dict) else {}
     if action == "update":

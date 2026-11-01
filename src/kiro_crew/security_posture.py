@@ -1003,6 +1003,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/interactions_options.py",
         "slack/interactions_sessions.py",
         "slack/renderer.py",
+        # Shared renderer redactors; output is covered by the same Slack sinks.
+        "slack/renderer_safety.py",
         "slack/sessions_view.py",
         # The Slack handler facade and the owners composed into it: the facade defines
         # the canonical-order pair delivery.py's fallback egress uses (_display_redactor),

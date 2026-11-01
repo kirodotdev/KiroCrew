@@ -388,6 +388,10 @@ F401 off for `slack/handler.py`; `test/test_handler_turn.py` asserts what it sto
 every facade import is read by the facade or an owner, or is an owner name the facade
 re-exports, and a function-local import is read in its own function.
 
+The `_safe_final_update` patch surface retains its base signature. Notice-aware
+callers use `_safe_final_update_with_notice` so fresh overflow messages are graded
+against the preceding provider notice. Owner type imports resolve through the facade.
+
 **One turn, three phases.** `handle_message` builds one `_SlackTurn` per call and runs
 `_dispatch_before_turn`, then `_run_turn`, then `_deliver_answer`; each returns whether
 the next runs. The turn carries the call's inputs and the values one phase hands the
@@ -1203,6 +1207,21 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - SEL audit on every download, skip, and error
 
 ## Streaming UX
+
+Both Slack answer paths clear their notice-prefix state whenever the answer
+stream is closed or its timestamp is cleared. The next answer captures the last
+delivered notice as its predecessor, including after a `wait` tool call.
+The transport renderer's display redactors live in `slack/renderer_safety.py`
+and remain importable from `slack/renderer.py`.
+
+
+Native turns (`messaging.use_transport=false`) deliver provider notices through
+`SlackRenderer.dispatch` as separate, display-redacted, mention-defanged messages.
+Notice sends are advisory and do not enter the answer accumulator. Review mode
+and the existing Slack pause predicate suppress these sends. Both Slack paths retain
+successfully posted notice tails and grade fresh answers against them. A notice
+below an already-open answer does not become that answer's predecessor. Whitespace
+and formatting-only chunks retain the bounded unresolved notice anchor until displayed content arrives.
 
 - Response streams in real-time via progressive Slack message edits
 - Edit throttled to ~1/sec to avoid Slack rate limits (Tier 3: ~50 req/min)

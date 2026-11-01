@@ -39,6 +39,9 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import chat_message_note, row_mid
 from kiro_crew.messaging.empty_turn_copy import EMPTY_TURN_NOTICE, EMPTY_TURN_NOTICE_AFTER_WORK
+from kiro_crew.messaging.notice_seam import NoticeAnswerPrefix
+from kiro_crew.messaging.renderer import repaired_after_a_sent_tail
+from kiro_crew.platform import redact_via_context
 
 # Read when the module loads (the placeholder pattern), so imported plainly.
 from kiro_crew.security import EXFILTRATION_REDACTION_TAG_PREFIX, redact, redact_and_truncate
@@ -57,6 +60,7 @@ if TYPE_CHECKING:
         DashboardState,
         ReplayFamily,
         _ChatSlot,
+        append_and_surface,
         crew_log_emit,
         effective_session_key,
         logger,
@@ -683,6 +687,14 @@ def _redact_segment_text(
     for w in cred_warnings:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the redactor's warning names the pattern class, never the matched value; moved verbatim
         logger.warning("Credential redacted in chat segment: %s", w)
+    for row in reversed(slot.messages):
+        if row.get("meta", {}).get("kind") == "provider_notice":
+            repaired = repaired_after_a_sent_tail(row["content"], redacted, redact_via_context)
+            if repaired is not None:
+                redacted = repaired
+            break
+        if row.get("role") in ("assistant", "user"):
+            break
     return redacted, blocked_links, credential_records(matches, slot.credential_evidence)
 
 
@@ -932,6 +944,35 @@ def _adopt_pending_variants(slot: _ChatSlot, newest: dict) -> list[dict]:
     return pending_list
 
 
+def _flush_provider_notices(turn: _ChatTurn) -> None:
+    """Draw the provider notices held while assistant text was open.
+
+    Each becomes a ``notice`` row with ``meta.kind = "provider_notice"`` and its
+    severity, through the identity-carrying append/broadcast path, so reload
+    keeps the metadata. Called once a reply segment is finalized, so a notice
+    never cuts the segment's raw copy, redaction witness or withheld word.
+    """
+    notices = turn._provider_notices
+    if turn._provider_notice_drops:
+        logger.warning(
+            "Dashboard: dropped %d provider notices from the full queue",
+            turn._provider_notice_drops,
+        )
+        turn._provider_notice_drops = 0
+    while notices:
+        event = notices.popleft()
+        text = redact_via_context(event.title + (f"\n{event.text}" if event.text else ""))
+        append_and_surface(
+            turn.state,
+            turn.slot,
+            "notice",
+            text,
+            "msg msg-info",
+            meta={"kind": "provider_notice", "severity": event.notice_severity},
+        )
+        turn._provider_answer_prefix = NoticeAnswerPrefix(text, redact_via_context)
+
+
 def _schedule_widget_registration(
     state: DashboardState,
     slot: _ChatSlot,
@@ -1062,6 +1103,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     if turn.assistant_text and not _branch_answer_text:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
+        _flush_provider_notices(turn)
         turn._reply_flushed = True
 
     if turn._terminal_directive_applied and _activity_after_terminal:
@@ -1084,6 +1126,7 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
     if _branch_answer_text:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
+        _flush_provider_notices(turn)
         turn._reply_flushed = True
         if _stop_reason == STOP_REASON_REFUSAL:
             # The Kiro service's content filter STREAMS its canned

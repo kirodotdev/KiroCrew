@@ -484,6 +484,16 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   )
 })
 
+/** A provider notice's stored `title\ndescription` as one sentence for the
+ * single-line ErrorCard: `Title: description`, or `Title. description` when the
+ * title already ends a sentence. */
+export function providerErrorText(content: string): string {
+  const [title, ...rest] = content.split('\n')
+  const description = rest.join(' ').trim()
+  if (!description) return title
+  return /[.!?:]$/.test(title.trim()) ? `${title.trim()} ${description}` : `${title.trim()}: ${description}`
+}
+
 function toolRow(m: ChatMessage, ctx: MessageRenderContext, autoDenied?: boolean): React.ReactNode {
   return ctx.row(
     ctx.renderTool
@@ -773,12 +783,14 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
   {
     id: 'notice',
     roles: ['notice'],
-    // A gateway notice row (empty response, model fallback) draws localized
-    // copy keyed on its token; any other notice keeps its own text.
     render: (m, ctx) => {
-      const notice = resolveGatewayNotice(m, ctx.messages, ctx.index)
+      const providerSeverity = m.meta?.kind === 'provider_notice' ? m.meta.severity : undefined
+      if (providerSeverity === 'error') {
+        return ctx.row(<ErrorCard content={providerErrorText(m.content)} meta={m.meta} />)
+      }
+      const notice = m.meta?.kind === 'provider_notice' ? null : resolveGatewayNotice(m, ctx.messages, ctx.index)
       if (notice?.card === 'notice') return ctx.row(<NoticeCard content={notice.text} tone={notice.tone} />)
-      return ctx.row(<NoticeCard content={m.content} />)
+      return ctx.row(<NoticeCard content={m.content} severity={providerSeverity} />)
     },
   },
   {

@@ -57,6 +57,7 @@ from kiro_crew.messaging.renderer import (
     count_redaction_tags,
     new_approval_nonce,
     redaction_notice,
+    repaired_after_a_sent_tail,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import bounded_for_delivery, chunk_utf8_bytes
@@ -267,6 +268,7 @@ class WebexRenderer(Renderer):
         # Thread root to reply under, when the inbound message had one. Webex
         # threads are flat, so this is the root rather than the immediate parent.
         self._thread_id = thread_id or None
+        self._sent_tail = ""
         self._buf: list[str] = []
         self._placeholder_id: str | None = None
         self._edits_used = 0
@@ -378,6 +380,21 @@ class WebexRenderer(Renderer):
         # the answer, and the note costs nothing riding on the final edit.
         self._steered = True
 
+    async def _send_fresh(self, text: str) -> str | None:
+        repaired = repaired_after_a_sent_tail(self._sent_tail, text, _redact_all)
+        text = repaired if repaired is not None else text
+        sent = None
+        for chunk in await asyncio.to_thread(_bounded_chunks, text):
+            sent = await self._client.send_message(self._room_id, chunk, parent_id=self._thread_id)
+            if sent is None:
+                return None
+            self._sent_tail = chunk
+        return sent
+
+    async def on_notice(self, text: str) -> None:
+        if await self._send_fresh(text) is None:
+            raise RuntimeError("Webex refused provider notice delivery")
+
     async def on_compaction(self, context_usage_pct: float) -> None:
         # The dispatcher surfaces threshold notices as separate messages.
         logger.debug("Webex: compaction status %.0f%%", context_usage_pct)
@@ -466,7 +483,7 @@ class WebexRenderer(Renderer):
         if self._placeholder_id is not None:
             delivered = await self._client.edit_message(self._placeholder_id, self._room_id, first)
         if not delivered:
-            sent = await self._client.send_message(self._room_id, first, parent_id=self._thread_id)
+            sent = await self._send_fresh(first)
             delivered = sent is not None
             # Don't leave a stale "🔧 Running…" placeholder above the answer.
             if delivered and self._placeholder_id is not None:
@@ -488,7 +505,7 @@ class WebexRenderer(Renderer):
         # part 2 resuming mid-sentence — a card asking for a choice before the
         # question has finished arriving.
         for chunk in rest:
-            sent = await self._client.send_message(self._room_id, chunk, parent_id=self._thread_id)
+            sent = await self._send_fresh(chunk)
             if sent is None:
                 # Stop at the first failed follow-up: the delivered prefix is
                 # coherent, and skipping ahead would splice a gap into the middle

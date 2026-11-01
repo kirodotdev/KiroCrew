@@ -30,8 +30,10 @@ if TYPE_CHECKING:
         _STATUS_WORKING,
         _TIMEOUT_REPLY,
         _UNFINISHED_STOP_REASONS,
+        ACTIVATION_REVIEW,
         CONTEXT_EVENT_COMPACTION,
         EVENT_COMPLETE,
+        EVENT_NOTICE,
         EVENT_PERMISSION_REQUEST,
         EVENT_TEXT_CHUNK,
         EVENT_THINKING_CHUNK,
@@ -885,6 +887,25 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         async for event in client.stream(full_message):
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
+
+            elif event.kind == EVENT_NOTICE:
+                from kiro_crew.dashboard.chat_utils import slack_mirror_is_paused
+                from kiro_crew.messaging.renderer import NOTICE, OutputEvent
+                from kiro_crew.slack.renderer import SlackRenderer
+
+                if channel_activation != ACTIVATION_REVIEW and not slack_mirror_is_paused(
+                    turn, session_key
+                ):
+                    notice_renderer = SlackRenderer(slack, channel, reply_ts)
+                    notice_renderer._notice_tail = answer.notice_tail
+                    await notice_renderer.dispatch(
+                        OutputEvent(
+                            kind=NOTICE,
+                            text=event.title + (f"\n{event.text}" if event.text else ""),
+                            notice_severity=event.notice_severity,
+                        )
+                    )
+                    answer.notice_tail = notice_renderer._notice_tail
 
             elif event.kind == EVENT_THINKING_CHUNK:
                 await answer.on_thinking(event)
