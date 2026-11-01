@@ -475,3 +475,86 @@ class TestRemove:
         monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "absent")
         assert cli_kas.kas_cmd(self._args(yes=True)) == 0
         assert "nothing installed" in capsys.readouterr().out
+
+
+class TestInstallIfInUse:
+    """``install --if-in-use``: what every update runs from the new release.
+
+    The install goes ahead when the install runs Kiro Crew's own engine (the bundle
+    route is on, or an engine version is already on disk) and is a quiet success
+    otherwise. The relay route alone -- KAS selected, ``agent.kas_bundle`` off, the
+    default -- installs nothing, so a host that cannot run the engine keeps updating.
+    """
+
+    def _args(self, **over) -> argparse.Namespace:
+        base = dict(
+            kas_action="install",
+            from_dir=None,
+            version=None,
+            url=None,
+            unpinned=False,
+            force=False,
+            if_in_use=True,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_the_flag_reaches_the_namespace(self):
+        assert _parse("install", "--if-in-use").if_in_use is True
+        assert _parse("install").if_in_use is False
+
+    def test_the_relay_route_with_no_engine_on_disk_installs_nothing(
+        self, cfg, monkeypatch, capsys
+    ):
+        """The default config: KAS selected, the bundle off, nothing installed."""
+        monkeypatch.setattr(kas_bundle, "kas_bundle_route", lambda: False)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
+        monkeypatch.setattr(
+            kas_bundle, "fetch_manifest", lambda *a, **k: pytest.fail("fetched on the relay route")
+        )
+        assert cli_kas.kas_cmd(self._args()) == 0
+        assert "not in use" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("route", "on_disk"),
+        [(True, []), (False, ["0.66.33"])],
+        ids=["bundle-route", "engine-on-disk"],
+    )
+    def test_the_engine_in_use_installs_the_pin(
+        self, cfg, host, tmp_path, monkeypatch, capsys, route, on_disk
+    ):
+        monkeypatch.setattr(kas_bundle, "kas_bundle_route", lambda: route)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: on_disk)
+        monkeypatch.setattr(kas_bundle, "kas_engines_root", lambda: tmp_path / "engines")
+        fetched: list[str] = []
+
+        def fake_fetch(base, *, version, sha256):
+            fetched.append(version)
+            return kas_bundle.parse_manifest(_manifest_doc()), f"{base}/kas/{version}/manifest.json"
+
+        monkeypatch.setattr(kas_bundle, "fetch_manifest", fake_fetch)
+        monkeypatch.setattr(
+            kas_bundle, "install_bundle", lambda *a, **k: _installed(tmp_path / "engines")
+        )
+        assert cli_kas.kas_cmd(self._args()) == 0
+        assert fetched == [_PIN]
+
+    @pytest.mark.parametrize("route", [True, False])
+    def test_an_unlistable_engines_directory_leaves_the_route_to_decide(self, monkeypatch, route):
+        def unreadable():
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(kas_bundle, "installed_versions", unreadable)
+        monkeypatch.setattr(kas_bundle, "kas_bundle_route", lambda: route)
+        assert cli_kas._uses_kas() is route
+
+    def test_the_route_is_read_through_the_shared_predicate(self, monkeypatch):
+        """No second copy of the bundle-route rule: an unreadable config is the relay
+        route here exactly as it is for every other ``kas_bundle_route()`` reader."""
+
+        def broken(cls):
+            raise ValueError("config.json is not JSON")
+
+        monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(broken))
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: [])
+        assert cli_kas._uses_kas() is False

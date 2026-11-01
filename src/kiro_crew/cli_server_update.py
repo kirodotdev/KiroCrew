@@ -39,6 +39,7 @@ from kiro_crew.git_divergence import (
     count_divergence_sync,
 )
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
+from kiro_crew.platform import release_apply
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_GIT,
@@ -481,11 +482,8 @@ def _update(force: bool = False) -> None:
     # would run. No pin -> skip the step; a PATH-only install is reported so the
     # operator knows why it was skipped and which override puts it back.
     # On the KAS bundle route kiro-cli -- present or not -- is not part of what
-    # runs: the engine is Crew's own install, laid down separately by
-    # `kirocrew kas install` for the pin the installed release carries
-    # (``acp/kas_pin.py``). This update does not install it, so the printed line
-    # names that command for a changed pin; it does not print a version, because
-    # the pin this process holds is the pre-update release's. Decided before the
+    # runs: the engine is Crew's own install, which the release install below
+    # lays down for the new release's pin (``release_apply``). Decided before the
     # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
     # Local import: this body runs on the ``cli_server`` facade's globals.
     from kiro_crew.agent_sdk import kas_bundle
@@ -493,10 +491,6 @@ def _update(force: bool = False) -> None:
     if kas_bundle.kas_bundle_route():
         print(
             "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
-        )
-        print(
-            "               If this update changes the pinned engine version, run: "
-            "kirocrew kas install   (kirocrew kas status shows it)"
         )
         kiro_cli_bin, unpinned_kiro_cli = None, False
     else:
@@ -532,18 +526,20 @@ def _update(force: bool = False) -> None:
     # Build the dashboard frontend assets (npm), then reinstall the package.
     build_frontend_sync(Path(proj))
 
-    # Install the pulled revision into this CLI's own venv. `kirocrew update` is
-    # itself run FROM the console script pip would have to rewrite, so on Windows
-    # the reinstall cannot succeed and dep_sync substitutes a dependency-only sync
-    # (it reports, rather than silently tolerating, a revision that repointed the
-    # script — that is the one case still needing a terminal without kirocrew
-    # running).
+    # Install the pulled release into this CLI's own venv: its code, then the
+    # KAS engine it pins (release_apply). `kirocrew update` is itself run FROM
+    # the console script pip would have to rewrite, so on Windows the reinstall
+    # cannot succeed and dep_sync substitutes a dependency-only sync (it reports,
+    # rather than silently tolerating, a revision that repointed the script —
+    # that is the one case still needing a terminal without kirocrew running).
     print("  🔨 Installing the pulled revision…")
 
     def _emit(message: str, error: bool) -> None:
         print(f"  {'❌' if error else '•'} {message}")
 
-    rc = dep_sync.sync_or_reinstall(Path(proj), Path(sys.executable), _emit)
+    rc = release_apply.apply_release(
+        release_apply.GitRelease(Path(proj), Path(sys.executable), _emit, trusted_env=False)
+    )
     if rc != 0:
         sys.exit(1)
 
@@ -895,8 +891,8 @@ def _update_managed_venv(
     update holds the lock (it would race that apply's promotion) and never for a
     refused memory copy (it would perform the un-copied update).
     """
-    from kiro_crew.platform import wheel_apply
-    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+    from kiro_crew.platform import release_apply, wheel_apply
+    from kiro_crew.platform.wheel_engine import WheelUpdateError
 
     print("\n  🔄 Building the new version beside the current one…")
 
@@ -908,15 +904,19 @@ def _update_managed_venv(
     try:
         # Inside the try: a feed version outside the release grammar is refused here.
         reattach = wheel_apply.userns_reattach_needed(remote_version)
-        promoted = apply_wheel_update(
-            channel=channel,
-            feed_base=feed_base,
-            artifact_base=artifact_base,
-            expected_version=remote_version,
-            progress=_progress,
-            preflight=wheel_apply.check_memory_ready,
-            before_promote=wheel_apply.memory_snapshot_hook(_progress),
-            trusted_env=False,
+        # The release, not the wheel: the new version's KAS engine is
+        # installed before the stable link flips.
+        promoted = release_apply.apply_release(
+            release_apply.WheelRelease(
+                channel=channel,
+                feed_base=feed_base,
+                artifact_base=artifact_base,
+                expected_version=remote_version,
+                progress=_progress,
+                preflight=wheel_apply.check_memory_ready,
+                before_promote=wheel_apply.memory_snapshot_hook(_progress),
+                trusted_env=False,
+            )
         )
     except (WheelUpdateError, OSError) as exc:
         # The engine wraps its own I/O failures in WheelUpdateError, but

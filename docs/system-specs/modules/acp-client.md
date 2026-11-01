@@ -3940,9 +3940,10 @@ Dependencies and Connectivity rows, its per-harness `kas auth:` row, the
 diagnostics bundle's `versions.txt` (`kiro_cli_version:` says the binary is not
 used; `kas_engine:` names the installed engine and the pin), `kirocrew update`'s
 and the unattended auto-apply's `kiro-cli update` step (skipped, the reason
-printed or logged: the route never runs kiro-cli, and the update does not
-install the engine either -- a changed pin needs `kirocrew kas install`, which
-the printed or logged line names) and the gateway's boot-time outdated-kiro-cli
+printed or logged: the route never runs kiro-cli; the engine the new release
+pins is installed by the release install every update path runs,
+`platform/release_apply.apply_release`, see [cli.md](cli.md) § The release is
+the unit of install) and the gateway's boot-time outdated-kiro-cli
 warning (skipped) all agree on when kiro-cli is not part of the installation, and all keep their
 relay-route behaviour byte for byte when the predicate is false.
 

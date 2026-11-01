@@ -184,6 +184,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # credential from being split by the cut and surviving in halves.
         "platform/wheel_engine.py",
         "platform/wheel_engine_build_child.py",
+        # The release install's engine step cuts the same redacted stderr tail
+        # (``_redacted_detail``) into its failure, which reaches the operator
+        # through the same registered sink and the git routes' own progress feed.
+        "platform/release_apply.py",
         # Same shape: redacts the unparseable LLM decomposition response before
         # writing the diagnostic ERROR line to the gateway log. Defensive log
         # hygiene so a response echoing a credential or exfiltration URL cannot
