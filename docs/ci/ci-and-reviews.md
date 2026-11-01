@@ -667,7 +667,7 @@ yet decided: install from a committed constraints file, or set
 | `cancel-superseded-run` | "Cancel Superseded Run". Runs only on a push to `main` (and only while `MERGE_QUEUE_ENABLED` is unset, like the barrier), beside `await-fast-gate` rather than behind it. It runs the barrier's script as a probe and, only when that proves this commit's Fast Gate run was evicted before it started, makes the workflow's one write: `POST /actions/runs/{run_id}/cancel` on its own run, so the run concludes `cancelled` instead of `failure`. Any other outcome cancels nothing and exits 0, leaving the verdict to the barrier. It is the only job in `ci.yml` with `actions: write`; pull requests and merge groups never start it. Nothing needs it, so it cannot release the matrix, and a cancelled run is never a green one |
 | `backend-lint` | `isort --check-only`, `flake8`, `mypy` on Python 3.12, plus `scripts/check_black_formatting.py` — black enforced on every file outside `.github/black-baseline.txt`, which can only shrink; on a PR it runs only on the changed `src/` and `test/` Python files (a baseline edit that only deletes entries adds those paths), and an edit to `pyproject.toml` or an added baseline entry forces the whole tree, as does `main-ratchet-audit.yml`. Black here and the four scope-resolving gates in `backend-ratchets` read their diff scope from the one shared resolver in `scripts/ratchet_scope.py`, so they cannot disagree about which lines a change added; the env-base gates (`check_brand_name.py`, `check_harness_parity.py`, `check_focus_cue.py`) share the same diff parsing through its explicit-base entry points while keeping their `*_BASE_REF` base semantics |
 | `backend-test` | 8 whole-file shards on Python 3.12, assigned before import, `-n auto` within each; 60-minute job budget includes coverage upload, with the 120-second per-test timeout retained. Large CodeBuild compute with the non-root boundary for eligible actors; hosted fallback |
-| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, `kirocrew-windows-4-core` for an ineligible run executing in this repository, and windows-latest in a fork; `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
+| `backend-test-windows` | All 8 whole-file shards use large CodeBuild compute for eligible actors, windows-latest otherwise; `--no-cov`, 180s per-test timeout. On a fork pull request it runs only when the `changes` job finds a Windows path (including `.github/actions/setup-windows-tests/**`, `**/*.ps1`, `**/conftest.py` and the platform shims), an added or removed `*.py` line that branches on Windows, the `ci:windows` label or `ci-full-run` (the label takes effect on the next push); main's own CI always runs it. See the migration contract below |
 | `backend-test-ipv6` | Five native IPv6 cases on hosted Linux and Windows; fail-closed report check, Linux full-run coverage merged with the ordinary shards |
 | `backend-test-kernel-lock-owner` | Runs the two strict live-holder/orphan flock cases on an uncontainerized hosted VM (the `kirocrew-runners` group here, `ubuntu-latest` in a fork) with `KIROCREW_LOCK_OWNER_STRICT=1`; full-scope coverage is merged with the shard and IPv6 artifacts. **Skipped on a frontend-only diff** (`only_frontend`); Coverage Gate accepts `skipped` in that case |
 | `pod-boot-windows` | Boots a real worktree Pod under Windows Task Scheduler and pins three canary tests. A PR carrying `ci:pod-scenarios` before its next push also runs the 55-test Pod scenario suite against a built SPA |
@@ -1571,27 +1571,14 @@ do: `build-windows.yml`'s `build-windows` (Build Windows Desktop) and
 `smoke-install-windows` (Smoke-install Windows installer (x64)).
 
 **Why these and nothing else on Windows.** Every other Windows job either
-already resolves through `needs.changes.outputs.windows_runner`, or declares no
-runner of its own.
-
-The resolver's non-fleet path used to be hosted, on the ground that it is the
-high-volume path rather than the exception: every fork pull request takes it, and
-so does every same-repo one opened from outside `CODEBUILD_ACTOR_IDS`, so
-pointing it at a capped, billed group moves the largest population of Windows
-runs there. That objection still describes the trade accurately. It now resolves
-to `kirocrew-windows-4-core` for a run executing in this repository anyway,
-matching the Linux resolver, because a run that can reach the group should not
-sit in the enterprise-shared standard pool. A fork running its own CI still gets
-the hosted image: it cannot reach an organization group, and a label no runner
-carries queues every consumer until GitHub cancels it, which is worse than the
-shared pool. The four consumers keep `|| 'windows-latest'` for the different case
-the resolver cannot cover, an EMPTY output meaning the resolver never ran.
-
-That path shares `kirocrew-windows-4-core`'s `maximum_runners`, which is read
-from the hosted-runners API rather than quoted here. `backend-test-windows`'s
-`max-parallel` stays at 4 off CodeBuild, so one such run occupies at most seven
-of those slots.
-
+already resolves to the CodeBuild fleet through
+`needs.changes.outputs.windows_runner`, or declares no runner of its own. The
+four fleet consumers keep `|| 'windows-latest'` as their fallback deliberately:
+that branch is the high-volume path, not the exception, because every fork pull
+request takes it and so does every same-repo one opened from outside
+`CODEBUILD_ACTOR_IDS`. Pointing it at a capped, billed group would move the
+largest population of Windows runs there, and
+`test/test_ci_fleet_routing_expression_parity.py` pins the expression besides.
 The Windows legs of a mixed matrix (`backend-test-ipv6`, `new-test-stability`,
 `denial-differential`, `security-scope-review`, `fork-security-scope-review`)
 resolve `runs-on` per leg from `matrix.os`, so they need an expression of the
