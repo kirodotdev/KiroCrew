@@ -9494,7 +9494,8 @@
       "retry": "Tentar novamente",
       "save_failed": "falha ao salvar",
       "star_as_artifact": "Marcar como artefato",
-      "starred_as_click_to_remove": "Favoritado como \"{{name}}\" — clique para remover"
+      "starred_as_click_to_remove": "Favoritado como \"{{name}}\" — clique para remover",
+      "runtime_unavailable": "Não foi possível ler o script de estilos, então Abrir em nova aba e Baixar podem mostrar este widget sem estilos."
     },
     "widgetPlaceholder": {
       "generating": "gerando…"
@@ -11417,7 +11418,8 @@
       "activity_failed_to_load": "Falha ao carregar a atividade",
       "sync_status_unavailable": "Status de sincronização indisponível",
       "more": "Mais",
-      "more_actions": "Mais ações"
+      "more_actions": "Mais ações",
+      "runtime_unavailable": "Não foi possível ler o script de estilos, então o arquivo baixado pode abrir sem estilos."
     },
     "artifactPopoutFrame": {
       "artifact": "Artefato",

@@ -31,6 +31,7 @@ import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { Artifact, ArtifactComment } from '../types'
+import { i18nT } from '../i18n/t'
 import { chooseMore, findMoreItem, hasMoreItem, moreButton } from './artifactMoreMenu'
 
 // The sandboxed frame mints its document URL through the api client. The
@@ -605,6 +606,60 @@ describe('ArtifactDetailPage — mutation paths', () => {
       expect(cap.seen[0].type).toBe('text/html')
     } finally {
       cap.restore()
+    }
+  })
+
+  it('a downloaded widget carries the Tailwind runtime inside it instead of linking it', async () => {
+    // A saved file cannot reach the dashboard, and a cookie-authenticating proxy
+    // refuses its cookieless request, so the file carries the runtime the page read.
+    const runtime = '/*tw-runtime*/globalThis.__tw=1;'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(runtime, { status: 200 })))
+    const blobs: Blob[] = []
+    const origCreate = URL.createObjectURL
+    URL.createObjectURL = vi.fn((b: Blob) => { blobs.push(b); return 'blob:download' }) as typeof URL.createObjectURL
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    try {
+      await mount(mkArtifact({ kind: 'widget', content: '<p class="p-4">hi</p>' }))
+      await waitFor(async () => {
+        blobs.length = 0
+        await chooseMore('Download')
+        expect(blobs.length).toBe(1)
+        const doc = new DOMParser().parseFromString(await blobs[0].text(), 'text/html')
+        const scripts = Array.from(doc.querySelectorAll('script'))
+        expect(scripts.some((s) => s.textContent === runtime)).toBe(true)
+        expect(scripts.some((s) => (s.getAttribute('src') ?? '').endsWith('/vendor/tailwindcss-browser.js'))).toBe(false)
+      })
+    } finally {
+      clickSpy.mockRestore()
+      URL.createObjectURL = origCreate
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps a widget Download disabled until the runtime read settles', async () => {
+    let release: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { release = resolve })))
+    try {
+      await mount(mkArtifact({ kind: 'widget', content: '<p>hi</p>' }))
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
+      expect(await findMoreItem('Download')).toHaveAttribute('aria-disabled', 'true')
+      await act(async () => { release(new Response('/*rt*/', { status: 200 })) })
+      await waitFor(async () => expect(await findMoreItem('Download')).not.toHaveAttribute('aria-disabled'))
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a failed runtime read says beside Download that the file may open unstyled', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('denied', { status: 403 })))
+    try {
+      await mount(mkArtifact({ kind: 'widget', content: '<p>hi</p>' }))
+      await waitFor(async () => expect(await findMoreItem('Download')).not.toHaveAttribute('aria-disabled'))
+      const notice = await screen.findByTestId('artifact-download-runtime-error')
+      expect(notice).toHaveTextContent(i18nT('pages.artifactDetailPage.runtime_unavailable'))
+      expect(screen.getByRole('menuitem', { name: /ask the agent/i })).toHaveAttribute('aria-describedby', 'artifact-download-runtime-error')
+    } finally {
+      vi.unstubAllGlobals()
     }
   })
 

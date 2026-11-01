@@ -42,6 +42,7 @@
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
 import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
+import { runtimeScriptText } from './tailwindRuntimeInline'
 import { withBase } from './basePath'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
@@ -1533,6 +1534,11 @@ interface BuildSrcdocOptions {
    * FRAME_WHEEL_RELAY_BODY), for a host whose desktop trackpad swipe must be
    * able to run over the frame. Off by default. */
   relayWheel?: boolean
+  /** The Tailwind runtime's source, carried inside the document instead of
+   * linked. Set by surfaces that open the document as a blob or save it as a
+   * file (lib/tailwindRuntimeInline.ts says why); the link stays when it is
+   * unset or cannot be inlined safely. */
+  inlineRuntime?: string
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -1553,6 +1559,7 @@ export function buildSrcdoc({
   pageScripts = true,
   relayTouches = false,
   relayWheel = false,
+  inlineRuntime,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -1827,13 +1834,19 @@ export function buildSrcdoc({
   //     body script executes, so only the element's own handler is free of
   //     that ordering hazard. Static trusted string — no LLM content.
   const serialized = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  // An inline runtime keeps the nonce, so a page whose own scripts are blocked
+  // still runs it. A function replacement, so `$` in the bundle is never read
+  // as a replacement pattern.
+  const runtimeText = inlineRuntime ? runtimeScriptText(inlineRuntime) : null
   const finished = serialized.replace(
     /<meta name="x-script-placeholder" data-src="([^"]*)">/,
     // With a nonce the inline `onerror` would be refused, so the tag drops it; the
     // overlay's hang backstop still uncovers the page.
-    (_match, src) => nonce
-      ? `<script src="${src}" crossorigin="anonymous" nonce="${nonce}"></script>`
-      : `<script src="${src}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"></script>`,
+    (_match, src) => runtimeText !== null
+      ? `<script${nonce ? ` nonce="${nonce}"` : ''}>${runtimeText}</script>`
+      : nonce
+        ? `<script src="${src}" crossorigin="anonymous" nonce="${nonce}"></script>`
+        : `<script src="${src}" crossorigin="anonymous" onerror="${TW_ERROR_INLINE_HANDLER}"></script>`,
   )
   // A static page also loses what navigates the frame without a script.
   return nonce ? settleStaticPage(finished, nonce) : finished

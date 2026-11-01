@@ -9214,7 +9214,8 @@
       "retry": "再試行",
       "save_failed": "保存に失敗しました",
       "star_as_artifact": "アーティファクトとしてスター付け",
-      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除"
+      "starred_as_click_to_remove": "「{{name}}」としてスター登録済み — クリックで解除",
+      "runtime_unavailable": "スタイル用スクリプトを読み込めなかったため、「新しいタブで開く」と「ダウンロード」ではこのウィジェットがスタイルなしで表示される場合があります。"
     },
     "widgetPlaceholder": {
       "generating": "生成中…"
@@ -11087,7 +11088,8 @@
       "activity_failed_to_load": "アクティビティの読み込みに失敗しました",
       "sync_status_unavailable": "同期状態を取得できません",
       "more": "その他",
-      "more_actions": "その他の操作"
+      "more_actions": "その他の操作",
+      "runtime_unavailable": "スタイル用スクリプトを読み込めなかったため、ダウンロードしたファイルはスタイルなしで開く場合があります。"
     },
     "artifactPopoutFrame": {
       "artifact": "アーティファクト",
