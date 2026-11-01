@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, screen, createEvent, act } from '@testing-library/react'
+import { render, fireEvent, screen, createEvent, act, waitFor } from '@testing-library/react'
 
 import MarkdownRenderer, { COPIED_FLASH_MS, COPY_FAILED_FLASH_MS } from '../components/MarkdownRenderer'
 import { copyToClipboard } from '../utils/clipboard'
@@ -70,7 +70,7 @@ describe('session chip — a bare slot key in prose', () => {
     expect(onSessionOpen).toHaveBeenCalledTimes(2)
   })
 
-  it('copies the NORMALISED key on Ctrl/Cmd+click instead of switching', () => {
+  it('copies the NORMALISED key on Ctrl/Cmd+click instead of switching', async () => {
     render(
       <MarkdownRenderer
         content={`\`dashboard_${KEY}\``}
@@ -80,7 +80,7 @@ describe('session chip — a bare slot key in prose', () => {
     )
     const chip = screen.getByText(`dashboard_${KEY}`)
     fireEvent.click(chip, { metaKey: true })
-    expect(copyToClipboard).toHaveBeenCalledWith(KEY)
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(KEY))
     expect(onSessionOpen).not.toHaveBeenCalled()
   })
 
@@ -123,12 +123,12 @@ describe('session chip — a SHORT slot name', () => {
     expect(screen.getByText(SHORT).getAttribute('title') ?? '').toContain('Fix the pagination bug')
   })
 
-  it('copies the FULL key on Ctrl/Cmd+click, not the nickname', () => {
+  it('copies the FULL key on Ctrl/Cmd+click, not the nickname', async () => {
     render(
       <MarkdownRenderer content={`\`${SHORT}\``} onSessionOpen={onSessionOpen} sessions={roster()} messageTs={WRITTEN} />,
     )
     fireEvent.click(screen.getByText(SHORT), { metaKey: true })
-    expect(copyToClipboard).toHaveBeenCalledWith(KEY)
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(KEY))
     expect(onSessionOpen).not.toHaveBeenCalled()
   })
 
@@ -388,20 +388,21 @@ describe('session chip — a SHORT slot name', () => {
 
 describe('session chip — the honesty gates', () => {
   /** Assert the span fell back to the plain click-to-copy chip. */
-  const expectCopyChip = (text: string) => {
+  const expectCopyChip = async (text: string) => {
     const el = screen.getByText(text)
     expect(el).toHaveAttribute('aria-label', `Copy ${text}`)
     expect(el.className).toContain('cursor-copy')
     expect(el).not.toHaveAttribute('data-session-key')
     fireEvent.click(el)
-    expect(copyToClipboard).toHaveBeenCalledWith(text)
+    // The copy resolves after the click; wait for the write before the last check.
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(text))
     expect(onSessionOpen).not.toHaveBeenCalled()
   }
 
-  it('offers no chip when the caller wired no roster', () => {
+  it('offers no chip when the caller wired no roster', async () => {
     // Absence of a roster is absence of KNOWLEDGE, not absence of the session.
     render(<MarkdownRenderer content={`\`${KEY}\``} onSessionOpen={onSessionOpen} />)
-    expectCopyChip(KEY)
+    await expectCopyChip(KEY)
   })
 
   it('offers no chip when the caller wired no handler', () => {
@@ -411,16 +412,16 @@ describe('session chip — the honesty gates', () => {
     expect(el).toHaveAttribute('aria-label', `Copy ${KEY}`)
   })
 
-  it('offers no chip for a session that is not open', () => {
+  it('offers no chip for a session that is not open', async () => {
     // Its transcript may still be on disk, but reopening that is a History resume,
     // not a slot switch — so a chip here could not do what it promises.
     render(
       <MarkdownRenderer content={`\`${OTHER}\``} onSessionOpen={onSessionOpen} sessions={roster()} />,
     )
-    expectCopyChip(OTHER)
+    await expectCopyChip(OTHER)
   })
 
-  it('offers no chip for the session the reader is already in', () => {
+  it('offers no chip for the session the reader is already in', async () => {
     render(
       <MarkdownRenderer
         content={`\`${KEY}\``}
@@ -429,7 +430,7 @@ describe('session chip — the honesty gates', () => {
         activeSession={KEY}
       />,
     )
-    expectCopyChip(KEY)
+    await expectCopyChip(KEY)
   })
 
   it('offers no chip for a string that merely resembles a key', () => {

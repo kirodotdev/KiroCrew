@@ -307,7 +307,6 @@
   "src/test/MarkdownRenderer.mermaidEnlarge.test.tsx",
   "src/test/MarkdownRenderer.mermaidLazy.test.tsx",
   "src/test/MarkdownRenderer.mermaidSource.test.tsx",
-  "src/test/MarkdownRenderer.sessionChip.test.tsx",
   "src/test/MarkdownRenderer.streamingReclassify.test.tsx",
   "src/test/MarkdownRenderer.test.tsx",
   "src/test/MarkdownTable.columnResize.test.tsx",
