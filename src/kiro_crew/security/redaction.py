@@ -61,6 +61,8 @@ from .redaction_entropy import (  # noqa: F401
     _contains_fixed_credential,
     _decode_b64_chunk,
     _is_code_literal,
+    _is_whole_exchange_id,
+    _link_pieces,
     _looks_like_secret_key,
     _plantuml_source,
     _text_contains_bare_secret,
@@ -93,10 +95,9 @@ def _document_link_spans(text: str) -> list[tuple[int, int]]:
             kept, spent = _plantuml_verdict(m["diagram"], budget)
             budget -= spent
         else:
-            kept = not any(
+            kept = (not m["outlook"] or _is_whole_exchange_id(m["exchange_id"])) and not any(
                 len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
-                for piece_re in _RUN_PIECE_RES
-                for piece in piece_re.findall(m.group())
+                for piece in _link_pieces(m.group(), outlook=bool(m["outlook"]))
             )
         if kept:
             spans.append(m.span())
@@ -1497,11 +1498,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DATA_URI_BEFORE_RE,
         _DATA_URI_PAYLOAD_MIN,
         _DATA_URI_REACH,
+        _DECODED_RUN_RE,
         _DOCUMENT_ID,
         _ENTROPY_TERMS_KEY_LEN,
+        _EXCHANGE_GUID_RE,
+        _EXCHANGE_ID_MAX_BYTES,
         _GOOGLE_USER,
         _HEX_ONLY_RE,
         _HOST_ID_EXEMPT_OVERLAP,
+        _OUTLOOK_FOLDER,
+        _OUTLOOK_ID,
+        _OUTLOOK_ITEM_ID,
+        _PERCENT_ESCAPE_RE,
         _PLANTUML_ALPHABET,
         _PLANTUML_DIAGRAM,
         _PRINTABLE_BYTES,
@@ -1512,11 +1520,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SECRET_MAX_SLASHES,
         _SECRET_MAX_VOWEL_RATIO,
         _SECRET_PRINTABLE_DECODE_RATIO,
+        _SLACK_HOST,
+        _SLACK_ID,
+        _SLACK_MESSAGE,
+        _SLACK_ROUTE,
+        _URL_SEGMENT_SEP_RE,
         _VOWELS,
         _crosses_into_a_routed_commit,
         _decode_b64_safe,
         _decodes_to_printable_text,
+        _expand_exchange_runs,
         _has_all_three_char_classes,
+        _is_item_entry_id,
         _lowercase_run_exceeds,
         _shannon_entropy,
         _steps_up,
