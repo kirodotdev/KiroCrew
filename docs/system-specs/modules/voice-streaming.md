@@ -261,7 +261,11 @@ during synthesis, and malformed requests.
 Read aloud request. This replaces a prior synthesis even during model loading,
 before any audio has started. `useVoiceInput` also dispatches it when an actual
 batch or streaming recording starts, before microphone acquisition, so the
-recognizer does not capture ongoing synthesized speech. Hover prewarming does
+recognizer does not capture ongoing synthesized speech. That covers every
+surface built on the hook: the chat composer and the document comment boxes'
+`CommentVoiceButton` (selection comment, image-box comment and thread reply;
+`stt-streaming.md` § "Comment-box dictation"), so pressing a comment box's mic
+stops a reply being read aloud. Hover prewarming does
 not interrupt playback. Clicking Read aloud while audio plays stops it, on
 whichever reply it is clicked, so while `voicePlaying` is set the More menu
 item reads "Stop reading" with a stop glyph (`SpeakMenuItem`). While audio
