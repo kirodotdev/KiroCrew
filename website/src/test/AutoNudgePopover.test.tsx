@@ -650,22 +650,51 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     ['cycle_cap', `Paused · cycle limit reached (3 of 3). ${FRESH_BUDGET}`],
     ['runtime_budget', `Paused · time limit reached. ${FRESH_BUDGET}`],
     ['approval_stalled', 'Paused · waiting for your approval'],
-    ['structural_terminal', 'Paused · the last cycle could not run'],
-    ['session_start_failures', 'Paused · the last cycle could not run'],
     ['some_future_reason', 'Paused'],
     [undefined, 'Paused'],
-  ])('a paused loop reads one plain line by the title for stopped_reason %s', (reason, expected) => {
+  ])('a paused loop that stopped cleanly reads one plain line by the title for stopped_reason %s', (reason, expected) => {
     renderWith(paused({ stopped_reason: reason, cycle_count: 3, max_cycles: 3 }))
     expect(status()!.textContent).toBe(expected)
     expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    // The ink is the tint-safe warn text, not the solid-fill `--warn-fg` (black
+    // in the dark themes) -- readable over the 12% wash.
+    expect(status()!.className).toMatch(/\btext-warn-text\b/)
+    expect(status()!.className).not.toMatch(/\btext-warn-fg\b/)
+    // A clean stop is not a failure: no error alert.
+    expect(status()!.getAttribute('role')).not.toBe('alert')
     expect(title()).toBe('Paused')
     expect(screen.queryByText(/Stopped/)).toBeNull()
+  })
+
+  it.each([
+    ['structural_terminal', 'Paused · the last cycle could not run'],
+    ['session_start_failures', 'Paused · the last cycle could not run'],
+    // consecutive_failures / model_refused have no dedicated line, so they keep
+    // the bare "Paused" copy -- the failure classification is independent of the
+    // copy map, so they still render as an error. Which line each failure shows
+    // (and any recovery hint) is a product-copy decision left to the maintainer.
+    ['consecutive_failures', 'Paused'],
+    ['model_refused', 'Paused'],
+  ])('a paused loop whose last cycle FAILED (stopped_reason %s) renders the status through ErrorNotice with alert semantics', (reason, expected) => {
+    renderWith(paused({ stopped_reason: reason, cycle_count: 3, max_cycles: 3 }))
+    // The reason's existing copy, unchanged -- now carried by an error surface.
+    expect(status()!.textContent).toBe(expected)
+    // ErrorNotice: role=alert and the danger tone, not the warn `<p>`.
+    expect(status()!.getAttribute('role')).toBe('alert')
+    expect(status()!.className).toMatch(/\btext-danger-text\b/)
+    expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+    // No hand-off: the unsaved goal fields must survive, so the Ask-the-agent
+    // control is absent.
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(title()).toBe('Paused')
   })
 
   it('an active loop held for approval reads paused: warn box, Play resumes, Pause still stops it, no Clear', () => {
     renderWith(running({ approval_stalled: true, next_due_ts: Math.floor(Date.now() / 1000) - 5 }))
     expect(status()!.textContent).toBe('Paused · an approval in this chat timed out. Press Play or send a message to resume.')
     expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    expect(status()!.className).toMatch(/\btext-warn-text\b/)
+    expect(status()!.className).not.toMatch(/\btext-warn-fg\b/)
     expect(title()).toBe('Paused')
     expectIconRow([PAUSE, RESUME])
     // Pause is the one way to stop a held loop from the popover.
@@ -682,6 +711,8 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(status()!.textContent).toBe('Waiting on you · every open task needs your answer in this chat. Nudges resume when a worker reports back.')
     // The next move is the user's, so it reads in the warn tone, not the running green.
     expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
+    expect(status()!.className).toMatch(/\btext-warn-text\b/)
+    expect(status()!.className).not.toMatch(/\btext-warn-fg\b/)
     expect(title()).toBe('Goal active (cycle 1/3)')
     expect(clearAction()).toBeNull()
   })
@@ -690,6 +721,9 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     renderWith(running({ cycle_count: 2 }))
     expect(status()!.textContent).toMatch(/^Next cycle in .+$/)
     expect(status()!.className).toMatch(/\bbg-ok-subtle\b/)
+    // Tint-safe ok ink, not the solid-fill `--ok-fg` (black in the dark themes).
+    expect(status()!.className).toMatch(/\btext-ok-text\b/)
+    expect(status()!.className).not.toMatch(/\btext-ok-fg\b/)
     expect(title()).toBe('Goal active (cycle 2/3)')
     cleanup()
     renderWith(null)
