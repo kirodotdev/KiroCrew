@@ -218,6 +218,12 @@ class SessionRegistryState:
     #: ``spawn_in_flight``; a token leaves at registration (published, or a
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
+    #: Per key, the event a speculative (eager) allocation sets when it returns,
+    #: registered or not, and that allocation's start priority. A real claim of
+    #: no higher priority that finds no live session but finds this waits for it
+    #: and claims what it registered, instead of cold-starting a second process
+    #: for the same key. Removed by the call that added it.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration

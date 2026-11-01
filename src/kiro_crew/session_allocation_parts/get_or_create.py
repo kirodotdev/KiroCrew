@@ -21,7 +21,9 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``.
+``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
+start's announcement (``speculative_starts``), which a real claim of no higher start
+priority joins.
 """
 
 from __future__ import annotations
@@ -355,29 +357,53 @@ async def get_or_create(
             # reservation (the ending caller's post-pass read must not count
             # it), waits outside the lock, and comes back to this door.
             held = reserved_key in self.state.ending_keys
+            started: asyncio.Event | None = None
             if not held:
                 self._allocation_reservations.setdefault(reserved_key, set()).add(token)
                 self.advance_ownership_generation(reserved_key)
+                # An eager start announces itself in the same lock hold that
+                # finds no session, so a real claim arriving while it runs can
+                # join it (``_get_or_create_impl``) instead of spawning a
+                # second process for the key.
+                starts = self.state.speculative_starts
+                if (
+                    speculative
+                    and reserved_key not in starts
+                    and reserved_key not in self._sessions
+                ):
+                    started = asyncio.Event()
+                    starts[reserved_key] = (started, start_priority)
         if held:
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
         try:
-            result = await self._get_or_create_impl(
-                reserved_key,
-                agent=agent,
-                channel_id=channel_id,
-                approval_policy=approval_policy,
-                model=model,
-                cwd=cwd,
-                extra_env=extra_env,
-                speculative=speculative,
-                speculative_resume=speculative_resume,
-                wait_if_busy=wait_if_busy,
-                _won_race_retries=_won_race_retries,
-                _reservation=token,
-                start_priority=start_priority,
-                **extra_factory_kwargs,
-            )
+            try:
+                result = await self._get_or_create_impl(
+                    reserved_key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    approval_policy=approval_policy,
+                    model=model,
+                    cwd=cwd,
+                    extra_env=extra_env,
+                    speculative=speculative,
+                    speculative_resume=speculative_resume,
+                    wait_if_busy=wait_if_busy,
+                    _won_race_retries=_won_race_retries,
+                    _reservation=token,
+                    start_priority=start_priority,
+                    **extra_factory_kwargs,
+                )
+            finally:
+                # Every exit -- registered, refused, failed, cancelled -- ends
+                # the announcement, so a joined claim never waits on a start
+                # that is over. A failed start leaves no session, and the
+                # joined claim then cold-starts as it would have.
+                if started is not None:
+                    entry = self.state.speculative_starts.get(reserved_key)
+                    if entry is not None and entry[0] is started:
+                        del self.state.speculative_starts[reserved_key]
+                    started.set()
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
             # of the body refused it -- at registration, with the provider
@@ -467,6 +493,7 @@ async def _get_or_create_impl(
     stale_provider: LLMProvider | None = None
     stale_session: Any | None = None
     claimed: Any | None = None
+    joined_start: asyncio.Event | None = None
     factory: ProviderFactory
     try:
         async with self._lock:
@@ -535,6 +562,22 @@ async def _get_or_create_impl(
                 if not owner._provider_factory:
                     raise RuntimeError("No provider factory configured")
                 factory = owner._provider_factory
+                # An eager start for this key is still running: a real claim
+                # waits for it below rather than spawning a second process --
+                # unless the claim outranks it. The eager start waits in every
+                # start queue at its own priority, so a person's FOREGROUND
+                # claim joining a BACKGROUND start would wait behind background
+                # work; that claim cold-starts at its own priority, as before.
+                entry = self.state.speculative_starts.get(key)
+                if (
+                    not speculative
+                    and entry is not None
+                    and not (
+                        start_priority is StartPriority.FOREGROUND
+                        and entry[1] is StartPriority.BACKGROUND
+                    )
+                ):
+                    joined_start = entry[0]
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -547,6 +590,31 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+
+    if joined_start is not None:
+        # Join the eager start, then claim through the front door: it finds
+        # the session that start registered, or -- when the start failed or
+        # was refused -- no session and no announcement, and cold-starts as
+        # this claim would have without the join.
+        await joined_start.wait()
+        return await owner.get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=cwd,
+            extra_env=extra_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+            app_name=app_name,
+            app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
+            **extra_factory_kwargs,
+        )
 
     if claimed is not None:
         session = claimed
