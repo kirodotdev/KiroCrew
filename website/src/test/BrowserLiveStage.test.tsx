@@ -186,6 +186,17 @@ describe('Expand moves the picture to the side panel', () => {
     await waitFor(() => expect(browserStageStore.get(S)).toBeNull())
   })
 
+  it('a new turn under a held browser starts the big view\'s hand-back note empty', async () => {
+    browserStageStore.registerHost(() => {})
+    act(() => { browserLiveStore.applyEvent(ev({ state: 'in_control' })); browserLiveStore.applyFrame(frame(1)) })
+    render(wrap(<PreviewTabBody sessionKey={S} active />))
+    act(() => { browserStageStore.open(S, { turnId: null, mode: 'live' }) })
+    const note = await screen.findByTestId('browser-live-handback-note', undefined, { timeout: LAZY_STAGE_TIMEOUT_MS })
+    fireEvent.change(note, { target: { value: 'for the old turn' } })
+    act(() => { browserLiveStore.applyEvent(ev({ turn_id: 't2', state: 'in_control' })) })
+    expect(screen.getByTestId('browser-live-handback-note')).toHaveValue('')
+  })
+
   it('picking a turn that has no card here keeps the sheet open', async () => {
     setMobile(true)
     act(() => { browserLiveStore.applyEvent(ev()); browserLiveStore.applyFrame(frame(1)) })
