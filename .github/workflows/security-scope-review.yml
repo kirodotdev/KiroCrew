@@ -78,8 +78,20 @@ jobs:
     # comment at the fence's definition already names as a known weakness of
     # a hardcoded path. Revisit once the fence itself is CodeBuild-portable
     # (an expression, not a literal path) rather than routing this job before
-    # that lands.
-    runs-on: ubuntu-latest
+    # that lands. The larger-runner group is a different destination from the
+    # fleet, so this exclusion stands unchanged; the fork lane already runs
+    # this identical fence on this same group.
+    #
+    # Of the four jobs in either lane, only `generate` holds `id-token: write`,
+    # so only `generate` assumes the Bedrock role. `generate` and `publish` have
+    # no `paths:` filter, so every pull-request event that is not superseded
+    # draws at least two jobs from this definition's cap, which the review
+    # lanes also draw on.
+    #
+    # Targeted by LABEL, not `group:`: this workflow fires on `pull_request`,
+    # so a contributor's own fork runs it in a repository no organization
+    # group admits.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # OIDC for Bedrock, and read-only on the PR: this stage proposes candidates and
     # posts nothing.
     permissions:
@@ -656,22 +668,35 @@ jobs:
       always()
       && needs.generate.outputs.in_scope == 'true'
       && needs.generate.outputs.override != 'true'
-    # NOT routed to the CodeBuild fleet. A diff that touches this workflow's
-    # own `runs-on:` lines (as one that migrates CI runners does) sets
-    # `in_scope=true` above, but carries no shell/flow/cron surface for
-    # `generate`'s model to propose candidates for -- an honest empty
-    # `candidates.json`. `scope_candidates.py validate` treats that the same
-    # as an untrustworthy file (`CandidateError`, exit 2), deliberately: exit
-    # 3 ("nothing new to adjudicate") means the model DID propose candidates
-    # and they are already covered by the committed corpus, which is a
-    # different, stronger claim than "nothing was proposed at all" -- merging
-    # the two would let a failed or empty model call pass as a reviewed,
-    # honest empty set, which is the exact false green this lane exists to
-    # prevent (test_an_untrustworthy_candidate_file_is_exit_2's `empty` case
-    # pins this). Fixing the diff-has-no-surface-for-this-lane case belongs
-    # in a change to this lane's own design, not a CI-runner migration, so
-    # this job stays on `ubuntu-latest` until that lands.
-    runs-on: ubuntu-latest
+    # Keeps its `_PERMANENT_EXCEPTIONS` entry: this change does not argue this
+    # job onto the CodeBuild fleet, and the larger-runner group is not the
+    # fleet. Label rather than `group:` for the reason `generate` gives.
+    #
+    # READ THIS BEFORE EDITING THIS FILE AT ALL, for any reason. This workflow
+    # is itself an entry of the `SCOPE-SURFACE` array above, so ANY diff
+    # touching it sets `in_scope=true`. A diff whose only `SCOPE-SURFACE` path
+    # is this file supplies no
+    # tightening to probe, so `candidates.json` is honestly empty.
+    # `scope_candidates.py validate` treats that the same as an untrustworthy
+    # file (`CandidateError`, exit 2), deliberately: exit 3 ("nothing new to
+    # adjudicate") means the model DID
+    # propose candidates and they are already covered by the committed corpus,
+    # which is a different, stronger claim than "nothing was proposed at all" --
+    # merging the two would let a failed or empty model call pass as a
+    # reviewed, honest empty set, which is the exact false green this lane
+    # exists to prevent (test_an_untrustworthy_candidate_file_is_exit_2's
+    # `empty` case pins this). Only a diff that ALSO changes the deny or
+    # classifier surface gives the model something to propose.
+    #
+    # So a diff whose only `SCOPE-SURFACE` path is this file reds a lane
+    # `PR Readiness` watches, and
+    # the only same-head exit is a human override --
+    # `/ai-review override scope <sha> <class>: <reason>` -- which `generate`'s
+    # "Resolve human override" step reads. The class is the poster's to choose;
+    # this comment deliberately does not draft one. The record is keyed to ONE
+    # head, so every push needs a fresh one. Fixing this belongs in a change to
+    # this lane's own design.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # `contents: read` and NOTHING else. This job can execute the pull request's own
     # harness, so it must hold nothing worth reaching: no `id-token`, so no AWS
     # assume is even possible here, and no scope that could post or patch this
@@ -1143,7 +1168,14 @@ jobs:
     name: Security scope adjudication (${{ matrix.os }})
     needs: validate
     if: needs.validate.outputs.adjudicate == 'true'
-    runs-on: ${{ matrix.os }}
+    # Keep `matrix.os` stable: the job name above uses it and so do the per-leg
+    # artifact names, so neither the rendered check names nor the fold's report
+    # lookup change. In THIS repository the Linux and Windows legs take the
+    # `kirocrew-linux-4-core` / `kirocrew-windows-4-core` larger-runner labels
+    # instead of the shared standard pool; the macOS leg stays hosted. Label
+    # rather than `group:` for the reason `generate` gives. The same expression
+    # `fork-security-scope-review.yml`'s `adjudicate` already carries.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest') || matrix.os == 'windows-latest' && (github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-windows-4-core' || 'windows-latest') || matrix.os }}
     # Runs the pull request's OWN classifier at both refs, so it gets the floor: no
     # id-token, no write scope. Nothing here is worth stealing.
     permissions:
@@ -1359,14 +1391,12 @@ jobs:
     # always(): a leg that reds is exactly the run whose verdict must be
     # published, and the exit-3 short circuit skips `adjudicate` entirely.
     if: always()
-    # NOT routed to the CodeBuild fleet -- same reason as `validate`, above:
-    # a diff limited to this workflow's own `runs-on:` lines gives `generate`
-    # nothing to propose, and `validate` already stays on `ubuntu-latest` for
-    # that diff shape. `publish` is this lane's required check and always
-    # runs downstream of `validate`, so routing it alone would not change
-    # this job's own outcome but would split the two across runner classes
-    # for no reason.
-    runs-on: ubuntu-latest
+    # Keeps its `_PERMANENT_EXCEPTIONS` entry: this change does not argue this
+    # job onto the CodeBuild fleet, and the larger-runner group is not the
+    # fleet. On the label alongside `validate`, since this required check
+    # always runs downstream of it. Label rather than `group:` for the reason
+    # `generate` gives.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Posts, and holds the ONLY write scope in this lane. On a `pull_request`
     # event a bare checkout resolves to the PR MERGE REF, so the workspace below
     # IS the change under review -- which makes `scripts/` a path the change can
