@@ -941,6 +941,54 @@ async def synthesize_speech(
     return None
 
 
+# The one Polly failure whose fix is "change the voice, engine or region": the
+# chosen engine (or language voice) is not offered in the request's region, so
+# AWS rejects every sentence identically. The reported AWS CLI stderr for it is
+#   An error occurred (ValidationException) when calling the SynthesizeSpeech
+#   operation: The selected engine is not supported in this region
+# so ``not supported in this region`` matches it; the two exception names cover
+# the forms AWS returns when the voice's language, rather than the engine, is
+# the unsupported one. It is the only AWS error that raises
+# ``voice_polly_rejected`` and stops the stream, because it is the only one that
+# repeats for every sentence and the only one that fix resolves. These markers
+# match against the CLI stderr; an error narrower to one sentence
+# (``InvalidSsmlException``, ``InvalidParameterValue``) or about the account
+# rather than the request (``AccessDenied``, ``ExpiredToken``) is absent on
+# purpose, so it falls through to the ``None``/skip-per-sentence path and the
+# dashboard shows its generic notice — the honest answer when the remedy is not
+# "change the voice, engine or region". A general AWS-error taxonomy belongs to
+# a separate change.
+_POLLY_ENGINE_REGION_ERRORS = (
+    "EngineNotSupportedException",
+    "LanguageNotSupportedException",
+    "not supported in this region",
+)
+
+
+def _classify_polly_failure(stderr: str) -> "VoiceSynthesisError | None":
+    """Return the coded error for a Polly stderr, or ``None`` to skip-per-sentence.
+
+    Only the engine/region-unsupported rejection becomes a raise, because it is
+    the only AWS failure whose fix is the one action the notice names — pick a
+    different voice, engine, or region — and the only one that repeats for every
+    sentence. Every other nonzero exit (a sentence-scoped SSML/parameter error,
+    a credential or access error, a transport blip) returns ``None``, so the
+    caller skips that sentence and the dashboard shows its generic notice.
+    Naming a remedy that does not fit is worse than the generic notice, so an
+    unrecognised failure says nothing specific. The AWS message can echo the
+    SSML, so it stays in the log; the raised text is fixed.
+    """
+    for marker in _POLLY_ENGINE_REGION_ERRORS:
+        if marker in stderr:
+            return VoiceSynthesisError(
+                "voice_polly_rejected",
+                "Amazon Polly does not offer the selected voice or engine in the "
+                "selected AWS region. In the Text-to-speech settings, pick a "
+                "different Voice, Engine, or Region.",
+            )
+    return None
+
+
 async def _synthesize_polly(
     ssml: str,
     voice_id: str = DEFAULT_VOICE,
@@ -957,7 +1005,12 @@ async def _synthesize_polly(
 
     ``raise_refusal`` is for a caller with a person waiting: when no consent is
     recorded for this profile and region it raises
-    ``VoiceSynthesisError("voice_consent_required")`` instead of returning ``None``.
+    ``VoiceSynthesisError("voice_consent_required")`` instead of returning ``None``,
+    and the engine/region-unsupported rejection raises
+    ``VoiceSynthesisError("voice_polly_rejected")`` rather than being retried once
+    per sentence. Every other nonzero exit returns ``None`` (skip-per-sentence),
+    so an unrecognised or sentence-scoped failure falls back to text rather than
+    naming a remedy that may not fit.
     """
     # Polly is a PAID AWS service and this is the request that spends money, so
     # it does not happen without a recorded operator consent for this exact
@@ -1078,7 +1131,23 @@ async def _synthesize_polly(
                     raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
-                logger.error("Polly failed: %s", stderr.decode())
+                decoded = stderr.decode(errors="replace")
+                logger.error("Polly failed: %s", decoded)
+                if raise_refusal:
+                    # A classified AWS error is a property of this profile,
+                    # region, engine and voice, so it repeats identically for
+                    # every sentence. The unattended path returns None and lets
+                    # the caller fall back to text, but the dashboard stream has
+                    # a person waiting: returning None there retries the same
+                    # doomed call once per sentence and ends in the generic "no
+                    # audio" notice. Stop at the first one with the code whose
+                    # remedy actually fixes it — an unsupported engine/region is
+                    # not the same fix as an expired credential. An unclassified
+                    # failure stays None, so the generic notice shows, which is
+                    # the honest answer when the cause is unknown.
+                    classified = _classify_polly_failure(decoded)
+                    if classified is not None:
+                        raise classified
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("Polly output too small")
@@ -1108,6 +1177,12 @@ async def _synthesize_polly(
             # sentinel loses the one fact that resolves this. The ``finally`` below
             # still discards the owned temp file, which matters MORE once the
             # exception travels instead of a return value.
+            raise
+        except VoiceSynthesisError:
+            # The coded AWS-rejection error raised above on the ``raise_refusal``
+            # path is a deliberate signal to the waiting caller, not a synthesis
+            # fault to collapse into None — let it travel. The ``finally`` still
+            # discards the owned temp file.
             raise
         except Exception:
             logger.exception("Polly synthesis error")
@@ -1295,9 +1370,10 @@ async def streaming_voice_reply(
             continue
         # Dashboard streaming is Polly-only today (sentence-by-sentence MP3
         # chunks). Calls the Polly-specific internal to avoid double-wrapping
-        # text→SSML through the public dispatcher. Raises only when no consent
-        # is recorded for this profile and region; any other refusal skips
-        # this sentence and the next one is checked again.
+        # text→SSML through the public dispatcher. Raises when no consent is
+        # recorded for this profile and region, or on the engine/region-
+        # unsupported rejection that repeats for every sentence; any other
+        # refusal skips this sentence and the next one is checked again.
         mp3_path = await _synthesize_polly(
             ssml,
             voice_id=voice_id,

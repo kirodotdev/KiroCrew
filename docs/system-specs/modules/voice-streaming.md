@@ -367,6 +367,25 @@ Text-to-speech settings link. A refusal while the consent stands (the account co
 not be re-checked, or the consent changed during the check) returns no audio for
 that sentence, and the next sentence is checked again.
 
+
+On the same `raise_refusal=True` path, the one Polly failure #17511 reports —
+the chosen voice or engine is not offered in the request's region, which AWS
+rejects identically for every sentence — is matched from the CLI stderr
+(`_classify_polly_failure`) and raises
+`VoiceSynthesisError("voice_polly_rejected")`, whose notice names the
+voice/engine/region fix. It is the only AWS failure turned into a raise, because
+it is the only one whose fix is the one action the notice names and the only one
+that repeats for every sentence. Every other nonzero exit — a sentence-scoped
+SSML or parameter error, a credential or access error, a transport blip — keeps
+the old `None`/skip-per-sentence behaviour, so the dashboard shows its generic
+notice, which is the honest answer when the remedy is not "change the voice,
+engine or region". A general AWS-error taxonomy is a separate change, not this
+fix. The raise stops at the first sentence rather than being retried once per
+sentence; the AWS message can echo the SSML, so the code's text is fixed and the
+message stays in the log. The unattended callers keep the `None`/text-fallback
+contract on every failure. `voiceFailureMessage()` maps the code to its own
+localized notice.
+
 `_synthesize_polly()` runs its command through
 `wrap_argv_async(..., _prepare=wrap_argv)`. `_synthesize_system()` instead delegates
 to `_run_tts_subprocess()`, which uses `sandboxed_spawn_argv_async()` and the

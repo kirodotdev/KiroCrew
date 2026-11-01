@@ -29,6 +29,7 @@ from kiro_crew.voice_reply import (
     SYSTEM_ENGINE_ESPEAK,
     SYSTEM_ENGINE_SAPI,
     SYSTEM_ENGINE_SAY,
+    VoiceSynthesisError,
     _produced_audio,
     _synthesize_polly,
     _synthesize_system,
@@ -704,6 +705,65 @@ class TestSynthesizePolly:
         proc = _mock_subprocess(returncode=1, stderr=b"denied")
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             assert await _synthesize_polly("<speak>hi</speak>") is None
+
+    @pytest.mark.asyncio
+    async def test_engine_region_rejection_raises_for_a_waiting_caller(self) -> None:
+        """``raise_refusal`` turns the engine/region rejection into a coded error.
+
+        The unattended path returns None (above) so the caller falls back to
+        text, but an engine/region-unsupported rejection repeats identically for
+        every sentence, so the dashboard stream stops at the first one with the
+        code whose remedy fixes it rather than retry a doomed call per sentence
+        into the generic notice. The AWS message can echo the SSML, so the
+        raised text is fixed, not the CLI's stderr.
+        """
+        proc = _mock_subprocess(
+            returncode=255,
+            # The AWS CLI stderr reported for this failure.
+            stderr=(
+                b"An error occurred (ValidationException) when calling the "
+                b"SynthesizeSpeech operation: The selected engine is not supported "
+                b"in this region"
+            ),
+        )
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            pytest.raises(VoiceSynthesisError) as rejected,
+        ):
+            await _synthesize_polly("<speak>hi</speak>", raise_refusal=True)
+        assert rejected.value.code == "voice_polly_rejected"
+        assert "ValidationException" not in str(rejected.value)
+        assert str(rejected.value) == (
+            "Amazon Polly does not offer the selected voice or engine in the "
+            "selected AWS region. In the Text-to-speech settings, pick a different "
+            "Voice, Engine, or Region."
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_error_is_not_classified_as_engine_region(self) -> None:
+        """A credential/access error is NOT the engine/region case.
+
+        Its remedy is the profile, not the engine or region, so it takes the
+        skip-per-sentence ``None`` path rather than raising a remedy that would
+        send the user to fix something that is not broken.
+        """
+        proc = _mock_subprocess(
+            returncode=255,
+            stderr=b"An error occurred (ExpiredTokenException): the security token has expired",
+        )
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            assert await _synthesize_polly("<speak>hi</speak>", raise_refusal=True) is None
+
+    @pytest.mark.asyncio
+    async def test_unclassified_aws_failure_still_returns_none(self) -> None:
+        """Any failure that is not the engine/region case stays None.
+
+        Naming a remedy that does not fit is worse than the honest generic
+        notice, so an unfamiliar failure keeps the skip-per-sentence path.
+        """
+        proc = _mock_subprocess(returncode=52, stderr=b"Could not connect to the endpoint URL")
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            assert await _synthesize_polly("<speak>hi</speak>", raise_refusal=True) is None
 
     @pytest.mark.asyncio
     async def test_output_too_small_returns_none(self) -> None:

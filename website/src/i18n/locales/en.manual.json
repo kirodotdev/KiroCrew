@@ -1632,6 +1632,7 @@
     "voicePlaybackNotice": {
       "failed": "{{speak}} failed. Check the Text-to-speech settings and try again.",
       "consent_required": "{{speak}} needs Amazon Polly confirmed for this AWS profile and region. Confirm it in the Text-to-speech settings, then try again.",
+      "polly_rejected": "Amazon Polly does not offer the selected voice or engine in the selected AWS region. In the Text-to-speech settings, pick a different Voice, Engine, or Region.",
       "blocked": "Your browser blocked automatic playback. Open {{moreActions}} below the completed reply, then select {{speak}}.",
       "settings": "{{speak}} settings (Text-to-speech)"
     },

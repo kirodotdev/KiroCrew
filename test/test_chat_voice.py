@@ -785,6 +785,89 @@ class TestVoiceSynthesize:
                 assert secret not in carried["error"]
         spawn.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_polly_aws_rejection_reaches_the_client_with_its_code(
+        self, tmp_path, monkeypatch
+    ):
+        """Consent stands, but AWS rejects every sentence: name the cause once.
+
+        The real stream runs with a granted consent, and the mocked AWS CLI
+        exits nonzero (a region that does not support the engine). The stream
+        must fail at the first sentence with ``voice_polly_rejected`` -- fixed
+        text, the CLI's stderr kept out of it -- rather than skip each sentence
+        into the generic "no audio" notice.
+        """
+        from kiro_crew import aws_consent
+        from kiro_crew.config.loader import config_dir
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        config_dir().mkdir(parents=True, exist_ok=True)
+        _consent_to_polly(profile="polly-reader", region="us-east-1")
+
+        async def _granted(_profile, _region, *, use_cache=True):
+            return aws_consent.Identity(ok=True, account="111122223333")
+
+        monkeypatch.setattr(aws_consent, "probe_identity", _granted)
+        # The AWS CLI must resolve so the argv is built and the spawn is reached;
+        # the spawn itself returns a nonzero proc, so no real CLI runs.
+        monkeypatch.setattr("kiro_crew.voice_reply.resolve_aws_bin", lambda: "aws")
+        monkeypatch.setattr(
+            "kiro_crew.voice_reply.shutil.which",
+            lambda name, *a, **k: "/usr/bin/aws" if name == "aws" else None,
+        )
+        monkeypatch.setattr("kiro_crew.voice_reply.wrap_argv", lambda argv, **k: (list(argv), None))
+        monkeypatch.setattr("kiro_crew.voice_reply.cgroup_scope_argv", lambda argv: list(argv))
+        rejected_proc = AsyncMock()
+        rejected_proc.communicate = AsyncMock(
+            return_value=(
+                b"",
+                # The AWS CLI stderr reported for this failure.
+                b"An error occurred (ValidationException) when calling the "
+                b"SynthesizeSpeech operation: The selected engine is not supported "
+                b"in this region",
+            )
+        )
+        rejected_proc.returncode = 255
+        rejected_proc.kill = MagicMock()
+        rejected_proc.wait = AsyncMock()
+
+        async def _spawn(*_argv, **_kw):
+            return rejected_proc
+
+        monkeypatch.setattr("kiro_crew.voice_reply.create_subprocess_limited", _spawn)
+        mock_vc = MagicMock(
+            provider="polly",
+            default_voice="Ruth",
+            default_engine="generative",
+            default_rate="100%",
+            default_pitch="+0%",
+            aws_profile="polly-reader",
+            region="us-east-1",
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice._vc", mock_vc)
+
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        async with TestClient(TestServer(_make_voice_app(state))) as client:
+            resp = await client.post(
+                "/api/voice/synthesize", json={"text": "First. Second.", "slot": "s1"}
+            )
+            assert resp.status == 502
+            data = await resp.json()
+        event, payload = state.broadcast_ws.call_args[0]
+        assert event == "voice_error"
+        assert payload["slot"] == "s1"
+        fixed = (
+            "Amazon Polly does not offer the selected voice or engine in the "
+            "selected AWS region. In the Text-to-speech settings, pick a different "
+            "Voice, Engine, or Region."
+        )
+        for carried in (data, payload):
+            assert carried["code"] == "voice_polly_rejected"
+            assert carried["error"] == fixed
+            assert "ValidationException" not in carried["error"]
+
 
 def _consent_to_polly(*, profile: str, region: str) -> None:
     """Record operator consent for Polly under one profile+region pair."""
