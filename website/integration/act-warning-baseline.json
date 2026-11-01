@@ -43,7 +43,6 @@
   "src/pages/members/FargateCrewView.test.tsx",
   "src/pages/members/MembersPage.newCrewmate.test.tsx",
   "src/pages/members/MembersPage.schedules.test.tsx",
-  "src/pages/settings/SecretsPanel.test.tsx",
   "src/pages/settings/SecurityPanel.yoloDurationRefresh.test.tsx",
   "src/pages/settings/decisionsCard.test.tsx",
   "src/test/AboutPanel.autoDownloadToggle.test.tsx",
