@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IssueRadarProvider, useIssueRadar } from '../apps/issue-radar/context'
 import { APP_CACHE_RETENTION_MS } from '../apps/appCacheRetention'
@@ -197,12 +197,12 @@ describe('issue-radar list polling', () => {
 
     let releaseClosed: (v: unknown) => void = () => {}
     pulls.mockImplementation(() => new Promise((res) => { releaseClosed = res }))
-    screen.getByTestId('to-closed').click()
+    await act(async () => { screen.getByTestId('to-closed').click() })
 
     // Still 'rows' — the previous repo-A rows are retained across the filter change.
     await waitFor(() => expect(pulls).toHaveBeenCalledTimes(2))
     expect(screen.getByTestId('pulls-state').textContent).toBe('rows')
-    releaseClosed({ pulls: [] })
+    await act(async () => { releaseClosed({ pulls: [] }) })
   })
 
   it('does not report SUCCESS while another repo\'s rows are on screen', async () => {
@@ -232,7 +232,7 @@ describe('issue-radar list polling', () => {
     // app paints without waiting on `gh`.
     expect(issues.mock.calls[0][1]).toMatchObject({ poll: false })
 
-    await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000) })
 
     await waitFor(() => expect(issues.mock.calls.length).toBeGreaterThan(1))
     // Every poll after that goes down the probe-gated path, or it would be
@@ -245,7 +245,7 @@ describe('issue-radar list polling', () => {
     const { unmount } = renderProvider()
 
     await waitFor(() => expect(issues).toHaveBeenCalled())
-    await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000) })
 
     // The PR fetch runs the GraphQL enrichment server-side; polling it while the
     // user sits on the dashboard would spend GitHub budget on unseen data.
@@ -269,7 +269,7 @@ describe('issue-radar list polling', () => {
     await waitFor(() => expect(pulls).toHaveBeenCalledTimes(1))
     expect(pulls.mock.calls[0][1]).toMatchObject({ poll: false })
 
-    await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000) })
 
     await waitFor(() => expect(pulls.mock.calls.length).toBeGreaterThan(1))
     expect(pulls.mock.calls[1][1]).toMatchObject({ poll: true })
@@ -283,7 +283,7 @@ describe('issue-radar list polling', () => {
     const { unmount } = renderProvider()
 
     await waitFor(() => expect(searchPulls).toHaveBeenCalled())
-    await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000) })
 
     await waitFor(() => expect(searchPulls.mock.calls.length).toBeGreaterThan(1))
     expect(pulls).not.toHaveBeenCalled()
@@ -330,7 +330,7 @@ describe('issue-radar list polling', () => {
     const { unmount } = renderProvider()
 
     await waitFor(() => expect(issues).toHaveBeenCalled())
-    await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(LIST_POLL_MS + 1_000) })
 
     expect(searchPulls).not.toHaveBeenCalled()
     expect(pulls).not.toHaveBeenCalled()
