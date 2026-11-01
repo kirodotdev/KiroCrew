@@ -1087,7 +1087,6 @@ The sites that target the group with `group:` are, by workflow:
   `validate` and `publish`
 - the same-repo review lanes: `codex-review`, `claude-review`,
   `first-principles-review`, `design-review`, `ux-review`
-- `codeql.yml`
 - `docker-smoke.yml`, both jobs
 - `release.yml`: `version`, `resolve-promotion`, `stable-gate`,
   `github-release`, `record-promotion`
@@ -1137,7 +1136,7 @@ why they took the `group:` form.
 
 **This test governs what may be ADDED; it does not describe what the group
 already holds.** Several of the sites listed above can be started by a
-personal fork: the same-repo review lanes, `codeql.yml`'s `analyze` and
+personal fork: the same-repo review lanes and
 both `docker-smoke.yml` jobs all fire on `pull_request` with no head-repository
 check, and `release.yml`'s jobs start on a `v*` tag push, which a fork
 owner can make in their own fork. None of them was admitted under this test,
@@ -1170,10 +1169,14 @@ narrow or re-scope that credential.
 and it already excludes forks through the `Analyze` job's own `if`. Its load is
 also permanent for an unrelated reason: GitHub's CodeQL default setup, which
 this workflow replaced, is off, so there is no second scan to fall back to.
+`analyze` reaches the CodeBuild fleet by expression and keeps this group's
+`kirocrew-linux-4-core` label as its in-repository fallback, so it is a
+fleet-fallback label site and takes that recipe, not a whole-line replacement.
 
-**Every review lane and CodeQL moved here can hold merges, so treat any stuck
-run as an immediate rollback.** (The label-routed fallbacks below hold no merge,
-apart from `pr-readiness.yml`'s own `readiness` job: the rest are not polled by
+**Every review lane moved here can hold merges, and so can CodeQL, so treat any
+stuck run as an immediate rollback.** (The label-routed fallbacks below hold no
+merge, apart from `pr-readiness.yml`'s own `readiness` job and `codeql.yml`'s
+`analyze`: the rest are not polled by
 `pr-readiness.yml` or `merge-queue-readiness.yml`, and none fires on
 `pull_request` or `merge_group`. The rollback rule still covers them. The
 `readiness` job does hold every merge -- see **PR Readiness reaches the group by
@@ -1191,7 +1194,7 @@ CodeQL has no second scan to fall back to either, since GitHub's default setup
 is off. If the group does not admit the repository, or is at its
 `maximum_runners` cap, restore `runs-on: ubuntu-latest` on the affected line at
 once rather than waiting to see whether the queue clears -- for any
-group-targeted site, not just CodeQL. The fleet-fallback label sites below are
+group-targeted site. The fleet-fallback label sites below are
 covered by the same rule but have their own recipe, since a whole-line
 replacement there would take the fleet route out with it; the PR-time label
 sites take the plain replacement, since they carry no fleet route to preserve;

@@ -8,12 +8,14 @@ name: CodeQL
 # SAME SCAN AS DEFAULT SETUP. The languages, query suite (`default`), threat
 # model (`remote`) and build mode (`none`) match what default setup ran
 # (`gh api repos/<repo>/code-scanning/default-setup`), as does the weekly
-# schedule. The RUNNER no longer matches: default setup ran on a standard
-# hosted runner, and the `Analyze` job below now draws on the
-# `kirocrew-runners` larger-runner group (see "Larger runners for the review
-# lanes and CodeQL" in docs/ci/ci-and-reviews.md). Same 4 vCPU and
-# 16 GB as a public-repo `ubuntu-latest`, so the scan itself is unaffected;
-# only which concurrency ceiling it draws on changed.
+# schedule. The RUNNER does not match: default setup ran on a standard hosted
+# runner, and the `Analyze` job below routes to the AWS CodeBuild fleet on an
+# eligible push or pull request and takes the `kirocrew-linux-4-core`
+# larger-runner label on every other event (see "Larger runners for the review
+# lanes and CodeQL" in docs/ci/ci-and-reviews.md). The fleet's default compute
+# is 4 vCPU and 7 GB against a public-repo `ubuntu-latest`'s 4 vCPU and 16 GB,
+# so the scan has less memory on the fleet leg than on either fallback; the
+# larger-runner label is the same 4 vCPU and 16 GB as the hosted image.
 # The workflow name `CodeQL` and the job name `Analyze (<language>)` match its
 # check names. Each upload names `category: /language:<language>`, the category
 # default setup used, so alerts keep their history instead of opening twice
@@ -67,11 +69,15 @@ jobs:
       (github.event_name != 'pull_request' ||
        (!github.event.pull_request.draft &&
         github.event.pull_request.head.repo.full_name == github.repository))
-    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
-    # "Larger runners for the review lanes and CodeQL" in
-    # docs/ci/ci-and-reviews.md.
-    runs-on:
-      group: kirocrew-runners
+    # The CodeBuild fleet on an admitted actor's push or `opened`/`synchronize`
+    # same-repository pull request. Every other event -- `reopened`,
+    # `ready_for_review`, the weekly schedule and a manual dispatch -- carries
+    # no fleet-eligible actor or action and takes the `kirocrew-linux-4-core`
+    # label, the larger-runner definition this job targeted by group before. A
+    # fork running this workflow on its own `main` cannot reach an organization
+    # runner group, so it takes the hosted image. The AWS webhook remains the
+    # security boundary; this expression controls availability.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 60
     permissions:
       actions: read
