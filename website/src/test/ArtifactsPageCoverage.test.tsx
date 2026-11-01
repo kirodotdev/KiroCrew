@@ -5,6 +5,7 @@ import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders, createTestStore } from './helpers'
 import { sseConnected } from '../store/dashboardSlice'
+import { namedCeiling } from './namedCeiling'
 
 /** The move submenu is gateway-gated, so these fixtures must be connected. */
 function connectedStore() {
@@ -134,27 +135,27 @@ describe('ArtifactsPage — card previews per kind', () => {
     const arts = [mkArtifact('daily-notes', { kind: 'markdown' })]
     const m = seed({ artifacts: arts })
     let resolveArtifact!: (artifact: Artifact) => void
-    let signalArtifactRequest!: () => void
-    const artifactRequested = new Promise<void>((resolve) => {
-      signalArtifactRequest = resolve
-    })
     const pending = new Promise<Artifact>((resolve) => {
       resolveArtifact = resolve
     })
     m.artifact.mockImplementation(() => {
-      signalArtifactRequest()
       return pending
     })
     renderWithProviders(<ArtifactsPage />)
-    // Wait on the actual query call, not a polling deadline: resolving before
-    // LocalCardBody mounts can leave the cache notification behind its
-    // subscriber under a loaded full suite.
-    await artifactRequested
+    // Wait on the actual query call: resolving before LocalCardBody has issued
+    // its query can leave the cache notification behind its subscriber under a
+    // loaded full suite. A testing-library wait, so the page's mount-time
+    // commits (card list, filter selects) land inside it instead of between
+    // two awaits. Chain: list query, card mount, ['artifact', slug] call.
+    await waitFor(() => expect(m.artifact).toHaveBeenCalled(), namedCeiling('CARD_ARTIFACT_QUERY_CALLED', 5000))
     await act(async () => {
       resolveArtifact({ ...arts[0], content: '# Heading one\n\nbody text' })
       await pending
     })
-    expect(screen.getByRole('heading', { name: 'Heading one' })).toBeInTheDocument()
+    // The query cache commits the body after the act above returns. Chain: the
+    // ['artifact', slug] query resolves, the card re-renders, the markdown
+    // renderer draws the heading and the body text in one commit.
+    expect(await screen.findByRole('heading', { name: 'Heading one' }, namedCeiling('CARD_MARKDOWN_DRAWN', 5000))).toBeInTheDocument()
     expect(screen.getByText('body text')).toBeInTheDocument()
   })
 
@@ -1248,8 +1249,15 @@ describe('ArtifactsPage — dragging a card', () => {
     // browser keeps the gesture. jsdom cannot pan, so what is asserted is the
     // observable half: no ghost is raised.
     seed({ artifacts: [mkArtifact('cr-queue')], folders: [] })
-    renderWithProviders(<ArtifactsPage />)
+    const { queryClient } = renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
+    // The card's own ['artifact', slug] read re-renders it with nothing visible
+    // to wait on, so settle it before the window rather than during it. Chain:
+    // list query, card mount, per-card read.
+    await waitFor(
+      () => expect(queryClient.getQueryState(['artifact', 'cr-queue'])?.status).toBe('success'),
+      namedCeiling('CARD_ARTIFACT_READ_SETTLED', 5000),
+    )
 
     // The card container carries the drag listeners; its open button is a child.
     const card = screen.getByRole('button', { name: 'cr queue' }).parentElement as HTMLElement
