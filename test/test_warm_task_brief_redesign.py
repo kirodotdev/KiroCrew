@@ -1008,3 +1008,34 @@ def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
     payload = warm_task_brief._payload(_snapshot(), time.time() - 3600, (entry,))
     assert all("pr" not in change for change in payload["changes_since_away"])
     assert payload["live_prs"][0]["state"] == "merged"
+
+
+def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():
+    # A colour is not a PR, wherever the model writes it.
+    assert inputs.pr_numbers("Set the button to #007bff and #fff.") == set()
+    # A number a field cap cut short, ending in an ellipsis, names nothing.
+    assert inputs.pr_numbers("Fix #26100 and #2610…") == {26100}
+    assert inputs.pr_numbers("line one\nasked about #2610…\nnext") == set()
+    # A number followed by a mid-line ellipsis the model wrote still counts.
+    assert inputs.pr_numbers("#26100… then more") == {26100}
+    # A CJK letter next to the number is still a boundary.
+    assert inputs.pr_numbers("#18901已合并") == {18901}
+
+
+@pytest.mark.asyncio
+async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch):
+    state = _State()
+    slot = _foreground_slot(state)
+    request = "x" * (warm_task_brief._MAX_ASKED_CHARS - 6) + " #26100 and more"
+    base = _snap(original_request=request)
+
+    async def run_model(*args, **kwargs):
+        return '{"headline":"On track."}'
+
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
+    await warm_task_brief._prepare_warm_task_brief(state, slot)
+    row = slot.rows[-1]
+    # The cap cut the number: what is left names no PR the input lacks.
+    assert row["meta"]["brief"]["asked"].endswith("#261…")
+    assert row["meta"]["kind"] == "warm_task_brief_result"

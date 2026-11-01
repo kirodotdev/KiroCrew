@@ -46,17 +46,21 @@ _RECENT_OWNER_TURNS = 3
 _OWNER_SAMPLE_CHARS = 300
 
 # ASCII boundaries: a CJK letter next to a number is a boundary, as a space is.
+# A number ends at a non-word character: ``#007bff`` is a colour, not PR 7.
+# A number just before a field cap's closing ``…`` was cut by the gateway
+# (a five-digit number capped to four digits and ``…``) and names no PR.
+_PR_END = r"(?![0-9A-Za-z_])(?!…$)"
 _PR_URL_RE = re.compile(
-    r"https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})/pull/(\d{1,9})(?![0-9])",
-    re.ASCII,
+    r"https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})/pull/(\d{1,9})" + _PR_END,
+    re.ASCII | re.M,
 )
 # ``owner/repo#N``: a number with its repository.
 _PR_REPO_HASH_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#(\d{1,9})(?![0-9])",
-    re.ASCII,
+    r"(?<![A-Za-z0-9_./-])([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#(\d{1,9})" + _PR_END,
+    re.ASCII | re.M,
 )
 # A bare ``#N`` or ``PR#N``; never an HTML entity (``&#38;``) or part of a path.
-_PR_HASH_RE = re.compile(r"(?<![A-Za-z0-9_&/])(?:PR)?#(\d{1,9})(?![0-9])", re.ASCII | re.I)
+_PR_HASH_RE = re.compile(r"(?<![A-Za-z0-9_&/])(?:PR)?#(\d{1,9})" + _PR_END, re.ASCII | re.I | re.M)
 _REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 
 

@@ -278,7 +278,9 @@ defanged, then the field is capped.
 
 The gateway post-checks the result: any pull-request number (a PR URL,
 `owner/repo#N`, or a bare `#N` or `PR#N`, matched with ASCII boundaries, so a
-CJK letter next to the number is a boundary) in a model-written field that neither the prompt's input nor the original
+CJK letter next to the number is a boundary; a number followed by a letter, as
+in the colour `#007bff`, or cut by a field cap's closing `…` names no PR) in a
+model-written field that neither the prompt's input nor the original
 request named fails the result, and the
 fixed failure line posts instead.
 The result is one mate message: `meta.brief` holds the fields and `content`
