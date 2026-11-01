@@ -214,6 +214,16 @@ describe('resolveTurn: binding a card to a record', () => {
     expect(browserLiveStore.resolveTurn(S, 'call:restored', false, started + 1_000)!.turnId).toBe('t1')
   })
 
+  it('after a reload the restored turn is not claimed by the turn before it', () => {
+    // Two browser turns 30 s apart; the reload restores only the latest record.
+    const earlierRow = Date.now() - 600_000
+    const started = earlierRow + 30_000
+    browserLiveStore.applyEvent(ev({ turn_id: 't2', state: 'done', turn_over: true, started_at_ms: started, ended_at_ms: started + 20_000 }))
+    // The earlier turn's card mounts first and must not take t2.
+    expect(browserLiveStore.resolveTurn(S, 'call:earlier', false, earlierRow)).toBeNull()
+    expect(browserLiveStore.resolveTurn(S, 'call:latest', false, started - 200)!.turnId).toBe('t2')
+  })
+
   it('returns null for a session the relay never spoke about', () => {
     expect(browserLiveStore.resolveTurn('slot:none', 'call:x', true, null)).toBeNull()
   })

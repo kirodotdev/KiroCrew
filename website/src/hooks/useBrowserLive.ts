@@ -120,9 +120,11 @@ export interface BrowserLiveTurn {
   rung: number
   fps: number
   detail: string
-  /** Wall-clock ms the first event arrived, and the ms of `done` / `error`. */
+  /** Wall-clock ms the turn began and ended: the gateway's, else when the event arrived. */
   startedAt: number
   endedAt: number | null
+  /** `startedAt` is the gateway's own stamp, so the bind window can be tight before it. */
+  serverClock: boolean
   /** True once a frame has landed, so the card can swap its placeholder for the canvas. */
   hasFrame: boolean
   /** The frames kept for Replay. Shared by every copy of this record. */
@@ -176,6 +178,12 @@ const BROWSERS: ReadonlySet<string> = new Set(['user_chrome', 'edge', 'kiro_chro
 
 /** How far an anchor row's timestamp may sit from a record's clock and still claim it. */
 const BIND_SLACK_MS = 120_000
+/**
+ * How far BEFORE a gateway-stamped start the anchor row may sit. The row is the
+ * browser call that opened the turn, so it precedes the start by dispatch time
+ * only; an earlier turn's row sits before that turn's end and misses this window.
+ */
+const BIND_LEAD_MS = 10_000
 
 /**
  * Turns per session whose replay ring is kept. A ring holds up to 48 MB, and a
@@ -427,6 +435,7 @@ class BrowserLiveStore {
       // The gateway's own times win on a first sight, so a card a reload restored
       // keeps its turn's times and still binds to that turn's tool rows.
       startedAt: prev?.startedAt ?? ev.started_at_ms ?? now,
+      serverClock: prev ? prev.serverClock : ev.started_at_ms !== undefined,
       // A reopened view keeps the turn's own end, so the done line's duration is the
       // agent's browsing, not the time the person spent looking afterwards.
       endedAt: isEnded(ev.state) || turnOver ? (prev?.endedAt ?? ev.ended_at_ms ?? now) : null,
@@ -553,7 +562,8 @@ class BrowserLiveStore {
     if ((!isEnded(cur.state) && !cur.turnOver) || this.isBound(sessionKey, cur.turnId)) return null
     if (anchorTs !== null) {
       const end = cur.endedAt ?? Date.now()
-      if (anchorTs < cur.startedAt - BIND_SLACK_MS || anchorTs > end + BIND_SLACK_MS) return null
+      const lead = cur.serverClock ? BIND_LEAD_MS : BIND_SLACK_MS
+      if (anchorTs < cur.startedAt - lead || anchorTs > end + BIND_SLACK_MS) return null
     }
     this.anchors.set(ak, cur.turnId)
     return cur
