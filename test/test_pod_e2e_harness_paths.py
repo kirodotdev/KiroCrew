@@ -70,7 +70,7 @@ def _bash_works() -> bool:
         return False
     try:
         probe = subprocess.run(
-            ["bash", "-c", "echo ok"], capture_output=True, text=True, timeout=15
+            ["bash", "-c", "echo ok"], capture_output=True, text=True, encoding="utf-8", timeout=15
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -110,6 +110,7 @@ def _run(
         env={"HOME": home, "PATH": path},
         capture_output=True,
         text=True,
+        encoding="utf-8",
         input=stdin,
     )
 
@@ -172,6 +173,7 @@ def test_guard_works_without_any_readlink_at_all(symlinked_home, tmp_path):
         env={"HOME": symlinked_home, "PATH": f"{empty}:/usr/bin:/bin"},
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     # basename/dirname/cd/pwd are all we may rely on
     assert res.returncode == 0, res.stdout + res.stderr
