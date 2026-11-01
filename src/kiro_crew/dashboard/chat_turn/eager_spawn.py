@@ -470,6 +470,11 @@ def schedule_eager_spawn(
         # An app-owned palette session resolves its agent only after the per-turn
         # ownership check; a speculative start would resolve it before that check.
         return None
+    if getattr(slot, "_doc", ""):
+        # A doc session is a document, not a chat: nothing ever claims a session
+        # started for it, so a speculative start would be a kiro-cli process per
+        # open doc doing nothing.
+        return None
     prev = getattr(slot, "_eager_spawn_task", None)
     if prev is not None and not prev.done():
         prev.cancel()

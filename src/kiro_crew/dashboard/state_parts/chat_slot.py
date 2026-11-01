@@ -138,6 +138,7 @@ class _ChatSlot:
         "_reports_to_creator",
         "_revived_by",
         "_artifact",
+        "_doc",
         "_channel_folder_filed",
         "_resumed_count",
         "_hook_continuation_depth",
@@ -351,6 +352,7 @@ class _ChatSlot:
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
+    _doc: str
     _channel_folder_filed: bool
     folder_id: str
     _folder_changed: bool

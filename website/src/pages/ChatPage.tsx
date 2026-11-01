@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, lazy, Suspense } from 'react'
 import { useAnchoredTriggerRect } from '../hooks/useAnchoredTriggerRect'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
@@ -51,6 +51,14 @@ import ChatPaneChrome from './chat/page/ChatPaneChrome'
 import ChatEmptyState from './chat/page/ChatEmptyState'
 import ChatTitleOverlay from './chat/page/ChatTitleOverlay'
 import ChatTranscriptView from './chat/page/ChatTranscriptView'
+import DocPane from './chat/page/DocPane'
+import BoardPane from './chat/page/board/BoardPane'
+import { isBoardId } from './chat/page/board/boardModel'
+import { isCodebaseId } from './chat/page/codebase/codebaseModel'
+import DashboardPane from './chat/page/dashboard/DashboardPane'
+import { isDashboardId } from './chat/page/dashboard/dashboardModel'
+// three.js is large: the codebase pane loads only when a codebase session opens.
+const CodebasePane = lazy(() => import('./chat/page/codebase/CodebasePane'))
 import ComposerDockView from './chat/page/ComposerDockView'
 import ChatSidePanels from './chat/page/ChatSidePanels'
 import { slotBusySteer } from '../components/chat-input/busySend'
@@ -1093,6 +1101,17 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               splitAnchorForActive={splitAnchorForActive} toggleAct={toggleAct} openSidebar={openSidebar} sidebarOnScreen={sidebarOnScreen} sidebarOpen={sidebarOpen}
               sidePanelWantsMount={sidePanelWantsMount} mobileNewSessionItem={mobileNewSessionItem} mobileSessionsToggle={mobileSessionsToggle} popOutTip={popOutTip} activityTip={activityTip}
             />
+            {currentSlot?.doc ? (
+              // A doc session: the pane is the document (or the whiteboard, for a
+              // board), with no transcript or composer.
+              isBoardId(currentSlot.doc)
+                ? <BoardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+                : isDashboardId(currentSlot.doc)
+                ? <DashboardPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+                : isCodebaseId(currentSlot.doc)
+                ? <Suspense fallback={<div className="flex-1" />}><CodebasePane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} project={currentSlot.project} /></Suspense>
+                : <DocPane key={currentSlot.doc} docId={currentSlot.doc} slotKey={currentSlot.key} title={currentSlot.title} approvalMode={displayMode} />
+            ) : (<>
             <ChatDropOverlay active={dragOver} />
             {/* A failed reactions GET must not read as "no reactions": without
                 this notice `data: reactions = []` would silently drop every
@@ -1166,6 +1185,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               steerWorker={currentSlot?.crew_root ? (currentSlot.title || i18nT('commandCenter.worker_untitled')) : undefined}
               steerWorkerRoot={currentSlot?.crew_root || ''}
             />
+            </>)}
           </div>
           </SearchHighlightContext.Provider>
         )}

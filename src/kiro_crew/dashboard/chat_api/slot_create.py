@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         is_sensitive_path,
         logger,
         members_mod,
+        mint_doc_id,
         owner_start_priority,
         pin_private_agent_store,
         read_bounded_json,
@@ -324,6 +325,21 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     _mode = _coerce_requested_mode(body.get("mode", ""))
     if _mode not in _CREATABLE_MODES:
         return web.json_response({"error": "invalid mode", "code": "invalid_mode"}, status=400)
+    # A doc session: the slot's pane is a markdown document (dashboard/doc_files.py)
+    # instead of a chat. Only a person's own fresh, unnamed, ordinary create may
+    # make one; anything else is refused rather than half-applied.
+    want_doc = body.get("doc") is True
+    if want_doc and (
+        not is_owner_dashboard_request(request)
+        or name
+        or request_app
+        or body.get("artifact")
+        or body.get("ephemeral")
+        or memory_mode != "persistent"
+    ):
+        return web.json_response(
+            {"error": "invalid doc create", "code": "invalid_doc_create"}, status=400
+        )
     # A member-* name is RESERVED for DM threads (born only through the member
     # thread endpoint); `get_or_create_slot` below rejects it with a ValueError
     # that becomes a 409; refused here so the error carries its code. Checked on the
@@ -582,9 +598,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             is_new_slot = _requested_key not in state._slots
         # The binding is stamped only on the owner's own fresh local create below;
         # any request that would skip that branch is refused, never left unbound.
-        if app_agent_owner and not (
+        if (app_agent_owner or want_doc) and not (
             is_new_slot and cfg is not None and is_owner_dashboard_request(request)
         ):
+            if want_doc:
+                return web.json_response(
+                    {"error": "invalid doc create", "code": "invalid_doc_create"}, status=400
+                )
             return web.json_response(
                 {"error": "invalid app agent owner", "code": "invalid_app_agent_owner"},
                 status=400,
@@ -718,6 +738,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         artifact_slug = body.get("artifact") if isinstance(body, dict) else None
         if isinstance(artifact_slug, str) and ARTIFACT_SLUG_RE.match(artifact_slug):
             slot._artifact = artifact_slug
+        if want_doc:
+            # The guard above admits a doc create only for a fresh slot. A board
+            # a codebase or a dashboard is a doc whose id says how its pane is drawn.
+            from kiro_crew.dashboard.doc_files import DOC_KINDS
+
+            kind = body.get("doc_kind")
+            slot._doc = mint_doc_id(kind if kind in DOC_KINDS else "doc")
         # File the slot before the coalesced broadcast, so its first appearance
         # in every client is already inside the folder.
         folder_applied = False
@@ -821,6 +848,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             and not _requested_key
             and body.get("no_session_folder") is not True
             and not body.get("artifact")
+            and not want_doc
             and not request_app
             and not cron_creator
             and not body.get("ephemeral")
@@ -946,7 +974,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # A pinned title must persist too (not just a folder move): without the
         # write, a restart rehydrates the previous title with a refreshable
         # "auto" origin and the background refresh may rewrite the pin.
-        if app_agent_owner:
+        if app_agent_owner or slot._doc:
+            # A doc session needs the same birth line: it never gets a message, so
+            # without one a restart would bring it back as an empty chat.
+            #
             # The app-agent binding is what makes every turn re-check the agent,
             # and nothing else records it: the selection record omits it, and a
             # message-less newborn has no metadata line, so the save path's
@@ -977,7 +1008,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 return web.json_response(
                     {
                         "error": "Could not save the new session. Try again.",
-                        "code": "app_agent_owner_unpersisted",
+                        "code": "doc_unpersisted" if slot._doc else "app_agent_owner_unpersisted",
                     },
                     status=503,
                 )
@@ -1039,7 +1070,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # unprewarmed: a local spawn would run on the wrong machine, a remote one would
     # start billed compute for a chat that may never send a message.
     bound_remote = False
-    if slot.executor != "remote" and existing_slot is None and is_owner_dashboard_request(request):
+    if (
+        slot.executor != "remote"
+        and existing_slot is None
+        and not slot._doc
+        and is_owner_dashboard_request(request)
+    ):
         from kiro_crew.dashboard.handlers.session_environments import (
             apply_default_environment,
         )

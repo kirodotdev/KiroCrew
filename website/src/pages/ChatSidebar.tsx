@@ -698,7 +698,7 @@ function ChatSidebar({
 
   const {
     remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createDocMutation,
   } = useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, onSelectSlot, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession })
   // A conductor-lane member anchor opens on the Members page (see renderSessionRow).
   const navigate = useNavigate()
@@ -812,7 +812,7 @@ function ChatSidebar({
     closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
-    createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
+    createChatMutation, createDocMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,

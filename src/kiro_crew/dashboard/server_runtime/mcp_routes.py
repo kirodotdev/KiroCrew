@@ -694,6 +694,14 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.webapp_preview import register_webapp_preview_routes
 
     register_webapp_preview_routes(app)
+    # Doc sessions: the markdown file behind a slot whose pane is a document.
+    from kiro_crew.dashboard.handlers.doc_files import register_doc_routes
+
+    register_doc_routes(app)
+    # Codebase sessions: the scan their 3D model is drawn from.
+    from kiro_crew.dashboard.handlers.codebase_scan import register_codebase_routes
+
+    register_codebase_routes(app)
     # The document channel artifact and widget frames load from — see
     # handlers/sandbox_doc.py for why a blob: URL was not survivable.
     from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes

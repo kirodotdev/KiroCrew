@@ -6599,6 +6599,23 @@
       "topic": "Topic"
     },
     "chat": {
+      "boardPane": {
+        "load_failed": "Could not open this board"
+      },
+      "codebasePane": {
+        "load_failed": "Could not open this codebase session",
+        "scan_failed": "Could not read the codebase"
+      },
+      "docPane": {
+        "load_failed": "Could not open this doc",
+        "save_failed": "Your last edit was not saved",
+        "conflict_title": "This doc changed somewhere else",
+        "conflict_message": "The file was edited outside this page since you opened it. Your text is still here; choose which version to keep.",
+        "keep_mine": "Keep my version",
+        "take_theirs": "Use the other version",
+        "empty_hint": "Start writing. Select text and press Ask conductor to talk to the doc's conductor.",
+        "send_failed": "Could not reach the conductor"
+      },
       "activityViewer": {
         "activity": "Activity",
         "approve": "Approve",
@@ -7005,6 +7022,10 @@
         "title_named_resolved": "{{who}} asked you",
         "title_resolved": "A tool asked you",
         "url_hint": "Open the link, finish there, then come back and press “I've finished”."
+      },
+      "dashboardPane": {
+        "load_failed": "Could not open this dashboard",
+        "frame_failed": "Could not show this page"
       }
     },
     "chatPage": {
@@ -7139,6 +7160,14 @@
       "needs_your_answer": "Needs your answer",
       "new_incognito_chat": "New incognito chat",
       "new_temporary_chat": "New temporary chat",
+      "new_doc": "New doc",
+      "untitled_doc": "Untitled doc",
+      "new_board": "New board",
+      "untitled_board": "Untitled board",
+      "new_codebase": "New codebase",
+      "untitled_codebase": "Untitled codebase",
+      "new_dashboard": "New dashboard",
+      "untitled_dashboard": "Untitled dashboard",
       "incognito_hint": "Uses memory, learns nothing new",
       "temporary_hint": "No memory, learns nothing new",
       "new_chat_in_folder": "New chat in folder",

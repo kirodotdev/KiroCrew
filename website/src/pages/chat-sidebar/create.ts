@@ -8,6 +8,7 @@ import { unwrapResult } from '@reduxjs/toolkit'
 import { captureForkOrigin, createSlot, forkMayOpen, type ForkOrigin, requestSlotFolderOpen } from '../../store/chatSlice'
 import { focusComposer } from '../chat/composerFocus'
 import { i18nT } from '../../i18n/t'
+import { crewModeAgent } from '../../lib/crewMode'
 import type { Slot } from './types'
 import type { AppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
@@ -408,8 +409,25 @@ export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotIn
     },
     onError: onNewChatError,
   })
+  // Create a doc session: a sidebar row whose pane is a markdown document you
+  // write in instead of a chat. Always activates, like a plain create, so the
+  // new doc is what the user sees.
+  const createDocMutation = useMutation({
+    // `'board'` makes a whiteboard and `'codebase'` a 3D model of a work tree;
+    // both are docs drawn another way.
+    mutationFn: (kind?: 'board' | 'codebase' | 'dashboard') => {
+      setNewChatError('')
+      // A doc runs on the conductor agent: the document is how you talk to it.
+      const title = i18nT(kind === 'board' ? 'pages.chatSidebar.untitled_board' : kind === 'codebase' ? 'pages.chatSidebar.untitled_codebase' : kind === 'dashboard' ? 'pages.chatSidebar.untitled_dashboard' : 'pages.chatSidebar.untitled_doc')
+      return dispatch(createSlot({ doc: true, docKind: kind, agent: crewModeAgent(), agent_kind: 'template', title, defaultFolder: true })).unwrap()
+    },
+    onSuccess: (slot) => {
+      if (slot?.key && store.getState().chat.activeSlot === slot.key) onSelectSlot?.(slot.key)
+    },
+    onError: onNewChatError,
+  })
   return {
     remoteCrewChatPreview,
-    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation,
+    createChatMutation, createRemoteChatMutation, createEphemeralChatMutation, createDocMutation,
   }
 }

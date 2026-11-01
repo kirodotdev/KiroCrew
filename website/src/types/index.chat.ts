@@ -297,6 +297,10 @@ export interface ChatSlot extends TurnIdentityFields {
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */
   artifact?: string
+  /** Doc session binding: id of the markdown file this slot shows as a document
+   * instead of a chat (`/api/docs/<id>`). Empty for an ordinary chat. Set at
+   * create and persisted, so a doc reopens as a doc. */
+  doc?: string
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
   // Board fields

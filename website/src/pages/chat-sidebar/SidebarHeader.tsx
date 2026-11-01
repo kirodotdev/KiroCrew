@@ -1,7 +1,7 @@
 /** The sidebar header: the Sessions title, the list menu (dashboards, board
  *  toggle, cleanup, model switch, tags) and the split New button with its create
  *  menu (folders, private chats, import, chat in a folder or on a crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone } from 'lucide-react'
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, FileText, LayoutDashboard, Boxes, PanelsTopLeft, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone } from 'lucide-react'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
 import { LIST_HEADER_CLS, LIST_TITLE_CLS } from '../../components/listShell'
@@ -18,7 +18,7 @@ import { offlineMenuRow, offlineProps } from '../../utils/offline'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
-  const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
+  const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createDocMutation, createEphemeralChatMutation,
     createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
@@ -176,6 +176,22 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                  *  default. */}
                 <DropdownMenuItem data-testid="new-plain-chat" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_chat'), () => { createChatMutation.mutate({ inNewTab: false }) })}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
+                </DropdownMenuItem>
+                {/* A doc session: a document you write in, in place of a chat. */}
+                <DropdownMenuItem data-testid="new-doc" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_doc'), () => { createDocMutation.mutate(undefined) })}>
+                  <FileText size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_doc')}
+                </DropdownMenuItem>
+                {/* A board session: a FigJam-style whiteboard, in place of a chat. */}
+                <DropdownMenuItem data-testid="new-board" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_board'), () => { createDocMutation.mutate('board') })}>
+                  <LayoutDashboard size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_board')}
+                </DropdownMenuItem>
+                {/* A codebase session: a 3D model of a work tree to point at and refactor. */}
+                <DropdownMenuItem data-testid="new-codebase" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_codebase'), () => { createDocMutation.mutate('codebase') })}>
+                  <Boxes size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_codebase')}
+                </DropdownMenuItem>
+                {/* A dashboard session: an HTML page the conductor builds, to point at and talk about. */}
+                <DropdownMenuItem data-testid="new-dashboard" disabled={creatingSlot} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_dashboard'), () => { createDocMutation.mutate('dashboard') })}>
+                  <PanelsTopLeft size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_dashboard')}
                 </DropdownMenuItem>
                 {/* New folder sits right under New chat: the two everyday
                  *  create actions come first, then a divider, then the less

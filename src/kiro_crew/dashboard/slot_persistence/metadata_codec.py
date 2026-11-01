@@ -57,6 +57,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_transcript_key,
 )
+from kiro_crew.dashboard.doc_files import is_doc_id
 from kiro_crew.dashboard.slot_buffers import (
     committed_filtered_note_ids,
     drop_committed_restored_notes,
@@ -579,6 +580,14 @@ def _read_artifact(r: _Read) -> None:
         r.slot._artifact = artifact
 
 
+def _read_doc(r: _Read) -> None:
+    # Re-validated against the minted id shape: the value reaches a file path and
+    # every client's slot payload, and the metadata line is attacker-writable.
+    doc = r.meta.get("doc")
+    if is_doc_id(doc):
+        r.slot._doc = doc
+
+
 def _read_pinned(r: _Read) -> None:
     if r.meta.get("pinned"):
         r.slot.pinned = True
@@ -1042,6 +1051,16 @@ FIELDS: tuple[Field, ...] = (
             "resume clears it (#17025)"
         ),
     ),
+    # The doc session binding. Restored on every read, RESUME included: unlike a
+    # companion chat, a doc reopened from History is still the same document.
+    Field(
+        "doc",
+        _ALL,
+        attr="_doc",
+        line=_truthy(lambda s: s._doc),
+        merge=_truthy(lambda s: s._doc),
+        read=_read_doc,
+    ),
     Field(
         "pinned",
         _ALL,
@@ -1286,6 +1305,7 @@ LINE_ORDER: tuple[str, ...] = (
     "origin",
     "created_by",
     "artifact",
+    "doc",
     "pinned",
     "mutes_opened",
     "muted",
@@ -1315,6 +1335,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "muted",
     "mode",
     "artifact",
+    "doc",
     "reasoning_effort",
     "color_index",
     "color_hex",

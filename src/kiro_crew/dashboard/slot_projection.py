@@ -467,6 +467,7 @@ class SlotProjection:
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
+            "doc": slot._doc,
             "messages": len(rows),
             "running": turn_in_flight,
             # A loop wake is opening this running turn and its row is not in the

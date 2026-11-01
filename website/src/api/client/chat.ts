@@ -8,6 +8,7 @@
 import type { ChatSlot, ChatSlotDetailResponse, CrewTimeline, CrewWorker, SideSnapshot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { DynamicDashboardCard } from '../../types/dynamicDashboard'
+import type { CodebaseScanResponse } from '../../pages/chat/page/codebase/codebaseModel'
 import { getStoredConsent } from '../../utils/themeConsent'
 import { chatSlotDetailPath } from '../chatSlotPaths'
 import { isLookPreviewFrame } from '../../utils/lookPreview'
@@ -161,11 +162,17 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean) => {
-      const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, doc?: boolean, doc_kind?: 'board' | 'codebase' | 'dashboard') => {
+      // A doc session is always an ordinary persistent slot: the server refuses
+      // a doc in incognito or temporary mode, so the person's default memory
+      // mode never applies to one.
+      const resolvedMemoryMode = doc ? 'persistent' : memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
       return post('/api/chat/slots', {
+        ...(doc ? { doc: true } : {}),
+        // A board or a codebase is a doc drawn as a whiteboard or a 3D model.
+        ...(doc && doc_kind ? { doc_kind } : {}),
         ...(name ? { name } : {}),
         ...(agent ? { agent } : {}),
         // Only beside an agent: a namespace without a name selects nothing.
@@ -188,6 +195,16 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         ...(default_folder && !folder_id ? { default_folder: true } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
+    /** Read a doc session's markdown. `version` is what a save names to be refused
+     *  (409, with the file as it is now) when the doc changed elsewhere. */
+    getDoc: (docId: string) =>
+      fetch('/api/docs/' + encodeURIComponent(docId)).then(j) as Promise<{ content: string; version: string }>,
+    saveDoc: (docId: string, content: string, version: string | null) =>
+      put('/api/docs/' + encodeURIComponent(docId), { content, version }).then(j) as Promise<{ content: string; version: string }>,
+    /** A codebase session's model: the work tree containing `root`, or
+     *  `{unchanged: true}` when `since` is still its signature. */
+    codebaseScan: (root: string, since?: string) =>
+      fetch('/api/codebase/scan?' + new URLSearchParams({ root, ...(since ? { since } : {}) }).toString()).then(j) as Promise<CodebaseScanResponse>,
     /** Inject silent background context into a slot — consumed on the next user
      * message. Used by the artifact companion chat to name the bound artifact so
      * the user's first message needs no slug boilerplate. */

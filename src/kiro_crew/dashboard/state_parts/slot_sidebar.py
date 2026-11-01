@@ -5,7 +5,7 @@ here) that every slot stamps at birth and on each tag edit.
 
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
-Writes: ``_artifact``, ``_channel_folder_filed``, ``_folder_changed``,
+Writes: ``_artifact``, ``_channel_folder_filed``, ``_doc``, ``_folder_changed``,
 ``_folder_suggested``, ``color_hex``, ``color_index``, ``color_theme``, ``folder_id``,
 ``muted``, ``mutes_opened``, ``pinned``, ``tags``, ``tags_revision``, ``theme_consent``,
 ``theme_consent_sha``.
@@ -162,6 +162,11 @@ def init_sidebar_fields(self: _ChatSlot) -> None:
     # active binding from the slots snapshot, and the binding must survive
     # gateway restarts.
     self._artifact = ""
+    # Doc session binding: the id of the markdown file (dashboard/doc_files.py) this
+    # slot shows as a document instead of a chat. Set only at create, never
+    # changed. Serialized and persisted like ``_artifact``, so a doc reopens as a
+    # doc after a restart.
+    self._doc = ""
     # True once per-channel default filing has been APPLIED to this
     # conversation (see kiro_crew.dashboard.channel_folders). Persisted,
     # because it is the only durable record that the automatic placement

@@ -200,10 +200,10 @@ describe('create-button caret menu', () => {
     }
   })
 
-  it('orders the rows: the two everyday creates, a rule, then the other kinds of session', async () => {
-    // New chat and New folder first (the two things people make all day), one
-    // separator, then the private modes and import. No folders are seeded and no
-    // peer is warm, so these six are the whole menu.
+  it('orders the rows: the everyday creates, a rule, then the other kinds of session', async () => {
+    // New chat, New doc and New folder first (the things people make all day),
+    // one separator, then the private modes and import. No folders are seeded
+    // and no peer is warm, so these seven are the whole menu.
     renderSidebar()
     openCreateMenu()
     await findCreateMenuItem('New chat')
@@ -212,6 +212,10 @@ describe('create-button caret menu', () => {
       .map(el => el.getAttribute('role') === 'separator' ? '---' : el.getAttribute('data-testid') ?? el.textContent?.trim())
     expect(rows).toEqual([
       'new-plain-chat',
+      'new-doc',
+      'new-board',
+      'new-codebase',
+      'new-dashboard',
       'new-folder',
       '---',
       'new-incognito-chat',
@@ -227,6 +231,29 @@ describe('create-button caret menu', () => {
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
     // `mode` is the FOURTH positional argument of createChatSlot.
     expect(mocks.createChatSlot.mock.calls.at(-1)?.[3]).toBe('')
+  })
+
+  it('"New doc" creates a doc session, titled and persistent', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await findCreateMenuItem('New doc'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    const args = mocks.createChatSlot.mock.calls.at(-1) ?? []
+    // `title` is the sixth positional argument and `doc` the thirteenth.
+    expect(args[5]).toBe('Untitled doc')
+    expect(args[12]).toBe(true)
+    expect(args[13]).toBeUndefined()
+  })
+
+  it('"New board" creates a board: a doc of the board kind', async () => {
+    renderSidebar()
+    openCreateMenu()
+    fireEvent.click(await findCreateMenuItem('New board'))
+    await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
+    const args = mocks.createChatSlot.mock.calls.at(-1) ?? []
+    expect(args[5]).toBe('Untitled board')
+    expect(args[12]).toBe(true)
+    expect(args[13]).toBe('board')
   })
 
   // The Mates door is gone from this menu: every row here creates something and
