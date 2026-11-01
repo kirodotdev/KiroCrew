@@ -1158,7 +1158,9 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > page and in the install or enable consent dialog, and only the dashboard grants it.
 > `kirocrew app enable` has no consent flag or prompt: for an app whose consent is
 > pending it prints what the app asks for and the app's dashboard link, exits 1 and
-> leaves the app off. It is enforced for app-token
+> leaves the app off. A companion program on the same machine can send the user to
+> that page in the desktop app with `kirocrew://apps/detail/<name>`; the link opens
+> the page and nothing more, so the consent click stays the user's. It is enforced for app-token
 > user-session calls, in addition to `permissions.api`. The app must be enabled.
 > The grant reaches existing local user-owned sessions only; cron, system, remote,
 > member-mode, and other apps' sessions are denied. Apps retain their pre-existing
