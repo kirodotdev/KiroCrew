@@ -10,7 +10,6 @@
   "src/apps/aws-control/ConsoleView.test.tsx",
   "src/apps/aws-control/DrivePage.test.tsx",
   "src/apps/aws-control/shared.test.tsx",
-  "src/apps/command-bar/CommandBarOverlay.artifacts.test.tsx",
   "src/apps/command-bar/CommandBarOverlay.test.tsx",
   "src/apps/issue-radar/pipeline/views/PipelineView.render.test.tsx",
   "src/apps/mochi/test/mochiCopyMarkdown.test.tsx",
