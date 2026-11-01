@@ -212,6 +212,43 @@ Portal returns IdP metadata (`issuer_url`, `client_id`, `scopes`, `login_hint`,
 the token's own `tokenEndpoint` with `grant_type=refresh_token`. Ensure
 `offline_access` scope for refresh.
 
+The dashboard runs it as the fifth sign-in choice ("Continue with Okta, Entra ID or
+another identity provider"; the open form, the waiting screen and a stored sign-in
+use the same name),
+through `POST /api/kas-login/loopback {provider: "external_idp"}` with the
+optional portal lookup hints `external_idp_domain` (a work e-mail domain; a whole
+address is cut to its domain), `external_idp_start_url` (an HTTPS Kiro start URL) and
+`region` (the control-plane region the profile is resolved in, default `us-east-1`):
+
+```
+{portal}/signin?state&code_challenge&redirect_uri=http://localhost:<port>
+        &redirect_from=kirocli&signin_methods=external_idp[&external_idp_*]
+-> http://localhost:<port>/signin/callback?login_option=external_idp&state
+        &issuer_url&client_id&scopes[&login_hint][&audience]      (no code)
+-> GET {issuer_url}/.well-known/openid-configuration
+        (issuer must equal issuer_url; HTTPS authorization/token endpoints)
+-> 302 to authorization_endpoint, its own query kept
+        (fresh PKCE pair, fresh state, scopes + offline_access)
+-> http://localhost:<port>/oauth/callback?code&state
+-> token_endpoint (form, client_id + code_verifier, no client secret)
+-> ListAvailableProfiles with TokenType: EXTERNAL_IDP -> profile ARN
+-> KasToken(identity=external_idp, provider=ExternalIdp, auth_method=external_idp,
+            token_endpoint, scopes (as granted), audience, profile_arn, region)
+```
+
+`portal.wait_for_callback(on_idp_handoff=...)` serves both legs: the first hit must be
+the portal's hand-off with the portal state and no code; after it only the IdP leg's
+state is accepted, and a code before the hand-off fails the login. The endpoints come
+from the issuer's own discovery document, never from the redirect. The stored scope is
+the one the token response granted (the requested one when the response names none);
+the refresh repeats it and the `audience`, and keeps a narrower scope a refresh grants.
+
+Loopback only: an arbitrary external IdP has no device-code grant, so the choice is
+offered only where a loopback sign-in can land (gateway transport `loopback` and a
+dashboard served from a loopback address), the begin answers 409
+`loopback_unavailable` elsewhere, and a timeout or failure ends on the problem screen
+instead of restarting on the device flow. kiro-cli and the IDE have the same limit.
+
 ## Refresh
 
 Each identity refreshes on its own endpoint; the module owns the refresh and the
@@ -520,7 +557,7 @@ engine instead ([aws-control.md](aws-control.md)).
   KAS relay alone, so a build or policy that cannot select KAS has nothing to
   sign in for, and a row that is not KAS has no use for it. The section embeds
   the same views `KasLoginGate` renders (`KasLoginEmbedded`, card chrome instead
-  of the scrim + aside door; in that chrome the four provider choices are
+  of the scrim + aside door; in that chrome the provider choices are
   outlined and sit in a two-column grid, none accent-filled, because the detail's
   own primary button is "Use {{name}}", from
   `components.kiroPrerequisiteGate.use_agent`) and adds a signed-in summary (provider,

@@ -110,7 +110,7 @@ class _StubService(KasLoginService):
         if identity != "social":
             raise ValueError(identity)
 
-    async def begin_loopback(self, provider_str, *, replaces=""):
+    async def begin_loopback(self, provider_str, *, replaces="", **_organization_hints):
         self.calls.append(("loopback", provider_str, replaces))
         if provider_str == "facebook":
             raise ValueError(provider_str)
@@ -373,7 +373,7 @@ async def test_begin_answers_409_when_a_sign_out_landed_mid_begin():
         async def begin_device(self, provider_str, *, start_url="", region="", replaces=""):
             raise SignedOutDuringLoginError()
 
-        async def begin_loopback(self, provider_str, *, replaces=""):
+        async def begin_loopback(self, provider_str, *, replaces="", **_organization_hints):
             raise SignedOutDuringLoginError()
 
     for handler in (api_kas_login_begin_device, api_kas_login_begin_loopback):
