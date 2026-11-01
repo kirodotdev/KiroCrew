@@ -1,6 +1,7 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { wholeMatchAutolinkHref } from '../../utils/autolinkRules'
 import { classifyShortName, sessionKeyFrom } from '../../utils/sessionKeys'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
@@ -52,11 +53,28 @@ export function unfurlableHref(href: string | null | undefined): string | null {
 }
 
 /** Resolve the unfurl target for an href under the current gate. A hook (reads
- *  context), so it is called unconditionally by both link components. */
-export function useUnfurlHref(href: string | null | undefined): string | null {
+ *  context), so it is called unconditionally by both link components.
+ *
+ *  `label` is the link's visible text. A link whose text is wholly one
+ *  operator link-pattern match and whose href is that match's expansion is
+ *  never unfurled: the matched key (`PROJ-1`) is the label the operator
+ *  configured the pattern for, and an unfurl replaces it with the page title,
+ *  or with the SSO login host when the target sits behind sign-in. Such a link
+ *  stays a plain anchor reading the matched text, as it already does with
+ *  previews off. The check re-derives the expansion from the text, so an
+ *  authored link cannot claim this form for some other destination. */
+export function useUnfurlHref(href: string | null | undefined, label?: string): string | null {
   const { enabled, live } = useContext(LinkUnfurlCtx)
-  if (!enabled || live) return null
-  return unfurlableHref(href)
+  const target = enabled && !live ? unfurlableHref(href) : null
+  // Memoized: the pattern scan drains the per-message link-preview pool, and a
+  // meta fetch re-renders the link without re-arming it. That pool is separate
+  // from the prose pass's, so ordinary links here never leave a later key
+  // in the message as plain text.
+  const patternLink = useMemo(
+    () => !!target && !!label && wholeMatchAutolinkHref(label, 'unfurl') === target,
+    [target, label],
+  )
+  return patternLink ? null : target
 }
 
 /**
@@ -81,10 +99,17 @@ export function soleLinkInParagraph(node?: HastElement): { href: string; text: s
   }
   const href = anchor?.properties?.href
   if (!anchor || typeof href !== 'string') return null
-  const text = anchor.children
-    .map((c) => (c.type === 'text' ? c.value : ''))
+  return { href, text: hastText(anchor) }
+}
+
+/** An element's visible text, read through nested formatting (`**PROJ-9**`)
+ *  and image `alt`s, the way `textOf` reads the rendered anchor's children —
+ *  so the paragraph's unfurl gate and `MdAnchor`'s see the same label. */
+function hastText(node: HastElement): string {
+  if (node.tagName === 'img' && typeof node.properties?.alt === 'string') return node.properties.alt
+  return node.children
+    .map((c) => (c.type === 'text' ? c.value : c.type === 'element' ? hastText(c) : ''))
     .join('')
-  return { href, text }
 }
 
 /**
