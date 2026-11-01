@@ -410,6 +410,31 @@ async def api_update_message(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "text or blocks required", "code": "content_required"}, status=400
         )
+    # The calling app's own messaging grant, as every send_message egress leg asks
+    # it: an edit publishes new agent-authored text to the message's audience, so
+    # an app whose messaging is revoked must not reach Slack by editing a post it
+    # made earlier. Asked before the owner DM is resolved, because opening a DM is
+    # itself visible to the recipient.
+    app_refusal = await asyncio.to_thread(
+        _vet_app_messaging,
+        effective_request_app(state, request),
+        request.headers.get("X-Session-Key", ""),
+        tool_name="update_message",
+    )
+    if app_refusal:
+        _sel().log_tool_invocation(
+            session_key="api",
+            source="api",
+            tool_name="update_message",
+            tool_kind="slack",
+            outcome="denied",
+            downstream_service="slack",
+            resources=f"channel={channel}",
+        )
+        return web.json_response(
+            {"error": f"slack edit refused: {app_refusal}", "code": "channel_not_permitted"},
+            status=403,
+        )
     # A DM is authorized by IDENTITY, a room by the tracked-channel allowlist --
     # and a DM must be the CURRENT owner's, not merely D-prefixed. Passing every
     # `D...` on the prefix alone would leave any DM this bot ever posted in a

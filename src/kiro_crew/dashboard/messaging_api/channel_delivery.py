@@ -574,7 +574,9 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
     return ""
 
 
-def _vet_app_messaging(request_app: str, session_key: str) -> str:
+def _vet_app_messaging(
+    request_app: str, session_key: str, *, tool_name: str = "send_message"
+) -> str:
     """The calling app's own ``capabilities.messaging`` grant; ``""`` when permitted.
 
     The MCP ``send_message`` tool vets ``capabilities.messaging`` before it posts,
@@ -583,6 +585,8 @@ def _vet_app_messaging(request_app: str, session_key: str) -> str:
     knows the app: ``effective_request_app`` reads it off the attested token or
     the calling session's owner. Every proactive egress leg asks this before it
     sends, so an app whose messaging is revoked reaches no channel on any leg.
+    ``update_message``'s edit route asks it too, under its own *tool_name* in the
+    audit row: an edit publishes new text to the audience the message already has.
 
     An empty *request_app* is the person, whose surface profile the MCP tool
     already vets, so it is not re-asked here. Fail-closed like the ``channels``
@@ -598,7 +602,7 @@ def _vet_app_messaging(request_app: str, session_key: str) -> str:
             "capabilities.messaging",
             "",
             session_key=session_key or HOST_SESSION_KEY,
-            tool_name="send_message",
+            tool_name=tool_name,
             app=request_app,
             fail_closed=True,
         )
