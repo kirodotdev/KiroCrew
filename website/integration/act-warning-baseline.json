@@ -407,7 +407,6 @@
   "src/test/UpdatePill.test.tsx",
   "src/test/UserMessage.quote.test.tsx",
   "src/test/UserMessage.test.tsx",
-  "src/test/UserMessagePasteCov80.test.tsx",
   "src/test/WebPreviewPanel.frameHint.test.tsx",
   "src/test/WebPreviewPanel.test.tsx",
   "src/test/WeekGridCoverage.test.tsx",
