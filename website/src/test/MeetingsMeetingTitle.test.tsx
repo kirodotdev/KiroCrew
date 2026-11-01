@@ -23,11 +23,12 @@ describe('MeetingTitle', () => {
     await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
   })
 
-  it('saves on blur', () => {
+  it('saves on blur', async () => {
     const { onRename, input } = openEditor()
     fireEvent.change(input, { target: { value: 'Retro' } })
     fireEvent.blur(input)
     expect(onRename).toHaveBeenCalledWith('Retro')
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
   })
 
   it('cancels on Escape without saving', () => {
