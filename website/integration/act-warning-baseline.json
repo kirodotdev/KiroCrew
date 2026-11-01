@@ -1,6 +1,5 @@
 [
   "integration/MarkdownPanelComment.integration.test.tsx",
-  "src/apps/auto-research/ResearchLabPage.test.tsx",
   "src/apps/aws-control/ConsoleView.test.tsx",
   "src/apps/aws-control/DrivePage.test.tsx",
   "src/apps/aws-control/shared.test.tsx",
