@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import pinned_fs
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp import client_claude_seed as _client_claude_seed
 from kiro_crew.acp import client_claude_session as _client_claude_session
 from kiro_crew.acp import client_copilot as _client_copilot
@@ -706,6 +707,9 @@ class AcpClient:
         # clock (``_TOOL_STALL_TIMEOUT``) stays armed and the stale clock
         # disarmed for a call whose row was dropped but may still be running.
         self._active_tool_calls = InFlightIdSet()
+        # The current parallel tool batch, for the opt-in batch write guard
+        # that ``approve_tool`` consults (``acp.batch_guard``).
+        self._batch_window = batch_guard.BatchWindow()
         # Armed by _handle_compaction_status on a `failed` status and cleared at
         # turn start: gates the _COMPACTION_FAILED_TURN_BUDGET check in
         # _prompt_loop. _compaction_failed_turn records that the check fired, so
@@ -1330,6 +1334,11 @@ class AcpClient:
     _apply_session_permission_routing = _client_permissions._apply_session_permission_routing
     _verify_goose_routing = _client_permissions._verify_goose_routing
     approve_tool = _client_permissions.approve_tool
+
+    def take_batch_refusal(self, request_id: str | int) -> str | None:
+        """The batch write guard's reason for refusing *request_id*, taken once."""
+        return batch_guard.take_refusal(self, request_id)
+
     _note_pi_gate_denied = _client_permissions._note_pi_gate_denied
     reject_tool = _client_permissions.reject_tool
     _handle_permission = _client_permissions._handle_permission

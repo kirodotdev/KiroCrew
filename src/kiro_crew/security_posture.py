@@ -151,6 +151,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # the SEL audit log. That is a local audit record, not an output bound for
         # a human or a third party.
         "permission_floor.py",
+        # The same audit hygiene for the batch write guard's own refusal row
+        # (``batch_guard.audit_refusal``), through permission_floor's helpers: a
+        # local SEL record and a gateway log line, not an egress.
+        "acp/batch_guard.py",
         # Transfer-side log hygiene: both redact a URL down to scheme+host before it
         # reaches a gateway log line ("Downloading %s from %s", a fetch failure, a
         # manifest that overran its byte bound). The url is operator- or

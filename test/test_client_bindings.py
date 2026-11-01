@@ -374,6 +374,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "supports_config_option": ("function", False, "b86d69c93890", "client_model_selection"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "client_class"),
     "supports_steer": ("property", False, "a6632a57e602", "client_class"),
+    "take_batch_refusal": ("function", False, "85a6851f62f8", "client_class"),
     "touch_activity": ("function", False, "b60c5fea256e", "client_lifecycle"),
     "turn_finished_cleanly": ("function", False, "a6632a57e602", "client_turn_control"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "client_usage"),
