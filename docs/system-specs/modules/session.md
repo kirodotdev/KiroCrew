@@ -842,7 +842,11 @@ if needed — no compaction, since background tasks are stateless:
 - Process-tree RSS at or over `session.watchdog_rss_max_mb` → recycle. When
   that knob is 0 (which turns the chat-session sweep off) or above
   `BACKGROUND_RSS_FALLBACK_MB` (1536 MiB, below the 4096 default), the ceiling
-  is that fallback, so this runtime keeps its own lower bound either way.
+  is that fallback, so this runtime keeps its own lower bound either way. On
+  Windows the figure is the larger of the tree's working set and its committed
+  private bytes, and the chat-session sweep also warns about this runtime's
+  tree when its busiest process holds more than 50,000 handles, whether or not
+  the knob is set.
 - Below thresholds → no-op (session stays warm)
 
 Callers: heartbeat callback, taskrunner lesson extraction, `background_turn()`,
@@ -2176,7 +2180,20 @@ against sweep completeness, and are torn down at `close_all`.
   `RSS_REBOUND_WINDOW_SECS` (24h); the next ceiling crossing by that key inside
   the window logs one `RSS recycle rebound` WARNING with the ceiling, the current
   and pre-recycle RSS and the elapsed time — a sign that
-  `session.watchdog_rss_max_mb` sits below the workload's steady footprint. Measurement happens off-lock, so
+  `session.watchdog_rss_max_mb` sits below the workload's steady footprint.
+  Windows reads the larger of the tree's working set and its committed private
+  bytes (`get_session_rss_mb`), because a process that commits gigabytes while
+  its working set stays at ~120 MB is invisible to the RSS-only read and is
+  exactly what exhausts the host's commit charge. Independently of the ceiling,
+  a Windows tree with more than 50,000 handles in one process logs one
+  `... handles ... warning threshold` WARNING per session per 24h
+  (`session_cleanup_handles.warn_handle_leaks`, run first in the same tick).
+  That probe covers every live runtime, including the persistent, channel and
+  busy ones the ceiling skips and the runtimes no session entry holds
+  (`_companion_runtime_pids()`: the shared background runtime and sub-agent
+  runtimes, draining ones included, warned once per pid as "a companion
+  runtime"), and it opens no reset. Measurement happens
+  off-lock, so
   the victim's session object is captured at collection time and handed to
   `reset(expect_session=..., skip_if_busy=True)`, which re-verifies identity +
   not-busy atomically under the lock; a recycle that actually happened logs a

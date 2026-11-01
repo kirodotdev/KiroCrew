@@ -303,7 +303,10 @@ _MOVED: dict[str, tuple[str, ...]] = {
         limit_malloc_arenas log_malloc_arena_cap trim_heap_if_needed HeapTrimMaintainer
         proc_peak_rss_bytes _FD_DIRS count_open_fds proc_rss_bytes_for_pid _SUBTREE_MAX_PROCS
         proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
-        proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
+        proc_rss_tree_mb_for_pid _windows_memory_counters_for_pid
+        proc_private_bytes_for_pid proc_handle_count_for_pid _windows_tree_readings
+        _windows_tree_sum_mb proc_private_tree_mb_for_pid proc_handle_tree_max_for_pid
+        proc_cpu_seconds _prev_win_sys_cpu system_memory
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib
         _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL

@@ -79,8 +79,12 @@ class TestGetSessionRssMb:
                 "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
                 return_value=512.7,
             ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_private_tree_mb_for_pid",
+                return_value=600.2,
+            ),
         ):
-            assert session_pid.get_session_rss_mb(100) == 512
+            assert session_pid.get_session_rss_mb(100) == 600
 
     def test_windows_uses_the_lineage_validated_helper_not_a_raw_walk(self) -> None:
         """Toolhelp's PPID field is never cleared when a parent exits and Windows
@@ -93,6 +97,10 @@ class TestGetSessionRssMb:
             patch(
                 "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
                 return_value=1.0,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_private_tree_mb_for_pid",
+                return_value=None,
             ),
             patch(
                 "kiro_crew.session_pid._build_child_map",
@@ -110,8 +118,28 @@ class TestGetSessionRssMb:
                 "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
                 return_value=None,
             ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_private_tree_mb_for_pid",
+                return_value=None,
+            ),
         ):
             assert session_pid.get_session_rss_mb(100) == 0
+
+    def test_windows_private_bytes_win_when_they_exceed_the_working_set(self) -> None:
+        """The 10 GB leak this issue reports held a 120 MB working set."""
+        with (
+            patch("kiro_crew.session_pid.sys.platform", "win32"),
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_rss_tree_mb_for_pid",
+                return_value=120.0,
+            ),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_private_tree_mb_for_pid",
+                return_value=10_240.0,
+            ),
+        ):
+            assert session_pid.get_session_rss_mb(100) == 10_240
 
     def test_accumulates_root_plus_descendants(self) -> None:
         # tree: 100 -> [200, 300]; 300 -> [400]
@@ -275,6 +303,22 @@ class TestWindowsRssPrimitives:
             assert "_windows_process_parent_map" not in inspect.getsource(function)
 
 
+class TestGetSessionHandlePeak:
+    def test_none_off_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(session_pid.platform_compat, "IS_WINDOWS", False)
+        assert session_pid.get_session_handle_peak(9) is None
+
+    def test_windows_delegates_to_the_validated_tree(self) -> None:
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.proc_handle_tree_max_for_pid",
+                return_value=471_000,
+            ),
+        ):
+            assert session_pid.get_session_handle_peak(100) == 471_000
+
+
 class TestRssThresholdCheck:
     @pytest.fixture(autouse=True)
     def _on_the_proc_route(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -381,6 +425,92 @@ class TestRssThresholdCheck:
         assert manager.reset.await_count == 2
         recycled = {key: rss for key, (_, rss) in _rss_recycled(manager).items()}
         assert recycled == {"dashboard:a": 2048, "dashboard:b": 2048}
+
+    @pytest.mark.asyncio
+    async def test_windows_handle_leak_is_warned_even_with_the_ceiling_off(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock()
+        manager.get_pid = MagicMock(return_value=4242)
+        with (
+            patch.object(session.platform_compat, "IS_WINDOWS", True),
+            patch("kiro_crew.session_parts.sweeps.get_session_handle_peak", return_value=471_000),
+            caplog.at_level(logging.WARNING),
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_not_awaited()
+        assert "471000 handles" in caplog.text
+
+    @pytest.mark.parametrize(
+        "key, busy",
+        [
+            pytest.param("dashboard:x", True, id="busy_session"),
+            pytest.param(next(iter(session._PERSISTENT_KEYS)), False, id="persistent_key"),
+            pytest.param(f"{session._CHANNEL_PREFIX}team-eng", False, id="channel_key"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_windows_handle_leak_is_warned_on_a_tree_the_ceiling_skips(
+        self, key, busy, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions[key] = _session_stub(busy=busy)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        with (
+            patch.object(session.platform_compat, "IS_WINDOWS", True),
+            patch("kiro_crew.session.get_session_rss_mb", return_value=999999) as gs,
+            patch("kiro_crew.session_parts.sweeps.get_session_handle_peak", return_value=471_000),
+            caplog.at_level(logging.WARNING),
+        ):
+            await manager._rss_threshold_check()
+        gs.assert_not_called()
+        manager.reset.assert_not_awaited()
+        assert f"Session {key} tree holds 471000 handles" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_windows_handle_leak_is_warned_on_a_runtime_no_session_holds(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The shared background runtime lives outside ``_sessions`` but is probed."""
+        manager = _make_manager(rss_max_mb=0)
+        manager.reset = AsyncMock()
+        manager._companion_runtime_pids = MagicMock(return_value={5151})
+        with (
+            patch.object(session.platform_compat, "IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_parts.sweeps.get_session_handle_peak", return_value=471_000
+            ) as peak,
+            caplog.at_level(logging.WARNING),
+        ):
+            await manager._rss_threshold_check()
+            await manager._rss_threshold_check()
+        manager.reset.assert_not_awaited()
+        peak.assert_called_once_with(5151)
+        assert caplog.text.count("A companion runtime (background or sub-agent) tree") == 1
+        assert "471000 handles on pid 5151" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_companion_pid_a_session_already_names_is_warned_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager = _make_manager(rss_max_mb=0)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.get_pid = MagicMock(return_value=4242)
+        manager._companion_runtime_pids = MagicMock(return_value={4242})
+        with (
+            patch.object(session.platform_compat, "IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_parts.sweeps.get_session_handle_peak", return_value=471_000
+            ) as peak,
+            caplog.at_level(logging.WARNING),
+        ):
+            await manager._rss_threshold_check()
+        peak.assert_called_once_with(4242)
+        assert "Session dashboard:x tree holds 471000 handles" in caplog.text
+        assert "companion runtime" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_one_failed_victim_does_not_skip_the_rest(self) -> None:

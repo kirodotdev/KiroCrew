@@ -1785,6 +1785,7 @@ class TestGatewayMemoryLines:
 
     def test_reports_ceiling_and_live_rss(self, monkeypatch) -> None:
         self._cfg(monkeypatch, 1536)
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 4242)
         monkeypatch.setattr(
             cli_doctor.platform_compat,
@@ -1840,12 +1841,92 @@ class TestGatewayMemoryLines:
 
     def test_unreadable_rss_and_config_never_raise(self, monkeypatch) -> None:
         monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", MagicMock(side_effect=OSError))
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
         monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 7)
         monkeypatch.setattr(cli_doctor.platform_compat, "proc_rss_bytes_for_pid", lambda pid: None)
         monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda name: None)
         ceiling, rss = cli_doctor._gateway_memory_lines()
         assert "could not read" in ceiling
         assert "unreadable" in rss and "7" in rss
+
+    def test_windows_reports_private_bytes_and_the_busiest_handle_count(self, monkeypatch) -> None:
+        """Working set stayed at 120 MB while the tree committed 10 GB and held
+        942,000 handles; the doctor must say both."""
+        self._cfg(monkeypatch, 1536)
+        monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 4242)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "proc_rss_bytes_for_pid",
+            lambda pid: 120 * 1024 * 1024,
+        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "proc_private_tree_mb_for_pid",
+            lambda pid: 10_240.0,
+        )
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "proc_handle_tree_max_for_pid",
+            lambda pid: 942_000,
+        )
+        out = "\n".join(cli_doctor._gateway_memory_lines())
+        assert "120 MiB" in out
+        assert "10,240 MiB committed across the tree" in out
+        assert "942,000" in out and "warning threshold" in out
+
+    def test_windows_reads_a_serving_gateway_from_its_run_record(self, monkeypatch) -> None:
+        """A serving Windows gateway hides its lock stamp; its run record still names it."""
+        from kiro_crew import gateway_lock
+        from kiro_crew.doctor_checks import resources
+
+        self._cfg(monkeypatch, 1536)
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: None)
+
+        def _held(home):
+            raise gateway_lock.LockProbeError(home / "gateway.lock", OSError("locked"), held=True)
+
+        monkeypatch.setattr(gateway_lock, "lock_holder", _held)
+        monkeypatch.setattr(resources, "_windows_recorded_gateway_pid", lambda: 4242)
+        monkeypatch.setattr(cli_doctor, "_gateway_rss_bytes", lambda pid: 120 * 1024 * 1024)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "proc_private_tree_mb_for_pid", lambda pid: 10_240.0
+        )
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "proc_handle_tree_max_for_pid", lambda pid: 942_000
+        )
+        out = "\n".join(cli_doctor._gateway_memory_lines())
+        assert "120 MiB (pid 4242)" in out
+        assert "10,240 MiB committed across the tree" in out
+        assert "942,000" in out
+        assert "could not locate" not in out
+
+    def test_windows_without_a_fresh_run_record_stays_indeterminate(self, monkeypatch) -> None:
+        from kiro_crew import gateway_lock
+        from kiro_crew.doctor_checks import resources
+
+        self._cfg(monkeypatch, 1536)
+        monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: None)
+
+        def _held(home):
+            raise gateway_lock.LockProbeError(home / "gateway.lock", OSError("locked"), held=True)
+
+        monkeypatch.setattr(gateway_lock, "lock_holder", _held)
+        monkeypatch.setattr(resources, "_windows_recorded_gateway_pid", lambda: None)
+        _ceiling, rss = cli_doctor._gateway_memory_lines()
+        assert "could not locate the gateway process" in rss
+
+    def test_the_recorded_pid_is_read_for_the_resolved_port(self, monkeypatch) -> None:
+        from kiro_crew import cli_server, port_resolution
+        from kiro_crew.doctor_checks import resources
+
+        monkeypatch.setattr(port_resolution, "resolve_client_port", lambda _explicit: 8123)
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", {8123: 4242}.get)
+        assert resources._windows_recorded_gateway_pid() == 4242
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: None)
+        assert resources._windows_recorded_gateway_pid() is None
 
     def test_falls_back_to_trusted_ps_when_the_shim_has_no_route(self, monkeypatch) -> None:
         """macOS: the shim answers None, so the doctor reads ``ps -o rss=`` (KiB)."""

@@ -2770,7 +2770,13 @@ and a memory line: the gateway's own resident set (`gateway_rss_mb`) and the
 per-session tree ceiling the cleanup watchdog recycles at
 (`watchdog_rss_max_mb`, spelled out as disabled when `0`). Both fields are
 published by `/api/status` for this line; `kirocrew doctor` prints the same two
-readings at the top of its Memory Pressure section, on every platform.
+readings at the top of its Memory Pressure section, on every platform. On
+Windows the doctor also prints the gateway tree's committed private bytes and
+its busiest process's handle count, flagging a count above 50,000: a process
+leaking handles can exhaust a Windows host while every memory figure stays
+small. A serving Windows gateway keeps its lock file under a mandatory lock, so
+the doctor finds it through the gateway's own `run/gateway-<port>.pid` record
+instead, and only while that record's start token matches the live process.
 
 It exits 1 when nothing answers the resolved port (a refused connection,
 printed as "not running"), so a script or health check can gate on `$?`
