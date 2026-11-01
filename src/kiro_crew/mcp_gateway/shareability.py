@@ -277,9 +277,7 @@ def _all_tools_read_only(annotations: list[dict]) -> bool:
     return all(a.get("readOnlyHint") is True for a in annotations)
 
 
-def assess(
-    evidence: ShareEvidence, identity_keys: Collection[str] = ()
-) -> ShareVerdict:
+def assess(evidence: ShareEvidence, identity_keys: Collection[str] = ()) -> ShareVerdict:
     """Turn evidence into a verdict. Pure; no IO, no config, no clock.
 
     ``identity_keys`` is passed IN rather than read here precisely to keep that
@@ -352,9 +350,7 @@ def assess(
     #    Checked BEFORE the probe gate: it is a config fact, true whether or not
     #    the server ever started.
     if evidence.session_bound_by_construction:
-        return verdict(
-            Strength.DISQUALIFIED, [Reason("session_bound_by_construction")]
-        )
+        return verdict(Strength.DISQUALIFIED, [Reason("session_bound_by_construction")])
 
     # 4. Config-derived notes. Computed BEFORE the probe gate for the same reason.
     #
