@@ -999,3 +999,31 @@ async def test_the_recordings_root_is_hidden_from_every_sandbox_and_file_tool() 
     assert rc.RECORDINGS_DIRNAME in sandbox._CREW_HIDDEN_LEAVES
     assert rc.RECORDINGS_DIRNAME in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
     assert any(Path(d).name == rc.RECORDINGS_DIRNAME for d in sensitive_home_dirs())
+
+
+async def test_a_writer_that_falls_behind_drops_frames_and_marks_the_turn_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Frames wait in memory only up to the queue limit; past it they are dropped and
+    the replay says it is incomplete, so a stalled disk cannot fill the gateway."""
+    import threading
+
+    rec, store, clock = make_recorder(tmp_path)
+    monkeypatch.setattr(rc, "QUEUED_FRAMES_MAX", 2)
+    gate = threading.Event()
+    real_add = store.add_frame
+
+    def _slow_add(*args: Any, **kwargs: Any) -> bool:
+        gate.wait(5)  # flake-ok: released below once the frames are queued
+        return real_add(*args, **kwargs)
+
+    monkeypatch.setattr(store, "add_frame", _slow_add)
+    rec.turn_started(KEY, TURN, "https://a.example/")
+    for i in range(6):
+        clock.now += 1000
+        rec.frame(KEY, jpeg((i * 40, 0, 0)), 64, 40, [], True)
+    assert rec._recs[KEY].queued_frames <= 2
+    gate.set()
+    await rec.flush()
+    assert rec._recs[KEY].queued_frames == 0 and rec._recs[KEY].queued_bytes == 0
+    assert store.turn_detail(KEY, TURN)["truncated"] is True

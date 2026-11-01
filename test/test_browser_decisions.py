@@ -871,3 +871,12 @@ def test_a_screenshot_that_is_not_a_png_is_not_read(tmp_path):
     assert decide_mod._read_png(shot) is None
     shot.write_bytes(_png())
     assert decide_mod._read_png(shot) == _png()
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "mkfifo"), reason="POSIX FIFOs only")
+def test_a_fifo_in_the_screenshot_place_does_not_hold_the_read(tmp_path):
+    import os
+
+    shot = tmp_path / "shot.png"
+    os.mkfifo(shot)
+    assert decide_mod._read_png(shot) is None

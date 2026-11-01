@@ -59,6 +59,12 @@ RECORDINGS_DIRNAME = "browser-recordings"
 META_VERSION = 1
 #: Frames closer together than this collapse onto the latest: 5 fps.
 MIN_FRAME_INTERVAL_MS = 200
+#: Frames (and their JPEG bytes) one session may have waiting for the writer. A
+#: writer that falls behind past either limit drops the next frames and marks the
+#: turn ``truncated``, so a stalled disk cannot fill the gateway's memory.
+QUEUED_FRAMES_MAX = 32
+QUEUED_FRAME_BYTES_MAX = 16 * 1024 * 1024
+
 #: Events kept per turn; past it the log stops growing (the turn is ``truncated``).
 MAX_EVENTS_PER_TURN = 5000
 #: What a turn's meta.json and directory are counted as, so a turn with no frames still costs.
@@ -639,6 +645,17 @@ class RecordingStore:
             self._write_meta(sdir, info)
             return True
 
+    def mark_truncated(self, session_key: str, turn_id: str) -> None:
+        """Record that a turn lost frames before they reached the store."""
+        with self._lock:
+            live = self._live_info(session_key, turn_id)
+            if live is None:
+                return
+            sdir, info = live
+            if not info.truncated:
+                info.truncated = True
+                self._write_meta(sdir, info)
+
     def delete_session(self, session_key: str) -> bool:
         """Remove every recording of *session_key*. Returns whether any existed."""
         if not session_key:
@@ -781,6 +798,9 @@ class _SessionRec:
     #: Size of the latest frame the stream offered: the space a point drawn now is in.
     frame_w: int = 0
     frame_h: int = 0
+    #: Frames queued and not yet written, and their JPEG bytes (``_keep``).
+    queued_frames: int = 0
+    queued_bytes: int = 0
 
 
 class LiveRecorder:
@@ -960,19 +980,34 @@ class LiveRecorder:
     ) -> None:
         rec.last_kept_ms = frame.ts
         rec.last_digest = digest or hashlib.sha256(frame.jpeg + repr(frame.boxes).encode()).digest()
-        self._submit(
-            session_key,
-            lambda: self.store.add_frame(
-                session_key,
-                frame.turn_id,
-                frame.jpeg,
-                frame.width,
-                frame.height,
-                frame.boxes,
-                True,
-                frame.ts,
-            ),
-        )
+        size = len(frame.jpeg)
+        if (
+            rec.queued_frames >= QUEUED_FRAMES_MAX
+            or rec.queued_bytes + size > QUEUED_FRAME_BYTES_MAX
+        ):
+            # The writer is behind: drop this frame, and say so on the replay.
+            self._submit(session_key, lambda: self.store.mark_truncated(session_key, frame.turn_id))
+            return
+        rec.queued_frames += 1
+        rec.queued_bytes += size
+
+        def _write() -> None:
+            try:
+                self.store.add_frame(
+                    session_key,
+                    frame.turn_id,
+                    frame.jpeg,
+                    frame.width,
+                    frame.height,
+                    frame.boxes,
+                    True,
+                    frame.ts,
+                )
+            finally:
+                rec.queued_frames -= 1
+                rec.queued_bytes -= size
+
+        self._submit(session_key, _write)
 
     def _flush_pending(self, session_key: str, rec: _SessionRec) -> None:
         frame, rec.pending = rec.pending, None

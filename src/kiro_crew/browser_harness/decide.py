@@ -452,7 +452,9 @@ def _read_png(path: Any) -> bytes | None:
     file is opened without following a link, must be a regular file of bounded
     size, and must start with the PNG signature; anything else is no frame.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    # O_NONBLOCK: a FIFO in the file's place must not hold the open forever.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
     if os.path.islink(path):
         return None
     fd = os.open(path, flags)
