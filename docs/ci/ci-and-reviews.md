@@ -751,6 +751,8 @@ ordinary Linux shard excludes only `ipv6_required` and the dedicated hosted lane
 those items; the macOS command passes no marker filter at all. Explicit reduced-scope targets keep their
 existing discovery semantics and are partitioned at the same file boundary.
 Leaf-test repeat runs do not load the file-sharding plugin and remain unsharded.
+Leaf corpus gates run once across the matrix: each Linux job runs only the gates
+`file_shard` assigns to it, and a job that owns none skips the group.
 
 Both Linux and Windows backend commands opt into the existing payload-free
 `scripts.ci_pytest_progress` recorder. Linux supplies it to full, reduced and leaf
