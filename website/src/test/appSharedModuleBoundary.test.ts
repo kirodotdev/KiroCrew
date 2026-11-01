@@ -16,6 +16,34 @@ function uiExports(): string[] {
   }).sort()
 }
 
+const hasExportModifier = (node: ts.Node) =>
+  ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)
+
+// Every runtime name a barrel module exports, read from source: named re-exports,
+// exported functions, classes and constants, and `export *` from a relative module
+// followed into it. Static, so the check costs no import of the whole SDK graph.
+function valueExports(path: string): string[] {
+  const file = ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest)
+  const names = file.statements.flatMap((statement): string[] => {
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.isTypeOnly) return []
+      if (!statement.exportClause && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+        const target = new URL(statement.moduleSpecifier.text, new URL(path, import.meta.url)).pathname
+        return valueExports(`${target}/index.ts`)
+      }
+      if (!statement.exportClause || !ts.isNamedExports(statement.exportClause)) return []
+      return statement.exportClause.elements.filter(element => !element.isTypeOnly).map(element => element.name.text)
+    }
+    if (!hasExportModifier(statement)) return []
+    if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name) return [statement.name.text]
+    if (ts.isVariableStatement(statement)) {
+      return statement.declarationList.declarations.flatMap(d => ts.isIdentifier(d.name) ? [d.name.text] : [])
+    }
+    return []
+  })
+  return [...new Set(names)].sort()
+}
+
 function stubExports(source: string): string[] {
   const file = ts.createSourceFile('stub.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   return file.statements.flatMap(statement => {
@@ -59,6 +87,17 @@ describe('app shared-module boundaries', () => {
     expect(stubExports(source)).toEqual(names)
     const host = Object.fromEntries(names.map(name => [name, () => name]))
     const exported = loadStub(source, '@kirocrew/ui', host)
+    for (const name of names) expect(exported[name]).toBe(host[name])
+  })
+
+  it('exports exactly the app SDK barrel values, so no name fails an app at link time', () => {
+    const source = read('../../public/vendor/kirocrew-app-sdk.mjs')
+    const names = valueExports('../app-sdk/index.ts')
+    expect(names).toContain('APP_SDK_LEVEL')
+    expect(names).toContain('fmtCurrency')
+    expect(stubExports(source)).toEqual(names)
+    const host = Object.fromEntries(names.map(name => [name, () => name]))
+    const exported = loadStub(source, '@kirocrew/app-sdk', host)
     for (const name of names) expect(exported[name]).toBe(host[name])
   })
 

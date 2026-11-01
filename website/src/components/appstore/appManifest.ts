@@ -1,3 +1,4 @@
+import { activeLocale } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -434,16 +435,69 @@ function keysFor(app: { name?: string, _registry?: string, origin?: string }): M
     : undefined
 }
 
-/** Localised app name, falling back to the manifest's own value then its id. */
-export function appDisplayName(app: { name?: string; displayName?: string; _registry?: string; origin?: string }): string {
+/**
+ * Where an app's own translations of its listing copy can sit: the manifest's
+ * optional `l10n` block, on an installed record's `manifest` or spread onto a
+ * store row. Read for an app of ANY origin -- it is the app's content, not a
+ * trust claim -- and only when no catalog key covers the app (`keysFor`).
+ */
+export type AppL10nCarrier = { l10n?: unknown; manifest?: unknown }
+
+/** Per-field caps, mirroring the manifest parser's: an entry past one is ignored. */
+const L10N_TEXT_CAPS = { displayName: 120, description: 1000, pageLabel: 60 } as const
+const L10N_MAX_HIGHLIGHTS = 12
+const L10N_MAX_HIGHLIGHT_CHARS = 300
+
+/** The reader's locale entries, most specific first: `pt-BR`, then `pt`. */
+function l10nEntries(app: AppL10nCarrier | undefined): Record<string, unknown>[] {
+  const manifest = app?.manifest
+  const block = app?.l10n
+    ?? (manifest && typeof manifest === 'object' ? (manifest as { l10n?: unknown }).l10n : undefined)
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return []
+  const locale = activeLocale()
+  const base = locale.split('-')[0]
+  const out: Record<string, unknown>[] = []
+  for (const key of locale === base ? [locale] : [locale, base]) {
+    // hasOwnProperty, as in `keysFor`: the block is app data, and a locale named
+    // like an Object.prototype member must not resolve to an inherited value.
+    if (!Object.prototype.hasOwnProperty.call(block, key)) continue
+    const entry = (block as Record<string, unknown>)[key]
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) out.push(entry as Record<string, unknown>)
+  }
+  return out
+}
+
+/** The app's own translation of one text field for the reader's locale, or undefined. */
+export function appL10nText(app: AppL10nCarrier | undefined, field: keyof typeof L10N_TEXT_CAPS): string | undefined {
+  for (const entry of l10nEntries(app)) {
+    const value = entry[field]
+    if (typeof value === 'string' && value && value.length <= L10N_TEXT_CAPS[field]) return value
+  }
+  return undefined
+}
+
+/** The app's own translated highlights for the reader's locale, or undefined. */
+function appL10nHighlights(app: AppL10nCarrier | undefined): string[] | undefined {
+  for (const entry of l10nEntries(app)) {
+    const value = entry.highlights
+    if (Array.isArray(value) && value.length > 0 && value.length <= L10N_MAX_HIGHLIGHTS
+      && value.every(item => typeof item === 'string' && item.length <= L10N_MAX_HIGHLIGHT_CHARS)) {
+      return value as string[]
+    }
+  }
+  return undefined
+}
+
+/** Localised app name, falling back to the app's own translation, its manifest value, then its id. */
+export function appDisplayName(app: { name?: string; displayName?: string; _registry?: string; origin?: string } & AppL10nCarrier): string {
   const k = keysFor(app)
-  return k ? i18nT(k.displayName) : (app.displayName || app.name || '')
+  return k ? i18nT(k.displayName) : (appL10nText(app, 'displayName') || app.displayName || app.name || '')
 }
 
 /** Localised one-paragraph app description. */
-export function appDescription(app: { name?: string; description?: string; _registry?: string; origin?: string }): string {
+export function appDescription(app: { name?: string; description?: string; _registry?: string; origin?: string } & AppL10nCarrier): string {
   const k = keysFor(app)
-  return k ? i18nT(k.description) : (app.description || '')
+  return k ? i18nT(k.description) : (appL10nText(app, 'description') || app.description || '')
 }
 
 /**
@@ -453,11 +507,15 @@ export function appDescription(app: { name?: string; description?: string; _regi
  * than off the app record, and `App.tsx` resolves `page.label || displayName || name`.
  * Only installed apps contribute nav pages, so there is no `_registry` to weigh here.
  */
-export function appPageLabel(name: string | undefined, label?: string, displayName?: string, origin?: string): string {
+export function appPageLabel(name: string | undefined, label?: string, displayName?: string, origin?: string, l10n?: unknown): string {
   const k = keysFor({ name, origin })
   // An overlay-only builtin declares no page-label key; fall through to the caller's
-  // own strings exactly as a third-party app does.
-  return k?.pageLabel ? i18nT(k.pageLabel) : (label || displayName || name || '')
+  // own strings exactly as a third-party app does. Without a catalog key the app's
+  // own `l10n` block is read first: its page label, else its translated name.
+  if (k?.pageLabel) return i18nT(k.pageLabel)
+  if (k) return label || displayName || name || ''
+  const own = { l10n }
+  return appL10nText(own, 'pageLabel') || label || appL10nText(own, 'displayName') || displayName || name || ''
 }
 
 /**
@@ -470,10 +528,11 @@ export function appPageLabel(name: string | undefined, label?: string, displayNa
  * Losing a bullet is a worse failure than showing it in the wrong language, and
  * `check-app-manifest-sync.mjs` fails the build for the same mismatch anyway.
  */
-export function appHighlights(app: { name?: string; highlights?: string[]; _registry?: string; origin?: string }): string[] {
+export function appHighlights(app: { name?: string; highlights?: string[]; _registry?: string; origin?: string } & AppL10nCarrier): string[] {
   const manifest = app.highlights || []
   const k = keysFor(app)
-  if (!k || k.highlights.length !== manifest.length) return manifest
+  if (!k) return appL10nHighlights(app) ?? manifest
+  if (k.highlights.length !== manifest.length) return manifest
   return k.highlights.map(key => i18nT(key))
 }
 
