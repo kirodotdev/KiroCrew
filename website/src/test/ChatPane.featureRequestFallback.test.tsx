@@ -11,7 +11,8 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
+import { api } from '../api/client'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -108,9 +109,10 @@ function mount(messages: Msg[]) {
 }
 
 describe('ChatPane — a feature request refused for a usage limit offers the issue form (#13342)', () => {
-  it('renders the form link with its explanation on the usage-limit row of the pill\'s turn', () => {
+  it('renders the form link with its explanation on the usage-limit row of the pill\'s turn', async () => {
     mount([requestRow, limitRow])
 
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
     const card = screen.getByTestId('error-card')
     expect(card).toHaveAttribute('data-usage-limit-fallback', 'true')
     expect(card).toHaveTextContent('The monthly usage limit has been reached.')

@@ -153,7 +153,6 @@
   "src/test/ChatPageMoreCoverage.test.tsx",
   "src/test/ChatPageW3Coverage.test.tsx",
   "src/test/ChatPane.dirSend.test.tsx",
-  "src/test/ChatPane.featureRequestFallback.test.tsx",
   "src/test/ChatPane.headerStacking.test.tsx",
   "src/test/ChatPane.pinnedPrompt.test.tsx",
   "src/test/ChatPane.scrollChrome.test.tsx",
