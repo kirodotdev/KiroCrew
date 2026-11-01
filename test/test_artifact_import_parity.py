@@ -26,13 +26,7 @@ from pathlib import Path
 
 from kiro_crew.artifacts import _EXT_KIND_MAP, ALLOWED_KINDS
 
-_MODULE = (
-    Path(__file__).resolve().parents[1]
-    / "website"
-    / "src"
-    / "lib"
-    / "artifactImport.ts"
-)
+_MODULE = Path(__file__).resolve().parents[1] / "website" / "src" / "lib" / "artifactImport.ts"
 
 # `export const IMPORTABLE_EXT_KINDS: Record<...> = { ... }` -- capture the
 # object body up to the closing brace at column 0.

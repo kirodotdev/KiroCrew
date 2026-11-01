@@ -269,7 +269,6 @@ test/test_apps_uninstall_keep_specific.py
 test/test_artifact_companion.py
 test/test_artifact_folder_handlers.py
 test/test_artifact_folders.py
-test/test_artifact_import_parity.py
 test/test_artifact_sharing_handlers.py
 test/test_artifact_source.py
 test/test_artifacts.py
