@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { screen, act, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import App from '../App'
 import { ApiError } from '../api/client'
 
@@ -114,6 +115,22 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as typeof ResizeObserver
 
+/** appShell flips `shellEntered` from a 600ms timer after mount: wait it out so it cannot land inside a plain sleep. */
+const waitShellEntered = () => waitFor(
+  () => expect(screen.getByTestId('dashboard-shell')).not.toHaveClass('animate-rise'),
+  namedCeiling('SHELL_ENTERED', 5000),
+)
+
+/**
+ * Mount the shell and wait for what it fetches by itself. Chain: App mounts, its mount-time queries
+ * (theme-boot, kiro-usage, kirocrewConfig, system-metrics, apps, instances, ...) each answer and re-render App.
+ */
+async function mountShell() {
+  const rendered = renderWithProviders(<App />, { route: '/chat' })
+  await waitFor(() => expect(rendered.queryClient.isFetching()).toBe(0), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
+  return rendered
+}
+
 describe('mobile nav drawer insets', () => {
   /** The drawer's className, read from source: it only renders below 768px and
    *  jsdom applies no CSS, so a rendered assertion here would either need the
@@ -156,9 +173,9 @@ describe('mobile nav drawer insets', () => {
 })
 
 describe('TopbarMetrics widget', () => {
-  it('shows only the Activity toggle button when metricsOpen is not set', () => {
+  it('shows only the Activity toggle button when metricsOpen is not set', async () => {
     localStorage.removeItem('mc-topbar-metrics')
-    renderWithProviders(<App />, { route: '/chat' })
+    await mountShell()
     expect(screen.getByLabelText('System metrics')).toBeInTheDocument()
     expect(screen.queryByText(/CPU /)).not.toBeInTheDocument()
     expect(screen.queryByText(/MEM /)).not.toBeInTheDocument()
@@ -294,7 +311,7 @@ describe('onCycleAgent keyboard shortcut', () => {
     const { store } = await import('../store')
     ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockClear()
     store.dispatch({ type: 'chat/setActiveSlot', payload: null })
-    renderWithProviders(<App />, { route: '/chat' })
+    await mountShell()
     act(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
     })
@@ -378,7 +395,7 @@ describe('onCycleAgent edge cases', () => {
     ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockClear()
     store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false }] })
     store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
-    renderWithProviders(<App />, { route: '/chat' })
+    await mountShell()
     act(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'A', code: 'KeyA', altKey: true, shiftKey: true, bubbles: true }))
     })
@@ -500,7 +517,7 @@ describe('onCyclePrevAgent edge cases', () => {
     const { store } = await import('../store')
     ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockClear()
     store.dispatch({ type: 'chat/setActiveSlot', payload: null })
-    renderWithProviders(<App />, { route: '/chat' })
+    await mountShell()
     act(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', code: 'KeyZ', altKey: true, shiftKey: true, bubbles: true }))
     })
@@ -516,7 +533,7 @@ describe('onCyclePrevAgent edge cases', () => {
     ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockClear()
     store.dispatch({ type: 'dashboard/sseSlots', payload: [{ key: 'slot-1', messages: 0, running: false }] })
     store.dispatch({ type: 'chat/setActiveSlot', payload: 'slot-1' })
-    renderWithProviders(<App />, { route: '/chat' })
+    await mountShell()
     act(() => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', code: 'KeyZ', altKey: true, shiftKey: true, bubbles: true }))
     })
@@ -924,6 +941,7 @@ describe('Kiro credits pill — edge cases', () => {
     // Opening the modal re-asks for the config: the shared client never lets
     // the query go stale by itself, so this is the only retry there is.
     await waitFor(() => expect(vi.mocked(api.kirocrewConfig).mock.calls.length).toBeGreaterThan(configReads))
+    await waitShellEntered()
     // While that retry is in flight the query is back to `pending` with its
     // error cleared. The segment must NOT drop to the hidden non-Kiro shape
     // for that window: the dash, the notice and the modal all stay.
@@ -952,6 +970,7 @@ describe('Kiro credits pill — edge cases', () => {
     await act(async () => { resolveUsage({ usage: { available: false } }); await Promise.resolve() })
     await waitFor(() => expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument())
     await screen.findByTitle('Kiro account & credits — no balance reading yet; open to refresh')
+    await waitShellEntered()
     // Past any close (and its exit animation): still the same dialog, with Refresh.
     // flake-ok: pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
     // nosemgrep: semgrep.kirocrew.test-promise-sleep -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
