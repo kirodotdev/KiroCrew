@@ -12959,6 +12959,7 @@
       "search_older_sessions": "以前のセッションを検索…",
       "search_sessions": "セッションを検索…",
       "session_dropped_into_itself": "セッションをそれ自身にはドロップできません… それ自身に… それ自身に…",
+      "session_failed_to_archive_other": "{{count}} セッションのアーカイブに失敗しました",
       "session_failed_to_switch_other": "{{count}} セッションの切り替えに失敗しました",
       "session_other": "{{count}} セッション",
       "session_source": "セッション",

@@ -12978,6 +12978,8 @@
       "last_7_days": "[Ĺàşţ 7 Ðàýş ··········]",
       "dashboard_source": "[Ðàşĥƀøàŕð ··············]",
       "connected_to": "[Çøññèçţèð ţø {{label}} ············]",
+      "session_failed_to_archive_one": "[{{count}} şèşşìøñ ƒàìĺèð ţø àŕçĥìṽè ··················]",
+      "session_failed_to_archive_other": "[{{count}} şèşşìøñş ƒàìĺèð ţø àŕçĥìṽè ···················]",
       "session_failed_to_switch_one": "[{{count}} şèşşìøñ ƒàìĺèð ţø şẁìţçĥ ··················]",
       "session_failed_to_switch_other": "[{{count}} şèşşìøñş ƒàìĺèð ţø şẁìţçĥ ··················]",
       "session_source": "[Şèşşìøñ ···········]",

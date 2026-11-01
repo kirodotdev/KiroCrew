@@ -13191,6 +13191,8 @@
       "search_older_sessions": "Ältere Sitzungen suchen…",
       "search_sessions": "Sitzungen suchen…",
       "session_dropped_into_itself": "Eine Sitzung lässt sich nicht in sich selbst ablegen… in sich selbst… in sich selbst…",
+      "session_failed_to_archive_one": "{{count}} Sitzung konnte nicht archiviert werden",
+      "session_failed_to_archive_other": "{{count}} Sitzungen konnten nicht archiviert werden",
       "session_failed_to_switch_one": "{{count}} Sitzung konnte nicht gewechselt werden",
       "session_failed_to_switch_other": "{{count}} Sitzungen konnten nicht gewechselt werden",
       "session_one": "{{count}} Sitzung",
