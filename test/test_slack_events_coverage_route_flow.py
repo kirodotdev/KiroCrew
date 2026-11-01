@@ -259,6 +259,32 @@ class TestRouteMessageAttachments:
         assert not img.exists()
 
     @pytest.mark.asyncio
+    async def test_a_fence_opened_on_the_mention_line_ends_before_the_image(self, tmp_path):
+        # The fence is judged on the text the agent receives, past the mention,
+        # so an attached file's delimiter line cannot close it after the path.
+        orch = _make_orch()
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG")
+        files = [{"mimetype": "image/png", "url_private": "https://x.invalid/a.png"}]
+        text = "<@UBOT> ```python\nprint(1)"
+        with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
+            with patch("kiro_crew.slack.events.stt_available", return_value=False):
+                with patch(
+                    "kiro_crew.slack.events.process_slack_files",
+                    new_callable=AsyncMock,
+                    return_value=([str(img)], ["[File: n.md]\n```\nx\n```\n[End of file]"]),
+                ):
+                    with patch(
+                        "kiro_crew.slack.events.handle_message", new_callable=AsyncMock
+                    ) as hm:
+                        await ev._route_message(
+                            orch, _event(text=text, files=files), ev.SeenCache(), is_mention=True
+                        )
+                        await _drain(orch)
+        body = hm.await_args[0][3]
+        assert body.startswith(f"```python\nprint(1)\n```\n{img}\n\n[File: n.md]")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("use_transport", [False, True])
     async def test_spool_gets_the_pre_ingestion_message(self, tmp_path, use_transport):
         """The shutdown spool must not quote temp paths or file bodies.

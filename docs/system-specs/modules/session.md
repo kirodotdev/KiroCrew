@@ -3524,8 +3524,8 @@ judge and the skill merge) quote transcript rows the same way and go out the
 same way, through `stream_and_collect(..., allow_image=False)`.
 `chat_title._title_text` does not call the scrubber at all: it strips markdown
 images and attachment markers its own way and keeps an escaped or code-quoted
-`![x](…)` readable, while the scrubber's bare-path pass replaces the
-destination inside an escaped one (a code-quoted one survives both passes). A
+`![x](…)` readable; the scrubber keeps both as written too, because it reads
+escaped and code-quoted markup as literal text, as the prompt builder does. A
 channel's bare path is neither, so it stays in the title prompt as text. A row's picture belonged
 to an earlier turn and a text vehicle cannot carry bytes, so the reference is
 the only thing that would arrive, and both readings of it are wrong: while the
