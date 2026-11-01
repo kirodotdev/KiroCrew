@@ -58,18 +58,18 @@ describe('streaming reveal idle settle', () => {
     expect(cls).toContain('ft-idle')
   })
 
-  it('composes the root class list from one term per state: group, smooth, streaming, then the settle', () => {
+  it('composes the root class list from one term per state: group, smooth, streaming, then the settle, then the flow reset', () => {
     mount(LONG)
-    expect(root().className).toBe('group ft-anim-smooth ft-streaming')
+    expect(root().className).toBe('group ft-anim-smooth ft-streaming [&>:first-child>:first-child]:mt-0 [&>:first-child>:first-child>:first-child]:mt-0')
     act(() => void vi.advanceTimersByTime(500))
-    expect(root().className).toBe('group ft-anim-smooth ft-streaming ft-idle')
+    expect(root().className).toBe('group ft-anim-smooth ft-streaming ft-idle [&>:first-child>:first-child]:mt-0 [&>:first-child>:first-child>:first-child]:mt-0')
     // Without `smooth` every animation term is absent, streaming or not.
     const plain = render(
       <div data-testid="mdwrap-plain">
         <MarkdownRenderer content={LONG} streaming />
       </div>,
     )
-    expect((plain.getByTestId('mdwrap-plain').firstElementChild as HTMLElement).className).toBe('group')
+    expect((plain.getByTestId('mdwrap-plain').firstElementChild as HTMLElement).className).toBe('group [&>:first-child>:first-child]:mt-0 [&>:first-child>:first-child>:first-child]:mt-0')
   })
 
   it('keeps the settle latched when a chunk arrives after it settled', () => {
