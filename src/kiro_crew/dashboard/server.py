@@ -1040,7 +1040,7 @@ async def start_dashboard(
         # Static files — the React dist/ build, registered whether or not it is
         # built yet (each route resolves static/dist per request), then static/.
         _register_dist_static_routes(app, _DIST_DIR)
-        if _STATIC_DIR.is_dir():
+        if await asyncio.to_thread(_STATIC_DIR.is_dir):
             app.router.add_static(
                 "/static",
                 _STATIC_DIR,
