@@ -299,7 +299,7 @@ def test_signed_out_kiro_cli_explains_failing_turns(world):
     assert f["evidence"] == {"installed": True, "authenticated": False, "failed_turns_24h": 1}
     assert f["fix"]["steps"] == [
         "On the gateway host run: kiro-cli login",
-        "Start a new chat after signing in.",
+        "Send your message again after signing in.",
     ]
 
 

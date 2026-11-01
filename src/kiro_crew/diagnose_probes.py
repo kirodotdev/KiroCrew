@@ -563,7 +563,7 @@ def probe_kiro_cli_auth(ctx: ProbeContext) -> dict[str, Any]:
             evidence,
             _steps(
                 f"On the gateway host run: {status.login_command}",
-                "Start a new chat after signing in.",
+                "Send your message again after signing in.",
             ),
         )
     if not status.installed:
