@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -151,7 +151,7 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       // Precondition: the target really is excluded before the reveal.
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
 
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
 
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
       expect(search).toHaveValue('')
@@ -165,7 +165,7 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
       expect(utils.queryByText('alpha session')).not.toBeNull()
 
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
 
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
       // Persisted, not just state: the sidebar unmounts when the drawer
@@ -181,7 +181,7 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
 
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
 
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
       expect(localStorage.getItem(RUNNING_ONLY_LS_KEY)).toBe('0')
@@ -202,7 +202,7 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       ])
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
 
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
 
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
       expect(JSON.parse(localStorage.getItem(TAG_FILTER_LS_KEY) || '[]')).toEqual(['t1'])
@@ -225,7 +225,7 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
       fireEvent.change(search, { target: { value: 'alpha' } })
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
 
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
 
       await waitFor(() => expect(utils.queryByText('beta session')).not.toBeNull())
       expect(search).toHaveValue('')
