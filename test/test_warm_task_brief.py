@@ -261,8 +261,9 @@ async def test_closed_socket_stamps_the_thread_it_showed(monkeypatch):
 @pytest.mark.parametrize(("typed_ago", "briefs"), [(600, False), (2 * 3600, True)])
 async def test_old_naive_rows_read_as_local_time(monkeypatch, local_tz, typed_ago, briefs):
     # Older builds wrote naive local wall-clock. Read as UTC west of UTC, a
-    # message typed ten minutes ago would look seven hours old.
-    local_tz("America/Los_Angeles")
+    # message typed ten minutes ago would look seven hours old. The zone has no
+    # DST: in a fall-back hour a naive stamp is ambiguous and reads an hour off.
+    local_tz("America/Phoenix")
     state, slot, log = _thread(monkeypatch, user_ago=None)
     log.rows.insert(
         0,
