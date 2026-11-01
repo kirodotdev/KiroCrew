@@ -200,7 +200,6 @@
   "src/test/ProjectsPageCoverage.test.tsx",
   "src/test/ProjectsPageWorkspaceShell.test.tsx",
   "src/test/RemoteCrewPanel.test.tsx",
-  "src/test/SchedulePage.test.tsx",
   "src/test/SelectToAsk.test.tsx",
   "src/test/SelectionToolbar.composer.test.tsx",
   "src/test/SessionActionsMenu.folderOrder.test.tsx",
