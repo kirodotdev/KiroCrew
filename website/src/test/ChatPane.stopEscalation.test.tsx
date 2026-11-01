@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, fireEvent, act } from '@testing-library/react'
+import { render, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import type { ChatSlot } from '../types'
 import { Provider } from 'react-redux'
@@ -11,6 +11,7 @@ import chatReducer, { sseChatMessage } from '../store/chatSlice'
 import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { FORCE_KILL_ARMING_MS } from '../utils/stopDebounce'
+import { namedCeiling } from './namedCeiling'
 
 /* The Stop button in a pane that is NOT the active slot — the Crew Members DM
  * thread is the everyday case — must behave like the main chat's (#9547):
@@ -126,8 +127,12 @@ beforeEach(() => {
 })
 
 describe('ChatPane Stop: parity with the main chat', () => {
-  it('shows the pending-cancel state and the force hint while the slot is soft_pending', () => {
-    const { queryByTestId } = mount(makeStore('tool_running', { stop_state: 'soft_pending', stopping: true }))
+  it('shows the pending-cancel state and the force hint while the slot is soft_pending', async () => {
+    const store = makeStore('tool_running', { stop_state: 'soft_pending', stopping: true })
+    const { queryByTestId } = mount(store)
+    // Chain: the pane's detail query resolves after mount, then its hydrate effect marks the slot hydrated in the
+    // store. Each hop is a render, so the wait carries a named ceiling rather than the 1000ms default.
+    await waitFor(() => expect(store.getState().chat.slotHydrated?.[SLOT]).toBe(true), namedCeiling('PANE_DETAIL_HYDRATED', 5000))
     expect(queryByTestId('stop-button-pulsing')).not.toBeNull()
     expect(queryByTestId('stop-force-hint')).not.toBeNull()
     expect(queryByTestId('stop-button-armed')).toBeNull()
