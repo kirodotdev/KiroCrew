@@ -134,7 +134,7 @@ async def _run_app_build(
     """
     build_cmds: list[list[str]] = []
 
-    if (build_dir / "package.json").is_file():
+    if await asyncio.to_thread((build_dir / "package.json").is_file):
         # Resolve to a full path, mirroring the pip branch below: on Windows npm
         # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
         # by the bare name "npm".
@@ -199,9 +199,9 @@ async def _run_app_build(
         # Nothing here that would build (or a requirements.txt entry nothing
         # reads): no build step, reported below like any source-as-is checkout.
     elif (
-        (build_dir / "pyproject.toml").is_file()
-        or (build_dir / "setup.py").is_file()
-        or (build_dir / "requirements.txt").is_file()
+        await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+        or await asyncio.to_thread((build_dir / "setup.py").is_file)
+        or await asyncio.to_thread((build_dir / "requirements.txt").is_file)
     ):
         # `sys.executable -m pip`, NOT `shutil.which("pip")`.
         #
@@ -290,8 +290,9 @@ async def _run_app_build(
             )
         else:
             pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+            if await asyncio.to_thread((build_dir / "requirements.txt").is_file) and not (
+                await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+                or await asyncio.to_thread((build_dir / "setup.py").is_file)
             ):
                 build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
             else:
