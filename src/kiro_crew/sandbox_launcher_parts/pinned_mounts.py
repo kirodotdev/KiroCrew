@@ -254,6 +254,101 @@ def _kind_reached(code):
     return 0
 
 
+def _read_published_record(record):
+    """The ``(dev, ino)`` pairs per leaf the gateway's publication record lists, or ``None``.
+
+    *record* is the plan's ``published_file_record``. The record's directory is opened
+    no-follow and the file inside it no-follow, relative to that descriptor, so neither a
+    link at the directory's name nor one at the file's can aim the read elsewhere. The
+    directory is a sealed read-only leaf of every sandbox; this read is what that seal
+    protects. Only a regular file of bounded size whose first line is THIS plan's nonce
+    is read: a record left by an earlier gateway process, or one a sandbox of an older
+    build could still write, vouches for nothing. Plain text rather than JSON, so the
+    launcher needs no import beyond the ones it already loads before isolation.
+    """
+    path = os.fsencode(record.get("record") or "")
+    nonce = record.get("nonce") or ""
+    if not path or not nonce:
+        return None
+    directory, leaf = os.path.split(path)
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError:
+        return None
+    finally:
+        os.close(dir_fd)
+    try:
+        st = os.fstat(fd)
+        if (st.st_mode & _S_IFMT) != _S_IFREG or st.st_size > 65536:
+            return None
+        data = os.read(fd, 65537)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        lines = data.decode("ascii").split("\n")
+    except UnicodeDecodeError:
+        return None
+    if not lines or lines[0] != nonce:
+        return None
+    published: dict[str, set[tuple[int, int]]] = {}
+    for line in lines[1:]:
+        fields = line.split(" ")
+        if len(fields) != 3 or not fields[1].isdigit() or not fields[2].isdigit():
+            continue
+        published.setdefault(fields[0], set()).add((int(fields[1]), int(fields[2])))
+    return published
+
+
+def _published_by_gateway(launch, target, occupant, expect_occupant, fd):
+    """Whether the changed object pinned at *target* is one the gateway itself published.
+
+    The one recreation the pin admits, and only for the names the plan lists (the two
+    runtime-config files). The gateway saves them through an atomic rename, so the
+    object at the name after a save is a new inode, and a save landing between the
+    pre-spawn pass and this pin is the gateway's own write rather than a substitution.
+    What tells the two apart is the gateway's publication record, which lists the
+    ``(dev, ino)`` of every file it published at each name in this process. Every
+    condition is required:
+
+    * the name is one the plan vouches for;
+    * the ENTRY at the name is the same kind of entry the pass saw -- a plain file where
+      a plain file was, or the very same link where a link was (the gateway writes a
+      symlinked config through to its referent and leaves the link alone);
+    * the object the mask lands on, read off the descriptor the pin holds, is a regular
+      file whose identity the record lists under this name.
+
+    A rewrite the gateway did not make, a swap after one of its writes, and any change of
+    kind fail one of these and refuse exactly as before. The gateway writes the record
+    before the rename that publishes the file, so one read answers.
+    """
+    record = launch.published_file_record
+    if not record or expect_occupant is None:
+        return False
+    name = os.fsdecode(target)
+    if name not in record.get("names", ()):
+        return False
+    if bool(occupant[2]) != bool(expect_occupant[2]):
+        return False
+    if occupant[2] and tuple(occupant[:3]) != tuple(expect_occupant[:3]):
+        return False
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        return False
+    if (st.st_mode & _S_IFMT) != _S_IFREG:
+        return False
+    published = _read_published_record(record)
+    return published is not None and (st.st_dev, st.st_ino) in published.get(
+        os.path.basename(name), ()
+    )
+
+
 def _pin_mount_path(launch, target, kind, require_present=False):
     """Resolve *target* ONCE and hand it on as a path that cannot be re-aimed.
 
@@ -511,15 +606,17 @@ def _pin_mount_path(launch, target, kind, require_present=False):
     # another directory satisfies it while the real tree sits unmasked at whatever name
     # the writer moved it to.
     #
-    # THERE ARE NO EXCEPTIONS FOR LEGITIMATE RECREATION, DELIBERATELY. A protected target
-    # whose inode changes between the pass that observed it and this pin is refused, and
-    # some of those changes are ordinary rather than hostile: an atomic write replaces an
+    # NO RECREATION IS ADMITTED ON THE STRENGTH OF ITS SHAPE. A protected target whose
+    # inode changes between the pass that observed it and this pin is refused, and some
+    # of those changes are ordinary rather than hostile: an atomic write replaces an
     # inode by design, and a staging directory recreated mid-flight is a new object.
     # Which of those a sandbox should permit is a threat-model decision about what the
     # operator's own tooling may do to a protected name while an agent runs -- it is not
     # derivable from this function, and inventing a list here would either break ordinary
-    # hosts or quietly reopen the hole. The module spec enumerates the recreations this
-    # rejects so the choice is made from a list rather than a hypothesis.
+    # hosts or quietly reopen the hole. The module spec enumerates the recreations and the
+    # decision for each. Exactly one is admitted, and on EVIDENCE rather than shape: the
+    # gateway's own save of a runtime-config file, proven by its publication record
+    # (``_published_by_gateway``, applied below once the kind has been checked).
     #
     # The link-ness flag is compared alongside device and inode, not only the two. A
     # filesystem is free to RECYCLE an inode number the moment its prior holder is
@@ -584,6 +681,12 @@ def _pin_mount_path(launch, target, kind, require_present=False):
         # when the loop that does not cover it looks, so refusing here would fail the
         # spawn on the loop that was never meant to mask it.
         return None, None
+    # The single admitted recreation: the gateway's own save of a runtime-config file
+    # between the pass and this pin. Same kind only -- a changed KIND refused above --
+    # and only on the gateway's publication record; see ``_published_by_gateway`` and
+    # the recreation table in the module spec.
+    if _replaced and _published_by_gateway(launch, _t, occupant, expect_occupant, fd):
+        _replaced = False
     if _replaced:
         os.close(fd)
         _refuse(

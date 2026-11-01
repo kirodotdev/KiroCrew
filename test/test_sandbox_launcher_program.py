@@ -72,6 +72,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "alias_credential_ids": [],
         "required_mask_targets": [],
         "mask_occupants": {},
+        "published_file_record": {},
         "crew_home_aliases": [],
         "expose_files": [],
         "env_prefixes": [],

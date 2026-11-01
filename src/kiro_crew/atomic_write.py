@@ -1096,6 +1096,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    on_staged: Callable[[int], None] | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1195,6 +1196,12 @@ def atomic_write(
     from *path*; only the directory it is resolved through is pinned. It is also
     REFUSED alongside *restrict_to_owner*, whose lockdown is applied to the staged
     file by name and so cannot address a descriptor-relative temp.
+
+    *on_staged* is called with the staged file's open descriptor once its content
+    is complete and before the rename publishes it. It names the exact object that
+    will appear at *path*, which a stat of *path* after the rename cannot: another
+    writer may have replaced it by then. An exception it raises aborts the write
+    like any other staging failure.
     """
     binary = isinstance(content, bytes)
     if binary and newline is not None:
@@ -1307,6 +1314,8 @@ def atomic_write(
             _carry_xattrs(fd, src_xattrs, path)
         if fsync:
             os.fsync(fd)
+        if on_staged is not None:
+            on_staged(fd)
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that
         # still has an open handle. Clear fd first so the except branch below
         # cannot double-close if this close is itself what fails.

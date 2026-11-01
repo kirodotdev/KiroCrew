@@ -352,12 +352,14 @@ _OWNER_CONFIG_IMPORTS = {
     },
     "kiro_crew.config.loader_credentials": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
     "kiro_crew.config.loader_locations": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
+    "kiro_crew.config.write_provenance": {"kiro_crew.config.paths"},
     "kiro_crew.config.loader_document": {
         "kiro_crew.config.loader_locations",
         "kiro_crew.config.migration",
         "kiro_crew.config.paths",
         "kiro_crew.config.sections",
         "kiro_crew.config.validation",
+        "kiro_crew.config.write_provenance",
     },
     "kiro_crew.config.loader_builders": {
         "kiro_crew.config.loader_document",
