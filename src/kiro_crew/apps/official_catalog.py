@@ -303,15 +303,41 @@ def _declared_length(declared: object) -> int | None:
 def fetch_document(url: str) -> dict[str, Any] | None:
     """GET one JSON document from the catalog origin. Returns None on any failure.
 
-    Takes the URL because a second document (``editorial.json``) is served from
-    the same origin under the same trust basis, and the guards below -- https
-    only, redirects refused, a byte cap before decode, and the exception family
-    that a narrower tuple lets escape -- are security behaviour that must not
-    drift into a second copy. The scheme guard is what keeps this general form
-    from becoming a file read if a caller ever passes something configurable.
+    The document-or-nothing form, and what almost every caller wants: a failure
+    is a degradation rather than an error, because each caller has a working
+    answer without the document. ``fetch_document_with_status`` is the same
+    fetch for the one caller that must tell "the origin said this does not
+    exist" apart from "the origin could not be reached".
+    """
+    return fetch_document_with_status(url)[0]
 
-    Every failure is a degradation rather than an error: each caller has a
-    working answer without the document.
+
+def fetch_document_with_status(url: str) -> tuple[dict[str, Any] | None, int | None]:
+    """GET one JSON document, reporting ``(document, http_status)``.
+
+    Takes the URL because further documents (``editorial.json``,
+    ``catalog-ranking.json``) are served from the same origin under the same
+    trust basis, and the guards below -- https only, redirects refused, a byte
+    cap before decode, and the exception family that a narrower tuple lets
+    escape -- are security behaviour that must not drift into a second copy.
+    The scheme guard is what keeps this general form from becoming a file read
+    if a caller ever passes something configurable.
+
+    The status is reported so a caller can distinguish a document the origin
+    says is NOT THERE from one it could not be asked about. A 404 is a durable
+    answer -- nobody has published this document -- and retrying it on the
+    cadence that suits a transient outage means one pointless request per
+    back-off window, forever. The status is None when no HTTP response was
+    obtained at all: DNS, TLS, a timeout, or a refused redirect. A 200 whose
+    body was then unusable reports ``(None, 200)``: the body failed, not the
+    request, so it is not a durable "no such document" either.
+
+    The skip gate lives HERE rather than in ``fetch_document``, so it holds for
+    every caller of either form -- a gate on the thin wrapper alone would let
+    the ranking's fetch straight through to the network. It reports NO status,
+    because a skipped fetch asked the origin nothing: reporting 404 would tell
+    a caller "nobody has published this", and the ranking consumer answers that
+    with an hour-long back-off it has no business applying to a test rig.
 
     A transient fault -- a reset connection, or a body shorter than its declared
     ``Content-Length`` -- is retried (:data:`FETCH_ATTEMPTS`) with a short
@@ -326,8 +352,14 @@ def fetch_document(url: str) -> dict[str, Any] | None:
     """
     if store_fetch_skipped():
         logger.info("%s=1 — not fetching %s", SKIP_FETCH_ENV, url)
-        return None
+        return None, None
     raw: bytes | None = None
+    # The status of the last attempt that actually got a response, so an
+    # exhausted retry loop reports what the origin said rather than guessing.
+    # A truncated body means the origin answered 200 and the body was unusable;
+    # a transport failure means it never answered at all, and the difference is
+    # what the ranking consumer reads to choose a back-off.
+    answered: int | None = None
     for attempt in range(1, FETCH_ATTEMPTS + 1):
         if attempt > 1:
             time.sleep(FETCH_RETRY_PAUSE * (attempt - 1))
@@ -336,7 +368,8 @@ def fetch_document(url: str) -> dict[str, Any] | None:
             with _open_catalog(req) as resp:
                 if resp.status != 200:
                     logger.info("%s returned HTTP %s", url, resp.status)
-                    return None
+                    return None, resp.status
+                answered = resp.status
                 body = resp.read(MAX_BYTES + 1)
                 headers = getattr(resp, "headers", None)
                 declared = headers.get("Content-Length") if headers is not None else None
@@ -344,9 +377,13 @@ def fetch_document(url: str) -> dict[str, Any] | None:
         # redirect, so this -- not the status check above -- is where a server
         # that ANSWERED lands. It is a `URLError` subclass, so it must be caught
         # first: a second request would get the same answer.
+        # This arm is also where the ranking consumer's "not published" answer
+        # comes from: a 404 reaches here as `exc.code`, never as a response
+        # object's `.status`, so reporting the code is what lets a caller tell
+        # an absent document from an unreachable origin.
         except urllib.error.HTTPError as exc:
             logger.info("%s returned HTTP %s", url, exc.code)
-            return None
+            return None, exc.code if isinstance(exc.code, int) else None
         # `HTTPException` is the family, not a courtesy addition to the tuple. It is
         # NOT an OSError subclass, so `IncompleteRead` (a truncated chunked body),
         # `BadStatusLine`, `LineTooLong`, `InvalidURL`, `UnknownProtocol` and the
@@ -363,7 +400,10 @@ def fetch_document(url: str) -> dict[str, Any] | None:
             logger.info("could not fetch %s (attempt %d/%d): %s", url, attempt, FETCH_ATTEMPTS, exc)
             if _is_transient(exc):
                 continue
-            return None
+            # No HTTP response was obtained, so there is no status to report:
+            # the HTTPError arm above has already claimed every answer that
+            # carried one.
+            return None, None
         # Oversized first: a document over the cap that declares its true length
         # is ALSO shorter than `Content-Length` after the capped read, and must
         # not be mistaken for a truncation and downloaded again.
@@ -390,16 +430,16 @@ def fetch_document(url: str) -> dict[str, Any] | None:
         raw = body
         break
     if raw is None:
-        return None
+        return None, answered
     if len(raw) > MAX_BYTES:
         logger.warning("%s exceeds %d bytes; ignoring it", url, MAX_BYTES)
-        return None
+        return None, 200
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("%s is not valid JSON: %s", url, exc)
-        return None
-    return doc if isinstance(doc, dict) else None
+        return None, 200
+    return (doc, 200) if isinstance(doc, dict) else (None, 200)
 
 
 def _download() -> dict[str, Any] | None:
