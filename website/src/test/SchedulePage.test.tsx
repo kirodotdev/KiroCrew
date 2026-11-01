@@ -757,7 +757,9 @@ describe('SchedulePage translated labels', () => {
   })
 
   afterEach(async () => {
-    await i18next.changeLanguage('en')
+    // The test's tree is still mounted here, and a dialog's ErrorNotice
+    // subscribes to language switches, so the reset re-renders it: run it in act.
+    await act(async () => { await i18next.changeLanguage('en') })
   })
 
   it('names the job dialog tabs in the active language', async () => {
