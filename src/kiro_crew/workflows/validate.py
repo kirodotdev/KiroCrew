@@ -407,9 +407,14 @@ def check_ctx_surface(source: str, available: "frozenset[str] | set[str]") -> li
         ),
         None,
     )
-    if entry is None or not entry.args.args:
+    if entry is None:
         return []
-    ctx_name = entry.args.args[0].arg
+    # ``def workflow(ctx, /)`` keeps the context in ``posonlyargs``, which
+    # ``_check_entrypoint`` already accepts, so the port check reads it there too.
+    entry_params = entry.args.posonlyargs + entry.args.args
+    if not entry_params:
+        return []
+    ctx_name = entry_params[0].arg
     errors: list[str] = []
     seen: set[tuple[str, int]] = set()
 
