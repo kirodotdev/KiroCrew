@@ -43,9 +43,7 @@ def _err(data: str, message: str = "Internal error") -> dict:
 
 
 # The exact reported shape, request id included.
-_MONTHLY_LIMIT = _err(
-    f"{_ENVELOPE}The monthly usage limit has been reached (request_id: {_REQ})"
-)
+_MONTHLY_LIMIT = _err(f"{_ENVELOPE}The monthly usage limit has been reached (request_id: {_REQ})")
 
 
 class TestUsageLimitIsTerminalAndTruthful:
@@ -287,6 +285,4 @@ class TestThrottleWordingByBackend:
         # genuine Bedrock throttle on kiro-cli still reads as a retryable
         # throttle, named Bedrock, generic rate-limit wording included.
         assert _is_transient_raw_error(self._GENERIC_RATE) is True
-        assert _format_acp_error(self._GENERIC_RATE, backend="").startswith(
-            "Bedrock is throttling"
-        )
+        assert _format_acp_error(self._GENERIC_RATE, backend="").startswith("Bedrock is throttling")
