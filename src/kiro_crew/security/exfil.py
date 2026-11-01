@@ -1985,6 +1985,11 @@ if TYPE_CHECKING:  # project names it serves from outside its owners, from their
         _INERT_SEARCH_VERBS,
         _exception_eligible,
     )
+    from kiro_crew.security.gh_file_body import (  # noqa: F401
+        _GH_FILE_BODY_RULE,
+        _gh_file_body_flag,
+        _may_run_gh,
+    )
     from kiro_crew.security.shell_commands import read_commands as _read_commands  # noqa: F401
     from kiro_crew.sel import (  # noqa: F401
         SecurityEvent,

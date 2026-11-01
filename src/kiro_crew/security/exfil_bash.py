@@ -16,6 +16,7 @@ import fnmatch
 import re
 
 from .denied_rules import _INERT_SEARCH_VERBS, _exception_eligible
+from .gh_file_body import _GH_FILE_BODY_RULE, _gh_file_body_flag, _may_run_gh
 from .shell_commands import read_commands as _read_commands
 
 # Data-egress / reverse-shell command shapes — the exfiltration-specific subset
@@ -213,4 +214,8 @@ def audit_bash_exfiltration(
             if _on(matched_id):
                 return f"Blocked: command matches data-exfiltration pattern ({label})"
         continue
+    if _on(_GH_FILE_BODY_RULE) and _may_run_gh(command):
+        flag = _gh_file_body_flag(command)
+        if flag:
+            return f"Blocked: command matches data-exfiltration pattern (gh {flag} from file)"
     return None
