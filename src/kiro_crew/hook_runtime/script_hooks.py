@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _HOOK_BASE_ENV_KEYS,
+        _HOOK_REAP_SECS,
         _HOOK_STREAM_CAP_BYTES,
         _HOOK_TRUNCATION_MARKER,
         _HOOKS_FILE,
@@ -422,11 +423,16 @@ async def run_script_hook(
                 # us during cleanup. Drain both pipes concurrently under
                 # the same cap and discard; sequential reads can deadlock when
                 # residual data fills the other pipe.
-                await asyncio.gather(
-                    _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
-                    _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                # Bounded too: a descendant that left the killed group (setsid)
+                # can hold a pipe open, and the caller's turn waits on this.
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _read_capped_stream(proc.stdout, _HOOK_STREAM_CAP_BYTES),
+                        _read_capped_stream(proc.stderr, _HOOK_STREAM_CAP_BYTES),
+                        proc.wait(),
+                    ),
+                    timeout=_HOOK_REAP_SECS,
                 )
-                await proc.wait()
         except Exception:
             pass
         elapsed = int((time.monotonic() - start) * 1000)

@@ -37,6 +37,8 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL,
     EVENT_TOOL_RESULT,
     STOP_CLASS_CANCELLED,
+    STOP_CLASS_SUCCEEDED,
+    STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_REFUSAL,
     STOP_REASON_STALE_RECOVER,
@@ -75,6 +77,12 @@ from kiro_crew.messaging.renderer import (
     TOOL_RESULT,
     OutputEvent,
     Renderer,
+)
+from kiro_crew.messaging.script_hooks import (
+    ScriptHookTurn,
+    fire_prompt_submit,
+    fire_stop,
+    with_hook_context,
 )
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
@@ -531,8 +539,12 @@ class TurnDriver:
         monitor_completion: MonitorCompletionHook | None = None,
         undelivered_watch_key: str = "",
         event_tap: Callable[[Any], None] | None = None,
+        script_hooks: ScriptHookTurn | None = None,
     ) -> None:
         self.provider = provider
+        # The Hooks page's UserPromptSubmit and Stop hooks for this turn
+        # (:mod:`kiro_crew.messaging.script_hooks`). None fires none.
+        self.script_hooks = script_hooks
         self.renderer = renderer
         # The session key the caller authenticated for this turn, used ONLY to say
         # whose worker-tool call the harness failed to deliver
@@ -568,7 +580,8 @@ class TurnDriver:
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
-        # Whether run() saw an EVENT_COMPLETE at all. ``last_stop_reason`` is
+        # Whether run() saw an EVENT_COMPLETE or settled a pre-stream user cancel.
+        # ``last_stop_reason`` is
         # "" both before any completion and for a completion that carries no
         # reason, and the two mean opposite things to the post-compaction
         # re-injection bookkeeping (no completion: the prompt never landed; an
@@ -856,11 +869,27 @@ class TurnDriver:
                 )
 
         await self.renderer.on_turn_start()
+        # Before the monitor claim check, which must reach the stream with no
+        # await between them. So the hook means "a message arrived": a wake the
+        # check refuses, or a turn the closing gate refuses, has still fired it.
+        if self.script_hooks is not None:
+            message = await with_hook_context(message, await fire_prompt_submit(self.script_hooks))
         if self.monitor_completion is not None:
             if not await self.monitor_completion.authorize():
                 return accumulated
         # The closing gate remains yield-free with stream registration. Monitor
         # acceptance below is synchronous, so it cannot reopen that race.
+        if (
+            self.script_hooks is not None
+            and self.script_hooks.cancelled is not None
+            and self.script_hooks.cancelled()
+        ):
+            # A Stop during the hook has no provider turn to cancel yet. Settle
+            # it like a user-cancelled terminal, without registering a prompt.
+            self.last_stop_reason = STOP_REASON_CANCELLED
+            self.completion_observed = True
+            await self.renderer.dispatch(OutputEvent(kind=DONE, stop_reason=STOP_REASON_CANCELLED))
+            return accumulated
         if self.closing_gate is not None:
             self.closing_gate()
         if self.monitor_completion is not None:
@@ -1350,6 +1379,13 @@ class TurnDriver:
             self.empty_turn_notice = empty_turn_notice(
                 accumulated, completed=False, stop_reason="", productive=productive
             )
+        elif (
+            self.script_hooks is not None
+            and classify_stop_reason(self.last_stop_reason).name == STOP_CLASS_SUCCEEDED
+        ):
+            # Only a reply the backend finished: not one the user stopped, one
+            # it abandoned, or one that ended on a refusal or an error.
+            await fire_stop(self.script_hooks, accumulated)
         return accumulated
 
     async def _consume_directive(

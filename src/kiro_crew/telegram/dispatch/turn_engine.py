@@ -56,6 +56,7 @@ from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import DM_SCOPE_UNIFIED, channel_namespace_of
 from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.messaging.script_hooks import ScriptHookTurn
 from kiro_crew.messaging.session_resume import persisted_session_agent
 from kiro_crew.messaging.session_trust import is_session_trusted
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
@@ -202,6 +203,8 @@ async def _run_turn(
             model=(None if resumed_key is not None else self._model_pref.get(route) or None),
         )
         _acquired = True
+        # Taken on acquisition: a Stop from here on cancels the turn before it streams.
+        hook_turn = ScriptHookTurn.stoppable(self.sessions, session_key, text)
         # Hold the provider this turn obtained, for the failure handler's
         # attribution question. Captured HERE rather than looked up when a
         # failure is handled: the recovery paths replace a dead session, so a
@@ -345,6 +348,9 @@ async def _run_turn(
                 return "auto_approve"
             return ""
 
+        # The hooks match the sender's text as the turn will send it, attachments
+        # and quoted reply included.
+        hook_turn.prompt = text
         driver = facade.TurnDriver(
             provider,
             out_renderer,
@@ -379,6 +385,7 @@ async def _run_turn(
                 session_key, lambda: self.sessions.begin_turn(session_key)
             ),
             undelivered_watch_key=session_key,
+            script_hooks=hook_turn,
         )
         accumulated = await driver.run(full_message)
 
