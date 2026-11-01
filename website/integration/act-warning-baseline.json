@@ -84,7 +84,6 @@
   "src/test/BottomTerminalPanel.rename.test.tsx",
   "src/test/CapabilitiesPage.tabLanguage.test.tsx",
   "src/test/CfgTabCoverage.test.tsx",
-  "src/test/ChannelFolderBackfill.test.tsx",
   "src/test/ChatFooter.test.tsx",
   "src/test/ChatHeaderMenu.slack.test.tsx",
   "src/test/ChatInput.agentChipDefaultMarker.test.tsx",
