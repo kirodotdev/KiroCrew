@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _collapse_wire_rows,
         _has_validated_effort_marker,
+        _history_key,
         _history_key_for,
         _live_child_instance,
         _load_restore_cfg,
@@ -273,6 +274,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
     return {
         "ok": True,
         "key": existing.key,
+        "history_key": _history_key(existing),
         "messages": prepared,
         "queue": [queue_entry_view(q) for q in existing._queue],
         "total": total,
@@ -730,6 +732,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         {
             "ok": True,
             "key": slot.key,
+            "history_key": _history_key(slot),
             # `total` is the effective hydrated length (durable rows plus a
             # recovered interruption row when one was appended), so this is
             # the raw index the next older page starts from.

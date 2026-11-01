@@ -1,10 +1,12 @@
 import { useEffect, useCallback, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAppDispatch, useAppStore } from '../store'
-import { switchSlot, deleteSlot, openActivityToTab } from '../store/chatSlice'
+import { switchSlot, deleteSlot, openActivityToTab, resumeFromHistory, setAgentSwitchNotice } from '../store/chatSlice'
 import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { forgetClosedSessionRef, hasRecentlyClosedSession, isClosedSessionOpenIn, rememberClosedSession, restoreClosedSession, takeRecentlyClosedSession, trackClosedSessionClose, waitForClosedSession } from '../lib/recentlyClosedSessions'
+import type { ClosedSessionRef } from '../lib/recentlyClosedSessions'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { focusComposerElement, queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
+import { focusComposerElement, focusComposerForResumedSession, queryComposerOrExpand, queryPendingApprovalAction, releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { reportSeamCollision } from '../apps/seamCollision'
 import {
   loadPanelToggleOverrides,
@@ -34,7 +36,7 @@ import {
 } from '../lib/shortcutRegistry'
 import { i18nT } from '../i18n/t'
 import { canGoBack, canGoForward } from '../lib/routeHistoryPosition'
-import { useGuardedHistoryStep } from '../components/NavigationLeaveGuard'
+import { useGuardedHistoryStep, useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { MOBILE_BREAKPOINT } from './useIsMobile'
 import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
@@ -279,6 +281,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // controls, so the reference list and the buttons cannot drift apart.
   'new-chat': 'pages.chatSidebar.new_chat',
   'close-chat': 'pages.chatSidebar.close_session',
+  'reopen-chat': 'hooks.useKeyboardShortcuts.reopen_closed_session',
   'shortcuts-modal': 'hooks.useKeyboardShortcuts.open_shortcuts_help',
   'open-settings': 'hooks.useKeyboardShortcuts.open_settings',
   'cycle-agent': 'hooks.useKeyboardShortcuts.cycle_agent',
@@ -734,6 +737,9 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const guardedHistoryStep = useGuardedHistoryStep()
+  const guardedLeave = useGuardedLeave()
+  const guardedLeaveRef = useRef(guardedLeave)
+  guardedLeaveRef.current = guardedLeave
   const appStore = useAppStore()
   const mruIndexRef = useRef(-1)
   const [enabled, setEnabled] = useState(() => localStorage.getItem(SHORTCUTS_ENABLED_KEY) !== '0')
@@ -1036,8 +1042,76 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
             checkBusy: modChord,
           })
           if (prompt === null || confirm(prompt)) {
-            dispatch(deleteSlot(activeSlot))
+            // Recorded at the press, before the close is dispatched: the thunk's
+            // `fulfilled` trails the peer session's transcript load, so recording
+            // there left ⌘⇧T with nothing to reopen right after ⌘W and recorded
+            // rapid closes in finish order. A refused close drops the record.
+            const slot = appStore.getState().dashboard.slots.find(s => s.key === activeSlot)
+            const ref = rememberClosedSession(slot)
+            const close = dispatch(deleteSlot(activeSlot))
+            trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
+            void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
           }
+        },
+        // ⌘⇧T / Ctrl+Shift+T (alias Option/Alt+Shift+T): reopen the session
+        // this tab closed most recently (#18969) — the browser's reopen-closed-
+        // tab, so repeated presses walk further back. Through the same resume
+        // as History and the command palette, so the transcript and state come
+        // back exactly as those paths restore them. Claimed with nothing to
+        // reopen: a browser host never delivers the primary chord, and the
+        // alias would otherwise type a character into the composer. Through
+        // the draft guard, like the notification panel's resume: the hop to
+        // /chat unmounts the page on screen. Pending closes are awaited first
+        // and the guard is asked once, after them, so it judges the page that
+        // is actually left. Nothing to reopen asks nothing and says so through
+        // the shell notice (`agentSwitchNotice`), since a chord
+        // that does nothing visible reads as broken. A declined ask puts the
+        // entry back for the next press. "Open again" is judged by slot key OR history_key: a
+        // History reopen publishes under the folded transcript key, so a
+        // channel-linked slot comes back under a key other than the one it was
+        // closed with, and matching the bare key alone would resume it twice.
+        'reopen-chat': () => {
+          // Read the slots at each check, not once: the takes below run after
+          // awaiting pending closes.
+          const isOpen = (ref: ClosedSessionRef) => isClosedSessionOpenIn(appStore.getState().dashboard.slots)(ref)
+          if (!hasRecentlyClosedSession(isOpen)) {
+            dispatch(setAgentSwitchNotice(i18nT('hooks.useKeyboardShortcuts.no_recently_closed_session')))
+            return
+          }
+          void (async () => {
+            // Settle first, ask last: wait for every close this press could
+            // cross (the newest entry's and, when it was refused, each older
+            // fallback's) BEFORE the leave guard, so the guard is asked once,
+            // against the page on screen when the switch actually happens.
+            // A refused close has already dropped its record, so the next
+            // older entry is tried instead.
+            let ref = takeRecentlyClosedSession(isOpen)
+            while (ref && !((await waitForClosedSession(ref)) && !isOpen(ref))) {
+              ref = takeRecentlyClosedSession(isOpen)
+            }
+            if (!ref) {
+              dispatch(setAgentSwitchNotice(i18nT('hooks.useKeyboardShortcuts.no_recently_closed_session')))
+              return
+            }
+            const reopenRef = ref
+            let left = false
+            // Read through the ref: the wait above may span renders, and the
+            // guard captured at keydown would judge "already on /chat" against
+            // the page the press started on.
+            guardedLeaveRef.current(() => {
+              left = true
+              const resumed = dispatch(resumeFromHistory({ key: reopenRef.historyKey, title: reopenRef.title })).unwrap()
+              // A failed resume puts the entry back, so the next press retries
+              // this session instead of skipping to an older one.
+              resumed.catch(() => restoreClosedSession(reopenRef))
+              focusComposerForResumedSession(resumed, appStore)
+              // resumeFromHistory only activates the slot in the store; land on
+              // the chat surface that renders it, from whichever page fired.
+              navigate('/chat')
+            }, '/chat')
+            // A declined ask keeps the exact entry for the next press.
+            if (!left) restoreClosedSession(reopenRef)
+          })()
         },
       }
       // Every `registry` entry has an action here (shortcutRegistry.test pins the
