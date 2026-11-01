@@ -406,8 +406,16 @@ def build_message(
                 # scrubbed above, but this section is appended separately.
                 _resume_member = ""
                 if _member_turn.deliver_section:
+                    # Same memory-scope predicate as the session-start and
+                    # post-compaction legs: a temporary session's prefix
+                    # promises no memory reads, so the briefing is withheld
+                    # here too rather than riding the re-injection.
                     _member_section = self._build_member_section(
-                        member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                        member,
+                        desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                        include_briefing=_member.briefing_reads_allowed(
+                            blocks_reads, ctx._config_scoped_groups(context_groups)
+                        ),
                     )
                     if _member_section:
                         _resume_member = (
@@ -564,8 +572,16 @@ def build_message(
         # WARM_REINJECTION leg of the member lifecycle (see the
         # chokepoint consult above).
         if _member_turn.deliver_section:
+            # Same memory-scope predicate as the session-start and slim-resume
+            # legs: a temporary session's prefix promises no memory reads, so
+            # the briefing is withheld here too rather than riding the
+            # re-injection.
             _member_section = self._build_member_section(
-                member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                member,
+                desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+                include_briefing=_member.briefing_reads_allowed(
+                    blocks_reads, ctx._config_scoped_groups(context_groups)
+                ),
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))

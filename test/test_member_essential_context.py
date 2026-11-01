@@ -727,7 +727,7 @@ def test_strict_member_section_and_profile_validation_refuse_deleted_id(env):
     config.agents["writer"] = KiroCrewAgentConfig(description="REPLACEMENT_V1_PERSONA")
     config.save()
     with pytest.raises(UnknownMemoryStore, match="member identity"):
-        env.builder._build_member_section(env.member, strict=True)
+        env.builder._build_member_section(env.member, strict=True, include_briefing=True)
     with pytest.raises(UnknownMemoryStore, match="member identity"):
         env.builder._build_v2_essentials(env.store, member=env.member)
 

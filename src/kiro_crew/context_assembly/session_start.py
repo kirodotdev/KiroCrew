@@ -374,12 +374,20 @@ def build_session_context(
     # delivery branch consults (kiro_crew.members.member_turn_context).
     # Delivery enforces the rules gate: the section builder reads
     # [PERMANENT RULES] fresh and fails closed on an unreadable file.
+    #
+    # The briefing rides the same memory-scope predicate the V2 essentials
+    # envelope and every other memory block read: a temporary session's
+    # prefix promises no memory reads, so the member's agent-writable
+    # briefing must be withheld here too instead of riding the turn the
+    # prefix disclaims.
     if (
         ctx.member_turn_context(member, ctx.MemberLifecycle.FRESH).deliver_section
         and not essentials
     ):
         _member_section = self._build_member_section(
-            member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+            member,
+            desk_withheld=ctx._desk_withheld(execution_context, desk_member),
+            include_briefing=_member.briefing_reads_allowed(blocks_reads, effective_groups),
         )
         if _member_section:
             append_required(_member_section)
