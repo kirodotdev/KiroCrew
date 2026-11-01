@@ -35,7 +35,6 @@
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/messaging_api/discord_settings.py
 1 src/kiro_crew/dashboard/messaging_api/run_views.py
-1 src/kiro_crew/dashboard/messaging_api/teams_settings.py
 1 src/kiro_crew/dashboard/messaging_api/webex_settings.py
 1 src/kiro_crew/dashboard/server.py
 2 src/kiro_crew/frontend.py
