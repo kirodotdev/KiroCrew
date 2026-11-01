@@ -3678,7 +3678,7 @@ dashboard token auth.
   create deep link and `command`, the slash command that manifest registers
   (`slack_manifest.slash_command(alias)`). It writes no config, so a caller
   that passes `?alias=` learns the `slack.command` value the gateway needs.
-  Settings → Slack passes no alias, so its one-click app registers
+  Settings → Messaging Channels → Slack passes no alias, so its one-click app registers
   `/kirocrew`, which the default `slack.command` answers.
 
 `allowed_users` / `open_channels` are intentionally not exposed while the
