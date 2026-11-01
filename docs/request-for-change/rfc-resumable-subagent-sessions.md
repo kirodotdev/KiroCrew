@@ -130,14 +130,14 @@ Record rows use the existing schema. `tools` carries tool **names in order** (`a
 
 ### Retaining the resume material
 
-The run's sid, cwd, provider, and agent go into the **record's metadata** — not into `SessionMap` at spawn. `SessionMap.set` rewrites the whole map file on every call (`session_map.py:178-195`), so one entry per run would make spawning O(n); and `SessionMap.get` self-prunes entries whose kiro session `.json` is missing or whose `.jsonl` is under 10 bytes (`session_map.py:124-167`). A map entry is written once, at promotion.
+The run's sid, cwd, provider, and agent go into the **record's metadata** — not into `SessionMap` at spawn. `SessionMap.set` rewrites the whole map file on every call (`session_map.py:178-195`), so one entry per run would make spawning O(n); and `SessionMap.get` self-prunes entries whose kiro session `.json` is missing or whose `.jsonl` is under 10 bytes (`session_map.py::SessionMap.get`). A map entry is written once, at promotion.
 
 Keeping the kiro session files means touching **four** unlink sites:
 
 | Unlink site | Reached by |
 |---|---|
 | `AcpSessionHandle._cleanup_transcript`, via `AcpSessionHandle.destroy()` | the session-sharing arm — the default — through `AcpSessionProvider.shutdown` (`acp/session_provider.py:173`) from `subagent_manager/run_lifecycle.py`'s `_teardown_run_session_impl` |
-| `AcpSessionProvider.cleanup_session` (`acp/session_provider.py:180-200`) | `SessionManager._safe_cleanup` |
+| `AcpSessionProvider.cleanup_session` (`acp/session_provider.py::AcpSessionProvider.cleanup_session`) | `SessionManager._safe_cleanup` |
 | `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`) | `SessionManager._safe_cleanup` |
 | `_cleanup_session_files_sync` (`subagent_persistence.py:293`) | tombstone prune (`:280`) and orphan reconcile (`_reconcile_orphans_impl`) |
 
