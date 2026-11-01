@@ -336,3 +336,35 @@ def _doctor_credentials(issues: list[str]) -> None:
             "With nothing configured, an agent reporting no AWS access is reporting "
             "the truth — configure a profile first, then re-run this check."
         )
+    _doctor_kerberos_ccache()
+
+
+def _doctor_kerberos_ccache() -> None:
+    """Say when agent children are left on a Kerberos cache the sandbox hides.
+
+    The Linux sandbox starts each agent child in its own user namespace, where a
+    ``KEYRING:`` ticket cache is a different, empty keyring. Without a usable
+    ``/tmp/krb5cc_<uid>`` file, every Kerberos-gated MCP server an agent starts
+    reports no ticket while ``klist`` in the user's terminal shows one, and
+    nothing else says why. Advisory, like the rest of this section: a host that
+    does not use Kerberos has the same default cache. Silent off Linux and when
+    the cache is not a ``KEYRING:`` one.
+    """
+    crew_env = cli_doctor.env
+    try:
+        keyring = crew_env.krb5_keyring_ccache(cli_doctor.os.environ)
+        file_cache = None if keyring is None else crew_env.usable_file_ccache()
+    except Exception as exc:  # noqa: BLE001 — an advisory row must not end the report
+        print(f"  kerberos:    ⚠️  could not check the ticket cache ({type(exc).__name__})")
+        return
+    if keyring is None:
+        return
+    if file_cache is not None:
+        print(f"  kerberos:    ✅ agents use the file cache {render._safe_display(file_cache)}")
+        render._print_wrapped("`klist -c FILE:<that path>` shows whether its ticket is current.")
+        return
+    print(f"  kerberos:    ⚠️  ticket cache {render._safe_display(keyring)} is not visible")
+    render._print_wrapped(
+        "to sandboxed agents, so MCP servers they start that need a Kerberos ticket "
+        f"report none. If you use Kerberos, {crew_env.KRB5_KEYRING_REMEDY}."
+    )

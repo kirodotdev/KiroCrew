@@ -694,8 +694,9 @@ class GatewayManager:
         env = {**base_env, **self._spec.mcp_target_env}
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
-        # ticket for any credential-gated MCP server.
-        resolve_krb5_ccname(env)
+        # ticket for any credential-gated MCP server. Off the loop: it stats
+        # the ccache candidates and may read the krb5 config files.
+        await asyncio.to_thread(resolve_krb5_ccname, env)
         # A background daemon can inherit a minimal PATH (e.g. launched from
         # Electron or under systemd-user), so extend it with the well-known MCP
         # launcher dirs. This MUST be ``mcp_runtime_path``: operator-contributed
