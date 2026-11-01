@@ -75,13 +75,10 @@ def install_root_targets_for(package_dir: str) -> list[str]:
     ``site-packages`` (or ``dist-packages``) directory: an installer copied it there (a wheel, the desktop
     bundle's embedded interpreter). The seal is the package directory itself, which
     holds the gateway's own sources and its served static assets (``static/dist`` with
-    the precompressed ``.br``/``.gz`` siblings). The surrounding ``site-packages`` and
-    the rest of the environment (its ``bin`` scripts, ``pyvenv.cfg``, other
-    distributions, ``.pth`` files) stay writable to the child: sandboxed provisioning
-    steps (an optional extra, an app's Python build) install into that same
-    ``site-packages``, so sealing it would break them. A child can therefore still
-    change what the interpreter loads at start-up through those paths; this seal covers
-    the package directory only.
+    the precompressed ``.br``/``.gz`` siblings). It holds for every spawn, provisioning
+    ones included. The environment around it is sealed by
+    :func:`kiro_crew.sandbox_python_env.python_env_targets_for`, for every spawn but a
+    provisioning one.
 
     An editable or from-source checkout (``pip install -e``, ``install.sh``, a Dev Fleet
     worktree) imports from a source tree, never directly from such a directory, and returns
