@@ -167,6 +167,145 @@ class TestManagedRefsMaterialized:
         _materialize_managed_refs(data)
         assert data.get("mcpServers", {}) == {}
 
+    def test_gate_closed_managed_ref_is_not_materialized(self, monkeypatch):
+        """A ``@kirocrew-computer`` ref must NOT spawn a backend the gate forbids.
+
+        The spec gate (``_computer_use_spec_gate``) is CLOSED when computer use is
+        disabled. The host spec writers withhold the entry then, and the app path
+        does too. A materialized entry would spawn a backend that advertises no
+        tools, which times out KAS readiness with
+        ``kirocrew-computer: tools not advertised``.
+        """
+        from kiro_crew.apps.bridges import _materialize_managed_refs
+        from kiro_crew.computer_use import enable_state
+
+        # Gate CLOSED: keystone disabled. (The platform half is not even reached.)
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False)
+
+        data: dict[str, Any] = {"tools": ["@kirocrew-core", "@kirocrew-computer"]}
+        _materialize_managed_refs(data)
+
+        # The always-on server is still materialized; the gated-off one is not.
+        assert data["mcpServers"]["kirocrew-core"]["args"][-1] == "mcp-core"
+        assert "kirocrew-computer" not in data["mcpServers"]
+
+    def test_gate_open_managed_ref_is_materialized(self, monkeypatch):
+        """With the gate OPEN (enabled + a driver exists), the entry IS emitted."""
+        from kiro_crew.apps.bridges import _materialize_managed_refs
+        from kiro_crew.computer_use import backend as cu_backend
+        from kiro_crew.computer_use import enable_state
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: True)
+        monkeypatch.setattr(cu_backend, "platform_could_be_supported", lambda: True)
+
+        data: dict[str, Any] = {"tools": ["@kirocrew-computer"]}
+        _materialize_managed_refs(data)
+
+        assert data["mcpServers"]["kirocrew-computer"]["args"][-1] == "mcp-computer"
+
+    def test_managed_mcp_spec_honours_the_gate(self, monkeypatch):
+        """``_managed_mcp_spec`` (the policy-grant launch source) also gates."""
+        from kiro_crew.apps.bridges import _managed_mcp_spec
+        from kiro_crew.computer_use import backend as cu_backend
+        from kiro_crew.computer_use import enable_state
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: False)
+        assert _managed_mcp_spec("kirocrew-computer") is None
+
+        monkeypatch.setattr(enable_state, "is_enabled", lambda *a, **k: True)
+        monkeypatch.setattr(cu_backend, "platform_could_be_supported", lambda: True)
+        entry = _managed_mcp_spec("kirocrew-computer")
+        assert entry is not None and entry["args"][-1] == "mcp-computer"
+
+    def test_opt_in_managed_ref_is_materialized(self):
+        """An app agent's ``@ref`` is an explicit grant, so an opt-in server mounts."""
+        from kiro_crew.apps.bridges import _managed_mcp_spec, _materialize_managed_refs
+
+        data: dict[str, Any] = {"tools": ["@kirocrew-work", "@kirocrew-dashboard/session_status"]}
+        _materialize_managed_refs(data)
+
+        assert data["mcpServers"]["kirocrew-work"]["args"][-1] == "mcp-work"
+        assert data["mcpServers"]["kirocrew-dashboard"]["args"][-1] == "mcp-dashboard"
+        grant = _managed_mcp_spec("kirocrew-work")
+        assert grant is not None and grant["args"][-1] == "mcp-work"
+
+
+class TestRefreshEnabledAppAgents:
+    """``refresh_enabled_app_agents`` rewrites every enabled app's agents, and only those."""
+
+    def test_only_enabled_apps_are_refreshed_and_one_failure_does_not_stop_the_rest(
+        self, monkeypatch
+    ):
+        from kiro_crew.apps import bridges
+
+        apps = [
+            {"name": "on-a", "enabled": True},
+            {"name": "off", "enabled": False},
+            {"name": "broken", "enabled": True},
+            {"name": "on-b", "enabled": True},
+            {"name": "", "enabled": True},
+        ]
+        refreshed: list[str] = []
+
+        def _refresh(name: str, io_failures: Any = None) -> list[str]:
+            refreshed.append(name)
+            if name == "broken":
+                raise OSError("disk full")
+            return [f"{name}--agent"]
+
+        monkeypatch.setattr(bridges, "list_apps", lambda: apps)
+        monkeypatch.setattr(bridges, "app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bridges, "refresh_app_agents", _refresh)
+
+        assert bridges.refresh_enabled_app_agents() == 2
+        assert refreshed == ["on-a", "broken", "on-b"]
+
+    @staticmethod
+    def _race(monkeypatch, before: "bool | None", after: "bool | None") -> dict[str, list]:
+        """One listed-enabled app whose live enablement reads *before*, then *after*."""
+        from kiro_crew.apps import bridges
+
+        seen: dict[str, list] = {"refreshed": [], "removed": []}
+        states = iter([before, after])
+        monkeypatch.setattr(bridges, "list_apps", lambda: [{"name": "app", "enabled": True}])
+        monkeypatch.setattr(bridges, "app_enabled_state", lambda name: next(states))
+        monkeypatch.setattr(
+            bridges,
+            "refresh_app_agents",
+            lambda name, io_failures=None: (seen["refreshed"].append(name), ["app--a"])[1],
+        )
+        monkeypatch.setattr(
+            bridges, "_deregister_agents", lambda name: (seen["removed"].append(name), 1)[1]
+        )
+        seen["count"] = [bridges.refresh_enabled_app_agents()]
+        return seen
+
+    def test_an_app_disabled_after_the_snapshot_is_not_rewritten(self, monkeypatch):
+        seen = self._race(monkeypatch, before=False, after=False)
+        assert seen == {"refreshed": [], "removed": [], "count": [0]}
+
+    def test_an_app_disabled_during_the_rewrite_has_its_agents_removed(self, monkeypatch):
+        """The disable wins the race: what the rewrite put back is taken down again."""
+        seen = self._race(monkeypatch, before=True, after=False)
+        assert seen == {"refreshed": ["app"], "removed": ["app"], "count": [0]}
+
+    def test_an_unreadable_state_after_the_rewrite_deletes_nothing(self, monkeypatch):
+        seen = self._race(monkeypatch, before=True, after=None)
+        assert seen == {"refreshed": ["app"], "removed": [], "count": [1]}
+
+    def test_an_unreadable_state_before_the_rewrite_writes_nothing(self, monkeypatch):
+        seen = self._race(monkeypatch, before=None, after=None)
+        assert seen == {"refreshed": [], "removed": [], "count": [0]}
+
+    def test_an_unlistable_app_store_rewrites_nothing(self, monkeypatch):
+        from kiro_crew.apps import bridges
+
+        def _boom() -> list[dict[str, Any]]:
+            raise OSError("unreadable apps dir")
+
+        monkeypatch.setattr(bridges, "list_apps", _boom)
+        assert bridges.refresh_enabled_app_agents() == 0
+
 
 def _ctx(tmp_path: Path) -> Any:
     class _Ctx:

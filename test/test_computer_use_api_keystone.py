@@ -499,6 +499,61 @@ class TestEnableRestartsSessions:
         assert body["agent_spec_rewritten"] is expected
 
     @pytest.mark.asyncio
+    async def test_an_enable_flip_rewrites_app_agents_under_the_config_lock(
+        self, state_file, monkeypatch
+    ):
+        """An app agent's ``kirocrew-computer`` entry follows the same gate as the host's.
+
+        Without this rewrite, an app agent materialized while the feature was off
+        keeps a spec with no ``kirocrew-computer`` entry, and enabling the feature
+        restarts its sessions into that spec until the next gateway start.
+        """
+        from kiro_crew.apps import bridges
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+        self._spy(monkeypatch)
+        lock = _get_config_lock()
+        held: list[bool] = []
+        monkeypatch.setattr(
+            bridges, "refresh_enabled_app_agents", lambda: (held.append(lock.locked()), 1)[1]
+        )
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 200
+        assert held == [True], "the app agent rewrite did not run, or ran outside the lock"
+
+    @pytest.mark.asyncio
+    async def test_a_NO_OP_resave_does_not_rewrite_app_agents(self, state_file, monkeypatch):
+        from kiro_crew.apps import bridges
+
+        state_file.write_text(json.dumps({STATE_KEY_ENABLED: True}), encoding="utf-8")
+        self._spy(monkeypatch)
+        ran: list[str] = []
+        monkeypatch.setattr(bridges, "refresh_enabled_app_agents", lambda: (ran.append("x"), 0)[1])
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 200
+        assert ran == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_app_agent_rewrite_does_not_fail_the_SAVE(self, state_file, monkeypatch):
+        from kiro_crew.apps import bridges
+
+        calls = self._spy(monkeypatch)
+
+        def _boom() -> int:
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(bridges, "refresh_enabled_app_agents", _boom)
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+            body = await resp.json()
+        assert resp.status == 200
+        assert body["enabled"] is True
+        assert len(calls) == 1
+        assert json.loads(state_file.read_text())[STATE_KEY_ENABLED] is True
+
+    @pytest.mark.asyncio
     async def test_a_save_without_an_enable_change_reports_no_rebuild(
         self, state_file, monkeypatch
     ):

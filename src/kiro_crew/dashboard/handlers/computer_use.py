@@ -540,6 +540,20 @@ async def api_computer_use_config_get(request: web.Request) -> web.Response:
 # ── PUT ──
 
 
+def _refresh_app_agents_after_enable_change() -> None:
+    """Rewrite enabled apps' agent configs after an enable flip. Synchronous, never raises.
+
+    Resolved through the ``kiro_crew.apps.bridges`` facade at CALL time, so a test
+    that patches ``refresh_enabled_app_agents`` there reaches this call.
+    """
+    try:
+        from kiro_crew.apps import bridges
+
+        bridges.refresh_enabled_app_agents()
+    except Exception:
+        logger.warning("app agent refresh failed after a computer-use enable change", exc_info=True)
+
+
 async def api_computer_use_config_save(request: web.Request) -> web.Response:
     """PUT /api/computer-use/config — write the enable (keystone) + limits (config).
 
@@ -811,6 +825,11 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
             spec_rewritten = await asyncio.to_thread(
                 rebuild_agent_spec, "computer-use enable change"
             )
+            # Enabled apps' agents carry the same gated entry, materialized from the
+            # same keystone, so they are rewritten under the same lock. A failure
+            # leaves them on their previous server set until the next gateway start
+            # and does not fail the save.
+            await asyncio.to_thread(_refresh_app_agents_after_enable_change)
 
         from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
 
