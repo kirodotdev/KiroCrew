@@ -406,8 +406,32 @@ class RecordingStore:
             fh.write(data)
 
     @staticmethod
-    def _append(path: Path, line: dict[str, Any]) -> int:
-        data = (json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    def _line(line: dict[str, Any]) -> bytes:
+        return (json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+    @staticmethod
+    def _size(path: Path) -> int:
+        try:
+            return os.lstat(path).st_size
+        except OSError:
+            return 0
+
+    @staticmethod
+    def _roll_back(path: Path, size: int) -> None:
+        """Cut a log back to *size* after a failed append, so no half line stays."""
+        try:
+            fd = os.open(path, os.O_WRONLY | _O_NOFOLLOW | _O_BINARY)
+        except OSError:
+            return
+        try:
+            os.ftruncate(fd, size)
+        except OSError:
+            logger.debug("recording: roll back %s failed", path, exc_info=True)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _append(path: Path, data: bytes) -> int:
         fd = os.open(
             path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW | _O_BINARY, _FILE_MODE
         )
@@ -486,18 +510,19 @@ class RecordingStore:
             except OSError:
                 pass
 
-    def _evict(self, sdir: str, extra: int = 0) -> None:
+    def _evict(self, sdir: str, extra: int = 0, keep: str = "") -> None:
         """Oldest finished turns first, until *extra* more bytes fit both caps.
 
         The session's cap first, then the global one. Running turns are never
-        evicted; when only they are left, the caller's write is refused instead.
+        evicted, nor *keep* (the turn that just ended); when only they are left,
+        the caller's write is refused instead.
         """
         cfg = self.config
         while self._session_bytes(sdir) + extra > cfg.max_session_bytes:
             victims = [
                 t
                 for t in self._loaded().get(sdir, {}).values()
-                if (sdir, t.turn_id) not in self._live
+                if (sdir, t.turn_id) not in self._live and t.turn_id != keep
             ]
             if not victims:
                 break
@@ -508,7 +533,7 @@ class RecordingStore:
                 (s, t)
                 for s, turns in self._loaded().items()
                 for t in turns.values()
-                if (s, t.turn_id) not in self._live
+                if (s, t.turn_id) not in self._live and (s, t.turn_id) != (sdir, keep)
             ]
             if not anywhere:
                 break
@@ -564,7 +589,7 @@ class RecordingStore:
             info.ended_ts = max(ts, info.last_ts, info.started_ts)
             self._live.discard((sdir, turn_id))
             self._write_meta(sdir, info)
-            self._evict(sdir)
+            self._evict(sdir, keep=turn_id)
 
     def note_url(self, session_key: str, turn_id: str, url: str) -> None:
         with self._lock:
@@ -603,18 +628,27 @@ class RecordingStore:
             sdir, info = found
             if info.truncated:
                 return False
-            line = {"i": info.frame_count, "ts": ts, "w": width, "h": height}
-            self._evict(sdir, len(masked))
-            if self._over_cap(sdir, len(masked)):
+            data = self._line({"i": info.frame_count, "ts": ts, "w": width, "h": height})
+            need = len(masked) + len(data)
+            self._evict(sdir, need)
+            if self._over_cap(sdir, need):
                 info.truncated = True
                 self._write_meta(sdir, info)
                 return False
             tdir = self._turn_dir(sdir, turn_id)
+            jpg, index = tdir / "frames" / f"{info.frame_count}.jpg", tdir / "frames.jsonl"
+            size = self._size(index)
             try:
-                self._write_new(tdir / "frames" / f"{info.frame_count}.jpg", masked)
-                info.bytes += len(masked) + self._append(tdir / "frames.jsonl", line)
+                self._write_new(jpg, masked)
+                info.bytes += len(masked) + self._append(index, data)
             except OSError:
+                # Leave nothing half written: the next frame reuses this number.
                 logger.debug("recording: frame write failed", exc_info=True)
+                try:
+                    jpg.unlink()
+                except OSError:
+                    pass
+                self._roll_back(index, size)
                 return False
             info.frame_count += 1
             info.width, info.height = width, height
@@ -632,13 +666,23 @@ class RecordingStore:
                 info.truncated = True
                 self._write_meta(sdir, info)
                 return False
-            line = {"id": info.event_count, **event}
+            data = self._line({"id": info.event_count, **event})
+            # Events count against the caps as frames do, so a long turn's log
+            # cannot take it past them and get it evicted when it ends.
+            self._evict(sdir, len(data))
+            if self._over_cap(sdir, len(data)):
+                info.truncated = True
+                self._write_meta(sdir, info)
+                return False
             if not info.start_url and isinstance(event.get("url"), str):
                 info.start_url = event["url"]
+            log = self._turn_dir(sdir, turn_id) / "events.jsonl"
+            size = self._size(log)
             try:
-                info.bytes += self._append(self._turn_dir(sdir, turn_id) / "events.jsonl", line)
+                info.bytes += self._append(log, data)
             except OSError:
                 logger.debug("recording: event write failed", exc_info=True)
+                self._roll_back(log, size)
                 return False
             info.event_count += 1
             info.last_ts = max(info.last_ts, int(event.get("ts") or 0))

@@ -731,6 +731,50 @@ def test_a_running_turn_past_the_cap_stops_keeping_frames_not_events(tmp_path: P
     assert turn["truncated"] is True and turn["live"] is True and turn["event_count"] == 1
 
 
+def test_a_long_turns_events_stay_inside_the_cap_and_the_turn_survives_its_end(
+    tmp_path: Path,
+) -> None:
+    """Events count against the cap like frames, so a turn that keeps logging past
+    its frames cannot outgrow the cap and then evict itself when it ends."""
+    size = len(jpeg())
+    cap = size * 2 + rc.TURN_META_BYTES
+    store = rc.RecordingStore(lambda: tmp_path, rc.RecordingConfig(max_session_bytes=cap))
+    store.start_turn(KEY, TURN, 1)
+    store.add_frame(KEY, TURN, jpeg(), 64, 40, [], True, 1)
+    kept = [
+        store.add_event(KEY, TURN, {"ts": 2 + i, "op": "other", "actor": "agent", "label": "x" * 200})
+        for i in range(400)
+    ]
+    assert kept[0] and not kept[-1]
+    store.end_turn(KEY, TURN, 500)
+    (turn,) = store.list_turns(KEY)
+    assert turn["truncated"] is True and turn["frame_count"] == 1
+    assert sum(p.stat().st_size for p in turn_dir(tmp_path).rglob("*") if p.is_file()) <= cap
+
+
+def test_a_failed_frame_write_leaves_nothing_behind_for_the_next_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that fails (disk full) removes its JPEG and its half index line, so
+    the next frame, which reuses the number, is kept once the disk recovers."""
+    store = rc.RecordingStore(lambda: tmp_path)
+    store.start_turn(KEY, TURN, 1)
+    real_append = rc.RecordingStore._append
+
+    def _full(path: Path, data: bytes) -> int:
+        with open(path, "ab") as fh:
+            fh.write(data[:5])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(rc.RecordingStore, "_append", staticmethod(_full))
+    assert store.add_frame(KEY, TURN, jpeg((10, 0, 0)), 64, 40, [], True, 2) is False
+    assert not (turn_dir(tmp_path) / "frames" / "0.jpg").exists()
+    monkeypatch.setattr(rc.RecordingStore, "_append", staticmethod(real_append))
+    assert store.add_frame(KEY, TURN, jpeg((90, 0, 0)), 64, 40, [], True, 3) is True
+    lines = (turn_dir(tmp_path) / "frames.jsonl").read_bytes().splitlines()
+    assert len(lines) == 1 and lines[0].startswith(b'{"i":0')
+
+
 def test_a_restart_reads_the_index_back_and_ends_a_torn_turn(tmp_path: Path) -> None:
     store = rc.RecordingStore(lambda: tmp_path)
     store.start_turn(KEY, TURN, 10, url="https://a.example/")

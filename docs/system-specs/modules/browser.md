@@ -765,9 +765,12 @@ The root is a `HIDDEN` crew-home leaf (sandbox-masked, precreated, and on the
 file-tool sensitive list), so another chat's agent cannot read or forge it
 outside the owner-only routes.
 `browser.recording.max_session_mb` (200) and `max_total_mb` (1024) cap the bytes;
-before each frame the oldest finished turns go first (the session's, then any
-session's); a running turn that alone cannot fit stops keeping frames and is
-marked `truncated`, its action log continues (at most 5000 events). The index is
+before each frame and each action the oldest finished turns go first (the
+session's, then any session's), never the turn that just ended; a running turn
+that alone cannot fit stops keeping frames and is marked `truncated`, and its
+action log continues while it fits (at most 5000 events). A write that fails
+(disk full) removes its JPEG and cuts the index back, so the next frame, which
+reuses the number, is kept once the disk recovers. The index is
 read back from the `meta.json` files on first use; a turn that was running when
 the gateway went away reads as ended at its last frame or event. Deleting a chat
 (`slot_teardown._remove_browser_recordings`) removes the recordings of every
