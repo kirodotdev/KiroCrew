@@ -17,12 +17,7 @@ from kiro_crew.dashboard.state import (
 )
 
 _CARD = (
-    Path(__file__).resolve().parents[1]
-    / "website"
-    / "src"
-    / "pages"
-    / "chat"
-    / "RecoveryCard.tsx"
+    Path(__file__).resolve().parents[1] / "website" / "src" / "pages" / "chat" / "RecoveryCard.tsx"
 )
 
 
